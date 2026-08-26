@@ -1,15 +1,37 @@
 $ErrorActionPreference = "Stop"
 
+$root = Split-Path $PSScriptRoot -Parent
 $project = Join-Path $PSScriptRoot "DisplaySwitcher.Windows\DisplaySwitcher.Windows.csproj"
 $output = Join-Path $PSScriptRoot "dist"
 
-dotnet publish $project `
-    --configuration Release `
-    --runtime win-x64 `
-    --self-contained true `
-    -p:PublishSingleFile=true `
-    -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:DebugType=None `
-    --output $output
+Push-Location $root
+try {
+    $sdkVersion = & dotnet --version
+    if ($LASTEXITCODE -ne 0 -or -not $sdkVersion.StartsWith("8.")) {
+        throw "需要 .NET 8 SDK，当前版本：$sdkVersion"
+    }
 
-Write-Host "构建完成：$output\DisplaySwitcher.Windows.exe"
+    if (Test-Path -LiteralPath $output) {
+        Remove-Item -LiteralPath $output -Recurse -Force
+    }
+
+    & dotnet publish $project `
+        --configuration Release `
+        --runtime win-x64 `
+        --self-contained true `
+        -p:Platform=x64 `
+        -p:WindowsAppSDKSelfContained=true `
+        -p:PublishSingleFile=false `
+        -p:DebugType=None `
+        --output $output
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows 发布失败，dotnet publish 退出码：$LASTEXITCODE"
+    }
+}
+finally {
+    Pop-Location
+}
+
+Write-Host "构建完成：$output"
+Write-Host "请保留并复制 dist 目录中的全部文件。"

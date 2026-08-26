@@ -1,44 +1,41 @@
+using Microsoft.UI.Dispatching;
+
 namespace DisplaySwitcher.Windows;
 
-internal sealed class TrayApplicationContext : ApplicationContext
+internal sealed class TrayApplicationContext : IDisposable
 {
-    private readonly NotifyIcon _trayIcon;
-    private readonly ToolStripMenuItem _statusItem;
+    private readonly DispatcherQueue _dispatcher;
+    private readonly Action _exitApplication;
+    private readonly TrayIcon _trayIcon;
     private readonly UdpPeer _peer = new();
-    private UsbWatcher _usbWatcher;
-    private AppConfig _config;
-    private readonly SynchronizationContext _ui;
     private readonly object _stateLock = new();
+    private readonly UsbWatcher _usbWatcher;
+    private AppConfig _config;
+    private SettingsWindow? _settingsWindow;
     private CancellationTokenSource? _outgoingCts;
     private string? _outgoingEventId;
     private string? _incomingEventId;
     private double _lastIncomingRequestTimestamp;
+    private bool _disposed;
 
-    public TrayApplicationContext()
+    public TrayApplicationContext(DispatcherQueue dispatcher, Action exitApplication)
     {
-        _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        _dispatcher = dispatcher;
+        _exitApplication = exitApplication;
         _config = AppConfig.Load();
         _usbWatcher = new UsbWatcher(_config.UsbVendorId, _config.UsbProductId);
+        _trayIcon = new TrayIcon(
+            () => Queue(ShowSettings),
+            () =>
+            {
+                Queue(() => _ = ManualSwitchAsync());
+                return Task.CompletedTask;
+            },
+            () => Queue(_exitApplication));
+
         _usbWatcher.PresenceChanged += OnUsbPresenceChanged;
-        _peer.MessageReceived += message => _ui.Post(_ => HandlePeerMessage(message), null);
+        _peer.MessageReceived += message => Enqueue(() => _ = HandlePeerMessageAsync(message));
         _peer.Error += message => SetStatus(message);
-
-        _statusItem = new ToolStripMenuItem("正在初始化…") { Enabled = false };
-        var menu = new ContextMenuStrip();
-        menu.Items.Add(_statusItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("手动切换到 Mac", null, async (_, _) => await ManualSwitchAsync());
-        menu.Items.Add("设置…", null, (_, _) => ShowSettings());
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("退出", null, (_, _) => Exit());
-
-        _trayIcon = new NotifyIcon {
-            Icon = SystemIcons.Application,
-            Text = "显示器切换",
-            ContextMenuStrip = menu,
-            Visible = true
-        };
-        _trayIcon.DoubleClick += (_, _) => ShowSettings();
 
         ApplyConfiguration();
     }
@@ -48,13 +45,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _peer.Stop();
         _usbWatcher.Reconfigure(_config.UsbVendorId, _config.UsbProductId);
         if (_config.CoordinationEnabled) _peer.Start(_config.Port);
-        try { AutoStart.Apply(_config.StartWithWindows); } catch { }
+        try { AutoStart.Apply(_config.StartWithWindows); }
+        catch (Exception ex) { ShowError("登录启动设置失败", ex.Message); }
         SetStatus(_config.CoordinationEnabled
             ? $"协同已开启 · USB {_config.UsbVendorId:X4}:{_config.UsbProductId:X4}"
             : "协同未开启");
     }
 
-    private void OnUsbPresenceChanged(bool isPresent) => _ui.Post(async _ =>
+    private void OnUsbPresenceChanged(bool isPresent) =>
+        Enqueue(() => _ = HandleUsbPresenceChangedAsync(isPresent));
+
+    private async Task HandleUsbPresenceChangedAsync(bool isPresent)
     {
         if (!_config.CoordinationEnabled) return;
 
@@ -72,14 +73,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         SetStatus("USB 已离开 Windows，等待确认…");
         await Task.Delay(800);
         if (!_usbWatcher.IsPresent()) BeginOutgoingHandover();
-    }, null);
+    }
 
     private void BeginOutgoingHandover()
     {
         CancelOutgoing();
         var eventId = Guid.NewGuid().ToString();
         var cts = new CancellationTokenSource();
-        lock (_stateLock) { _outgoingEventId = eventId; _outgoingCts = cts; }
+        lock (_stateLock)
+        {
+            _outgoingEventId = eventId;
+            _outgoingCts = cts;
+        }
         _ = RunOutgoingAsync(eventId, cts.Token);
     }
 
@@ -94,7 +99,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 await Task.Delay(450, token);
             }
             await Task.Delay(250, token);
-            _ui.Post(async _ => await CompleteOutgoingAsync(eventId), null);
+            Enqueue(() => _ = CompleteOutgoingAsync(eventId));
         }
         catch (OperationCanceledException) { }
     }
@@ -115,7 +120,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         await SendAsync("committed", eventId, result.Success);
         SetStatus(result.Success ? "已切换到 Mac" : $"部分切换失败：{result.Error}");
         if (!result.Success)
-            _trayIcon.ShowBalloonTip(4000, "显示器切换失败", result.Error ?? "未知错误", ToolTipIcon.Warning);
+            ShowError("显示器切换失败", result.Error ?? "未知错误");
     }
 
     private void CancelOutgoing()
@@ -129,7 +134,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async void HandlePeerMessage(PeerMessage message)
+    private async Task HandlePeerMessageAsync(PeerMessage message)
     {
         if (!_config.CoordinationEnabled || message.Version != 1 ||
             message.PairingCode != _config.PairingCode || message.Source != "mac" || message.Target != "windows" ||
@@ -147,7 +152,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     await SendAsync("usb_attached_and_awake", message.EventID, wakeSucceeded);
                 break;
             case "usb_present":
-                if (_outgoingEventId is not null) await CompleteOutgoingAsync(_outgoingEventId);
+                var outgoingEventId = _outgoingEventId;
+                if (outgoingEventId is not null) await CompleteOutgoingAsync(outgoingEventId);
                 break;
             case "usb_attached_and_awake":
                 if (_outgoingEventId == message.EventID) await CompleteOutgoingAsync(message.EventID);
@@ -170,32 +176,62 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task ManualSwitchAsync()
     {
+        SetStatus("正在手动切换显示器到 Mac…");
         var result = await SystemActions.SwitchDisplaysToMacAsync(_config);
         SetStatus(result.Success ? "已手动切换到 Mac" : $"切换失败：{result.Error}");
+        if (!result.Success) ShowError("显示器切换失败", result.Error ?? "未知错误");
     }
 
     private void ShowSettings()
     {
-        using var form = new SettingsForm(_config);
-        if (form.ShowDialog() != DialogResult.OK) return;
-        _config = form.Result;
-        _config.Save();
-        ApplyConfiguration();
+        if (_settingsWindow is not null)
+        {
+            _settingsWindow.ShowWindow();
+            return;
+        }
+
+        var window = new SettingsWindow(_config);
+        _settingsWindow = window;
+        window.Saved += config =>
+        {
+            _config = config;
+            _config.Save();
+            ApplyConfiguration();
+        };
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_settingsWindow, window)) _settingsWindow = null;
+        };
+        window.ShowWindow();
     }
 
-    private void SetStatus(string text) => _ui.Post(_ =>
-    {
-        _statusItem.Text = text.Length > 70 ? text[..70] : text;
-        _trayIcon.Text = text.Length > 60 ? text[..60] : text;
-    }, null);
+    private void SetStatus(string text) => Enqueue(() => _trayIcon.SetStatus(text));
 
-    private void Exit()
+    public void ShowError(string title, string message) =>
+        Enqueue(() => _trayIcon.ShowBalloon(title, message));
+
+    private void Enqueue(Action action)
     {
+        if (_disposed) return;
+        if (_dispatcher.HasThreadAccess) action();
+        else _dispatcher.TryEnqueue(() => action());
+    }
+
+    private void Queue(Action action)
+    {
+        if (_disposed) return;
+        _dispatcher.TryEnqueue(() => action());
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
         CancelOutgoing();
         _peer.Dispose();
         _usbWatcher.Dispose();
-        _trayIcon.Visible = false;
+        _settingsWindow?.CloseForExit();
+        _settingsWindow = null;
         _trayIcon.Dispose();
-        ExitThread();
     }
 }

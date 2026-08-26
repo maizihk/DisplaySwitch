@@ -2,7 +2,7 @@
 
 ## 安装
 
-1. 将 `DisplaySwitcher.Windows.exe` 放到固定目录，例如 `D:\Soft\DisplaySwitcher\`。
+1. 将整个 `Windows\dist\` 目录复制到固定位置，例如 `D:\Soft\DisplaySwitcher\`。这是 WinUI 3 自包含绿色版，必须保留 EXE 旁的 DLL、资源和语言目录。
 2. 确认 `D:\Soft\ControlMyMonitor\ControlMyMonitor.exe` 已存在。
 3. 双击启动。程序没有主窗口，会显示在 Windows 右下角托盘区域。
 4. Windows 防火墙询问时，只允许“专用网络”。

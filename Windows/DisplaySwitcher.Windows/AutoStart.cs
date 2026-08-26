@@ -12,7 +12,7 @@ internal static class AutoStart
         using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true)
             ?? Registry.CurrentUser.CreateSubKey(RunKey);
         if (enabled)
-            key.SetValue(ValueName, $"\"{Application.ExecutablePath}\"");
+            key.SetValue(ValueName, $"\"{Environment.ProcessPath}\"");
         else
             key.DeleteValue(ValueName, throwOnMissingValue: false);
     }
