@@ -147,13 +147,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingPeerTimeout: DispatchWorkItem?
     private var pendingOutgoingEventID: String?
     private var pendingIncomingEventID: String?
-    private var lastIncomingRequestTimestamp: TimeInterval = 0
+    private var pendingIncomingWakeSucceeded: Bool?
+    private var peerReplayGuard = PeerReplayGuard()
+    private var pendingPeerHealthTimeout: DispatchWorkItem?
     private var lastPeerSeen: Date?
     private var displayControls: [Int: DisplayControls] = [:]
     private var displayMenuItems: [Int: NSMenuItem] = [:]
     private var configurations: [Int: DisplayConfiguration] = [:]
     private var isRefreshing = false
     private var lastRefresh = Date.distantPast
+    private var settingsWindowHasBeenShown = false
 
     private lazy var settingsWindowController: SettingsWindowController = {
         let controller = SettingsWindowController()
@@ -597,6 +600,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func configurePeerTransport() {
         peerTransport.stop()
+        pendingPeerHealthTimeout?.cancel()
+        pendingPeerHealthTimeout = nil
+        peerReplayGuard.reset()
+        pendingIncomingEventID = nil
+        pendingIncomingWakeSucceeded = nil
+        lastPeerSeen = nil
         if AppPreferences.peerCoordinationEnabled {
             peerTransport.start(port: AppPreferences.peerPort)
         }
@@ -689,44 +698,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func handlePeerMessage(_ message: PeerMessage) {
         guard
+            AppPreferences.usbAutomationEnabled,
             AppPreferences.peerCoordinationEnabled,
-            message.version == 1,
-            message.pairingCode == AppPreferences.pairingCode,
-            message.source == "windows",
-            message.target == "mac",
-            abs(Date().timeIntervalSince1970 - message.timestamp) <= 10
+            PeerMessageValidation.accepts(
+                message,
+                pairingCode: AppPreferences.pairingCode,
+                expectedSource: "windows",
+                expectedTarget: "mac"
+            )
         else {
             return
         }
-        lastPeerSeen = Date()
+        markPeerSeen()
+
+        let disposition = peerReplayGuard.classify(message)
+        if disposition == .outOfOrder {
+            return
+        }
 
         switch message.type {
         case .handoverRequest:
-            guard message.timestamp >= lastIncomingRequestTimestamp else { return }
-            lastIncomingRequestTimestamp = message.timestamp
-            pendingIncomingEventID = message.eventID
-            let wakeSucceeded = wakeMacDisplay()
+            if disposition == .new {
+                pendingIncomingEventID = message.eventID
+                pendingIncomingWakeSucceeded = wakeMacDisplay()
+            } else if pendingIncomingEventID != message.eventID {
+                return
+            }
             usbMonitor.triggerPresence { [weak self] isPresent in
-                guard isPresent else { return }
-                self?.sendPeerMessageRepeated(type: .usbReady, eventID: message.eventID, wakeSucceeded: wakeSucceeded)
+                guard let self, isPresent else { return }
+                self.sendPeerMessageRepeated(
+                    type: .usbReady,
+                    eventID: message.eventID,
+                    wakeSucceeded: self.pendingIncomingWakeSucceeded
+                )
             }
         case .usbPresent:
+            guard disposition == .new else { return }
             if let eventID = pendingOutgoingEventID {
                 completeOutgoingHandover(eventID: eventID)
             }
         case .usbReady:
+            guard disposition == .new else { return }
             if pendingOutgoingEventID == message.eventID {
                 completeOutgoingHandover(eventID: message.eventID)
             }
         case .committed:
+            guard disposition == .new else { return }
             if pendingIncomingEventID == message.eventID {
                 pendingIncomingEventID = nil
+                pendingIncomingWakeSucceeded = nil
             }
         case .statusProbe:
             sendPeerMessage(type: .statusResponse, eventID: message.eventID)
         case .statusResponse:
             break
         }
+    }
+
+    private func markPeerSeen() {
+        let seenAt = Date()
+        lastPeerSeen = seenAt
+        if settingsWindowHasBeenShown {
+            settingsWindowController.updatePeerConnectionStatus("已连接到 Windows", connected: true)
+        }
+        pendingPeerHealthTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self, self.lastPeerSeen == seenAt else { return }
+            if self.settingsWindowHasBeenShown {
+                self.settingsWindowController.updatePeerConnectionStatus("Windows 连接已中断", connected: false)
+            }
+        }
+        pendingPeerHealthTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: timeout)
     }
 
     private func sendPeerMessage(
@@ -799,7 +842,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func showSettings() {
+        settingsWindowHasBeenShown = true
         settingsWindowController.show()
+        let connected = lastPeerSeen.map { Date().timeIntervalSince($0) <= 6 } ?? false
+        settingsWindowController.updatePeerConnectionStatus(
+            AppPreferences.peerCoordinationEnabled
+                ? (connected ? "已连接到 Windows" : "等待 Windows 心跳…")
+                : "协同未启用",
+            connected: connected
+        )
     }
 
     private func reloadSettings() {

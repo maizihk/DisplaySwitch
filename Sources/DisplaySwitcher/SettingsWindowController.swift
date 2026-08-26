@@ -158,6 +158,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let peerHostField = NSTextField()
     private let peerPortField = NSTextField()
     private let pairingCodeField = NSSecureTextField()
+    private let peerStatusLabel = NSTextField(wrappingLabelWithString: "协同未启用")
     private let usbDeviceLabel = NSTextField(wrappingLabelWithString: "未选择触发设备")
     private lazy var learnUSBButton = NSButton(title: "学习 USB 设备…", target: self, action: #selector(learnUSBDevice))
     private var nameFields: [Int: NSTextField] = [:]
@@ -197,6 +198,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func updatePeerConnectionStatus(_ text: String, connected: Bool) {
+        peerStatusLabel.stringValue = text
+        peerStatusLabel.textColor = connected ? .systemGreen : .secondaryLabelColor
     }
 
     private func buildInterface() {
@@ -288,6 +294,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         peerGrid.columnSpacing = 12
         peerGrid.column(at: 0).xPlacement = .trailing
         peerGrid.column(at: 1).width = 410
+        peerStatusLabel.font = .systemFont(ofSize: 11, weight: .medium)
         let peerHint = NSTextField(wrappingLabelWithString: "协同开启后，USB 离开时先通知 Windows；确认 Hub 已接入并唤醒后再切屏。通信失败时会超时退化为直接切屏。")
         peerHint.textColor = .secondaryLabelColor
         peerHint.font = .systemFont(ofSize: 11)
@@ -322,6 +329,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 ),
                 separator(),
                 peerGrid,
+                peerStatusLabel,
                 peerHint
             ])
         ]))
@@ -581,6 +589,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         usbAutomationCheckbox.state = AppPreferences.usbAutomationEnabled ? .on : .off
         usbArrivalSwitchCheckbox.state = AppPreferences.usbSwitchDisplaysOnArrival ? .on : .off
         peerCoordinationCheckbox.state = AppPreferences.peerCoordinationEnabled ? .on : .off
+        updatePeerConnectionStatus(
+            AppPreferences.peerCoordinationEnabled ? "等待 Windows 心跳…" : "协同未启用",
+            connected: false
+        )
         peerHostField.stringValue = AppPreferences.peerHost
         peerPortField.integerValue = AppPreferences.peerPort
         pairingCodeField.stringValue = AppPreferences.pairingCode

@@ -21,21 +21,86 @@ struct PeerMessage: Codable {
     let wakeSucceeded: Bool?
 
     init(
+        version: Int = 1,
         type: PeerMessageType,
         eventID: String,
         source: String,
         target: String,
+        timestamp: TimeInterval = Date().timeIntervalSince1970,
         pairingCode: String,
         wakeSucceeded: Bool? = nil
     ) {
-        self.version = 1
+        self.version = version
         self.type = type
         self.eventID = eventID
         self.source = source
         self.target = target
-        self.timestamp = Date().timeIntervalSince1970
+        self.timestamp = timestamp
         self.pairingCode = pairingCode
         self.wakeSucceeded = wakeSucceeded
+    }
+}
+
+enum PeerMessageValidation {
+    static let version = 1
+    static let maximumAge: TimeInterval = 10
+
+    static func accepts(
+        _ message: PeerMessage,
+        pairingCode: String,
+        expectedSource: String,
+        expectedTarget: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> Bool {
+        pairingCode.count >= 8 &&
+            message.version == version &&
+            message.pairingCode == pairingCode &&
+            message.source == expectedSource &&
+            message.target == expectedTarget &&
+            UUID(uuidString: message.eventID) != nil &&
+            message.timestamp.isFinite &&
+            abs(now - message.timestamp) <= maximumAge
+    }
+}
+
+enum PeerMessageDisposition: Equatable {
+    case new
+    case duplicate
+    case outOfOrder
+}
+
+struct PeerReplayGuard {
+    private var seenKeys: [String: TimeInterval] = [:]
+    private var newestHandoverTimestamp: TimeInterval = 0
+
+    mutating func classify(
+        _ message: PeerMessage,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> PeerMessageDisposition {
+        seenKeys = seenKeys.filter { now - $0.value <= PeerMessageValidation.maximumAge }
+        let key = "\(message.type.rawValue):\(message.eventID.lowercased())"
+        if seenKeys[key] != nil {
+            return .duplicate
+        }
+
+        if message.type == .handoverRequest {
+            guard message.timestamp >= newestHandoverTimestamp else {
+                return .outOfOrder
+            }
+            newestHandoverTimestamp = message.timestamp
+        }
+
+        seenKeys[key] = now
+        if seenKeys.count > 2_048,
+           let oldestKey = seenKeys.min(by: { $0.value < $1.value })?.key {
+            seenKeys.removeValue(forKey: oldestKey)
+        }
+        return .new
+    }
+
+    mutating func reset() {
+        seenKeys.removeAll(keepingCapacity: true)
+        newestHandoverTimestamp = 0
     }
 }
 

@@ -2,6 +2,8 @@
 
 一个轻量的原生 macOS 菜单栏 App。它不显示 Dock 图标，也不会打开 Terminal，可以替代日常使用中的 MonitorControl 菜单栏功能。
 
+当前 macOS 版本为 `2.1.0 (18)`。正式工程为原生 Swift/AppKit `DisplaySwitcher.xcodeproj`，最低支持 macOS 12。
+
 功能包括：
 
 - 分别调节显示器 1、显示器 2 的亮度、对比度和音量。
@@ -51,7 +53,7 @@
 触发设备从 Mac 消失   → 两台显示器切换到 Windows 输入源
 ```
 
-“键鼠回到 Mac 时检查并按需切换显示器”默认关闭；打开后，App 使用自动检测到的显示器 UUID 与 macOS 当前活动显示器比较。两台都已在 Mac 时不发送命令，只有一台缺失时也只切换该显示器。少数显示器切换输入后仍会向 Mac 保持连接，此时 App 会保守地不操作，避免重复或错误切换。App 每 250 毫秒检查一次 USB 设备；USB 离开使用 300 毫秒防抖，回到 Mac 后的可选显示器检查仍使用 1 秒防抖。启动时只记录当前 USB 状态，不会立即切换显示器。默认输入源为：显示器 1 的 Mac/Windows 为 `15/18`，显示器 2 为 `17/15`，均可在设置中修改。
+“键鼠回到 Mac 时检查并按需切换显示器”默认关闭；打开后，App 使用自动检测到的显示器 UUID 与 macOS 当前活动显示器比较。两台都已在 Mac 时不发送命令，只有一台缺失时也只切换该显示器。少数显示器切换输入后仍会向 Mac 保持连接，此时 App 会保守地不操作，避免重复或错误切换。App 每 250 毫秒检查一次 USB 设备；USB 离开使用 150 毫秒防抖，回到 Mac 后的可选显示器检查仍使用 1 秒防抖。启动时只记录当前 USB 状态，不会立即切换显示器。默认输入源为：显示器 1 的 Mac/Windows 为 `15/18`，显示器 2 为 `17/15`，均可在设置中修改。
 
 ## Mac / Windows 双端协同
 
@@ -90,7 +92,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 /opt/homebrew/bin/m1ddc display 2 set input 15
 ```
 
-只有当前一条命令成功后，才会执行下一条。失败时会显示错误提示，方便判断是 `m1ddc` 路径、显示器编号还是输入源编号的问题。
+两台显示器的命令会并行执行，以缩短切屏时间。失败时会显示错误提示，方便判断是 `m1ddc` 路径、显示器编号还是输入源编号的问题。
 
 ## 亮度、对比度和音量
 
@@ -106,12 +108,13 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 前置检查
 
-确认 `m1ddc` 已安装且两条命令能在 Terminal 中正常工作：
+确认已安装完整 Xcode，当前开发者目录指向 Xcode，并检查 `m1ddc` 是否就绪：
 
 ```bash
+xcode-select -p
+xcodebuild -version
 test -x /opt/homebrew/bin/m1ddc && echo "m1ddc 已就绪"
-/opt/homebrew/bin/m1ddc display 1 set input 18
-/opt/homebrew/bin/m1ddc display 2 set input 15
+/opt/homebrew/bin/m1ddc display list detailed
 ```
 
 ## 编译
@@ -123,10 +126,10 @@ chmod +x scripts/build-app.sh
 ./scripts/build-app.sh
 ```
 
-如果机器上同时装了多个 macOS SDK，而命令行工具尚未指向匹配版本，可以临时指定 SDK 后再构建：
+项目的正式构建入口是 Xcode 原生工程，可直接打开：
 
 ```bash
-SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" ./scripts/build-app.sh
+open DisplaySwitcher.xcodeproj
 ```
 
 完成后会生成：
@@ -135,7 +138,20 @@ SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" ./scripts/build-app.sh
 outputs/DisplaySwitcher.app
 ```
 
-也可以用 Xcode 打开 `Package.swift`，直接检查、修改和调试源码。构建脚本会自动使用当前 Mac 的架构和选中的 macOS SDK，并封装出标准 `.app`。
+`scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到输出目录后做本地临时签名和严格验证。`Package.swift` 仅作为迁移期参考，不再是正式构建入口。
+
+如果 Xcode Beta 不在系统当前开发者目录，可在单次构建时指定：
+
+```bash
+DEVELOPER_DIR="/path/to/Xcode-beta.app/Contents/Developer" ./scripts/build-app.sh
+```
+
+将项目放在 NAS 或 File Provider 同步目录时，同步软件可能在构建后重新添加 Finder 扩展属性。脚本会在签名前清理它；若稍后手动严格验证时再次出现 `resource fork, Finder information`，先执行：
+
+```bash
+xattr -d com.apple.FinderInfo outputs/DisplaySwitcher.app 2>/dev/null || true
+codesign --verify --deep --strict outputs/DisplaySwitcher.app
+```
 
 ## 安装与运行
 

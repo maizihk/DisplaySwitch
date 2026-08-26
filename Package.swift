@@ -20,6 +20,11 @@ let package = Package(
                 .linkedFramework("Network"),
                 .linkedFramework("ServiceManagement")
             ]
+        ),
+        .testTarget(
+            name: "DisplaySwitcherTests",
+            dependencies: ["DisplaySwitcher"],
+            path: "Tests/DisplaySwitcherTests"
         )
     ]
 )
