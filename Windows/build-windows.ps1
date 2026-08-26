@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 
 $project = Join-Path $PSScriptRoot "DisplaySwitcher.Native\DisplaySwitcher.Native.vcxproj"
 $buildOutput = Join-Path $PSScriptRoot "DisplaySwitcher.Native\bin\x64\Release"
+$launcherProject = Join-Path $PSScriptRoot "DisplaySwitcher.Launcher\DisplaySwitcher.Launcher.vcxproj"
+$launcherOutput = Join-Path $PSScriptRoot "DisplaySwitcher.Launcher\bin\x64\Release"
 $dist = Join-Path $PSScriptRoot "dist"
 
 function Find-MSBuild {
@@ -51,6 +53,9 @@ $msbuild = Find-MSBuild
 Invoke-CleanEnvironmentProcess $msbuild @(
     $project, "/restore", "/m", "/t:Rebuild", "/p:Configuration=Release", "/p:Platform=x64", "/v:minimal"
 )
+Invoke-CleanEnvironmentProcess $msbuild @(
+    $launcherProject, "/m", "/t:Rebuild", "/p:Configuration=Release", "/p:Platform=x64", "/v:minimal"
+)
 
 $distPath = [IO.Path]::GetFullPath($dist)
 $windowsPath = [IO.Path]::GetFullPath($PSScriptRoot) + [IO.Path]::DirectorySeparatorChar
@@ -59,6 +64,11 @@ if (-not $distPath.StartsWith($windowsPath, [StringComparison]::OrdinalIgnoreCas
 }
 if (Test-Path -LiteralPath $distPath) { Remove-Item -LiteralPath $distPath -Recurse -Force }
 New-Item -ItemType Directory -Path $distPath | Out-Null
+$launcher = Join-Path $launcherOutput "DisplaySwitch.exe"
+if (-not (Test-Path -LiteralPath $launcher)) { throw "构建完成但缺少启动器：$launcher" }
+Copy-Item -LiteralPath $launcher -Destination $distPath
+$runtimePath = Join-Path $distPath "runtime"
+New-Item -ItemType Directory -Path $runtimePath | Out-Null
 $releaseFiles = @(
     "DisplaySwitcher.Windows.exe",
     "DisplaySwitcher.Windows.pri",
@@ -70,10 +80,10 @@ $releaseFiles = @(
 foreach ($name in $releaseFiles) {
     $source = Join-Path $buildOutput $name
     if (-not (Test-Path -LiteralPath $source)) { throw "构建完成但缺少发布文件：$source" }
-    Copy-Item -LiteralPath $source -Destination $distPath
+    Copy-Item -LiteralPath $source -Destination $runtimePath
 }
 
-$entryPoint = Join-Path $distPath "DisplaySwitcher.Windows.exe"
+$entryPoint = Join-Path $distPath "DisplaySwitch.exe"
 if (-not (Test-Path -LiteralPath $entryPoint)) { throw "构建完成但未找到入口：$entryPoint" }
 $bytes = (Get-ChildItem -LiteralPath $distPath -File -Recurse | Measure-Object Length -Sum).Sum
 if ($bytes -ge 20MB) { throw ("dist 体积为 {0:N2} MiB，超过 20 MiB 目标。" -f ($bytes / 1MB)) }

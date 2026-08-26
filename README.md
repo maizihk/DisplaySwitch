@@ -81,7 +81,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Windows\build-windows.ps1
 ```
 
-生成 framework-dependent 绿色版目录 `Windows\dist\`，入口为 `DisplaySwitcher.Windows.exe`，整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹，不能只复制 EXE。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并选择原生 DDC/CI 或 ControlMyMonitor。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
+生成 framework-dependent 绿色版目录 `Windows\dist\`，根入口为 `DisplaySwitch.exe`，WinUI 程序及依赖集中在 `runtime` 子目录；整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并选择原生 DDC/CI 或 ControlMyMonitor。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
 
 点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台并行执行：
 

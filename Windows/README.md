@@ -3,9 +3,9 @@
 ## 安装
 
 1. 在目标电脑安装一次 Microsoft Windows App Runtime 2.4 x64（已安装则跳过）。程序本身不依赖 .NET。
-2. 将整个 `Windows\dist\` 目录复制到固定位置，例如 `D:\Soft\DisplaySwitcher\`。这是 C++/WinUI 3 framework-dependent 绿色版，必须保留 EXE 旁的 DLL、XBF、PRI 和 WinMD 文件。
+2. 将整个 `Windows\dist\` 目录复制到固定位置。这是 C++/WinUI 3 framework-dependent 绿色版，必须保留 `runtime` 子目录。
 3. 默认可以使用 Windows 原生 DDC/CI，不需要 ControlMyMonitor；如果选择兼容模式，再确认设置中配置的 ControlMyMonitor 路径存在。
-4. 双击启动。程序没有主窗口，会显示在 Windows 右下角托盘区域。
+4. 双击根目录的 `DisplaySwitch.exe` 启动。程序没有主窗口，会显示在 Windows 右下角托盘区域。
 5. Windows 防火墙询问时，只允许“专用网络”。
 6. 右键托盘图标，打开“设置…”。
 
@@ -71,4 +71,4 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Windows\build-windows.ps1
 ```
 
-脚本生成 `Windows\dist\DisplaySwitcher.Windows.exe` 及其少量伴随文件，并检查整个目录小于 20 MiB。目标电脑只需 Windows App Runtime 2.4 x64；不需要 .NET SDK，也不需要 Visual C++ Redistributable（本项目 Release 使用静态 C/C++ 运行库）。
+脚本生成根入口 `Windows\dist\DisplaySwitch.exe`，并将 WinUI 程序和依赖放入 `Windows\dist\runtime\`，同时检查整个目录小于 20 MiB。目标电脑只需 Windows App Runtime 2.4 x64；不需要 .NET SDK，也不需要 Visual C++ Redistributable（本项目 Release 使用静态 C/C++ 运行库）。
