@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+.DS_Store
+outputs/
+work/
+Windows/**/bin/
+Windows/**/obj/
+Windows/dist/
