@@ -2,11 +2,12 @@
 
 ## 安装
 
-1. 将整个 `Windows\dist\` 目录复制到固定位置，例如 `D:\Soft\DisplaySwitcher\`。这是 WinUI 3 自包含绿色版，必须保留 EXE 旁的 DLL、资源和语言目录。
-2. 确认 `D:\Soft\ControlMyMonitor\ControlMyMonitor.exe` 已存在。
-3. 双击启动。程序没有主窗口，会显示在 Windows 右下角托盘区域。
-4. Windows 防火墙询问时，只允许“专用网络”。
-5. 右键托盘图标，打开“设置…”。
+1. 在目标电脑安装一次 Microsoft Windows App Runtime 2.4 x64（已安装则跳过）。程序本身不依赖 .NET。
+2. 将整个 `Windows\dist\` 目录复制到固定位置，例如 `D:\Soft\DisplaySwitcher\`。这是 C++/WinUI 3 framework-dependent 绿色版，必须保留 EXE 旁的 DLL、XBF、PRI 和 WinMD 文件。
+3. 确认 `D:\Soft\ControlMyMonitor\ControlMyMonitor.exe` 已存在。
+4. 双击启动。程序没有主窗口，会显示在 Windows 右下角托盘区域。
+5. Windows 防火墙询问时，只允许“专用网络”。
+6. 右键托盘图标，打开“设置…”。
 
 程序是本地构建、未购买商业代码签名证书的版本。SmartScreen 如果提示未知发布者，请检查文件来源后选择“更多信息”→“仍要运行”。
 
@@ -48,3 +49,14 @@ Dell：\\.\DISPLAY1\Monitor0，VCP 60，Mac 输入 17
 ```
 
 程序按“小米 → Dell”的顺序执行，每台失败后重试一次。设备路径变化时可直接在设置中修改。
+
+## 构建
+
+构建机需要 Visual Studio（安装“使用 C++ 的桌面开发”和 Windows App SDK C++ 组件）。执行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\Windows\build-windows.ps1
+```
+
+脚本生成 `Windows\dist\DisplaySwitcher.Windows.exe` 及其少量伴随文件，并检查整个目录小于 20 MiB。目标电脑只需 Windows App Runtime 2.4 x64；不需要 .NET SDK，也不需要 Visual C++ Redistributable（本项目 Release 使用静态 C/C++ 运行库）。

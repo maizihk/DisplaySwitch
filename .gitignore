@@ -6,3 +6,8 @@ work/
 Windows/**/bin/
 Windows/**/obj/
 Windows/dist/
+Windows/**/x64/
+Windows/**/Generated Files/
+Windows/**/DisplayS.*/
+Windows/**/XamlMetaDataProvider.cpp
+Windows/**/XamlMetaDataProvider.idl

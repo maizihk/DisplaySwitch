@@ -1,0 +1,201 @@
+#include "pch.h"
+#include "SettingsWindow.xaml.h"
+
+#if __has_include("SettingsWindow.g.cpp")
+#include "SettingsWindow.g.cpp"
+#endif
+
+using namespace winrt;
+using namespace Microsoft::UI;
+using namespace Microsoft::UI::Windowing;
+using namespace Microsoft::UI::Xaml;
+using namespace Microsoft::UI::Xaml::Controls;
+using namespace Microsoft::UI::Xaml::Media;
+
+namespace
+{
+    void Header(Control const& control, wchar_t const* text)
+    {
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(box_value(text));
+        else if (auto passwordBox = control.try_as<PasswordBox>()) passwordBox.Header(box_value(text));
+        else if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(box_value(text));
+        else if (auto toggleSwitch = control.try_as<ToggleSwitch>()) toggleSwitch.Header(box_value(text));
+    }
+
+    std::wstring Trim(std::wstring value)
+    {
+        auto whitespace = [](wchar_t c) { return iswspace(c) != 0; };
+        value.erase(value.begin(), std::find_if_not(value.begin(), value.end(), whitespace));
+        value.erase(std::find_if_not(value.rbegin(), value.rend(), whitespace).base(), value.end());
+        return value;
+    }
+
+    std::optional<int> ParseInteger(std::wstring const& text, int base, int minimum, int maximum)
+    {
+        auto value = Trim(text);
+        if (value.empty()) return std::nullopt;
+        wchar_t* end{};
+        errno = 0;
+        auto number = std::wcstol(value.c_str(), &end, base);
+        if (errno || end != value.c_str() + value.size() || number < minimum || number > maximum) return std::nullopt;
+        return static_cast<int>(number);
+    }
+}
+
+namespace winrt::DisplaySwitcher::Native::implementation
+{
+    SettingsWindow::SettingsWindow() { InitializeComponent(); }
+
+    void SettingsWindow::Initialize(::DisplaySwitcher::Native::AppConfig const& config,
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&)> saved,
+        std::function<void()> closed)
+    {
+        if (initialized_) return;
+        initialized_ = true;
+        original_ = config; saved_ = std::move(saved); closed_ = std::move(closed);
+        Title(L"显示器切换设置");
+        try { SystemBackdrop(MicaBackdrop()); } catch (...) {}
+        Content(BuildContent()); LoadValues(config); ResizeAndCenter();
+        Closed([this](auto const&, auto const&) { if (closed_) closed_(); });
+        LoadUsbDevices();
+    }
+
+    UIElement SettingsWindow::BuildContent()
+    {
+        validation_ = TextBlock(); validation_.Foreground(SolidColorBrush(Windows::UI::Color{ 255, 196, 43, 28 }));
+        validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
+        coordination_ = ToggleSwitch(); Header(coordination_, L"启用 Mac / Windows 网络协同");
+        peerHost_ = TextBox(); Header(peerHost_, L"Mac IP 或主机名"); peerHost_.PlaceholderText(L"例如 192.168.1.20");
+        port_ = TextBox(); Header(port_, L"UDP 端口"); port_.PlaceholderText(L"49731");
+        pairingCode_ = PasswordBox(); Header(pairingCode_, L"配对码"); pairingCode_.PlaceholderText(L"至少 8 位，两端保持一致");
+        usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
+        vendorId_ = TextBox(); Header(vendorId_, L"Vendor ID"); vendorId_.PlaceholderText(L"0BDA"); vendorId_.MaxLength(4);
+        productId_ = TextBox(); Header(productId_, L"Product ID"); productId_.PlaceholderText(L"5409"); productId_.MaxLength(4);
+        controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
+        redmiPath_ = TextBox(); Header(redmiPath_, L"设备路径"); redmiInput_ = TextBox(); Header(redmiInput_, L"Mac 输入源");
+        dellPath_ = TextBox(); Header(dellPath_, L"设备路径"); dellInput_ = TextBox(); Header(dellInput_, L"Mac 输入源");
+        autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录 Windows 时自动启动");
+        usbDevices_.SelectionChanged([this](auto const&, auto const&)
+        {
+            auto index = usbDevices_.SelectedIndex();
+            if (index < 0 || static_cast<size_t>(index) >= devices_.size()) return;
+            wchar_t value[5]{}; swprintf_s(value, L"%04X", devices_[index].vendorId); vendorId_.Text(value);
+            swprintf_s(value, L"%04X", devices_[index].productId); productId_.Text(value);
+        });
+
+        auto root = Grid(); auto scroll = ScrollViewer();
+        scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto); scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+        scroll.HorizontalScrollMode(ScrollMode::Disabled); scroll.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto page = Grid(); page.Padding(Thickness{ 32 }); page.HorizontalAlignment(HorizontalAlignment::Stretch);
+        auto content = StackPanel(); content.MaxWidth(720); content.Spacing(20); content.HorizontalAlignment(HorizontalAlignment::Stretch);
+        auto title = TextBlock(); title.Text(L"显示器切换设置"); title.FontSize(28); title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        content.Children().Append(title);
+        auto subtitle = TextBlock(); subtitle.Text(L"配置 Mac / Windows 协同、USB 触发设备和显示器输入源。"); subtitle.Opacity(0.72);
+        subtitle.TextWrapping(TextWrapping::Wrap); subtitle.Margin(Thickness{ 0, -12, 0, 0 }); content.Children().Append(subtitle);
+        content.Children().Append(validation_);
+        content.Children().Append(CreateSection(L"网络协同", { coordination_, CreateTwoColumn(peerHost_, port_, 180), pairingCode_ }));
+        auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
+        refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
+        content.Children().Append(CreateSection(L"USB 触发设备", { CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_) }));
+        content.Children().Append(CreateSection(L"显示器控制", { controlMyMonitor_, CreateSubheading(L"小米显示器"),
+            CreateTwoColumn(redmiPath_, redmiInput_, 180), CreateSubheading(L"Dell 显示器"), CreateTwoColumn(dellPath_, dellInput_, 180) }));
+        content.Children().Append(CreateCard(autoStart_));
+        auto cancel = Button(); cancel.Content(box_value(L"取消")); cancel.Click([this](auto const&, auto const&) { appWindow_.Hide(); });
+        auto save = Button(); save.Content(box_value(L"保存")); save.Click([this](auto const&, auto const&) { Save(); });
+        try { save.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>()); } catch (...) {}
+        auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(12);
+        buttons.HorizontalAlignment(HorizontalAlignment::Right); buttons.Margin(Thickness{ 0, 0, 0, 24 });
+        buttons.Children().Append(cancel); buttons.Children().Append(save); content.Children().Append(buttons);
+        page.Children().Append(content); scroll.Content(page); root.Children().Append(scroll); return root;
+    }
+
+    Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
+    {
+        auto panel = StackPanel(); panel.Spacing(16); auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
+        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
+        for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
+    }
+
+    Border SettingsWindow::CreateCard(UIElement const& child)
+    {
+        auto border = Border(); border.Child(child); border.Padding(Thickness{ 20 }); border.CornerRadius(CornerRadius{ 8 });
+        border.BorderThickness(Thickness{ 1 }); border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
+        border.BorderBrush(SolidColorBrush(Windows::UI::Color{ 28, 128, 128, 128 })); return border;
+    }
+
+    Grid SettingsWindow::CreateTwoColumn(FrameworkElement const& left, FrameworkElement const& right, double rightWidth)
+    {
+        auto grid = Grid(); grid.ColumnSpacing(16); auto leftColumn = ColumnDefinition(); leftColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto rightColumn = ColumnDefinition(); rightColumn.Width(rightWidth < 0 ? GridLengthHelper::Auto() : GridLength{ rightWidth });
+        grid.ColumnDefinitions().Append(leftColumn); grid.ColumnDefinitions().Append(rightColumn);
+        Grid::SetColumn(left, 0); Grid::SetColumn(right, 1); grid.Children().Append(left); grid.Children().Append(right); return grid;
+    }
+
+    TextBlock SettingsWindow::CreateSubheading(std::wstring const& text)
+    {
+        auto heading = TextBlock(); heading.Text(text); heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+        heading.Margin(Thickness{ 0, 2, 0, -6 }); return heading;
+    }
+
+    void SettingsWindow::ResizeAndCenter()
+    {
+        HWND window{}; check_hresult(this->get_strong().as<::IWindowNative>()->get_WindowHandle(&window)); auto id = Microsoft::UI::GetWindowIdFromWindow(window);
+        appWindow_ = AppWindow::GetFromWindowId(id);
+        if (auto presenter = appWindow_.Presenter().try_as<OverlappedPresenter>()) { presenter.IsMaximizable(false); presenter.IsMinimizable(false); }
+        auto area = DisplayArea::GetFromWindowId(id, DisplayAreaFallback::Primary).WorkArea();
+        auto dpi = GetDpiForWindow(window); double scale = dpi ? dpi / 96.0 : 1.0;
+        int width = (std::min)(static_cast<int>(std::lround(800 * scale)), area.Width);
+        int height = (std::min)(static_cast<int>(std::lround(860 * scale)), area.Height);
+        int x = area.X + (std::max)(0, (area.Width - width) / 2); int y = area.Y + (std::max)(0, (area.Height - height) / 2);
+        appWindow_.MoveAndResize(Windows::Graphics::RectInt32{ x, y, width, height });
+    }
+
+    void SettingsWindow::ShowWindow() { appWindow_.Show(); Activate(); }
+    void SettingsWindow::CloseForExit() { Close(); }
+
+    void SettingsWindow::LoadValues(::DisplaySwitcher::Native::AppConfig const& config)
+    {
+        coordination_.IsOn(config.coordinationEnabled); peerHost_.Text(config.peerHost); port_.Text(std::to_wstring(config.port)); pairingCode_.Password(config.pairingCode);
+        wchar_t value[5]{}; swprintf_s(value, L"%04X", config.usbVendorId); vendorId_.Text(value); swprintf_s(value, L"%04X", config.usbProductId); productId_.Text(value);
+        controlMyMonitor_.Text(config.controlMyMonitorPath); redmiPath_.Text(config.redmiMonitorPath); redmiInput_.Text(std::to_wstring(config.redmiMacInput));
+        dellPath_.Text(config.dellMonitorPath); dellInput_.Text(std::to_wstring(config.dellMacInput)); autoStart_.IsOn(config.startWithWindows);
+    }
+
+    void SettingsWindow::LoadUsbDevices()
+    {
+        try
+        {
+            devices_ = ::DisplaySwitcher::Native::UsbWatcher::EnumerateDevices(); usbDevices_.Items().Clear(); int selected = -1;
+            for (size_t index = 0; index < devices_.size(); ++index)
+            {
+                auto item = ComboBoxItem(); item.Content(box_value(devices_[index].DisplayName())); usbDevices_.Items().Append(item);
+                if (devices_[index].vendorId == original_.usbVendorId && devices_[index].productId == original_.usbProductId) selected = static_cast<int>(index);
+            }
+            if (selected >= 0) usbDevices_.SelectedIndex(selected); validation_.Visibility(Visibility::Collapsed);
+        }
+        catch (hresult_error const& error) { ShowValidationError(L"读取 USB 失败：" + std::wstring(error.message())); }
+        catch (...) { ShowValidationError(L"读取 USB 失败。"); }
+    }
+
+    void SettingsWindow::Save()
+    {
+        auto vendor = ParseInteger(vendorId_.Text().c_str(), 16, 0, 0xFFFF); auto product = ParseInteger(productId_.Text().c_str(), 16, 0, 0xFFFF);
+        if (!vendor || !product) { ShowValidationError(L"USB Vendor ID 和 Product ID 必须是十六进制，例如 0BDA、5409。"); return; }
+        auto host = Trim(peerHost_.Text().c_str()); auto code = Trim(pairingCode_.Password().c_str());
+        if (coordination_.IsOn() && (host.empty() || code.size() < 8)) { ShowValidationError(L"启用协同时，请填写 Mac IP 和至少 8 位配对码。"); return; }
+        auto port = ParseInteger(port_.Text().c_str(), 10, 1, 65535); auto redmiInput = ParseInteger(redmiInput_.Text().c_str(), 10, 0, 65535);
+        auto dellInput = ParseInteger(dellInput_.Text().c_str(), 10, 0, 65535);
+        if (!port || !redmiInput || !dellInput) { ShowValidationError(L"UDP 端口必须为 1–65535；显示器输入源必须为 0–65535 的整数。"); return; }
+        auto result = original_; result.coordinationEnabled = coordination_.IsOn(); result.peerHost = host; result.port = *port; result.pairingCode = code;
+        result.usbVendorId = *vendor; result.usbProductId = *product; auto selected = usbDevices_.SelectedIndex();
+        if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
+        result.controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str()); result.redmiMonitorPath = Trim(redmiPath_.Text().c_str()); result.redmiMacInput = *redmiInput;
+        result.dellMonitorPath = Trim(dellPath_.Text().c_str()); result.dellMacInput = *dellInput; result.startWithWindows = autoStart_.IsOn();
+        if (saved_) saved_(result); original_ = result; appWindow_.Hide();
+    }
+
+    void SettingsWindow::ShowValidationError(std::wstring const& message)
+    {
+        validation_.Text(message); validation_.Visibility(Visibility::Visible);
+    }
+}

@@ -64,7 +64,7 @@
 
 USB 消失防抖为 800 ms，确认等待上限为 2.5 秒。等待期间 USB 回到源端会取消交接；超时后仍会切屏，退化成没有网络协同时的原有行为。重复、过期和乱序请求不会重复触发切换。具体消息格式见 `PROTOCOL.md`。
 
-Windows 托盘版源码位于 `Windows/DisplaySwitcher.Windows`，设置界面使用 WinUI 3，托盘图标使用原生 Win32 API。默认配置沿用已验证的环境：
+Windows 托盘版当前源码位于 `Windows/DisplaySwitcher.Native`，使用原生 C++/WinUI 3；托盘、USB、UDP 和登录启动分别调用 Win32 API。旧的 `Windows/DisplaySwitcher.Windows` C# 工程保留为迁移行为参照，不再由构建脚本发布。默认配置沿用已验证的环境：
 
 ```text
 ControlMyMonitor：D:\Soft\ControlMyMonitor\ControlMyMonitor.exe
@@ -73,14 +73,14 @@ Dell：\\.\DISPLAY1\Monitor0，切到 Mac 输入 17
 USB Hub：0BDA:5409
 ```
 
-在 Windows 10/11 安装 .NET 8 SDK 后，以 PowerShell 执行：
+构建机安装 Visual Studio 的 C++ 桌面开发和 Windows App SDK C++ 组件后，以 PowerShell 执行：
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\Windows\build-windows.ps1
 ```
 
-生成自包含绿色版目录 `Windows\dist\`，入口为 `DisplaySwitcher.Windows.exe`。WinUI 3 的原生运行库位于同一目录，分发时必须复制整个 `dist` 文件夹，不能只复制 EXE。首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并确认 ControlMyMonitor 路径。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
+生成 framework-dependent 绿色版目录 `Windows\dist\`，入口为 `DisplaySwitcher.Windows.exe`，整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹，不能只复制 EXE。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并确认 ControlMyMonitor 路径。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
 
 点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台依次执行：
 
