@@ -10,6 +10,11 @@ using namespace winrt;
 
 namespace
 {
+    int64_t NowMilliseconds()
+    {
+        return static_cast<int64_t>(std::llround(::DisplaySwitcher::Native::UdpPeer::TimestampNow() * 1000.0));
+    }
+
     bool WaitUnlessCancelled(std::atomic<uint64_t> const& generation, uint64_t expected, int milliseconds)
     {
         for (int elapsed = 0; elapsed < milliseconds; elapsed += 25)
@@ -49,7 +54,11 @@ namespace DisplaySwitcher::Native
             if (auto self = weak.lock()) self->Enqueue([weak, message] { if (auto value = weak.lock()) value->HandlePeerMessage(message); });
         }, [weak](std::wstring const& error)
         {
-            if (auto self = weak.lock()) self->SetStatus(error);
+            if (auto self = weak.lock())
+            {
+                self->SetStatus(error);
+                self->SetPeerConnectionStatus(L"连接错误：" + error, false);
+            }
         });
         trayIcon_ = std::make_unique<TrayIcon>(
             [weak] { if (auto self = weak.lock()) self->ShowSettings(); },
@@ -70,9 +79,15 @@ namespace DisplaySwitcher::Native
     {
         auto config = Config();
         CancelOutgoing();
+        StopPeerHealthCheck();
         peer_->Stop();
         usbWatcher_->Reconfigure(config.usbVendorId, config.usbProductId);
-        if (config.usbAutomationEnabled && config.coordinationEnabled) peer_->Start(config.port);
+        if (config.usbAutomationEnabled && config.coordinationEnabled)
+        {
+            peer_->Start(config.port);
+            StartPeerHealthCheck();
+        }
+        else SetPeerConnectionStatus(L"协同未启用", false);
         try { ApplyAutoStart(config.startWithWindows); }
         catch (hresult_error const& error) { ShowError(L"登录启动设置失败", error.message().c_str()); }
         wchar_t ids[16]{}; swprintf_s(ids, L"%04X:%04X", config.usbVendorId, config.usbProductId);
@@ -179,11 +194,49 @@ namespace DisplaySwitcher::Native
         std::scoped_lock lock(stateMutex_); outgoingEventId_.clear();
     }
 
+    void Controller::StartPeerHealthCheck()
+    {
+        StopPeerHealthCheck();
+        lastPeerSeenMilliseconds_.store(0);
+        SetPeerConnectionStatus(L"正在连接 Mac…", false);
+        std::weak_ptr<Controller> weak = shared_from_this();
+        peerHealthThread_ = std::jthread([weak](std::stop_token token)
+        {
+            int probes = 0;
+            while (!token.stop_requested())
+            {
+                auto self = weak.lock();
+                if (!self || self->disposed_) return;
+                self->Send(L"status_probe", self->NewEventId(), std::nullopt);
+                auto lastSeen = self->lastPeerSeenMilliseconds_.load();
+                auto now = NowMilliseconds();
+                if (lastSeen == 0)
+                    self->SetPeerConnectionStatus(probes < 3 ? L"正在连接 Mac…" : L"Mac 未响应", false);
+                else if (now - lastSeen > 6000)
+                    self->SetPeerConnectionStatus(L"连接已中断", false);
+                else
+                    self->SetPeerConnectionStatus(L"已连接到 Mac", true);
+                ++probes;
+                for (int elapsed = 0; elapsed < 2000 && !token.stop_requested(); elapsed += 100)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
+    }
+
+    void Controller::StopPeerHealthCheck()
+    {
+        peerHealthThread_.request_stop();
+        if (peerHealthThread_.joinable()) peerHealthThread_.join();
+        lastPeerSeenMilliseconds_.store(0);
+    }
+
     void Controller::HandlePeerMessage(PeerMessage const& message)
     {
         auto config = Config();
         if (!config.usbAutomationEnabled || !config.coordinationEnabled || message.version != 1 || message.pairingCode != config.pairingCode ||
             message.source != L"mac" || message.target != L"windows" || std::abs(UdpPeer::TimestampNow() - message.timestamp) > 10) return;
+        lastPeerSeenMilliseconds_.store(NowMilliseconds());
+        SetPeerConnectionStatus(L"已连接到 Mac", true);
         if (message.type == L"handover_request")
         {
             if (message.timestamp < lastIncomingRequestTimestamp_) return;
@@ -207,6 +260,7 @@ namespace DisplaySwitcher::Native
             { std::scoped_lock lock(stateMutex_); if (incomingEventId_ == message.eventId) incomingEventId_.clear(); }
             SetStatus(L"Mac 已完成显示器切换");
         }
+        else if (message.type == L"status_probe") Send(L"status_response", message.eventId, std::nullopt);
     }
 
     void Controller::Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
@@ -245,6 +299,11 @@ namespace DisplaySwitcher::Native
                 }
             },
             [weak] { if (auto self = weak.lock()) self->settingsWindow_ = nullptr; });
+        {
+            std::scoped_lock lock(stateMutex_);
+            get_self<::winrt::DisplaySwitcher::Native::implementation::SettingsWindow>(projected)->SetConnectionStatus(
+                peerConnectionStatus_, peerConnected_);
+        }
         get_self<::winrt::DisplaySwitcher::Native::implementation::SettingsWindow>(projected)->ShowWindow();
     }
 
@@ -256,6 +315,29 @@ namespace DisplaySwitcher::Native
         {
             if (auto self = weak.lock(); self && !self->disposed_ && self->trayIcon_) self->trayIcon_->SetStatus(text);
         });
+    }
+
+    void Controller::SetPeerConnectionStatus(std::wstring const& text, bool connected)
+    {
+        if (disposed_) return;
+        if (!dispatcher_.HasThreadAccess())
+        {
+            Enqueue([weak = weak_from_this(), text, connected]
+            {
+                if (auto self = weak.lock()) self->SetPeerConnectionStatus(text, connected);
+            });
+            return;
+        }
+        {
+            std::scoped_lock lock(stateMutex_);
+            peerConnectionStatus_ = text;
+            peerConnected_ = connected;
+        }
+        if (settingsWindow_)
+        {
+            auto projected = settingsWindow_.as<::winrt::DisplaySwitcher::Native::SettingsWindow>();
+            get_self<::winrt::DisplaySwitcher::Native::implementation::SettingsWindow>(projected)->SetConnectionStatus(text, connected);
+        }
     }
 
     void Controller::ShowError(std::wstring const& title, std::wstring const& message)
@@ -284,6 +366,7 @@ namespace DisplaySwitcher::Native
     {
         if (disposed_.exchange(true)) return;
         CancelOutgoing();
+        StopPeerHealthCheck();
         if (peer_) peer_->Stop();
         if (settingsWindow_)
         {

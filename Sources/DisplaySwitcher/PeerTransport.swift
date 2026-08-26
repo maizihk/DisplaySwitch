@@ -6,6 +6,8 @@ enum PeerMessageType: String, Codable {
     case usbPresent = "usb_present"
     case usbReady = "usb_attached_and_awake"
     case committed
+    case statusProbe = "status_probe"
+    case statusResponse = "status_response"
 }
 
 struct PeerMessage: Codable {

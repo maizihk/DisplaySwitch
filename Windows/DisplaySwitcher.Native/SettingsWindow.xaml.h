@@ -12,6 +12,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void Initialize(::DisplaySwitcher::Native::AppConfig const& config,
             std::function<void(::DisplaySwitcher::Native::AppConfig const&)> saved,
             std::function<void()> closed);
+        void SetConnectionStatus(std::wstring const& status, bool connected);
         void ShowWindow();
         void CloseForExit();
 
@@ -39,6 +40,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock connectionDot_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock connectionStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbAutomation_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch coordination_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox peerHost_{ nullptr };

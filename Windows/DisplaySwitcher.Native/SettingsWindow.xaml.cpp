@@ -108,10 +108,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
             usbAutomation_, CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_), usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.Header(CreateTabHeader(L"\uE968", L"双端协同"));
+        auto peerStatus = StackPanel(); peerStatus.Orientation(Orientation::Horizontal); peerStatus.Spacing(8);
+        connectionDot_ = TextBlock(); connectionDot_.Text(L"●"); connectionDot_.FontSize(16);
+        connectionStatus_ = TextBlock(); connectionStatus_.VerticalAlignment(VerticalAlignment::Center);
+        peerStatus.Children().Append(connectionDot_); peerStatus.Children().Append(connectionStatus_);
+        SetConnectionStatus(L"协同未启用", false);
         auto peerHint = TextBlock(); peerHint.Text(L"两端使用相同端口和配对码；确认 USB 已接入目标电脑后再切换显示器。");
         peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
         peerTab.Content(CreatePage({ CreateSection(L"双端协同", {
-            coordination_, CreateTwoColumn(peerHost_, port_, 160), pairingCode_, peerHint }) }));
+            peerStatus, coordination_, CreateTwoColumn(peerHost_, port_, 160), pairingCode_, peerHint }) }));
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
         displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { controlMyMonitor_, CreateSubheading(L"小米显示器"),
@@ -212,6 +217,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::ShowWindow() { appWindow_.Show(); Activate(); }
     void SettingsWindow::CloseForExit() { Close(); }
+
+    void SettingsWindow::SetConnectionStatus(std::wstring const& status, bool connected)
+    {
+        if (!connectionStatus_ || !connectionDot_) return;
+        connectionStatus_.Text(status);
+        auto color = connected ? Windows::UI::Color{ 255, 16, 124, 16 } : Windows::UI::Color{ 255, 96, 96, 96 };
+        connectionDot_.Foreground(SolidColorBrush(color));
+    }
 
     void SettingsWindow::LoadValues(::DisplaySwitcher::Native::AppConfig const& config)
     {

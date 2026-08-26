@@ -26,11 +26,14 @@ namespace DisplaySwitcher::Native
         void CompleteOutgoing(std::wstring const& eventId);
         void CancelOutgoing();
         void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
+        void StartPeerHealthCheck();
+        void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void ManualSwitch();
         void ShowSettings();
         void SetStatus(std::wstring const& text);
+        void SetPeerConnectionStatus(std::wstring const& text, bool connected);
         void Enqueue(std::function<void()> action);
         static std::wstring NewEventId();
 
@@ -45,8 +48,12 @@ namespace DisplaySwitcher::Native
         std::mutex stateMutex_;
         std::wstring outgoingEventId_;
         std::wstring incomingEventId_;
+        std::wstring peerConnectionStatus_{ L"协同未启用" };
+        bool peerConnected_{};
         double lastIncomingRequestTimestamp_{};
+        std::atomic<int64_t> lastPeerSeenMilliseconds_{};
         std::atomic<uint64_t> outgoingGeneration_{};
         std::atomic<bool> disposed_{};
+        std::jthread peerHealthThread_;
     };
 }

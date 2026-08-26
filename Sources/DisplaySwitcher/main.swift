@@ -687,6 +687,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if pendingIncomingEventID == message.eventID {
                 pendingIncomingEventID = nil
             }
+        case .statusProbe:
+            sendPeerMessage(type: .statusResponse, eventID: message.eventID)
+        case .statusResponse:
+            break
         }
     }
 
