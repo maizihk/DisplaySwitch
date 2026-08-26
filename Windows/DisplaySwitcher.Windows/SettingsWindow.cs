@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -51,18 +52,29 @@ internal sealed class SettingsWindow : Window
     private UIElement BuildContent()
     {
         var root = new Grid { Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)) };
-        var scrollViewer = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var scrollViewer = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            HorizontalScrollMode = ScrollMode.Disabled,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch
+        };
+        var page = new Grid
+        {
+            Padding = new Thickness(32),
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
         var content = new StackPanel
         {
-            Width = 720,
+            MaxWidth = 720,
             Spacing = 20,
-            Margin = new Thickness(32),
-            HorizontalAlignment = HorizontalAlignment.Center
+            HorizontalAlignment = HorizontalAlignment.Stretch
         };
 
         UIElement Finish()
         {
-            scrollViewer.Content = content;
+            page.Children.Add(content);
+            scrollViewer.Content = page;
             root.Children.Add(scrollViewer);
             return root;
         }
@@ -195,8 +207,10 @@ internal sealed class SettingsWindow : Window
             _presenter.IsMinimizable = false;
         }
         var displayArea = DisplayArea.GetFromWindowId(windowId, DisplayAreaFallback.Primary);
-        const int width = 800;
-        const int height = 860;
+        var dpi = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this));
+        var scale = dpi == 0 ? 1.0 : dpi / 96.0;
+        var width = Math.Min((int)Math.Round(800 * scale), displayArea.WorkArea.Width);
+        var height = Math.Min((int)Math.Round(860 * scale), displayArea.WorkArea.Height);
         var x = displayArea.WorkArea.X + Math.Max(0, (displayArea.WorkArea.Width - width) / 2);
         var y = displayArea.WorkArea.Y + Math.Max(0, (displayArea.WorkArea.Height - height) / 2);
         _appWindow.MoveAndResize(new RectInt32(x, y, width, height));
@@ -317,5 +331,8 @@ internal sealed class SettingsWindow : Window
         _validationTextBlock.Text = message;
         _validationTextBlock.Visibility = Visibility.Visible;
     }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr window);
 
 }
