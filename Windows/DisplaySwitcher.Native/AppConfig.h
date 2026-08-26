@@ -4,6 +4,7 @@ namespace DisplaySwitcher::Native
 {
     struct AppConfig
     {
+        bool usbAutomationEnabled{ false };
         bool coordinationEnabled{ false };
         std::wstring peerHost;
         int port{ 49731 };

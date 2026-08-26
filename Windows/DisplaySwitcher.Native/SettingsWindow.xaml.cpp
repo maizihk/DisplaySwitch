@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "SettingsWindow.xaml.h"
+#include "resource.h"
 
 #if __has_include("SettingsWindow.g.cpp")
 #include "SettingsWindow.g.cpp"
@@ -64,6 +65,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         validation_ = TextBlock(); validation_.Foreground(SolidColorBrush(Windows::UI::Color{ 255, 196, 43, 28 }));
         validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
+        usbAutomation_ = ToggleSwitch(); Header(usbAutomation_, L"启用 USB 自动切换");
         coordination_ = ToggleSwitch(); Header(coordination_, L"启用 Mac / Windows 网络协同");
         peerHost_ = TextBox(); Header(peerHost_, L"Mac IP 或主机名"); peerHost_.PlaceholderText(L"例如 192.168.1.20");
         port_ = TextBox(); Header(port_, L"UDP 端口"); port_.PlaceholderText(L"49731");
@@ -100,10 +102,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
         refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
         auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
-        auto usbHint = TextBlock(); usbHint.Text(L"选择用于判断键鼠归属的 USB Hub，也可以直接填写 VID 和 PID。");
+        auto usbHint = TextBlock(); usbHint.Text(L"选择用于判断键鼠归属的 USB Hub。协同关闭时，USB 离开 Windows 后将直接切换到 Mac。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
-            CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_), usbHint }) }));
+            usbAutomation_, CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_), usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.Header(CreateTabHeader(L"\uE968", L"双端协同"));
         auto peerHint = TextBlock(); peerHint.Text(L"两端使用相同端口和配对码；确认 USB 已接入目标电脑后再切换显示器。");
@@ -193,6 +195,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::ResizeAndCenter()
     {
         HWND window{}; check_hresult(this->get_strong().as<::IWindowNative>()->get_WindowHandle(&window)); auto id = Microsoft::UI::GetWindowIdFromWindow(window);
+        if (auto icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON)))
+        {
+            SendMessageW(window, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+            SendMessageW(window, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+        }
         appWindow_ = AppWindow::GetFromWindowId(id);
         if (auto presenter = appWindow_.Presenter().try_as<OverlappedPresenter>()) { presenter.IsMaximizable(false); presenter.IsMinimizable(false); }
         auto area = DisplayArea::GetFromWindowId(id, DisplayAreaFallback::Primary).WorkArea();
@@ -208,7 +215,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::LoadValues(::DisplaySwitcher::Native::AppConfig const& config)
     {
-        coordination_.IsOn(config.coordinationEnabled); peerHost_.Text(config.peerHost); port_.Text(std::to_wstring(config.port)); pairingCode_.Password(config.pairingCode);
+        usbAutomation_.IsOn(config.usbAutomationEnabled); coordination_.IsOn(config.coordinationEnabled);
+        peerHost_.Text(config.peerHost); port_.Text(std::to_wstring(config.port)); pairingCode_.Password(config.pairingCode);
         wchar_t value[5]{}; swprintf_s(value, L"%04X", config.usbVendorId); vendorId_.Text(value); swprintf_s(value, L"%04X", config.usbProductId); productId_.Text(value);
         controlMyMonitor_.Text(config.controlMyMonitorPath); redmiPath_.Text(config.redmiMonitorPath); redmiInput_.Text(std::to_wstring(config.redmiMacInput));
         dellPath_.Text(config.dellMonitorPath); dellInput_.Text(std::to_wstring(config.dellMacInput)); autoStart_.IsOn(config.startWithWindows);
@@ -235,12 +243,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto vendor = ParseInteger(vendorId_.Text().c_str(), 16, 0, 0xFFFF); auto product = ParseInteger(productId_.Text().c_str(), 16, 0, 0xFFFF);
         if (!vendor || !product) { tabs_.SelectedIndex(1); ShowValidationError(L"USB Vendor ID 和 Product ID 必须是十六进制，例如 0BDA、5409。"); return; }
         auto host = Trim(peerHost_.Text().c_str()); auto code = Trim(pairingCode_.Password().c_str());
+        if (coordination_.IsOn() && !usbAutomation_.IsOn()) { tabs_.SelectedIndex(1); ShowValidationError(L"双端协同依赖 USB 自动切换，请先启用 USB 自动切换。"); return; }
         if (coordination_.IsOn() && (host.empty() || code.size() < 8)) { tabs_.SelectedIndex(2); ShowValidationError(L"启用协同时，请填写 Mac IP 和至少 8 位配对码。"); return; }
         auto port = ParseInteger(port_.Text().c_str(), 10, 1, 65535); auto redmiInput = ParseInteger(redmiInput_.Text().c_str(), 10, 0, 65535);
         auto dellInput = ParseInteger(dellInput_.Text().c_str(), 10, 0, 65535);
         if (!port) { tabs_.SelectedIndex(2); ShowValidationError(L"UDP 端口必须为 1–65535。"); return; }
         if (!redmiInput || !dellInput) { tabs_.SelectedIndex(3); ShowValidationError(L"显示器输入源必须为 0–65535 的整数。"); return; }
-        auto result = original_; result.coordinationEnabled = coordination_.IsOn(); result.peerHost = host; result.port = *port; result.pairingCode = code;
+        auto result = original_; result.usbAutomationEnabled = usbAutomation_.IsOn(); result.coordinationEnabled = coordination_.IsOn();
+        result.peerHost = host; result.port = *port; result.pairingCode = code;
         result.usbVendorId = *vendor; result.usbProductId = *product; auto selected = usbDevices_.SelectedIndex();
         if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
         result.controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str()); result.redmiMonitorPath = Trim(redmiPath_.Text().c_str()); result.redmiMacInput = *redmiInput;

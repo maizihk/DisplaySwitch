@@ -67,6 +67,7 @@
   <ItemGroup>
     <Manifest Include="app.manifest" />
     <ClInclude Include="pch.h" />
+    <ClInclude Include="resource.h" />
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
     <ClInclude Include="SettingsWindow.xaml.h"><DependentUpon>SettingsWindow.xaml</DependentUpon></ClInclude>
     <ClInclude Include="AppConfig.h" />
@@ -90,6 +91,8 @@
     <ClCompile Include="UdpPeer.cpp" />
     <ClCompile Include="UsbWatcher.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
+    <ResourceCompile Include="AppIcon.rc" />
+    <Image Include="AppIcon.ico" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260818.1" />

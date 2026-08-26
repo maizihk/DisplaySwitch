@@ -39,6 +39,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch usbAutomation_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch coordination_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox peerHost_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox port_{ nullptr };

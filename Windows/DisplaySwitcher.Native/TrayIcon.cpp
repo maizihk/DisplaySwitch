@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "TrayIcon.h"
+#include "resource.h"
 
 namespace
 {
@@ -16,7 +17,8 @@ namespace DisplaySwitcher::Native
         showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
-        icon_ = LoadIconW(nullptr, IDI_APPLICATION);
+        icon_ = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON));
+        if (!icon_) icon_ = LoadIconW(nullptr, IDI_APPLICATION);
         className_ = L"DisplaySwitcher.Tray." + std::to_wstring(GetCurrentProcessId());
         WNDCLASSEXW windowClass{ sizeof(windowClass) };
         windowClass.lpfnWndProc = WindowProcedure;

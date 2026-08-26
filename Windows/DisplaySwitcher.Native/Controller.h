@@ -25,6 +25,7 @@ namespace DisplaySwitcher::Native
         void BeginOutgoingHandover();
         void CompleteOutgoing(std::wstring const& eventId);
         void CancelOutgoing();
+        void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
         void HandlePeerMessage(PeerMessage const& message);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void ManualSwitch();

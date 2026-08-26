@@ -69,38 +69,52 @@ namespace DisplaySwitcher::Native
     void Controller::ApplyConfiguration()
     {
         auto config = Config();
+        CancelOutgoing();
         peer_->Stop();
         usbWatcher_->Reconfigure(config.usbVendorId, config.usbProductId);
-        if (config.coordinationEnabled) peer_->Start(config.port);
+        if (config.usbAutomationEnabled && config.coordinationEnabled) peer_->Start(config.port);
         try { ApplyAutoStart(config.startWithWindows); }
         catch (hresult_error const& error) { ShowError(L"登录启动设置失败", error.message().c_str()); }
         wchar_t ids[16]{}; swprintf_s(ids, L"%04X:%04X", config.usbVendorId, config.usbProductId);
-        SetStatus(config.coordinationEnabled ? L"协同已开启 · USB " + std::wstring(ids) : L"协同未开启");
+        if (!config.usbAutomationEnabled) SetStatus(L"USB 自动切换未开启");
+        else if (config.coordinationEnabled) SetStatus(L"协同已开启 · USB " + std::wstring(ids));
+        else SetStatus(L"USB 自动切换已开启 · USB " + std::wstring(ids));
     }
 
     void Controller::OnUsbPresenceChanged(bool present)
     {
         auto config = Config();
-        if (!config.coordinationEnabled) return;
+        if (!config.usbAutomationEnabled) return;
         if (present)
         {
             CancelOutgoing();
-            auto woke = WakeDisplay();
-            Send(L"usb_present", NewEventId(), woke);
-            std::wstring incoming;
-            { std::scoped_lock lock(stateMutex_); incoming = incomingEventId_; }
-            if (!incoming.empty()) Send(L"usb_attached_and_awake", incoming, woke);
-            SetStatus(L"USB 已接入 Windows，等待切屏");
+            if (config.coordinationEnabled)
+            {
+                auto woke = WakeDisplay();
+                Send(L"usb_present", NewEventId(), woke);
+                std::wstring incoming;
+                { std::scoped_lock lock(stateMutex_); incoming = incomingEventId_; }
+                if (!incoming.empty()) Send(L"usb_attached_and_awake", incoming, woke);
+                SetStatus(L"USB 已接入 Windows，等待切屏");
+            }
+            else SetStatus(L"USB 已接入 Windows");
             return;
         }
-        SetStatus(L"USB 已离开 Windows，等待确认…");
+        SetStatus(config.coordinationEnabled ? L"USB 已离开 Windows，等待确认…" : L"USB 已离开 Windows，准备切换…");
         auto generation = outgoingGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, generation]
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(800));
             if (auto self = weak.lock(); self && !self->disposed_ && self->outgoingGeneration_.load() == generation && !self->usbWatcher_->IsPresent())
-                self->Enqueue([weak] { if (auto value = weak.lock()) value->BeginOutgoingHandover(); });
+                self->Enqueue([weak]
+                {
+                    if (auto value = weak.lock())
+                    {
+                        if (value->Config().coordinationEnabled) value->BeginOutgoingHandover();
+                        else { value->CancelOutgoing(); value->SwitchToMac(std::nullopt, false); }
+                    }
+                });
         }).detach();
     }
 
@@ -132,19 +146,26 @@ namespace DisplaySwitcher::Native
             outgoingEventId_.clear();
         }
         ++outgoingGeneration_;
-        SetStatus(L"正在切换显示器到 Mac…");
+        SwitchToMac(eventId, false);
+    }
+
+    void Controller::SwitchToMac(std::optional<std::wstring> eventId, bool manual)
+    {
+        SetStatus(manual ? L"正在手动切换显示器到 Mac…" : L"正在切换显示器到 Mac…");
         auto config = Config(); std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, config, eventId]
+        std::thread([weak, config, eventId, manual]
         {
             auto result = SwitchDisplaysToMac(config);
             if (auto self = weak.lock(); self && !self->disposed_)
             {
-                self->Send(L"committed", eventId, result.success);
-                self->Enqueue([weak, result]
+                if (eventId) self->Send(L"committed", *eventId, result.success);
+                self->Enqueue([weak, result, manual]
                 {
                     if (auto value = weak.lock())
                     {
-                        value->SetStatus(result.success ? L"已切换到 Mac" : L"部分切换失败：" + result.error);
+                        std::wstring success = manual ? L"已手动切换到 Mac" : L"已切换到 Mac";
+                        std::wstring failure = manual ? L"切换失败：" : L"部分切换失败：";
+                        value->SetStatus(result.success ? success : failure + result.error);
                         if (!result.success) value->ShowError(L"显示器切换失败", result.error.empty() ? L"未知错误" : result.error);
                     }
                 });
@@ -161,7 +182,7 @@ namespace DisplaySwitcher::Native
     void Controller::HandlePeerMessage(PeerMessage const& message)
     {
         auto config = Config();
-        if (!config.coordinationEnabled || message.version != 1 || message.pairingCode != config.pairingCode ||
+        if (!config.usbAutomationEnabled || !config.coordinationEnabled || message.version != 1 || message.pairingCode != config.pairingCode ||
             message.source != L"mac" || message.target != L"windows" || std::abs(UdpPeer::TimestampNow() - message.timestamp) > 10) return;
         if (message.type == L"handover_request")
         {
@@ -198,20 +219,7 @@ namespace DisplaySwitcher::Native
 
     void Controller::ManualSwitch()
     {
-        SetStatus(L"正在手动切换显示器到 Mac…");
-        auto config = Config(); std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, config]
-        {
-            auto result = SwitchDisplaysToMac(config);
-            if (auto self = weak.lock()) self->Enqueue([weak, result]
-            {
-                if (auto value = weak.lock())
-                {
-                    value->SetStatus(result.success ? L"已手动切换到 Mac" : L"切换失败：" + result.error);
-                    if (!result.success) value->ShowError(L"显示器切换失败", result.error.empty() ? L"未知错误" : result.error);
-                }
-            });
-        }).detach();
+        SwitchToMac(std::nullopt, true);
     }
 
     void Controller::ShowSettings()

@@ -39,6 +39,7 @@ namespace DisplaySwitcher::Native
             std::string json((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
             auto object = JsonObject::Parse(to_hstring(json));
             config.coordinationEnabled = object.GetNamedBoolean(L"CoordinationEnabled", config.coordinationEnabled);
+            config.usbAutomationEnabled = object.GetNamedBoolean(L"UsbAutomationEnabled", config.coordinationEnabled);
             config.peerHost = String(object, L"PeerHost", config.peerHost);
             config.port = Number(object, L"Port", config.port);
             config.pairingCode = String(object, L"PairingCode", config.pairingCode);
@@ -59,6 +60,7 @@ namespace DisplaySwitcher::Native
     void AppConfig::Save() const
     {
         JsonObject object;
+        object.Insert(L"UsbAutomationEnabled", JsonValue::CreateBooleanValue(usbAutomationEnabled));
         object.Insert(L"CoordinationEnabled", JsonValue::CreateBooleanValue(coordinationEnabled));
         object.Insert(L"PeerHost", JsonValue::CreateStringValue(peerHost));
         object.Insert(L"Port", JsonValue::CreateNumberValue(port));
