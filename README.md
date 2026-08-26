@@ -12,7 +12,8 @@
 - 对显示器错误回报的 `max=0/1` 自动回退到 100，避免滑块被缩成一格。
 - 当一台显示器的三个读取值同时异常为 0 时，不用错误值覆盖界面；显示上次设置值，`≈` 表示该值来自缓存而非硬件回读。
 - 一键把两台显示器切换到 Windows 输入源。
-- 启动时在后台读取显示器名称和 System UUID，并使用 UUID 作为稳定控制目标。
+- 内置 Apple Silicon 原生 DDC/CI 后端，不安装 `m1ddc` 也能检测和控制显示器；已安装 `m1ddc` 时仅作为兼容性回退。
+- 启动时在后台读取显示器名称和 System UUID，并使用 UUID 作为稳定控制目标。当显示输入已切到另一台电脑时，会通过 I/O Registry 保留的 EDID 和已保存名称继续匹配 DDC 通道。
 - 原生设置窗口，可配置 Windows 输入源、DDC 回读和登录启动。
 - 设置窗口和内容卡片使用 macOS 系统动态背景色，自动适配浅色与深色外观；鼠标进入顶部标签区时，贯穿整个窗口宽度的分隔线淡入，进入内容区时淡出。紧凑的“图标 + 文字”标签会同步更新窗口标题，选中项在 macOS 26 及以上使用不带蓝色染色的原生液态玻璃效果，图标和文字变蓝，并使用完整轮廓与均匀柔影强化四条边，旧系统自动回退为中性半透明材质。所有开关类功能使用 macOS 原生滑动开关，底部保存按钮始终可见。
 - 单实例保护：重复打开 App 时，后启动的实例立即退出，避免出现多个菜单栏图标和重复执行自动切换。
@@ -30,13 +31,7 @@
 - 切换到 Windows 时使用的输入源编号。
 - 是否读取 DDC 当前值。Dell S2319HS 默认关闭读取，因为当前 HDMI 链路只能可靠写入、不能回读。
 
-名称和 UUID 不写死在程序中，由下面的命令在每次启动时自动读取：
-
-```text
-/opt/homebrew/bin/m1ddc display list detailed
-```
-
-检测成功后会缓存结果；检测失败时保留上次成功检测到的名称和 UUID。菜单中的“重新检测显示器”可以手动刷新设备信息。
+名称和 UUID 不写死在程序中，由内置原生后端在每次启动时自动读取。检测成功后会缓存结果；检测失败时保留上次成功检测到的名称和 UUID。菜单中的“重新检测显示器”可以手动刷新设备信息。
 
 ## USB 自动切换
 
@@ -85,37 +80,31 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 生成 framework-dependent 绿色版目录 `Windows\dist\`，根入口为 `DisplaySwitch.exe`，WinUI 程序及依赖集中在 `runtime` 子目录；整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并选择原生 DDC/CI 或 ControlMyMonitor。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
 
-点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台并行执行：
+点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台通过内置 DDC/CI 后端并行控制两台显示器。如果系统中另外安装了 `m1ddc`，原生通道返回失败时会使用等价命令回退，例如：
 
 ```text
 /opt/homebrew/bin/m1ddc display 1 set input 18
 /opt/homebrew/bin/m1ddc display 2 set input 15
 ```
 
-两台显示器的命令会并行执行，以缩短切屏时间。失败时会显示错误提示，方便判断是 `m1ddc` 路径、显示器编号还是输入源编号的问题。
+两台显示器的操作会并行执行，以缩短切屏时间。失败时会显示错误提示，方便判断 DDC 通道或输入源编号问题。
 
 ## 亮度、对比度和音量
 
-点击菜单栏图标，把鼠标移到“显示器 1”或“显示器 2”，即可使用三个滑块。松开滑块时，App 会在后台执行对应命令，例如：
-
-```text
-/opt/homebrew/bin/m1ddc display 1 set luminance 60
-/opt/homebrew/bin/m1ddc display 1 set contrast 70
-/opt/homebrew/bin/m1ddc display 1 set volume 30
-```
+点击菜单栏图标，把鼠标移到“显示器 1”或“显示器 2”，即可使用三个滑块。松开滑块时，App 会在后台写入对应的 VCP 指令（亮度 `0x10`、对比度 `0x12`、音量 `0x62`）。
 
 显示器必须支持对应的 DDC/CI 控制项。没有扬声器或不支持 DDC 音量的显示器无法用音量滑块控制；这是显示器能力限制，不是 App 故障。
 
 ## 前置检查
 
-确认已安装完整 Xcode，当前开发者目录指向 Xcode，并检查 `m1ddc` 是否就绪：
+确认已安装完整 Xcode，当前开发者目录指向 Xcode：
 
 ```bash
 xcode-select -p
 xcodebuild -version
-test -x /opt/homebrew/bin/m1ddc && echo "m1ddc 已就绪"
-/opt/homebrew/bin/m1ddc display list detailed
 ```
+
+`m1ddc` 不是运行依赖。项目保留对 `/opt/homebrew/bin/m1ddc` 和 `/usr/local/bin/m1ddc` 的可选兼容回退，未安装时不影响原生后端。内置实现基于 MIT 许可的 [AppleSiliconDDC](https://github.com/waydabber/AppleSiliconDDC)，许可文件位于 `ThirdParty/AppleSiliconDDC/LICENSE`。该后端使用 macOS 的私有 CoreDisplay/IOAVService 接口，因此 App Sandbox 保持关闭，且系统大版本升级后需重新验证。
 
 ## 编译
 
@@ -175,4 +164,4 @@ open /Applications/DisplaySwitcher.app
 
 ## 修改显示器参数
 
-编辑 `Sources/DisplaySwitcher/main.swift` 中的 `commands` 数组，然后重新运行构建脚本。输入源编号由显示器决定；当前配置保持为显示器 1 使用 `18`、显示器 2 使用 `15`。
+直接在“设置…”中修改每台显示器的 Mac/Windows 输入源编号和 DDC 回读开关，无需修改源码。输入源编号由显示器决定；当前默认为显示器 1 使用 `18`、显示器 2 使用 `15` 切到 Windows。

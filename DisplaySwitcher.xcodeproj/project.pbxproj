@@ -20,6 +20,9 @@
 		A1000000000000000000000C /* PeerProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* PeerProtocolTests.swift */; };
 		A1000000000000000000000D /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* XCTest.framework */; };
 		A1000000000000000000000E /* PeerTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* PeerTransport.swift */; };
+		A1000000000000000000000F /* DDCController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* DDCController.swift */; };
+		A10000000000000000000010 /* NativeDDC.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* NativeDDC.swift */; };
+		A10000000000000000000011 /* CoreDisplay.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* CoreDisplay.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +47,10 @@
 		A20000000000000000000010 /* DisplaySwitcherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DisplaySwitcherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000011 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* build-app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "build-app.sh"; sourceTree = "<group>"; };
+		A20000000000000000000013 /* DDCController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDCController.swift; sourceTree = "<group>"; };
+		A20000000000000000000014 /* NativeDDC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDDC.swift; sourceTree = "<group>"; };
+		A20000000000000000000015 /* NativeDDCBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NativeDDCBridge.h; sourceTree = "<group>"; };
+		A20000000000000000000016 /* CoreDisplay.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreDisplay.framework; path = System/Library/Frameworks/CoreDisplay.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -53,6 +60,7 @@
 			files = (
 				A10000000000000000000008 /* AppKit.framework in Frameworks */,
 				A10000000000000000000009 /* IOKit.framework in Frameworks */,
+				A10000000000000000000011 /* CoreDisplay.framework in Frameworks */,
 				A1000000000000000000000A /* Network.framework in Frameworks */,
 				A1000000000000000000000B /* ServiceManagement.framework in Frameworks */,
 			);
@@ -94,6 +102,9 @@
 				A20000000000000000000003 /* PeerTransport.swift */,
 				A20000000000000000000004 /* SettingsWindowController.swift */,
 				A20000000000000000000005 /* USBMonitor.swift */,
+				A20000000000000000000013 /* DDCController.swift */,
+				A20000000000000000000014 /* NativeDDC.swift */,
+				A20000000000000000000015 /* NativeDDCBridge.h */,
 			);
 			path = DisplaySwitcher;
 			sourceTree = "<group>";
@@ -125,6 +136,7 @@
 			children = (
 				A20000000000000000000009 /* AppKit.framework */,
 				A2000000000000000000000A /* IOKit.framework */,
+				A20000000000000000000016 /* CoreDisplay.framework */,
 				A2000000000000000000000B /* Network.framework */,
 				A2000000000000000000000C /* ServiceManagement.framework */,
 				A2000000000000000000000D /* XCTest.framework */,
@@ -233,6 +245,8 @@
 				A10000000000000000000003 /* PeerTransport.swift in Sources */,
 				A10000000000000000000004 /* SettingsWindowController.swift in Sources */,
 				A10000000000000000000005 /* USBMonitor.swift in Sources */,
+				A1000000000000000000000F /* DDCController.swift in Sources */,
+				A10000000000000000000010 /* NativeDDC.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -255,6 +269,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
 				PRODUCT_BUNDLE_IDENTIFIER = local.maizi.DisplaySwitcher;
 				PRODUCT_NAME = DisplaySwitcher;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/DisplaySwitcher/NativeDDCBridge.h;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
@@ -274,6 +289,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 12.0;
 				PRODUCT_BUNDLE_IDENTIFIER = local.maizi.DisplaySwitcher;
 				PRODUCT_NAME = DisplaySwitcher;
+				SWIFT_OBJC_BRIDGING_HEADER = Sources/DisplaySwitcher/NativeDDCBridge.h;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;

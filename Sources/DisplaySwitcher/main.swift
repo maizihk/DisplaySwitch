@@ -23,6 +23,14 @@ private enum DisplayControl: String, CaseIterable {
         case .volume: return "speaker.wave.2"
         }
     }
+
+    var ddcCommand: DDCCommand {
+        switch self {
+        case .luminance: return .luminance
+        case .contrast: return .contrast
+        case .volume: return .volume
+        }
+    }
 }
 
 private final class SliderRowView: NSView {
@@ -140,7 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var instanceLockFD: Int32 = -1
     private var ownsPrimaryInstance = false
-    private let workerQueue = DispatchQueue(label: "DisplaySwitcher.m1ddc")
+    private let workerQueue = DispatchQueue(label: "DisplaySwitcher.ddc")
+    private let ddcController = DDCController()
     private let usbMonitor = USBMonitor()
     private let peerTransport = PeerTransport()
     private var pendingUSBSwitch: DispatchWorkItem?
@@ -295,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switchToMacItem.isEnabled = false
         switchItem.isEnabled = false
         let currentConfigurations = configurations
+        let ddcController = ddcController
 
         workerQueue.async { [weak self] in
             let firstError = LockedFirstError()
@@ -307,12 +317,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     var succeeded = false
                     var displayError: Error?
                     for attempt in 0..<2 {
-                        let arguments = [
-                            "display", configuration.selector,
-                            "set", "input", "\(toMac ? configuration.macInput : configuration.windowsInput)"
-                        ]
                         do {
-                            _ = try Self.runM1DDC(arguments: arguments)
+                            try ddcController.write(
+                                selector: configuration.selector,
+                                command: .input,
+                                value: toMac ? configuration.macInput : configuration.windowsInput
+                            )
                             succeeded = true
                             break
                         } catch {
@@ -354,15 +364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func detectDisplays(showFailure: Bool) {
         detectItem.isEnabled = false
         detectItem.title = "正在检测…"
+        let ddcController = ddcController
 
         workerQueue.async { [weak self] in
             do {
-                let output = try Self.runM1DDC(arguments: ["display", "list", "detailed"])
-                let detectedDisplays = DetectedDisplay.parseList(output).filter { (1...2).contains($0.index) }
-
-                guard !detectedDisplays.isEmpty else {
-                    throw DDCError.detectionFailed
-                }
+                let detectedDisplays = try ddcController.detectDisplays()
 
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -401,6 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard force || Date().timeIntervalSince(lastRefresh) > 3 else { return }
         isRefreshing = true
         let currentConfigurations = configurations
+        let ddcController = ddcController
 
         workerQueue.async { [weak self] in
             var readings: [Int: [DisplayControl: (current: Int, maximum: Int)]] = [:]
@@ -414,18 +421,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
 
                 for control in DisplayControl.allCases {
-                    let prefix = ["display", configuration.selector]
-                    guard let current = Self.readValue(
-                        arguments: prefix + ["get", control.rawValue]
+                    guard let reading = ddcController.read(
+                        selector: configuration.selector,
+                        command: control.ddcCommand
                     ) else {
                         continue
                     }
 
-                    let reportedMaximum = Self.readValue(
-                        arguments: prefix + ["max", control.rawValue]
-                    )
-                    let maximum = Self.validatedMaximum(reportedMaximum, current: current)
-                    readings[displayID, default: [:]][control] = (current, maximum)
+                    let maximum = Self.validatedMaximum(reading.maximum, current: reading.current)
+                    readings[displayID, default: [:]][control] = (reading.current, maximum)
                 }
             }
 
@@ -460,6 +464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func setControl(_ control: DisplayControl, value: Int, fromDisplay displayID: Int) {
         let targetDisplays = linkedItem.state == .on ? [1, 2] : [displayID]
         let currentConfigurations = configurations
+        let ddcController = ddcController
 
         for targetID in targetDisplays {
             displayControls[targetID]?.update(control, value: value)
@@ -469,9 +474,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 for targetID in targetDisplays {
                     guard let configuration = currentConfigurations[targetID] else { continue }
-                    _ = try Self.runM1DDC(arguments: [
-                        "display", configuration.selector, "set", control.rawValue, "\(value)"
-                    ])
+                    try ddcController.write(
+                        selector: configuration.selector,
+                        command: control.ddcCommand,
+                        value: value
+                    )
                 }
                 DispatchQueue.main.async {
                     for targetID in targetDisplays {
@@ -482,48 +489,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.showError(title: "\(control.title)调节失败", error: error)
             }
         }
-    }
-
-    private static func runM1DDC(arguments: [String]) throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/m1ddc")
-        process.arguments = arguments
-
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-
-        try process.run()
-        process.waitUntilExit()
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        guard process.terminationStatus == 0 else {
-            throw DDCError.commandFailed(
-                arguments: arguments,
-                status: process.terminationStatus,
-                detail: text.isEmpty ? nil : text
-            )
-        }
-        return text
-    }
-
-    private static func readValue(arguments: [String]) -> Int? {
-        for attempt in 0..<2 {
-            if
-                let output = try? runM1DDC(arguments: arguments),
-                let value = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)),
-                value >= 0
-            {
-                return value
-            }
-
-            if attempt == 0 {
-                Thread.sleep(forTimeInterval: 0.08)
-            }
-        }
-        return nil
     }
 
     private static func validatedMaximum(_ reported: Int?, current: Int) -> Int {
@@ -908,22 +873,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         flock(instanceLockFD, LOCK_UN)
         Darwin.close(instanceLockFD)
         instanceLockFD = -1
-    }
-}
-
-private enum DDCError: LocalizedError {
-    case commandFailed(arguments: [String], status: Int32, detail: String?)
-    case detectionFailed
-
-    var errorDescription: String? {
-        switch self {
-        case let .commandFailed(arguments, status, detail):
-            let command = (["m1ddc"] + arguments).joined(separator: " ")
-            let suffix = detail.map { "\n\n\($0)" } ?? ""
-            return "命令执行失败（退出码 \(status)）：\n\(command)\(suffix)"
-        case .detectionFailed:
-            return "m1ddc 没有返回可解析的外接显示器信息。"
-        }
     }
 }
 
