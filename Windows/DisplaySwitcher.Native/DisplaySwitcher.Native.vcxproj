@@ -61,7 +61,7 @@
       <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
       <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
       <GenerateDebugInformation Condition="'$(Configuration)'=='Release'">false</GenerateDebugInformation>
-      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;Gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
