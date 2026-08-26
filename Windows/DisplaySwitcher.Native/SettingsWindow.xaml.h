@@ -20,6 +20,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::Border CreateSection(std::wstring const& title,
             std::vector<Microsoft::UI::Xaml::UIElement> const& children);
         Microsoft::UI::Xaml::Controls::Border CreateCard(Microsoft::UI::Xaml::UIElement const& child);
+        Microsoft::UI::Xaml::Controls::ScrollViewer CreatePage(
+            std::vector<Microsoft::UI::Xaml::UIElement> const& children);
+        Microsoft::UI::Xaml::Controls::StackPanel CreateTabHeader(wchar_t const* glyph, wchar_t const* text);
         Microsoft::UI::Xaml::Controls::Grid CreateTwoColumn(Microsoft::UI::Xaml::FrameworkElement const& left,
             Microsoft::UI::Xaml::FrameworkElement const& right, double rightWidth = -1);
         Microsoft::UI::Xaml::Controls::TextBlock CreateSubheading(std::wstring const& text);
@@ -34,6 +37,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<void()> closed_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch coordination_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox peerHost_{ nullptr };

@@ -53,7 +53,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (initialized_) return;
         initialized_ = true;
         original_ = config; saved_ = std::move(saved); closed_ = std::move(closed);
-        Title(L"显示器切换设置");
+        Title(L"常规");
         try { SystemBackdrop(MicaBackdrop()); } catch (...) {}
         Content(BuildContent()); LoadValues(config); ResizeAndCenter();
         Closed([this](auto const&, auto const&) { if (closed_) closed_(); });
@@ -83,30 +83,62 @@ namespace winrt::DisplaySwitcher::Native::implementation
             swprintf_s(value, L"%04X", devices_[index].productId); productId_.Text(value);
         });
 
-        auto root = Grid(); auto scroll = ScrollViewer();
-        scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto); scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
-        scroll.HorizontalScrollMode(ScrollMode::Disabled); scroll.HorizontalContentAlignment(HorizontalAlignment::Stretch);
-        auto page = Grid(); page.Padding(Thickness{ 32 }); page.HorizontalAlignment(HorizontalAlignment::Stretch);
-        auto content = StackPanel(); content.MaxWidth(720); content.Spacing(20); content.HorizontalAlignment(HorizontalAlignment::Stretch);
-        auto title = TextBlock(); title.Text(L"显示器切换设置"); title.FontSize(28); title.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-        content.Children().Append(title);
-        auto subtitle = TextBlock(); subtitle.Text(L"配置 Mac / Windows 协同、USB 触发设备和显示器输入源。"); subtitle.Opacity(0.72);
-        subtitle.TextWrapping(TextWrapping::Wrap); subtitle.Margin(Thickness{ 0, -12, 0, 0 }); content.Children().Append(subtitle);
-        content.Children().Append(validation_);
-        content.Children().Append(CreateSection(L"网络协同", { coordination_, CreateTwoColumn(peerHost_, port_, 180), pairingCode_ }));
+        auto root = Grid();
+        auto contentRow = RowDefinition(); contentRow.Height(GridLength{ 1, GridUnitType::Star });
+        auto footerRow = RowDefinition(); footerRow.Height(GridLengthHelper::Auto());
+        root.RowDefinitions().Append(contentRow); root.RowDefinitions().Append(footerRow);
+
+        tabs_ = TabView(); tabs_.IsAddTabButtonVisible(false);
+        tabs_.HorizontalAlignment(HorizontalAlignment::Stretch); tabs_.VerticalAlignment(VerticalAlignment::Stretch);
+        tabs_.TabStripHeader(Grid()); tabs_.TabStripFooter(Grid());
+
+        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
+        auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
+        commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
+        commonTab.Content(CreatePage({ CreateSection(L"常规", { autoStart_, commonHint }) }));
+
         auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
         refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
-        content.Children().Append(CreateSection(L"USB 触发设备", { CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_) }));
-        content.Children().Append(CreateSection(L"显示器控制", { controlMyMonitor_, CreateSubheading(L"小米显示器"),
-            CreateTwoColumn(redmiPath_, redmiInput_, 180), CreateSubheading(L"Dell 显示器"), CreateTwoColumn(dellPath_, dellInput_, 180) }));
-        content.Children().Append(CreateCard(autoStart_));
+        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
+        auto usbHint = TextBlock(); usbHint.Text(L"选择用于判断键鼠归属的 USB Hub，也可以直接填写 VID 和 PID。");
+        usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
+        usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
+            CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_), usbHint }) }));
+
+        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.Header(CreateTabHeader(L"\uE968", L"双端协同"));
+        auto peerHint = TextBlock(); peerHint.Text(L"两端使用相同端口和配对码；确认 USB 已接入目标电脑后再切换显示器。");
+        peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
+        peerTab.Content(CreatePage({ CreateSection(L"双端协同", {
+            coordination_, CreateTwoColumn(peerHost_, port_, 160), pairingCode_, peerHint }) }));
+
+        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
+        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { controlMyMonitor_, CreateSubheading(L"小米显示器"),
+            CreateTwoColumn(redmiPath_, redmiInput_, 150), CreateSubheading(L"Dell 显示器"), CreateTwoColumn(dellPath_, dellInput_, 150) }) }));
+
+        tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
+        tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab);
+        tabs_.SelectedIndex(0);
+        tabs_.SelectionChanged([this](auto const&, auto const&)
+        {
+            static constexpr wchar_t const* titles[]{ L"常规", L"USB 切换", L"双端协同", L"显示器" };
+            auto index = tabs_.SelectedIndex();
+            if (index >= 0 && index < 4) Title(titles[index]);
+            validation_.Visibility(Visibility::Collapsed);
+        });
+        Grid::SetRow(tabs_, 0); root.Children().Append(tabs_);
+
+        auto footer = Grid(); footer.Padding(Thickness{ 24, 12, 24, 20 }); footer.ColumnSpacing(16);
+        auto messageColumn = ColumnDefinition(); messageColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto buttonColumn = ColumnDefinition(); buttonColumn.Width(GridLengthHelper::Auto());
+        footer.ColumnDefinitions().Append(messageColumn); footer.ColumnDefinitions().Append(buttonColumn);
+        validation_.VerticalAlignment(VerticalAlignment::Center); Grid::SetColumn(validation_, 0); footer.Children().Append(validation_);
         auto cancel = Button(); cancel.Content(box_value(L"取消")); cancel.Click([this](auto const&, auto const&) { appWindow_.Hide(); });
         auto save = Button(); save.Content(box_value(L"保存")); save.Click([this](auto const&, auto const&) { Save(); });
         try { save.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>()); } catch (...) {}
         auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(12);
-        buttons.HorizontalAlignment(HorizontalAlignment::Right); buttons.Margin(Thickness{ 0, 0, 0, 24 });
-        buttons.Children().Append(cancel); buttons.Children().Append(save); content.Children().Append(buttons);
-        page.Children().Append(content); scroll.Content(page); root.Children().Append(scroll); return root;
+        buttons.HorizontalAlignment(HorizontalAlignment::Right); buttons.Children().Append(cancel); buttons.Children().Append(save);
+        Grid::SetColumn(buttons, 1); footer.Children().Append(buttons); Grid::SetRow(footer, 1); root.Children().Append(footer);
+        return root;
     }
 
     Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
@@ -121,6 +153,27 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto border = Border(); border.Child(child); border.Padding(Thickness{ 20 }); border.CornerRadius(CornerRadius{ 8 });
         border.BorderThickness(Thickness{ 1 }); border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
         border.BorderBrush(SolidColorBrush(Windows::UI::Color{ 28, 128, 128, 128 })); return border;
+    }
+
+    ScrollViewer SettingsWindow::CreatePage(std::vector<UIElement> const& children)
+    {
+        auto scroll = ScrollViewer(); scroll.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+        scroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled); scroll.HorizontalScrollMode(ScrollMode::Disabled);
+        scroll.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto content = StackPanel(); content.Spacing(16); content.Padding(Thickness{ 24, 20, 24, 20 });
+        content.HorizontalAlignment(HorizontalAlignment::Stretch);
+        for (auto const& child : children) content.Children().Append(child);
+        scroll.Content(content); return scroll;
+    }
+
+    StackPanel SettingsWindow::CreateTabHeader(wchar_t const* glyph, wchar_t const* text)
+    {
+        auto header = StackPanel(); header.Orientation(Orientation::Vertical); header.Width(112); header.Spacing(3);
+        header.HorizontalAlignment(HorizontalAlignment::Center);
+        auto icon = FontIcon(); icon.FontFamily(FontFamily(L"Segoe Fluent Icons")); icon.Glyph(glyph); icon.FontSize(18);
+        icon.HorizontalAlignment(HorizontalAlignment::Center);
+        auto label = TextBlock(); label.Text(text); label.FontSize(12); label.HorizontalAlignment(HorizontalAlignment::Center);
+        header.Children().Append(icon); header.Children().Append(label); return header;
     }
 
     Grid SettingsWindow::CreateTwoColumn(FrameworkElement const& left, FrameworkElement const& right, double rightWidth)
@@ -144,8 +197,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (auto presenter = appWindow_.Presenter().try_as<OverlappedPresenter>()) { presenter.IsMaximizable(false); presenter.IsMinimizable(false); }
         auto area = DisplayArea::GetFromWindowId(id, DisplayAreaFallback::Primary).WorkArea();
         auto dpi = GetDpiForWindow(window); double scale = dpi ? dpi / 96.0 : 1.0;
-        int width = (std::min)(static_cast<int>(std::lround(800 * scale)), area.Width);
-        int height = (std::min)(static_cast<int>(std::lround(860 * scale)), area.Height);
+        int width = (std::min)(static_cast<int>(std::lround(720 * scale)), area.Width);
+        int height = (std::min)(static_cast<int>(std::lround(690 * scale)), area.Height);
         int x = area.X + (std::max)(0, (area.Width - width) / 2); int y = area.Y + (std::max)(0, (area.Height - height) / 2);
         appWindow_.MoveAndResize(Windows::Graphics::RectInt32{ x, y, width, height });
     }
@@ -180,12 +233,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::Save()
     {
         auto vendor = ParseInteger(vendorId_.Text().c_str(), 16, 0, 0xFFFF); auto product = ParseInteger(productId_.Text().c_str(), 16, 0, 0xFFFF);
-        if (!vendor || !product) { ShowValidationError(L"USB Vendor ID 和 Product ID 必须是十六进制，例如 0BDA、5409。"); return; }
+        if (!vendor || !product) { tabs_.SelectedIndex(1); ShowValidationError(L"USB Vendor ID 和 Product ID 必须是十六进制，例如 0BDA、5409。"); return; }
         auto host = Trim(peerHost_.Text().c_str()); auto code = Trim(pairingCode_.Password().c_str());
-        if (coordination_.IsOn() && (host.empty() || code.size() < 8)) { ShowValidationError(L"启用协同时，请填写 Mac IP 和至少 8 位配对码。"); return; }
+        if (coordination_.IsOn() && (host.empty() || code.size() < 8)) { tabs_.SelectedIndex(2); ShowValidationError(L"启用协同时，请填写 Mac IP 和至少 8 位配对码。"); return; }
         auto port = ParseInteger(port_.Text().c_str(), 10, 1, 65535); auto redmiInput = ParseInteger(redmiInput_.Text().c_str(), 10, 0, 65535);
         auto dellInput = ParseInteger(dellInput_.Text().c_str(), 10, 0, 65535);
-        if (!port || !redmiInput || !dellInput) { ShowValidationError(L"UDP 端口必须为 1–65535；显示器输入源必须为 0–65535 的整数。"); return; }
+        if (!port) { tabs_.SelectedIndex(2); ShowValidationError(L"UDP 端口必须为 1–65535。"); return; }
+        if (!redmiInput || !dellInput) { tabs_.SelectedIndex(3); ShowValidationError(L"显示器输入源必须为 0–65535 的整数。"); return; }
         auto result = original_; result.coordinationEnabled = coordination_.IsOn(); result.peerHost = host; result.port = *port; result.pairingCode = code;
         result.usbVendorId = *vendor; result.usbProductId = *product; auto selected = usbDevices_.SelectedIndex();
         if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
