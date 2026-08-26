@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Diagnostics.h"
 #include "UsbWatcher.h"
 
 namespace
@@ -33,20 +34,50 @@ namespace DisplaySwitcher::Native
     }
 
     UsbWatcher::UsbWatcher(int vendorId, int productId, PresenceCallback callback) :
-        vendorId_(vendorId), productId_(productId), callback_(std::move(callback)),
-        thread_([this](std::stop_token token) { Poll(token); })
+        vendorId_(vendorId), productId_(productId), callback_(std::move(callback))
     {
+        changeEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        CM_NOTIFY_FILTER filter{};
+        filter.cbSize = sizeof(filter);
+        filter.Flags = CM_NOTIFY_FILTER_FLAG_ALL_DEVICE_INSTANCES;
+        filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINSTANCE;
+        if (CM_Register_Notification(&filter, this, OnDeviceNotification, &notification_) != CR_SUCCESS)
+            notification_ = nullptr;
+        notificationsEnabled_.store(notification_ != nullptr);
+        thread_ = std::jthread([this](std::stop_token token) { Poll(token); });
     }
 
     UsbWatcher::~UsbWatcher()
     {
+        if (notification_)
+        {
+            CM_Unregister_Notification(notification_);
+            notification_ = nullptr;
+        }
+        notificationsEnabled_.store(false);
         thread_.request_stop();
+        if (changeEvent_) SetEvent(changeEvent_);
+        if (thread_.joinable()) thread_.join();
+        if (changeEvent_)
+        {
+            CloseHandle(changeEvent_);
+            changeEvent_ = nullptr;
+        }
     }
 
     void UsbWatcher::Reconfigure(int vendorId, int productId)
     {
         vendorId_.store(vendorId);
         productId_.store(productId);
+        if (changeEvent_) SetEvent(changeEvent_);
+    }
+
+    DWORD CALLBACK UsbWatcher::OnDeviceNotification(HCMNOTIFICATION, void* context,
+        CM_NOTIFY_ACTION, PCM_NOTIFY_EVENT_DATA, DWORD)
+    {
+        auto watcher = static_cast<UsbWatcher*>(context);
+        if (watcher && watcher->changeEvent_) SetEvent(watcher->changeEvent_);
+        return ERROR_SUCCESS;
     }
 
     bool UsbWatcher::IsPresent() const
@@ -78,12 +109,24 @@ namespace DisplaySwitcher::Native
                     lastProduct = product;
                 }
                 auto present = IsPresent();
-                if (last.has_value() && *last != present && callback_) callback_(present);
+                if (last.has_value() && *last != present && callback_)
+                {
+                    WriteDiagnostic(present ? "usb.poll_change present=1" : "usb.poll_change present=0");
+                    callback_(present);
+                }
                 last = present;
             }
             catch (...) {}
-            for (int elapsed = 0; elapsed < 700 && !token.stop_requested(); elapsed += 50)
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (changeEvent_)
+            {
+                auto fallbackMilliseconds = notificationsEnabled_.load() ? 2000 : 250;
+                WaitForSingleObject(changeEvent_, fallbackMilliseconds);
+            }
+            else
+            {
+                for (int elapsed = 0; elapsed < 250 && !token.stop_requested(); elapsed += 50)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
         }
     }
 

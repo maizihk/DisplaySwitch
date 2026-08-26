@@ -61,7 +61,7 @@
       <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
       <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
       <GenerateDebugInformation Condition="'$(Configuration)'=='Release'">false</GenerateDebugInformation>
-      <AdditionalDependencies>Setupapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -86,6 +86,7 @@
     <ClCompile Include="AppConfig.cpp" />
     <ClCompile Include="AutoStart.cpp" />
     <ClCompile Include="Controller.cpp" />
+    <ClCompile Include="Diagnostics.cpp" />
     <ClCompile Include="SystemActions.cpp" />
     <ClCompile Include="TrayIcon.cpp" />
     <ClCompile Include="UdpPeer.cpp" />

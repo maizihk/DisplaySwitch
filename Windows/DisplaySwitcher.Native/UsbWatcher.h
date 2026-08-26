@@ -27,10 +27,15 @@ namespace DisplaySwitcher::Native
         static std::vector<UsbDeviceInfo> EnumerateDevices();
 
     private:
+        static DWORD CALLBACK OnDeviceNotification(HCMNOTIFICATION notification, void* context,
+            CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA eventData, DWORD eventDataSize);
         void Poll(std::stop_token token);
         std::atomic<int> vendorId_;
         std::atomic<int> productId_;
         PresenceCallback callback_;
+        HANDLE changeEvent_{};
+        HCMNOTIFICATION notification_{};
+        std::atomic<bool> notificationsEnabled_{};
         std::jthread thread_;
     };
 }

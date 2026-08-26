@@ -118,6 +118,24 @@ private final class DisplayControls {
     }
 }
 
+private final class LockedFirstError: @unchecked Sendable {
+    private let lock = NSLock()
+    private var error: Error?
+
+    func record(_ value: Error?) {
+        guard let value else { return }
+        lock.lock()
+        if error == nil { error = value }
+        lock.unlock()
+    }
+
+    var value: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return error
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var instanceLockFD: Int32 = -1
@@ -130,6 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingOutgoingEventID: String?
     private var pendingIncomingEventID: String?
     private var lastIncomingRequestTimestamp: TimeInterval = 0
+    private var lastPeerSeen: Date?
     private var displayControls: [Int: DisplayControls] = [:]
     private var displayMenuItems: [Int: NSMenuItem] = [:]
     private var configurations: [Int: DisplayConfiguration] = [:]
@@ -275,29 +294,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let currentConfigurations = configurations
 
         workerQueue.async { [weak self] in
-            var firstError: Error?
+            let firstError = LockedFirstError()
+            let group = DispatchGroup()
             for displayID in displayIDs {
                 guard let configuration = currentConfigurations[displayID] else { continue }
-                var succeeded = false
-                var displayError: Error?
-                for attempt in 0..<2 {
-                    let arguments = [
-                        "display", configuration.selector,
-                        "set", "input", "\(toMac ? configuration.macInput : configuration.windowsInput)"
-                    ]
-                    do {
-                        _ = try Self.runM1DDC(arguments: arguments)
-                        succeeded = true
-                        break
-                    } catch {
-                        displayError = error
-                        if attempt == 0 { Thread.sleep(forTimeInterval: 0.3) }
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { group.leave() }
+                    var succeeded = false
+                    var displayError: Error?
+                    for attempt in 0..<2 {
+                        let arguments = [
+                            "display", configuration.selector,
+                            "set", "input", "\(toMac ? configuration.macInput : configuration.windowsInput)"
+                        ]
+                        do {
+                            _ = try Self.runM1DDC(arguments: arguments)
+                            succeeded = true
+                            break
+                        } catch {
+                            displayError = error
+                            if attempt == 0 { Thread.sleep(forTimeInterval: 0.15) }
+                        }
+                    }
+                    if !succeeded {
+                        firstError.record(displayError)
                     }
                 }
-                if !succeeded, firstError == nil { firstError = displayError }
             }
+            group.wait()
 
-            if let firstError {
+            if let firstError = firstError.value {
                 self?.finishSwitch(message: "部分切换失败", toMac: toMac)
                 self?.showError(title: "显示器切换失败", error: firstError)
                 DispatchQueue.main.async { completion?(false) }
@@ -589,9 +616,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             cancelOutgoingHandover()
             if AppPreferences.peerCoordinationEnabled {
                 let wakeSucceeded = wakeMacDisplay()
-                sendPeerMessage(type: .usbPresent, eventID: UUID().uuidString, wakeSucceeded: wakeSucceeded)
+                sendPeerMessageRepeated(type: .usbPresent, eventID: UUID().uuidString, wakeSucceeded: wakeSucceeded)
                 if let pendingIncomingEventID {
-                    sendPeerMessage(type: .usbReady, eventID: pendingIncomingEventID, wakeSucceeded: wakeSucceeded)
+                    sendPeerMessageRepeated(type: .usbReady, eventID: pendingIncomingEventID, wakeSucceeded: wakeSucceeded)
                 }
             } else if AppPreferences.usbSwitchDisplaysOnArrival {
                 let workItem = DispatchWorkItem { [weak self] in self?.switchInactiveDisplaysToMac() }
@@ -613,7 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         pendingUSBSwitch = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     private func beginOutgoingHandover() {
@@ -621,8 +648,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let eventID = UUID().uuidString
         pendingOutgoingEventID = eventID
 
-        for attempt in 0..<5 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + (Double(attempt) * 0.45)) { [weak self] in
+        let peerIsAvailable = lastPeerSeen.map { Date().timeIntervalSince($0) <= 6 } ?? false
+        if !peerIsAvailable {
+            sendPeerMessage(type: .handoverRequest, eventID: eventID)
+            completeOutgoingHandover(eventID: eventID)
+            return
+        }
+
+        for attempt in 0..<4 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (Double(attempt) * 0.15)) { [weak self] in
                 guard self?.pendingOutgoingEventID == eventID else { return }
                 self?.sendPeerMessage(type: .handoverRequest, eventID: eventID)
             }
@@ -633,7 +667,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.completeOutgoingHandover(eventID: eventID)
         }
         pendingPeerTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: timeout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: timeout)
     }
 
     private func completeOutgoingHandover(eventID: String) {
@@ -664,6 +698,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         else {
             return
         }
+        lastPeerSeen = Date()
 
         switch message.type {
         case .handoverRequest:
@@ -673,7 +708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let wakeSucceeded = wakeMacDisplay()
             usbMonitor.triggerPresence { [weak self] isPresent in
                 guard isPresent else { return }
-                self?.sendPeerMessage(type: .usbReady, eventID: message.eventID, wakeSucceeded: wakeSucceeded)
+                self?.sendPeerMessageRepeated(type: .usbReady, eventID: message.eventID, wakeSucceeded: wakeSucceeded)
             }
         case .usbPresent:
             if let eventID = pendingOutgoingEventID {
@@ -708,6 +743,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             wakeSucceeded: wakeSucceeded
         )
         peerTransport.send(message, host: AppPreferences.peerHost, port: AppPreferences.peerPort)
+    }
+
+    private func sendPeerMessageRepeated(
+        type: PeerMessageType,
+        eventID: String,
+        wakeSucceeded: Bool? = nil
+    ) {
+        for attempt in 0..<3 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + (Double(attempt) * 0.12)) { [weak self] in
+                self?.sendPeerMessage(type: type, eventID: eventID, wakeSucceeded: wakeSucceeded)
+            }
+        }
     }
 
     private func wakeMacDisplay() -> Bool {

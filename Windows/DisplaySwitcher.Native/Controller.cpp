@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Controller.h"
 #include "AutoStart.h"
+#include "Diagnostics.h"
 #include "SettingsWindow.xaml.h"
 #include "SystemActions.h"
 #include "TrayIcon.h"
@@ -43,6 +44,7 @@ namespace DisplaySwitcher::Native
 
     void Controller::Initialize()
     {
+        ResetDiagnosticLog();
         std::weak_ptr<Controller> weak = shared_from_this();
         auto config = Config();
         usbWatcher_ = std::make_unique<UsbWatcher>(config.usbVendorId, config.usbProductId, [weak](bool present)
@@ -98,6 +100,7 @@ namespace DisplaySwitcher::Native
 
     void Controller::OnUsbPresenceChanged(bool present)
     {
+        WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
         auto config = Config();
         if (!config.usbAutomationEnabled) return;
         if (present)
@@ -106,10 +109,10 @@ namespace DisplaySwitcher::Native
             if (config.coordinationEnabled)
             {
                 auto woke = WakeDisplay();
-                Send(L"usb_present", NewEventId(), woke);
+                SendRepeated(L"usb_present", NewEventId(), woke);
                 std::wstring incoming;
                 { std::scoped_lock lock(stateMutex_); incoming = incomingEventId_; }
-                if (!incoming.empty()) Send(L"usb_attached_and_awake", incoming, woke);
+                if (!incoming.empty()) SendRepeated(L"usb_attached_and_awake", incoming, woke);
                 SetStatus(L"USB 已接入 Windows，等待切屏");
             }
             else SetStatus(L"USB 已接入 Windows");
@@ -120,8 +123,11 @@ namespace DisplaySwitcher::Native
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, generation]
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(800));
+            WriteDiagnostic("handover.debounce_begin");
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
             if (auto self = weak.lock(); self && !self->disposed_ && self->outgoingGeneration_.load() == generation && !self->usbWatcher_->IsPresent())
+            {
+                WriteDiagnostic("handover.debounce_complete present=0");
                 self->Enqueue([weak]
                 {
                     if (auto value = weak.lock())
@@ -130,25 +136,35 @@ namespace DisplaySwitcher::Native
                         else { value->CancelOutgoing(); value->SwitchToMac(std::nullopt, false); }
                     }
                 });
+            }
         }).detach();
     }
 
     void Controller::BeginOutgoingHandover()
     {
+        WriteDiagnostic("handover.outgoing_begin");
         CancelOutgoing();
         auto eventId = NewEventId();
         auto generation = outgoingGeneration_.load();
+        auto lastPeerSeen = lastPeerSeenMilliseconds_.load();
+        if (lastPeerSeen == 0 || NowMilliseconds() - lastPeerSeen > 6000)
+        {
+            WriteDiagnostic("handover.peer_unavailable bypass_wait=1");
+            Send(L"handover_request", eventId, std::nullopt);
+            SwitchToMac(eventId, false);
+            return;
+        }
         { std::scoped_lock lock(stateMutex_); outgoingEventId_ = eventId; }
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, eventId, generation]
         {
-            for (int attempt = 0; attempt < 5; ++attempt)
+            for (int attempt = 0; attempt < 4; ++attempt)
             {
                 auto self = weak.lock(); if (!self || self->disposed_ || self->outgoingGeneration_.load() != generation) return;
                 self->Send(L"handover_request", eventId, std::nullopt);
-                if (!WaitUnlessCancelled(self->outgoingGeneration_, generation, 450)) return;
+                if (!WaitUnlessCancelled(self->outgoingGeneration_, generation, 150)) return;
             }
-            auto self = weak.lock(); if (!self || !WaitUnlessCancelled(self->outgoingGeneration_, generation, 250)) return;
+            auto self = weak.lock(); if (!self) return;
             self->Enqueue([weak, eventId] { if (auto value = weak.lock()) value->CompleteOutgoing(eventId); });
         }).detach();
     }
@@ -160,12 +176,14 @@ namespace DisplaySwitcher::Native
             if (outgoingEventId_ != eventId) return;
             outgoingEventId_.clear();
         }
+        WriteDiagnostic("handover.outgoing_complete");
         ++outgoingGeneration_;
         SwitchToMac(eventId, false);
     }
 
     void Controller::SwitchToMac(std::optional<std::wstring> eventId, bool manual)
     {
+        WriteDiagnostic(manual ? "display.switch_begin manual=1" : "display.switch_begin manual=0");
         SetStatus(manual ? L"正在手动切换显示器到 Mac…" : L"正在切换显示器到 Mac…");
         auto config = Config(); std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, config, eventId, manual]
@@ -235,6 +253,8 @@ namespace DisplaySwitcher::Native
         auto config = Config();
         if (!config.usbAutomationEnabled || !config.coordinationEnabled || message.version != 1 || message.pairingCode != config.pairingCode ||
             message.source != L"mac" || message.target != L"windows" || std::abs(UdpPeer::TimestampNow() - message.timestamp) > 10) return;
+        if (message.type != L"status_probe" && message.type != L"status_response")
+            WriteDiagnostic("controller.peer_message accepted=1");
         lastPeerSeenMilliseconds_.store(NowMilliseconds());
         SetPeerConnectionStatus(L"已连接到 Mac", true);
         if (message.type == L"handover_request")
@@ -243,7 +263,7 @@ namespace DisplaySwitcher::Native
             lastIncomingRequestTimestamp_ = message.timestamp;
             { std::scoped_lock lock(stateMutex_); incomingEventId_ = message.eventId; }
             auto woke = WakeDisplay();
-            if (usbWatcher_->IsPresent()) Send(L"usb_attached_and_awake", message.eventId, woke);
+            if (usbWatcher_->IsPresent()) SendRepeated(L"usb_attached_and_awake", message.eventId, woke);
         }
         else if (message.type == L"usb_present")
         {
@@ -269,6 +289,21 @@ namespace DisplaySwitcher::Native
         auto config = Config();
         peer_->Send(PeerMessage{ 1, type, eventId, L"windows", L"mac", UdpPeer::TimestampNow(), config.pairingCode, wakeSucceeded },
             config.peerHost, config.port);
+    }
+
+    void Controller::SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
+    {
+        Send(type, eventId, wakeSucceeded);
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, type, eventId, wakeSucceeded]
+        {
+            for (int attempt = 1; attempt < 3; ++attempt)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(120));
+                if (auto self = weak.lock(); self && !self->disposed_) self->Send(type, eventId, wakeSucceeded);
+                else return;
+            }
+        }).detach();
     }
 
     void Controller::ManualSwitch()

@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "Diagnostics.h"
 #include "UdpPeer.h"
 
 using namespace winrt;
@@ -112,6 +113,8 @@ namespace DisplaySwitcher::Native
                     if (value.ValueType() == JsonValueType::Boolean) message.wakeSucceeded = value.GetBoolean();
                 }
                 if (messageCallback_) messageCallback_(message);
+                if (message.type != L"status_probe" && message.type != L"status_response")
+                    WriteDiagnostic("udp.receive parsed=1");
             }
             catch (...) {}
         }
@@ -120,6 +123,8 @@ namespace DisplaySwitcher::Native
     void UdpPeer::Send(PeerMessage const& message, std::wstring const& host, int port)
     {
         if (host.empty()) return;
+        auto trace = message.type != L"status_probe" && message.type != L"status_response";
+        auto started = std::chrono::steady_clock::now();
         SOCKET socket;
         {
             std::scoped_lock lock(mutex_);
@@ -146,14 +151,21 @@ namespace DisplaySwitcher::Native
         addrinfoW* addresses{};
         auto service = std::to_wstring(port);
         auto result = GetAddrInfoW(host.c_str(), service.c_str(), &hints, &addresses);
+        auto resolvedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
         if (result != 0)
         {
+            if (trace) WriteDiagnostic("udp.send resolve_ok=0 resolve_ms=" + std::to_string(resolvedMilliseconds));
             Report(L"发送失败：无法解析主机 " + host);
             return;
         }
         auto sent = sendto(socket, data.data(), static_cast<int>(data.size()), 0,
             addresses->ai_addr, static_cast<int>(addresses->ai_addrlen));
         FreeAddrInfoW(addresses);
+        auto totalMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        if (trace) WriteDiagnostic("udp.send resolve_ok=1 resolve_ms=" + std::to_string(resolvedMilliseconds) +
+            " total_ms=" + std::to_string(totalMilliseconds));
         if (sent == SOCKET_ERROR) Report(L"发送失败：" + SocketError(WSAGetLastError()));
     }
 

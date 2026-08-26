@@ -56,9 +56,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         original_ = config; saved_ = std::move(saved); closed_ = std::move(closed);
         Title(L"常规");
         try { SystemBackdrop(MicaBackdrop()); } catch (...) {}
-        Content(BuildContent()); LoadValues(config); ResizeAndCenter();
+        auto content = BuildContent();
+        Content(content);
+        if (auto root = content.try_as<FrameworkElement>())
+            root.ActualThemeChanged([this](auto const&, auto const&) { ApplyTitleBarTheme(); });
+        LoadValues(config); ResizeAndCenter(); ApplyTitleBarTheme();
         Closed([this](auto const&, auto const&) { if (closed_) closed_(); });
         LoadUsbDevices();
+        LoadDdcMonitors();
     }
 
     UIElement SettingsWindow::BuildContent()
@@ -73,9 +78,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
         vendorId_ = TextBox(); Header(vendorId_, L"Vendor ID"); vendorId_.PlaceholderText(L"0BDA"); vendorId_.MaxLength(4);
         productId_ = TextBox(); Header(productId_, L"Product ID"); productId_.PlaceholderText(L"5409"); productId_.MaxLength(4);
+        displayBackend_ = ComboBox(); Header(displayBackend_, L"显示器控制方式"); displayBackend_.HorizontalAlignment(HorizontalAlignment::Stretch);
+        displayBackend_.Items().Append(box_value(L"Windows 原生 DDC/CI（推荐）"));
+        displayBackend_.Items().Append(box_value(L"ControlMyMonitor"));
+        displayBackend_.SelectionChanged([this](auto const&, auto const&) { UpdateDisplayBackendVisibility(); });
+        redmiNativeMonitor_ = ComboBox(); Header(redmiNativeMonitor_, L"小米显示器"); redmiNativeMonitor_.HorizontalAlignment(HorizontalAlignment::Stretch);
+        dellNativeMonitor_ = ComboBox(); Header(dellNativeMonitor_, L"Dell 显示器"); dellNativeMonitor_.HorizontalAlignment(HorizontalAlignment::Stretch);
         controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
-        redmiPath_ = TextBox(); Header(redmiPath_, L"设备路径"); redmiInput_ = TextBox(); Header(redmiInput_, L"Mac 输入源");
-        dellPath_ = TextBox(); Header(dellPath_, L"设备路径"); dellInput_ = TextBox(); Header(dellInput_, L"Mac 输入源");
+        redmiPath_ = TextBox(); Header(redmiPath_, L"小米设备路径"); redmiInput_ = TextBox(); Header(redmiInput_, L"小米 Mac 输入源");
+        dellPath_ = TextBox(); Header(dellPath_, L"Dell 设备路径"); dellInput_ = TextBox(); Header(dellInput_, L"Dell Mac 输入源");
         autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录 Windows 时自动启动");
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
         {
@@ -91,23 +102,29 @@ namespace winrt::DisplaySwitcher::Native::implementation
         root.RowDefinitions().Append(contentRow); root.RowDefinitions().Append(footerRow);
 
         tabs_ = TabView(); tabs_.IsAddTabButtonVisible(false);
+        tabs_.TabWidthMode(TabViewWidthMode::Equal);
         tabs_.HorizontalAlignment(HorizontalAlignment::Stretch); tabs_.VerticalAlignment(VerticalAlignment::Stretch);
-        tabs_.TabStripHeader(Grid()); tabs_.TabStripFooter(Grid());
+        auto tabStripHeaderInset = Grid(); tabStripHeaderInset.Width(12);
+        auto tabStripFooterInset = Grid(); tabStripFooterInset.Width(12);
+        tabs_.TabStripHeader(tabStripHeaderInset); tabs_.TabStripFooter(tabStripFooterInset);
 
-        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
+        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
         commonTab.Content(CreatePage({ CreateSection(L"常规", { autoStart_, commonHint }) }));
 
         auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
         refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
-        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
+        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
         auto usbHint = TextBlock(); usbHint.Text(L"选择用于判断键鼠归属的 USB Hub。协同关闭时，USB 离开 Windows 后将直接切换到 Mac。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
             usbAutomation_, CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_), usbHint }) }));
 
-        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.Header(CreateTabHeader(L"\uE968", L"双端协同"));
+        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        peerTab.Header(CreateTabHeader(L"\uE968", L"双端协同"));
         auto peerStatus = StackPanel(); peerStatus.Orientation(Orientation::Horizontal); peerStatus.Spacing(8);
         connectionDot_ = TextBlock(); connectionDot_.Text(L"●"); connectionDot_.FontSize(16);
         connectionStatus_ = TextBlock(); connectionStatus_.VerticalAlignment(VerticalAlignment::Center);
@@ -118,9 +135,22 @@ namespace winrt::DisplaySwitcher::Native::implementation
         peerTab.Content(CreatePage({ CreateSection(L"双端协同", {
             peerStatus, coordination_, CreateTwoColumn(peerHost_, port_, 160), pairingCode_, peerHint }) }));
 
-        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
-        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { controlMyMonitor_, CreateSubheading(L"小米显示器"),
-            CreateTwoColumn(redmiPath_, redmiInput_, 150), CreateSubheading(L"Dell 显示器"), CreateTwoColumn(dellPath_, dellInput_, 150) }) }));
+        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
+        nativeDdcPanel_ = StackPanel(); nativeDdcPanel_.Spacing(14);
+        auto nativeHint = TextBlock(); nativeHint.Text(L"直接调用 Windows DDC/CI，无需外部工具。重新连接显示器后会自动刷新句柄。");
+        nativeHint.TextWrapping(TextWrapping::Wrap); nativeHint.Opacity(0.72);
+        auto refreshDdc = Button(); refreshDdc.Content(box_value(L"重新检测显示器"));
+        refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
+        nativeDdcPanel_.Children().Append(nativeHint); nativeDdcPanel_.Children().Append(redmiNativeMonitor_);
+        nativeDdcPanel_.Children().Append(dellNativeMonitor_); nativeDdcPanel_.Children().Append(refreshDdc);
+        controlMyMonitorPanel_ = StackPanel(); controlMyMonitorPanel_.Spacing(14);
+        auto cmmHint = TextBlock(); cmmHint.Text(L"兼容模式：继续通过外部 ControlMyMonitor 执行切换。");
+        cmmHint.TextWrapping(TextWrapping::Wrap); cmmHint.Opacity(0.72);
+        controlMyMonitorPanel_.Children().Append(cmmHint); controlMyMonitorPanel_.Children().Append(controlMyMonitor_);
+        controlMyMonitorPanel_.Children().Append(redmiPath_); controlMyMonitorPanel_.Children().Append(dellPath_);
+        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayBackend_, nativeDdcPanel_, controlMyMonitorPanel_,
+            CreateSubheading(L"Mac 输入源编号"), CreateTwoColumn(redmiInput_, dellInput_, 0) }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
         tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab);
@@ -150,15 +180,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
     {
-        auto panel = StackPanel(); panel.Spacing(16); auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
+        auto panel = StackPanel(); panel.Spacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
+        auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
         heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
         for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
     }
 
     Border SettingsWindow::CreateCard(UIElement const& child)
     {
-        auto border = Border(); border.Child(child); border.Padding(Thickness{ 20 }); border.CornerRadius(CornerRadius{ 8 });
-        border.BorderThickness(Thickness{ 1 }); border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
+        auto border = Border(); border.Child(child); border.Padding(Thickness{ 20, 20, 20, 20 });
+        border.CornerRadius(CornerRadius{ 8, 8, 8, 8 });
+        border.BorderThickness(Thickness{ 1, 1, 1, 1 });
+        border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
         border.BorderBrush(SolidColorBrush(Windows::UI::Color{ 28, 128, 128, 128 })); return border;
     }
 
@@ -186,7 +219,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
     Grid SettingsWindow::CreateTwoColumn(FrameworkElement const& left, FrameworkElement const& right, double rightWidth)
     {
         auto grid = Grid(); grid.ColumnSpacing(16); auto leftColumn = ColumnDefinition(); leftColumn.Width(GridLength{ 1, GridUnitType::Star });
-        auto rightColumn = ColumnDefinition(); rightColumn.Width(rightWidth < 0 ? GridLengthHelper::Auto() : GridLength{ rightWidth });
+        auto rightColumn = ColumnDefinition();
+        if (rightWidth < 0) rightColumn.Width(GridLengthHelper::Auto());
+        else if (rightWidth == 0) rightColumn.Width(GridLength{ 1, GridUnitType::Star });
+        else rightColumn.Width(GridLength{ rightWidth });
         grid.ColumnDefinitions().Append(leftColumn); grid.ColumnDefinitions().Append(rightColumn);
         Grid::SetColumn(left, 0); Grid::SetColumn(right, 1); grid.Children().Append(left); grid.Children().Append(right); return grid;
     }
@@ -215,6 +251,20 @@ namespace winrt::DisplaySwitcher::Native::implementation
         appWindow_.MoveAndResize(Windows::Graphics::RectInt32{ x, y, width, height });
     }
 
+    void SettingsWindow::ApplyTitleBarTheme()
+    {
+        HWND window{};
+        if (FAILED(this->get_strong().as<::IWindowNative>()->get_WindowHandle(&window)) || !window) return;
+        auto root = Content().try_as<FrameworkElement>();
+        BOOL dark = root && root.ActualTheme() == ElementTheme::Dark;
+        constexpr DWORD immersiveDarkMode = 20;
+        if (FAILED(DwmSetWindowAttribute(window, immersiveDarkMode, &dark, sizeof(dark))))
+        {
+            constexpr DWORD immersiveDarkModeBefore20H1 = 19;
+            DwmSetWindowAttribute(window, immersiveDarkModeBefore20H1, &dark, sizeof(dark));
+        }
+    }
+
     void SettingsWindow::ShowWindow() { appWindow_.Show(); Activate(); }
     void SettingsWindow::CloseForExit() { Close(); }
 
@@ -233,6 +283,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         wchar_t value[5]{}; swprintf_s(value, L"%04X", config.usbVendorId); vendorId_.Text(value); swprintf_s(value, L"%04X", config.usbProductId); productId_.Text(value);
         controlMyMonitor_.Text(config.controlMyMonitorPath); redmiPath_.Text(config.redmiMonitorPath); redmiInput_.Text(std::to_wstring(config.redmiMacInput));
         dellPath_.Text(config.dellMonitorPath); dellInput_.Text(std::to_wstring(config.dellMacInput)); autoStart_.IsOn(config.startWithWindows);
+        displayBackend_.SelectedIndex(config.displayControlBackend == L"native_ddc" ? 0 : 1);
+        UpdateDisplayBackendVisibility();
     }
 
     void SettingsWindow::LoadUsbDevices()
@@ -251,6 +303,45 @@ namespace winrt::DisplaySwitcher::Native::implementation
         catch (...) { ShowValidationError(L"读取 USB 失败。"); }
     }
 
+    void SettingsWindow::LoadDdcMonitors()
+    {
+        std::wstring redmiWanted = original_.redmiNativeMonitorId;
+        std::wstring dellWanted = original_.dellNativeMonitorId;
+        auto redmiIndex = redmiNativeMonitor_.SelectedIndex();
+        auto dellIndex = dellNativeMonitor_.SelectedIndex();
+        if (redmiIndex >= 0 && static_cast<size_t>(redmiIndex) < ddcMonitors_.size()) redmiWanted = ddcMonitors_[redmiIndex].id;
+        if (dellIndex >= 0 && static_cast<size_t>(dellIndex) < ddcMonitors_.size()) dellWanted = ddcMonitors_[dellIndex].id;
+
+        try
+        {
+            ddcMonitors_ = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
+            redmiNativeMonitor_.Items().Clear(); dellNativeMonitor_.Items().Clear();
+            int selectedRedmi = -1, selectedDell = -1;
+            for (size_t index = 0; index < ddcMonitors_.size(); ++index)
+            {
+                redmiNativeMonitor_.Items().Append(box_value(ddcMonitors_[index].displayName));
+                dellNativeMonitor_.Items().Append(box_value(ddcMonitors_[index].displayName));
+                if (!redmiWanted.empty() && _wcsicmp(ddcMonitors_[index].id.c_str(), redmiWanted.c_str()) == 0) selectedRedmi = static_cast<int>(index);
+                if (!dellWanted.empty() && _wcsicmp(ddcMonitors_[index].id.c_str(), dellWanted.c_str()) == 0) selectedDell = static_cast<int>(index);
+                if (redmiWanted.empty() && original_.redmiMonitorPath.starts_with(ddcMonitors_[index].gdiName)) selectedRedmi = static_cast<int>(index);
+                if (dellWanted.empty() && original_.dellMonitorPath.starts_with(ddcMonitors_[index].gdiName)) selectedDell = static_cast<int>(index);
+            }
+            redmiNativeMonitor_.SelectedIndex(selectedRedmi); dellNativeMonitor_.SelectedIndex(selectedDell);
+            if (ddcMonitors_.empty() && displayBackend_.SelectedIndex() == 0)
+                ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
+            else validation_.Visibility(Visibility::Collapsed);
+        }
+        catch (...) { ShowValidationError(L"读取原生 DDC/CI 显示器失败。"); }
+    }
+
+    void SettingsWindow::UpdateDisplayBackendVisibility()
+    {
+        if (!nativeDdcPanel_ || !controlMyMonitorPanel_) return;
+        auto native = displayBackend_.SelectedIndex() == 0;
+        nativeDdcPanel_.Visibility(native ? Visibility::Visible : Visibility::Collapsed);
+        controlMyMonitorPanel_.Visibility(native ? Visibility::Collapsed : Visibility::Visible);
+    }
+
     void SettingsWindow::Save()
     {
         auto vendor = ParseInteger(vendorId_.Text().c_str(), 16, 0, 0xFFFF); auto product = ParseInteger(productId_.Text().c_str(), 16, 0, 0xFFFF);
@@ -262,10 +353,19 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto dellInput = ParseInteger(dellInput_.Text().c_str(), 10, 0, 65535);
         if (!port) { tabs_.SelectedIndex(2); ShowValidationError(L"UDP 端口必须为 1–65535。"); return; }
         if (!redmiInput || !dellInput) { tabs_.SelectedIndex(3); ShowValidationError(L"显示器输入源必须为 0–65535 的整数。"); return; }
+        auto nativeBackend = displayBackend_.SelectedIndex() == 0;
+        auto redmiNativeIndex = redmiNativeMonitor_.SelectedIndex(); auto dellNativeIndex = dellNativeMonitor_.SelectedIndex();
+        if (nativeBackend && (redmiNativeIndex < 0 || dellNativeIndex < 0))
+        { tabs_.SelectedIndex(3); ShowValidationError(L"使用原生 DDC/CI 时，请选择小米和 Dell 显示器。"); return; }
+        if (nativeBackend && redmiNativeIndex == dellNativeIndex)
+        { tabs_.SelectedIndex(3); ShowValidationError(L"小米和 Dell 不能选择同一台物理显示器。"); return; }
         auto result = original_; result.usbAutomationEnabled = usbAutomation_.IsOn(); result.coordinationEnabled = coordination_.IsOn();
         result.peerHost = host; result.port = *port; result.pairingCode = code;
         result.usbVendorId = *vendor; result.usbProductId = *product; auto selected = usbDevices_.SelectedIndex();
         if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
+        result.displayControlBackend = nativeBackend ? L"native_ddc" : L"control_my_monitor";
+        if (redmiNativeIndex >= 0 && static_cast<size_t>(redmiNativeIndex) < ddcMonitors_.size()) result.redmiNativeMonitorId = ddcMonitors_[redmiNativeIndex].id;
+        if (dellNativeIndex >= 0 && static_cast<size_t>(dellNativeIndex) < ddcMonitors_.size()) result.dellNativeMonitorId = ddcMonitors_[dellNativeIndex].id;
         result.controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str()); result.redmiMonitorPath = Trim(redmiPath_.Text().c_str()); result.redmiMacInput = *redmiInput;
         result.dellMonitorPath = Trim(dellPath_.Text().c_str()); result.dellMacInput = *dellInput; result.startWithWindows = autoStart_.IsOn();
         if (saved_) saved_(result); original_ = result; appWindow_.Hide();

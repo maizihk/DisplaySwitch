@@ -3,8 +3,12 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <setupapi.h>
+#include <cfgmgr32.h>
+#include <physicalmonitorenumerationapi.h>
+#include <lowlevelmonitorconfigurationapi.h>
 #include <shlobj.h>
 #include <unknwn.h>
 #include <restrictederrorinfo.h>
@@ -20,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>

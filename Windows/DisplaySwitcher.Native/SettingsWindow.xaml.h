@@ -2,6 +2,7 @@
 
 #include "SettingsWindow.g.h"
 #include "AppConfig.h"
+#include "SystemActions.h"
 #include "UsbWatcher.h"
 
 namespace winrt::DisplaySwitcher::Native::implementation
@@ -28,8 +29,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             Microsoft::UI::Xaml::FrameworkElement const& right, double rightWidth = -1);
         Microsoft::UI::Xaml::Controls::TextBlock CreateSubheading(std::wstring const& text);
         void ResizeAndCenter();
+        void ApplyTitleBarTheme();
         void LoadValues(::DisplaySwitcher::Native::AppConfig const& config);
         void LoadUsbDevices();
+        void LoadDdcMonitors();
+        void UpdateDisplayBackendVisibility();
         void Save();
         void ShowValidationError(std::wstring const& message);
 
@@ -37,6 +41,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<void(::DisplaySwitcher::Native::AppConfig const&)> saved_;
         std::function<void()> closed_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
+        std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
@@ -50,6 +55,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ComboBox usbDevices_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox vendorId_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox productId_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox displayBackend_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox redmiNativeMonitor_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox dellNativeMonitor_{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel nativeDdcPanel_{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel controlMyMonitorPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox controlMyMonitor_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox redmiPath_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox redmiInput_{ nullptr };

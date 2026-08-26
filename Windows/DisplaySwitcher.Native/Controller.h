@@ -30,6 +30,7 @@ namespace DisplaySwitcher::Native
         void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
+        void SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void ManualSwitch();
         void ShowSettings();
         void SetStatus(std::wstring const& text);

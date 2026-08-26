@@ -46,10 +46,13 @@ namespace DisplaySwitcher::Native
             config.usbVendorId = Number(object, L"UsbVendorId", config.usbVendorId);
             config.usbProductId = Number(object, L"UsbProductId", config.usbProductId);
             config.usbName = String(object, L"UsbName", config.usbName);
+            config.displayControlBackend = String(object, L"DisplayControlBackend", config.displayControlBackend);
             config.controlMyMonitorPath = String(object, L"ControlMyMonitorPath", config.controlMyMonitorPath);
             config.redmiMonitorPath = String(object, L"RedmiMonitorPath", config.redmiMonitorPath);
+            config.redmiNativeMonitorId = String(object, L"RedmiNativeMonitorId", config.redmiNativeMonitorId);
             config.redmiMacInput = Number(object, L"RedmiMacInput", config.redmiMacInput);
             config.dellMonitorPath = String(object, L"DellMonitorPath", config.dellMonitorPath);
+            config.dellNativeMonitorId = String(object, L"DellNativeMonitorId", config.dellNativeMonitorId);
             config.dellMacInput = Number(object, L"DellMacInput", config.dellMacInput);
             config.startWithWindows = object.GetNamedBoolean(L"StartWithWindows", config.startWithWindows);
         }
@@ -68,10 +71,13 @@ namespace DisplaySwitcher::Native
         object.Insert(L"UsbVendorId", JsonValue::CreateNumberValue(usbVendorId));
         object.Insert(L"UsbProductId", JsonValue::CreateNumberValue(usbProductId));
         object.Insert(L"UsbName", JsonValue::CreateStringValue(usbName));
+        object.Insert(L"DisplayControlBackend", JsonValue::CreateStringValue(displayControlBackend));
         object.Insert(L"ControlMyMonitorPath", JsonValue::CreateStringValue(controlMyMonitorPath));
         object.Insert(L"RedmiMonitorPath", JsonValue::CreateStringValue(redmiMonitorPath));
+        object.Insert(L"RedmiNativeMonitorId", JsonValue::CreateStringValue(redmiNativeMonitorId));
         object.Insert(L"RedmiMacInput", JsonValue::CreateNumberValue(redmiMacInput));
         object.Insert(L"DellMonitorPath", JsonValue::CreateStringValue(dellMonitorPath));
+        object.Insert(L"DellNativeMonitorId", JsonValue::CreateStringValue(dellNativeMonitorId));
         object.Insert(L"DellMacInput", JsonValue::CreateNumberValue(dellMacInput));
         object.Insert(L"StartWithWindows", JsonValue::CreateBooleanValue(startWithWindows));
 

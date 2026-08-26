@@ -9,6 +9,14 @@ namespace DisplaySwitcher::Native
         std::wstring error;
     };
 
+    struct DdcMonitorInfo
+    {
+        std::wstring id;
+        std::wstring displayName;
+        std::wstring gdiName;
+    };
+
     bool WakeDisplay();
+    std::vector<DdcMonitorInfo> EnumerateDdcMonitors();
     ActionResult SwitchDisplaysToMac(AppConfig const& config);
 }

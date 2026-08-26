@@ -44,7 +44,7 @@ final class USBMonitor {
 
             if self.timer == nil {
                 let timer = DispatchSource.makeTimerSource(queue: self.queue)
-                timer.schedule(deadline: .now(), repeating: .milliseconds(700), leeway: .milliseconds(100))
+                timer.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(50))
                 timer.setEventHandler { [weak self] in self?.poll() }
                 self.timer = timer
                 timer.resume()

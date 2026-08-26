@@ -51,7 +51,7 @@
 触发设备从 Mac 消失   → 两台显示器切换到 Windows 输入源
 ```
 
-“键鼠回到 Mac 时检查并按需切换显示器”默认关闭；打开后，App 使用自动检测到的显示器 UUID 与 macOS 当前活动显示器比较。两台都已在 Mac 时不发送命令，只有一台缺失时也只切换该显示器。少数显示器切换输入后仍会向 Mac 保持连接，此时 App 会保守地不操作，避免重复或错误切换。App 每 700 毫秒检查一次 USB 设备，并对切换动作做 1 秒防抖。启动时只记录当前 USB 状态，不会立即切换显示器。默认输入源为：显示器 1 的 Mac/Windows 为 `15/18`，显示器 2 为 `17/15`，均可在设置中修改。
+“键鼠回到 Mac 时检查并按需切换显示器”默认关闭；打开后，App 使用自动检测到的显示器 UUID 与 macOS 当前活动显示器比较。两台都已在 Mac 时不发送命令，只有一台缺失时也只切换该显示器。少数显示器切换输入后仍会向 Mac 保持连接，此时 App 会保守地不操作，避免重复或错误切换。App 每 250 毫秒检查一次 USB 设备；USB 离开使用 300 毫秒防抖，回到 Mac 后的可选显示器检查仍使用 1 秒防抖。启动时只记录当前 USB 状态，不会立即切换显示器。默认输入源为：显示器 1 的 Mac/Windows 为 `15/18`，显示器 2 为 `17/15`，均可在设置中修改。
 
 ## Mac / Windows 双端协同
 
@@ -62,11 +62,12 @@
 目标端确认 USB 已接入 → 回复确认 → 源端执行 DDC 切屏
 ```
 
-USB 消失防抖为 800 ms，确认等待上限为 2.5 秒。等待期间 USB 回到源端会取消交接；超时后仍会切屏，退化成没有网络协同时的原有行为。重复、过期和乱序请求不会重复触发切换。具体消息格式见 `PROTOCOL.md`。
+USB 消失防抖为 150 ms。最近收到过对端心跳时，确认等待上限为 600 ms；对端离线时发送一次通知后立即切屏，不再等待无效超时。确认消息短间隔重复发送，等待期间 USB 回到源端会取消交接；超时后仍会切屏，退化成没有网络协同时的原有行为。重复、过期和乱序请求不会重复触发切换。具体消息格式见 `PROTOCOL.md`。
 
 Windows 托盘版当前源码位于 `Windows/DisplaySwitcher.Native`，使用原生 C++/WinUI 3；托盘、USB、UDP 和登录启动分别调用 Win32 API。旧的 `Windows/DisplaySwitcher.Windows` C# 工程保留为迁移行为参照，不再由构建脚本发布。默认配置沿用已验证的环境：
 
 ```text
+显示器后端：Windows 原生 DDC/CI 或 ControlMyMonitor（兼容模式）
 ControlMyMonitor：D:\Soft\ControlMyMonitor\ControlMyMonitor.exe
 小米：\\.\DISPLAY2\Monitor0，切到 Mac 输入 16
 Dell：\\.\DISPLAY1\Monitor0，切到 Mac 输入 17
@@ -80,9 +81,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\Windows\build-windows.ps1
 ```
 
-生成 framework-dependent 绿色版目录 `Windows\dist\`，入口为 `DisplaySwitcher.Windows.exe`，整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹，不能只复制 EXE。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并确认 ControlMyMonitor 路径。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
+生成 framework-dependent 绿色版目录 `Windows\dist\`，入口为 `DisplaySwitcher.Windows.exe`，整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹，不能只复制 EXE。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并选择原生 DDC/CI 或 ControlMyMonitor。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
 
-点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台依次执行：
+点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台并行执行：
 
 ```text
 /opt/homebrew/bin/m1ddc display 1 set input 18
