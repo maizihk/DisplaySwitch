@@ -2,6 +2,16 @@ import AppKit
 import Foundation
 import ServiceManagement
 
+private extension NSColor {
+    func cgColor(using appearance: NSAppearance) -> CGColor {
+        var result = NSColor.clear.cgColor
+        appearance.performAsCurrentDrawingAppearance {
+            result = cgColor
+        }
+        return result
+    }
+}
+
 private final class HoverTrackingView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
@@ -27,6 +37,32 @@ private final class HoverTrackingView: NSView {
 
     override func mouseExited(with event: NSEvent) {
         onHoverChanged?(false)
+    }
+}
+
+private final class AppearanceBackgroundView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override var wantsUpdateLayer: Bool {
+        true
+    }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor
+            .cgColor(using: effectiveAppearance)
+        layer?.cornerRadius = 12
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
     }
 }
 
@@ -77,9 +113,7 @@ private final class SettingsTabButton: NSControl {
         selectionShadowView.wantsLayer = true
         selectionShadowView.layer?.backgroundColor = NSColor.clear.cgColor
         selectionShadowView.layer?.cornerRadius = 12
-        selectionShadowView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.32).cgColor
         selectionShadowView.layer?.borderWidth = 0.5
-        selectionShadowView.layer?.shadowColor = NSColor.black.cgColor
         selectionShadowView.layer?.shadowOpacity = 0.20
         selectionShadowView.layer?.shadowRadius = 4
         selectionShadowView.layer?.shadowOffset = .zero
@@ -113,6 +147,7 @@ private final class SettingsTabButton: NSControl {
 
         setAccessibilityRole(.button)
         setAccessibilityLabel(title)
+        updateLayerColors()
         updateAppearance()
     }
 
@@ -133,6 +168,19 @@ private final class SettingsTabButton: NSControl {
             cornerHeight: 12,
             transform: nil
         )
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateLayerColors()
+    }
+
+    private func updateLayerColors() {
+        selectionShadowView.layer?.borderColor = NSColor.separatorColor
+            .withAlphaComponent(0.32)
+            .cgColor(using: effectiveAppearance)
+        selectionShadowView.layer?.shadowColor = NSColor.shadowColor
+            .cgColor(using: effectiveAppearance)
     }
 
     private func updateAppearance() {
@@ -179,7 +227,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             defer: false
         )
         window.title = "常规"
-        window.backgroundColor = .white
+        window.backgroundColor = .windowBackgroundColor
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.center()
@@ -419,10 +467,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func module(title: String, views: [NSView]) -> NSView {
         let heading = sectionTitle(title)
-        let card = NSView()
-        card.wantsLayer = true
-        card.layer?.backgroundColor = NSColor(calibratedWhite: 0.95, alpha: 1).cgColor
-        card.layer?.cornerRadius = 12
+        let card = AppearanceBackgroundView()
         card.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSStackView(views: views)
