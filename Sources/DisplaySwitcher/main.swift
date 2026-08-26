@@ -261,8 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         usbMonitor.onPresenceChanged = { [weak self] isPresent in
             self?.handleUSBPresenceChange(isPresent)
         }
-        peerTransport.onMessage = { [weak self] message in
-            self?.handlePeerMessage(message)
+        peerTransport.onMessage = { [weak self] message, reply in
+            self?.handlePeerMessage(message, reply: reply)
         }
         peerTransport.onError = { message in
             NSLog("DisplaySwitcher: %@", message)
@@ -696,7 +696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pendingPeerTimeout = nil
     }
 
-    private func handlePeerMessage(_ message: PeerMessage) {
+    private func handlePeerMessage(_ message: PeerMessage, reply: @escaping PeerTransport.Reply) {
         guard
             AppPreferences.usbAutomationEnabled,
             AppPreferences.peerCoordinationEnabled,
@@ -749,7 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 pendingIncomingWakeSucceeded = nil
             }
         case .statusProbe:
-            sendPeerMessage(type: .statusResponse, eventID: message.eventID)
+            reply(makePeerMessage(type: .statusResponse, eventID: message.eventID))
         case .statusResponse:
             break
         }
@@ -777,7 +777,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         eventID: String,
         wakeSucceeded: Bool? = nil
     ) {
-        let message = PeerMessage(
+        let message = makePeerMessage(type: type, eventID: eventID, wakeSucceeded: wakeSucceeded)
+        peerTransport.send(message, host: AppPreferences.peerHost, port: AppPreferences.peerPort)
+    }
+
+    private func makePeerMessage(
+        type: PeerMessageType,
+        eventID: String,
+        wakeSucceeded: Bool? = nil
+    ) -> PeerMessage {
+        PeerMessage(
             type: type,
             eventID: eventID,
             source: "mac",
@@ -785,7 +794,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pairingCode: AppPreferences.pairingCode,
             wakeSucceeded: wakeSucceeded
         )
-        peerTransport.send(message, host: AppPreferences.peerHost, port: AppPreferences.peerPort)
     }
 
     private func sendPeerMessageRepeated(

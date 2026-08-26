@@ -105,7 +105,9 @@ struct PeerReplayGuard {
 }
 
 final class PeerTransport {
-    var onMessage: ((PeerMessage) -> Void)?
+    typealias Reply = (PeerMessage) -> Void
+
+    var onMessage: ((PeerMessage, @escaping Reply) -> Void)?
     var onError: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "DisplaySwitcher.peer-network")
@@ -155,12 +157,20 @@ final class PeerTransport {
         }
 
         let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .udp)
-        connection.stateUpdateHandler = { state in
+        connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
-                connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
-            case .failed, .cancelled:
+                connection.send(content: data, completion: .contentProcessed { [weak self] error in
+                    if let error {
+                        self?.reportError("UDP 发送失败：\(error.localizedDescription)")
+                    }
+                    connection.cancel()
+                })
+            case let .failed(error):
+                self?.reportError("UDP 连接失败：\(error.localizedDescription)")
                 connection.cancel()
+            case .cancelled:
+                break
             default:
                 break
             }
@@ -185,7 +195,11 @@ final class PeerTransport {
             guard let self, let connection else { return }
 
             if let data, let message = try? self.decoder.decode(PeerMessage.self, from: data) {
-                DispatchQueue.main.async { self.onMessage?(message) }
+                let reply: Reply = { [weak self, weak connection] response in
+                    guard let self, let connection else { return }
+                    self.send(response, on: connection)
+                }
+                DispatchQueue.main.async { self.onMessage?(message, reply) }
             }
 
             if error == nil {
@@ -193,6 +207,21 @@ final class PeerTransport {
             } else {
                 connection.cancel()
             }
+        }
+    }
+
+    private func send(_ message: PeerMessage, on connection: NWConnection) {
+        guard let data = try? encoder.encode(message) else { return }
+        connection.send(content: data, completion: .contentProcessed { [weak self] error in
+            if let error {
+                self?.reportError("UDP 回复失败：\(error.localizedDescription)")
+            }
+        })
+    }
+
+    private func reportError(_ message: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onError?(message)
         }
     }
 }
