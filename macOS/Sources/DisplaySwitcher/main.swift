@@ -787,11 +787,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             settingsWindowController.presentConfigurationSafetyWarning(error)
         }
         let connected = handoffStateMachine.snapshot().peerReachable
+        let configurationBlocked = configurationSafetyGate.state != .ready
         settingsWindowController.updatePeerConnectionStatus(
-            AppPreferences.peerCoordinationEnabled
-                ? (connected ? "已连接到 Windows" : "等待 Windows 心跳…")
-                : "协同未启用",
-            connected: connected
+            configurationBlocked
+                ? "配置安全模式：网络交接已停用"
+                : (AppPreferences.peerCoordinationEnabled
+                    ? (connected ? "已连接到 Windows" : "等待 Windows 心跳…")
+                    : "协同未启用"),
+            connected: !configurationBlocked && connected
         )
     }
 
@@ -901,11 +904,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         let snapshot = handoffStateMachine.snapshot()
+        let configurationBlocked = configurationSafetyGate.state != .ready
         settingsWindowController.updatePeerConnectionStatus(
-            AppPreferences.peerCoordinationEnabled
-                ? (snapshot.peerReachable ? "已连接到 Windows" : "等待 Windows 心跳…")
-                : "协同未启用",
-            connected: snapshot.peerReachable
+            configurationBlocked
+                ? "配置安全模式：网络交接已停用"
+                : (AppPreferences.peerCoordinationEnabled
+                    ? (snapshot.peerReachable ? "已连接到 Windows" : "等待 Windows 心跳…")
+                    : "协同未启用"),
+            connected: !configurationBlocked && snapshot.peerReachable
         )
     }
 
