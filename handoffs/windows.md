@@ -7,8 +7,9 @@
 - 分支：`codex/windows-ds-004-usb-about`
 - 任务起始基线：`7703bab10eb432f9f276e35d74d3a896a556d21a`
 - 实现提交：`8b525b2bcddf6b6b23d7bb2c4a1e2181bdb28968`
-- PR：待创建
-- Windows CI：待 PR 创建后记录
+- CI 验证 head：`5a35787d06674765fa6b53e45496864424c4d74b`
+- PR：[#30](https://github.com/maizihk/DisplaySwitch/pull/30)，保持开放、未合并
+- Windows CI：run [#19](https://github.com/maizihk/DisplaySwitch/actions/runs/33103999814)（run ID `33103999814`）全部通过
 
 ## 完成内容
 
@@ -31,7 +32,8 @@
 - C-023 验证关于页数据源只含公开字段，不含配对码、USB/显示器标识或本机路径，且网络与硬件调用计数为零。
 - `Windows/dist/` 入口、`runtime/` 和全部必需文件通过检查；`runtime/AppIcon.ico` 已包含，framework-dependent 绿色版总大小 1.49 MiB，小于 20 MiB。构建产物未进入 Git。
 - 本机构建的 NuGet 漏洞元数据查询出现 `NU1900` 网络警告；依赖恢复、编译、显式测试和产物检查仍全部成功，没有通过降低或删除检查规避。
-- GitHub 托管 CI、artifact 与 PR head：待 PR 创建后记录。
+- GitHub 托管 CI 在 `windows-2025-vs2026` 上完成相同的 x64 Release 构建、两次显式自动测试和产物检查；日志明确显示 C-001..C-015、C-016..C-020/C-024、C-021..C-023 与 v1 17+16 全部通过，dist 为 1.51 MiB，并列出 `runtime/AppIcon.ico`。
+- CI artifact：`DisplaySwitcher-Windows-x64-unsigned-framework-dependent`，artifact ID `9659888746`，压缩包 738707 字节；上传步骤通过并保留完整 `Windows/dist/` 结构。
 
 ## 尚需实机验证
 
@@ -44,4 +46,4 @@
 
 - 仅修改 `Windows/` 和本文件；未修改 macOS、协议、AGENTS、根 README、coordination、specs、contracts、GitHub Actions、版本号、tag 或 Release。
 - DS-005 v2、HMAC、多目标网络运行时和蓝牙学习不在本任务内。
-- PR 创建后等待评审，不自动合并。
+- PR #30 等待评审，不自动合并。
