@@ -5,8 +5,8 @@
 - 日期：2026-08-27
 - 分支：`codex/windows-w002`
 - 清单：W-002 动态多显示器模型
-- 实现提交：本分支最新提交
-- PR：待创建
+- 实现提交：`46ecfd0`
+- PR：[#2](https://github.com/maizihk/DisplaySwitch/pull/2)
 
 ## 完成内容
 
