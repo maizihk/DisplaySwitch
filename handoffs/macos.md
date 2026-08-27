@@ -7,7 +7,7 @@
 - 分支：`codex/macos-ds-004-local-model`
 - 基线：`8466c120c15607e7f39645c494b2786eac1f12ac`
 - 实现提交：`26c1e93`
-- handoff 提交：`aad8528`
+- handoff 提交：`aad8528`；PR 元数据提交：`1a7b7e6`
 - PR：[#20 DS-004 macOS: add schema v3 local collaboration model](https://github.com/maizihk/DisplaySwitch/pull/20)
 
 ## 完成内容
@@ -39,6 +39,7 @@
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过。
 - `git diff --check`：通过。
 - Xcode 27 Beta 6 的 `xcodebuild test` 在当前中文路径下错误报告找不到实际存在的 test bundle executable；使用同一 Xcode 构建出的 `xctest` 直接执行 bundle，完整 32 项测试通过。这是测试启动器问题，不是编译或测试失败。
+- GitHub Actions macOS run [`33082486169`](https://github.com/maizihk/DisplaySwitch/actions/runs/33082486169) 在提交 `1a7b7e60712d4d27c50cb1f471614070ea755ef5` 上完整通过：Debug、32 项 XCTest、Release 打包、artifact 检查和严格 codesign 均成功。
 
 ## 尚需实机验证
 
