@@ -140,6 +140,36 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(profiles[1].triggerDevices, [secondTrigger])
     }
 
+    func testUSBLearningStartedForAStillWritesOnlyATriggerAfterSelectionChangesToB() {
+        let first = profile(name: "A")
+        let second = profile(name: "B")
+        var session = USBProfileLearningSession()
+        session.begin(profileID: first.id)
+        let currentlySelectedProfileID = second.id
+        let trigger = CollaborationTriggerDevice(kind: "usb", localReference: "7:8", displayName: "A 的设备")
+
+        let profiles = session.apply(trigger, to: [first, second])
+
+        XCTAssertEqual(currentlySelectedProfileID, second.id)
+        XCTAssertEqual(profiles[0].triggerDevices, [trigger])
+        XCTAssertTrue(profiles[1].triggerDevices.isEmpty)
+        XCTAssertNil(session.pendingProfileID)
+    }
+
+    func testLateUSBLearningResultIsDiscardedWhenTargetProfileWasDeleted() {
+        let first = profile(name: "A")
+        let second = profile(name: "B")
+        var session = USBProfileLearningSession()
+        session.begin(profileID: first.id)
+        let trigger = CollaborationTriggerDevice(kind: "usb", localReference: "9:10", displayName: "迟到设备")
+
+        let profiles = session.apply(trigger, to: [second])
+
+        XCTAssertEqual(profiles, [second])
+        XCTAssertTrue(profiles[0].triggerDevices.isEmpty)
+        XCTAssertNil(session.pendingProfileID)
+    }
+
     func testMultipleEnabledProfilesBlockLegacyV1AutomaticSideEffects() {
         var document = populatedDocument()
         document.collaborationProfiles[0].coordinationEnabled = true
@@ -162,6 +192,9 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         storage.values["Peer.Host"] = "peer.example"
         storage.values["Peer.Port"] = 49731
         storage.values["Peer.PairingCode"] = ephemeralPairingCode()
+        storage.values["USBAutomation.Device"] = try JSONSerialization.data(withJSONObject: [
+            "vendorID": 1, "productID": 2, "name": "迁移设备"
+        ])
         let document = DisplayConfigurationStore.load(storage: storage).document
 
         guard case .compatible(let selected) = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document) else {
@@ -169,6 +202,67 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         }
         XCTAssertEqual(selected.id, document.collaborationProfiles[0].id)
         XCTAssertEqual(selected.peerHost, "peer.example")
+    }
+
+    func testOnlyEnabledIncompleteNonCurrentProfileCannotStartLegacyV1() {
+        var document = populatedDocument()
+        document.collaborationProfiles[0].coordinationEnabled = false
+        var second = profile(name: "唯一开启但不完整")
+        second.coordinationEnabled = true
+        second.peerHost = "peer.example"
+        second.pairingCode = ephemeralPairingCode()
+        second.displayInputs = document.displays.map { DisplayInputMapping(displayID: $0.id, peerInput: 18) }
+        document.collaborationProfiles.append(second)
+        let currentSettingsProfileID = document.collaborationProfiles[0].id
+
+        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document)
+
+        XCTAssertEqual(currentSettingsProfileID, document.collaborationProfiles[0].id)
+        XCTAssertEqual(selection, .requiresCompleteConfiguration)
+        XCTAssertTrue(selection.blocksAutomaticSideEffects)
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { _ in !selection.allowsAutomaticCoordination })
+    }
+
+    func testLegacyV1CompatibilityRequiresEveryAutomaticCoordinationField() {
+        let display = display(name: "Only")
+        var complete = profile(name: "Windows")
+        complete.coordinationEnabled = true
+        complete.peerHost = "peer.example"
+        complete.peerPort = 49731
+        complete.pairingCode = ephemeralPairingCode()
+        complete.displayInputs = [DisplayInputMapping(displayID: display.id, peerInput: 18)]
+        complete.triggerDevices = [CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "USB")]
+        let makeDocument: (CollaborationProfile) -> DisplayConfigurationStoreV3Document = { profile in
+            DisplayConfigurationStoreV3Document(schemaVersion: 3, localEndpointID: UUID().uuidString,
+                localDeviceName: "Mac", listenPort: 49731, displays: [display], collaborationProfiles: [profile])
+        }
+        XCTAssertTrue(DisplayConfigurationStore.legacyV1RuntimeSelection(in: makeDocument(complete)).allowsAutomaticCoordination)
+
+        var invalidProfiles: [CollaborationProfile] = []
+        var missingHost = complete
+        missingHost.peerHost = ""
+        invalidProfiles.append(missingHost)
+        var invalidPort = complete
+        invalidPort.peerPort = 0
+        invalidProfiles.append(invalidPort)
+        var shortPairing = complete
+        shortPairing.pairingCode = "short"
+        invalidProfiles.append(shortPairing)
+        var missingMapping = complete
+        missingMapping.displayInputs = []
+        invalidProfiles.append(missingMapping)
+        var missingUSB = complete
+        missingUSB.triggerDevices = []
+        invalidProfiles.append(missingUSB)
+        var emptyUSBReference = complete
+        emptyUSBReference.triggerDevices[0].localReference = " "
+        invalidProfiles.append(emptyUSBReference)
+
+        for profile in invalidProfiles {
+            let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: makeDocument(profile))
+            XCTAssertEqual(selection, .requiresCompleteConfiguration)
+            XCTAssertTrue(selection.blocksAutomaticSideEffects)
+        }
     }
 
     func testC007InspectionAndPeerIdentityChangesArePureAndRequireConfirmation() {

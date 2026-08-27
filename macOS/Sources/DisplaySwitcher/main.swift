@@ -187,11 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.onImmediateChange = { [weak self] in
             self?.linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
         }
-        controller.onLearnUSB = { [weak self] in
-            self?.startUSBLearning()
+        controller.onLearnUSB = { [weak self] profileID in
+            self?.startUSBLearning(profileID: profileID)
         }
         controller.onCancelUSBLearning = { [weak self] in
-            self?.usbMonitor.cancelLearning()
+            self?.cancelUSBLearning()
         }
         return controller
     }()
@@ -639,7 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func configureUSBMonitor() {
         usbMonitor.stop()
         guard configurationSafetyGate.allows(.usb) else { return }
-        guard DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration) != .requiresProtocolV2 else {
+        guard !DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration).blocksAutomaticSideEffects else {
             return
         }
         let trigger = AppPreferences.usbAutomationEnabled ? AppPreferences.usbTriggerDevice : nil
@@ -682,17 +682,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    private func startUSBLearning() {
+    private func startUSBLearning(profileID: String) {
         guard configurationSafetyGate.allows(.usb) else { return }
+        usbMonitor.start(triggerDevice: nil)
         usbMonitor.beginLearning { [weak self] devices in
-            self?.settingsWindowController.presentDetectedUSBDevices(devices)
+            guard let self else { return }
+            if self.settingsWindowController.presentDetectedUSBDevices(devices, learningProfileID: profileID) {
+                self.configureUSBMonitor()
+            }
         }
+    }
+
+    private func cancelUSBLearning() {
+        usbMonitor.cancelLearning()
+        configureUSBMonitor()
     }
 
     private func handleUSBPresenceChange(_ isPresent: Bool) {
         guard configurationSafetyGate.allows(.usb) else { return }
         let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration)
-        guard selection != .requiresProtocolV2 else { return }
+        guard !selection.blocksAutomaticSideEffects else { return }
         if selection.allowsAutomaticCoordination {
             handoffStateMachine.handleUSBPresenceChanged(isPresent)
             return
@@ -962,6 +971,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return connected ? "已连接到 Windows" : "等待 Windows 心跳…"
         case .requiresProtocolV2:
             return "多个协同配置等待协议 v2，自动协同已暂停"
+        case .requiresCompleteConfiguration:
+            return "协同配置不完整，自动协同已暂停"
         case .disabled:
             return "协同未启用"
         }

@@ -200,7 +200,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onSave: (() -> Void)?
     var onConfigurationSaveFailure: ((DisplayConfigurationStoreError) -> Void)?
     var onImmediateChange: (() -> Void)?
-    var onLearnUSB: (() -> Void)?
+    var onLearnUSB: ((String) -> Void)?
     var onCancelUSBLearning: (() -> Void)?
 
     private let linkedCheckbox = NSSwitch()
@@ -228,6 +228,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var readCheckboxes: [Int: NSSwitch] = [:]
     private let displayStack = NSStackView()
     private var learnedUSBDevicesByProfileID: [String: USBDevice] = [:]
+    private var usbLearningSession = USBProfileLearningSession()
     private var configurationDocument: DisplayConfigurationStoreV3Document?
     private var editingProfiles: [CollaborationProfile] = []
     private var selectedProfileIndex = 0
@@ -861,6 +862,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             )]
         }
         selectedProfileIndex = min(selectedProfileIndex, editingProfiles.count - 1)
+        usbLearningSession.cancel()
         learnedUSBDevicesByProfileID.removeAll()
         if editingProfiles.count == 1, let device = AppPreferences.usbTriggerDevice,
            usbTrigger(device, matches: editingProfiles[0]) {
@@ -875,6 +877,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             updatePeerConnectionStatus("等待 Windows 心跳…", connected: false)
         case .requiresProtocolV2:
             updatePeerConnectionStatus("多个协同配置等待协议 v2，自动协同已暂停", connected: false)
+        case .requiresCompleteConfiguration:
+            updatePeerConnectionStatus("协同配置不完整，自动协同已暂停", connected: false)
         case .disabled:
             updatePeerConnectionStatus("协同未启用", connected: false)
         }
@@ -984,7 +988,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 AppPreferences.peerHost = profile.peerHost
                 AppPreferences.peerPort = profile.peerPort
                 AppPreferences.pairingCode = profile.pairingCode
-            case .disabled, .requiresProtocolV2:
+            case .disabled, .requiresCompleteConfiguration, .requiresProtocolV2:
                 AppPreferences.peerCoordinationEnabled = false
             }
         } catch let error as DisplayConfigurationStoreError {
@@ -1143,18 +1147,32 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func learnUSBDevice() {
+        guard editingProfiles.indices.contains(selectedProfileIndex) else { return }
+        let learningProfileID = editingProfiles[selectedProfileIndex].id
+        usbLearningSession.begin(profileID: learningProfileID)
         usbDeviceLabel.stringValue = "等待 USB 变化，请按一次切换器…"
         learnUSBButton.isEnabled = false
-        onLearnUSB?()
+        onLearnUSB?(learningProfileID)
     }
 
-    func presentDetectedUSBDevices(_ devices: [USBDevice]) {
-        learnUSBButton.isEnabled = true
-        guard !devices.isEmpty, editingProfiles.indices.contains(selectedProfileIndex) else {
+    @discardableResult
+    func presentDetectedUSBDevices(_ devices: [USBDevice], learningProfileID: String) -> Bool {
+        guard usbLearningSession.pendingProfileID == learningProfileID else {
             updateUSBDeviceLabel()
-            return
+            return false
         }
-        let learningProfileID = editingProfiles[selectedProfileIndex].id
+        guard editingProfiles.contains(where: { $0.id == learningProfileID }) else {
+            usbLearningSession.cancel()
+            learnUSBButton.isEnabled = true
+            updateUSBDeviceLabel()
+            return true
+        }
+        guard !devices.isEmpty else {
+            usbLearningSession.cancel()
+            learnUSBButton.isEnabled = true
+            updateUSBDeviceLabel()
+            return true
+        }
 
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 430, height: 26))
         devices.forEach { popup.addItem(withTitle: $0.displayName) }
@@ -1167,20 +1185,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         alert.addButton(withTitle: "取消")
         alert.beginSheetModal(for: window!) { [weak self] response in
             guard let self else { return }
-            if response == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0 {
+            defer {
+                self.usbLearningSession.cancel()
+                self.learnUSBButton.isEnabled = true
+                self.updateUSBDeviceLabel()
+            }
+            if response == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0,
+               self.usbLearningSession.pendingProfileID == learningProfileID {
                 let device = devices[popup.indexOfSelectedItem]
                 guard self.editingProfiles.contains(where: { $0.id == learningProfileID }) else { return }
                 self.learnedUSBDevicesByProfileID[learningProfileID] = device
-                self.editingProfiles = DisplayConfigurationStore.replacingUSBTrigger(
+                self.editingProfiles = self.usbLearningSession.apply(
                     CollaborationTriggerDevice(kind: "usb", localReference: "\(device.vendorID):\(device.productID)",
                                                displayName: device.displayName),
-                    profileID: learningProfileID,
-                    in: self.editingProfiles
+                    to: self.editingProfiles
                 )
                 self.usbAutomationCheckbox.state = .on
             }
-            self.updateUSBDeviceLabel()
         }
+        return true
     }
 
     private func updateUSBDeviceLabel() {
@@ -1207,6 +1230,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        usbLearningSession.cancel()
+        learnUSBButton.isEnabled = true
         onCancelUSBLearning?()
     }
 }

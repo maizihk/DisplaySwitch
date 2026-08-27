@@ -181,6 +181,7 @@ struct LocalProfileInspection: Equatable {
 enum LegacyV1RuntimeSelection: Equatable {
     case disabled
     case compatible(CollaborationProfile)
+    case requiresCompleteConfiguration
     case requiresProtocolV2
 
     var profile: CollaborationProfile? {
@@ -189,6 +190,30 @@ enum LegacyV1RuntimeSelection: Equatable {
     }
 
     var allowsAutomaticCoordination: Bool { profile != nil }
+
+    var blocksAutomaticSideEffects: Bool {
+        self == .requiresCompleteConfiguration || self == .requiresProtocolV2
+    }
+}
+
+struct USBProfileLearningSession {
+    private(set) var pendingProfileID: String?
+
+    mutating func begin(profileID: String) {
+        pendingProfileID = profileID
+    }
+
+    mutating func cancel() {
+        pendingProfileID = nil
+    }
+
+    mutating func apply(_ trigger: CollaborationTriggerDevice,
+                        to profiles: [CollaborationProfile]) -> [CollaborationProfile] {
+        guard let profileID = pendingProfileID else { return profiles }
+        pendingProfileID = nil
+        guard profiles.contains(where: { $0.id == profileID }) else { return profiles }
+        return DisplayConfigurationStore.replacingUSBTrigger(trigger, profileID: profileID, in: profiles)
+    }
 }
 
 enum PeerIdentityCheck: Equatable {
@@ -381,7 +406,16 @@ enum DisplayConfigurationStore {
     static func legacyV1RuntimeSelection(in document: DisplayConfigurationStoreV3Document) -> LegacyV1RuntimeSelection {
         let enabled = document.collaborationProfiles.filter(\.coordinationEnabled)
         if enabled.count > 1 { return .requiresProtocolV2 }
-        if let profile = enabled.first { return .compatible(profile) }
+        if let profile = enabled.first {
+            let knownDisplayIDs = Set(document.displays.map { $0.id.lowercased() })
+            let profileComplete = inspectProfile(profile, displays: document.displays,
+                                                 ddcAvailableDisplayIDs: knownDisplayIDs).issues.isEmpty
+            let hasUSBTrigger = profile.triggerDevices.contains { trigger in
+                trigger.kind.caseInsensitiveCompare("usb") == .orderedSame
+                    && clean(trigger.localReference, limit: textLimit) != nil
+            }
+            return profileComplete && hasUSBTrigger ? .compatible(profile) : .requiresCompleteConfiguration
+        }
         return .disabled
     }
 
