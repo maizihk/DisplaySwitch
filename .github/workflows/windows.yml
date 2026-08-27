@@ -7,13 +7,11 @@ on:
     paths:
       - Windows/**
       - contracts/**
-      - PROTOCOL.md
       - .github/workflows/windows.yml
   pull_request:
     paths:
       - Windows/**
       - contracts/**
-      - PROTOCOL.md
       - .github/workflows/windows.yml
   workflow_dispatch:
 
