@@ -715,6 +715,74 @@
         "outgoingEventID": null,
         "newestIncomingRequestTimestamp": 1788000000
       }
+    },
+    {
+      "id": "SM-016",
+      "description": "A duplicate valid status probe restores liveness after the six-second window and replies with the same event ID without hardware actions",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "status_probe",
+              "eventID": "16000000-0000-4000-8000-000000000001",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        },
+        { "atMs": 6001, "input": { "kind": "advanceTime" } },
+        {
+          "atMs": 6001,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "status_probe",
+              "eventID": "16000000-0000-4000-8000-000000000001",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "status_probe", "eventID": "16000000-0000-4000-8000-000000000001" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "sendMessage", "type": "status_response", "eventID": "16000000-0000-4000-8000-000000000001" },
+        { "atMs": 6001, "kind": "setPeerReachable", "value": false },
+        { "atMs": 6001, "kind": "setPeerReachable", "value": true },
+        { "atMs": 6001, "kind": "sendMessage", "type": "status_response", "eventID": "16000000-0000-4000-8000-000000000001" }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 6001,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "seenMessageCount": 1
+      }
     }
   ]
 }
