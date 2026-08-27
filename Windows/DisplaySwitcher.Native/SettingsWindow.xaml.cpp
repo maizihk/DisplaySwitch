@@ -520,9 +520,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         notice.TextAlignment(TextAlignment::Center); notice.Opacity(0.72);
         auto project = HyperlinkButton(); project.Content(box_value(L"项目主页"));
         project.NavigateUri(Windows::Foundation::Uri(info.projectUrl)); project.HorizontalAlignment(HorizontalAlignment::Center);
+        auto license = HyperlinkButton(); license.Content(box_value(L"MIT 许可证"));
+        license.NavigateUri(Windows::Foundation::Uri(info.licenseUrl)); license.HorizontalAlignment(HorizontalAlignment::Center);
+        auto notices = HyperlinkButton(); notices.Content(box_value(L"Windows 第三方说明"));
+        notices.NavigateUri(Windows::Foundation::Uri(info.thirdPartyNoticesUrl)); notices.HorizontalAlignment(HorizontalAlignment::Center);
+        auto links = StackPanel(); links.Orientation(Orientation::Horizontal); links.HorizontalAlignment(HorizontalAlignment::Center);
+        links.Children().Append(project); links.Children().Append(license); links.Children().Append(notices);
         auto content = StackPanel(); content.Spacing(10);
         content.Children().Append(icon); content.Children().Append(title); content.Children().Append(details);
-        content.Children().Append(project); content.Children().Append(notice);
+        content.Children().Append(links); content.Children().Append(notice);
         auto dialog = ContentDialog(); dialog.Title(box_value(L"关于")); dialog.Content(content);
         dialog.CloseButtonText(L"关闭"); dialog.XamlRoot(Content().XamlRoot()); dialog.ShowAsync();
     }

@@ -603,13 +603,25 @@ namespace
             L"C-022: 旧学习代际的迟到回调不得污染新会话");
         learning.Cancel(newGeneration);
 
-        auto about = PublicAboutInfo();
+        std::wstring modulePath(32768, L'\0');
+        auto moduleLength = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
+        Check(moduleLength > 0 && moduleLength < modulePath.size(), L"C-023: 测试程序路径必须可用");
+        modulePath.resize(moduleLength);
+        auto applicationExecutable = std::filesystem::path(modulePath).parent_path().parent_path().parent_path().parent_path().parent_path()
+            / L"DisplaySwitcher.Native" / L"bin" / L"x64" / L"Release" / L"DisplaySwitcher.Windows.exe";
+        auto about = PublicAboutInfo(applicationExecutable);
+        auto missingMetadata = PublicAboutInfo(applicationExecutable.parent_path() / L"missing.exe");
         auto combined = about.applicationName + L" " + about.publicVersion + L" " + about.architecture + L" "
-            + about.protocol + L" " + about.projectUrl + L" " + about.buildNotice;
-        Check(about.applicationName == L"DisplaySwitch" && !about.publicVersion.empty()
+            + about.protocol + L" " + about.projectUrl + L" " + about.licenseUrl + L" "
+            + about.thirdPartyNoticesUrl + L" " + about.buildNotice;
+        Check(about.applicationName == L"DisplaySwitch" && about.versionFromApplicationMetadata
+            && !about.publicVersion.empty() && about.publicVersion != L"未知"
+            && !missingMetadata.versionFromApplicationMetadata && missingMetadata.publicVersion == L"未知"
             && about.architecture.find(L"Windows") != std::wstring::npos && about.protocol == L"UDP 协议 v1"
-            && about.projectUrl == L"https://github.com/maizihk/DisplaySwitch",
-            L"C-023: 关于页面数据源只能提供公开产品、版本、架构、协议和项目链接");
+            && about.projectUrl == L"https://github.com/maizihk/DisplaySwitch"
+            && about.licenseUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/LICENSE"
+            && about.thirdPartyNoticesUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/THIRD_PARTY_NOTICES.md",
+            L"C-023: 关于页面必须从应用元数据读取版本并提供三个公开链接");
         Check(combined.find(L"pairing") == std::wstring::npos && combined.find(L"VID_") == std::wstring::npos
             && combined.find(L"PID_") == std::wstring::npos && combined.find(L"C:\\") == std::wstring::npos,
             L"C-023: 关于页面数据源不得包含配对码、硬件标识或本机路径");
