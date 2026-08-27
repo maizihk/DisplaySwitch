@@ -7,6 +7,7 @@
 - 分支：`codex/macos-ds-005-protocol-v2`
 - 基线：`dec66eca97b6a848b87a4c1ae3c30473134b8d2a`
 - 实现提交：`0d40c1ff31ae7bb76f413448433c5d8b2bb69b1c`
+- 已验证 PR HEAD：`e9563bcc0266559506fd8b2e29909a367917bb90`
 - PR：[#32 DS-005 macOS: implement protocol v2 coordination](https://github.com/maizihk/DisplaySwitch/pull/32)
 
 ## 完成内容
@@ -36,6 +37,7 @@
 - 文件同步提供程序可能在验证后重新附加 Finder 扩展属性；构建脚本和本次最终验证均已清理被忽略的产物并严格验签，未修改系统信任。
 - `contracts/protocol-v1/validate.py` 和 `contracts/protocol-v2/validate.py`：全部通过。
 - `git diff --check`：通过。
+- GitHub Actions macOS run [`33116056089`](https://github.com/maizihk/DisplaySwitch/actions/runs/33116056089) 在 PR HEAD `e9563bcc0266559506fd8b2e29909a367917bb90` 上通过：Debug、63 项 XCTest、Release 打包、产物检查、严格 codesign 和 artifact 上传全部成功。
 
 ## 尚未执行
 
