@@ -40,38 +40,227 @@ struct DetectedDisplay: Equatable {
     }
 }
 
-enum DisplayConfigurationStore {
-    static let storageKey = "Displays.Configuration.v1"
+struct DisplayConfigurationDocument: Codable, Equatable {
+    let schemaVersion: Int
+    let displays: [DisplayConfiguration]
+}
 
-    static func loadAll(defaults: UserDefaults = .standard) -> [DisplayConfiguration] {
-        if
-            let data = defaults.data(forKey: storageKey),
-            let decoded = try? JSONDecoder().decode([DisplayConfiguration].self, from: data),
-            !decoded.isEmpty
-        {
-            return normalized(decoded)
+enum DisplayConfigurationStoreError: Error, Equatable, LocalizedError {
+    case corruptedData
+    case unsupportedSchemaVersion(Int)
+    case encodingFailed
+    case writeFailed
+    case previousFailureRequiresReview
+
+    var errorDescription: String? {
+        switch self {
+        case .corruptedData:
+            return "显示器配置数据已损坏或格式不完整。"
+        case .unsupportedSchemaVersion(let version):
+            return "显示器配置版本 \(version) 不受当前 App 支持。"
+        case .encodingFailed:
+            return "无法编码显示器配置。"
+        case .writeFailed:
+            return "无法安全写入显示器配置。"
+        case .previousFailureRequiresReview:
+            return "上次显示器配置迁移或保存失败，需要用户检查。"
+        }
+    }
+}
+
+enum DisplayConfigurationSafetyState: Equatable {
+    case ready
+    case requiresUserReview(DisplayConfigurationStoreError)
+}
+
+struct DisplayConfigurationLoadResult: Equatable {
+    let configurations: [DisplayConfiguration]
+    let safetyState: DisplayConfigurationSafetyState
+}
+
+enum ConfigurationSideEffect: CaseIterable, Hashable {
+    case usb
+    case ddc
+    case wake
+    case network
+}
+
+final class ConfigurationSafetyGate {
+    private let lock = NSLock()
+    private var storedState: DisplayConfigurationSafetyState
+
+    init(state: DisplayConfigurationSafetyState = .ready) {
+        storedState = state
+    }
+
+    var state: DisplayConfigurationSafetyState {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedState
+    }
+
+    func apply(_ result: DisplayConfigurationLoadResult) {
+        setState(result.safetyState)
+    }
+
+    func requireUserReview(_ error: DisplayConfigurationStoreError) {
+        setState(.requiresUserReview(error))
+    }
+
+    func allows(_ sideEffect: ConfigurationSideEffect) -> Bool {
+        state == .ready
+    }
+
+    private func setState(_ state: DisplayConfigurationSafetyState) {
+        lock.lock()
+        storedState = state
+        lock.unlock()
+    }
+}
+
+protocol DisplayConfigurationStorage {
+    func data(forKey key: String) -> Data?
+    func object(forKey key: String) -> Any?
+    func string(forKey key: String) -> String?
+    func integer(forKey key: String) -> Int
+    func bool(forKey key: String) -> Bool
+    func set(_ value: Any?, forKey key: String)
+    func removeObject(forKey key: String)
+    func writeDocument(_ data: Data, forKey key: String) throws
+}
+
+struct UserDefaultsDisplayConfigurationStorage: DisplayConfigurationStorage {
+    let defaults: UserDefaults
+
+    func data(forKey key: String) -> Data? { defaults.data(forKey: key) }
+    func object(forKey key: String) -> Any? { defaults.object(forKey: key) }
+    func string(forKey key: String) -> String? { defaults.string(forKey: key) }
+    func integer(forKey key: String) -> Int { defaults.integer(forKey: key) }
+    func bool(forKey key: String) -> Bool { defaults.bool(forKey: key) }
+    func set(_ value: Any?, forKey key: String) { defaults.set(value, forKey: key) }
+    func removeObject(forKey key: String) { defaults.removeObject(forKey: key) }
+
+    func writeDocument(_ data: Data, forKey key: String) throws {
+        let previous = defaults.object(forKey: key)
+        defaults.set(data, forKey: key)
+        guard defaults.data(forKey: key) == data else {
+            if let previous {
+                defaults.set(previous, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+            throw DisplayConfigurationStoreError.writeFailed
+        }
+    }
+}
+
+enum DisplayConfigurationStore {
+    static let storageKey = "Displays.Configuration.v2"
+    static let legacyArrayStorageKey = "Displays.Configuration.v1"
+    static let requiresReviewKey = "Displays.Configuration.RequiresReview"
+    static let currentSchemaVersion = 2
+
+    private struct VersionProbe: Decodable {
+        let schemaVersion: Int
+    }
+
+    typealias DocumentEncoder = (DisplayConfigurationDocument) throws -> Data
+
+    static func load(defaults: UserDefaults = .standard) -> DisplayConfigurationLoadResult {
+        load(storage: UserDefaultsDisplayConfigurationStorage(defaults: defaults))
+    }
+
+    static func load(
+        storage: DisplayConfigurationStorage,
+        encodeDocument: DocumentEncoder = { try JSONEncoder().encode($0) }
+    ) -> DisplayConfigurationLoadResult {
+        if let data = storage.data(forKey: storageKey) {
+            do {
+                let version = try JSONDecoder().decode(VersionProbe.self, from: data).schemaVersion
+                guard version == currentSchemaVersion else {
+                    return failureResult(
+                        .unsupportedSchemaVersion(version),
+                        storage: storage
+                    )
+                }
+                let document = try JSONDecoder().decode(DisplayConfigurationDocument.self, from: data)
+                return DisplayConfigurationLoadResult(
+                    configurations: normalized(document.displays),
+                    safetyState: storage.bool(forKey: requiresReviewKey)
+                        ? .requiresUserReview(.previousFailureRequiresReview)
+                        : .ready
+                )
+            } catch let error as DisplayConfigurationStoreError {
+                return failureResult(error, storage: storage)
+            } catch {
+                return failureResult(.corruptedData, storage: storage)
+            }
         }
 
-        guard hasLegacyConfiguration(defaults: defaults) else { return [] }
+        if let legacyData = storage.data(forKey: legacyArrayStorageKey) {
+            guard let decoded = try? JSONDecoder().decode([DisplayConfiguration].self, from: legacyData) else {
+                return failureResult(.corruptedData, storage: storage, includeLegacyArray: false)
+            }
+            let migrated = normalized(decoded)
+            return migrate(migrated, storage: storage, encodeDocument: encodeDocument)
+        }
 
-        let migrated = (1...2).map { loadLegacy(index: $0, defaults: defaults) }
-        saveAll(migrated, defaults: defaults)
-        return migrated
+        guard hasLegacyConfiguration(storage: storage) else {
+            return DisplayConfigurationLoadResult(
+                configurations: [],
+                safetyState: storage.bool(forKey: requiresReviewKey)
+                    ? .requiresUserReview(.previousFailureRequiresReview)
+                    : .ready
+            )
+        }
+
+        let migrated = (1...2).map { loadLegacy(index: $0, storage: storage) }
+        return migrate(migrated, storage: storage, encodeDocument: encodeDocument)
     }
 
     static func saveAll(
         _ configurations: [DisplayConfiguration],
         defaults: UserDefaults = .standard
-    ) {
+    ) throws {
+        try saveAll(
+            configurations,
+            storage: UserDefaultsDisplayConfigurationStorage(defaults: defaults),
+            clearSafetyMarker: true
+        )
+    }
+
+    static func saveAll(
+        _ configurations: [DisplayConfiguration],
+        storage: DisplayConfigurationStorage,
+        clearSafetyMarker: Bool = true,
+        encodeDocument: DocumentEncoder = { try JSONEncoder().encode($0) }
+    ) throws {
         let values = normalized(configurations)
-        if let data = try? JSONEncoder().encode(values) {
-            defaults.set(data, forKey: storageKey)
+        let document = DisplayConfigurationDocument(
+            schemaVersion: currentSchemaVersion,
+            displays: values
+        )
+        let data: Data
+        do {
+            data = try encodeDocument(document)
+        } catch {
+            markRequiresReview(storage: storage)
+            throw DisplayConfigurationStoreError.encodingFailed
+        }
+        do {
+            try storage.writeDocument(data, forKey: storageKey)
+        } catch {
+            markRequiresReview(storage: storage)
+            throw DisplayConfigurationStoreError.writeFailed
         }
 
-        // Keep the legacy keys during the migration window so users can roll back safely.
+        // The v1 array and legacy keys are intentionally retained for rollback and recovery.
         for configuration in values {
-            saveLegacy(configuration, defaults: defaults)
-            saveDeviceOverrides(configuration, defaults: defaults)
+            saveLegacy(configuration, storage: storage)
+            saveDeviceOverrides(configuration, storage: storage)
+        }
+        if clearSafetyMarker {
+            storage.removeObject(forKey: requiresReviewKey)
         }
     }
 
@@ -79,7 +268,7 @@ enum DisplayConfigurationStore {
         detected: [DetectedDisplay],
         existing: [DisplayConfiguration],
         defaults: UserDefaults = .standard
-    ) -> [DisplayConfiguration] {
+    ) throws -> [DisplayConfiguration] {
         let sortedDetected = detected.sorted { $0.index < $1.index }
         var usedExistingIndexes = Set<Int>()
 
@@ -112,11 +301,18 @@ enum DisplayConfigurationStore {
                 windowsInput: configuration.windowsInput,
                 readEnabled: configuration.readEnabled
             )
-            applyDeviceOverrides(to: &configuration, defaults: defaults)
+            applyDeviceOverrides(
+                to: &configuration,
+                storage: UserDefaultsDisplayConfigurationStorage(defaults: defaults)
+            )
             return configuration
         }
 
-        saveAll(merged, defaults: defaults)
+        try saveAll(
+            merged,
+            storage: UserDefaultsDisplayConfigurationStorage(defaults: defaults),
+            clearSafetyMarker: false
+        )
         return merged
     }
 
@@ -147,11 +343,74 @@ enum DisplayConfigurationStore {
         }
     }
 
-    private static func hasLegacyConfiguration(defaults: UserDefaults) -> Bool {
+    private static func migrate(
+        _ configurations: [DisplayConfiguration],
+        storage: DisplayConfigurationStorage,
+        encodeDocument: DocumentEncoder
+    ) -> DisplayConfigurationLoadResult {
+        do {
+            try saveAll(
+                configurations,
+                storage: storage,
+                clearSafetyMarker: false,
+                encodeDocument: encodeDocument
+            )
+            return DisplayConfigurationLoadResult(
+                configurations: configurations,
+                safetyState: storage.bool(forKey: requiresReviewKey)
+                    ? .requiresUserReview(.previousFailureRequiresReview)
+                    : .ready
+            )
+        } catch let error as DisplayConfigurationStoreError {
+            return DisplayConfigurationLoadResult(
+                configurations: configurations,
+                safetyState: .requiresUserReview(error)
+            )
+        } catch {
+            return DisplayConfigurationLoadResult(
+                configurations: configurations,
+                safetyState: .requiresUserReview(.writeFailed)
+            )
+        }
+    }
+
+    private static func failureResult(
+        _ error: DisplayConfigurationStoreError,
+        storage: DisplayConfigurationStorage,
+        includeLegacyArray: Bool = true
+    ) -> DisplayConfigurationLoadResult {
+        markRequiresReview(storage: storage)
+        return DisplayConfigurationLoadResult(
+            configurations: recoveryConfigurations(
+                storage: storage,
+                includeLegacyArray: includeLegacyArray
+            ),
+            safetyState: .requiresUserReview(error)
+        )
+    }
+
+    private static func markRequiresReview(storage: DisplayConfigurationStorage) {
+        storage.set(true, forKey: requiresReviewKey)
+    }
+
+    private static func recoveryConfigurations(
+        storage: DisplayConfigurationStorage,
+        includeLegacyArray: Bool
+    ) -> [DisplayConfiguration] {
+        if includeLegacyArray,
+           let data = storage.data(forKey: legacyArrayStorageKey),
+           let decoded = try? JSONDecoder().decode([DisplayConfiguration].self, from: data) {
+            return normalized(decoded)
+        }
+        guard hasLegacyConfiguration(storage: storage) else { return [] }
+        return (1...2).map { loadLegacy(index: $0, storage: storage) }
+    }
+
+    private static func hasLegacyConfiguration(storage: DisplayConfigurationStorage) -> Bool {
         for index in 1...2 {
             let prefix = "Display.\(index)"
             for suffix in ["Name", "Selector", "MacInput", "WindowsInput", "ReadEnabled"]
-            where defaults.object(forKey: "\(prefix).\(suffix)") != nil {
+            where storage.object(forKey: "\(prefix).\(suffix)") != nil {
                 return true
             }
         }
@@ -162,67 +421,73 @@ enum DisplayConfigurationStore {
         Int(selector.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
     }
 
-    private static func loadLegacy(index: Int, defaults: UserDefaults) -> DisplayConfiguration {
+    private static func loadLegacy(
+        index: Int,
+        storage: DisplayConfigurationStorage
+    ) -> DisplayConfiguration {
         let fallback = defaultConfiguration(index: index)
         let prefix = "Display.\(index)"
         return DisplayConfiguration(
             index: index,
-            name: defaults.string(forKey: "\(prefix).Name") ?? fallback.name,
-            selector: defaults.string(forKey: "\(prefix).Selector") ?? fallback.selector,
-            macInput: defaults.object(forKey: "\(prefix).MacInput") == nil
-                ? fallback.macInput : defaults.integer(forKey: "\(prefix).MacInput"),
-            windowsInput: defaults.object(forKey: "\(prefix).WindowsInput") == nil
-                ? fallback.windowsInput : defaults.integer(forKey: "\(prefix).WindowsInput"),
-            readEnabled: defaults.object(forKey: "\(prefix).ReadEnabled") == nil
-                ? fallback.readEnabled : defaults.bool(forKey: "\(prefix).ReadEnabled")
+            name: storage.string(forKey: "\(prefix).Name") ?? fallback.name,
+            selector: storage.string(forKey: "\(prefix).Selector") ?? fallback.selector,
+            macInput: storage.object(forKey: "\(prefix).MacInput") == nil
+                ? fallback.macInput : storage.integer(forKey: "\(prefix).MacInput"),
+            windowsInput: storage.object(forKey: "\(prefix).WindowsInput") == nil
+                ? fallback.windowsInput : storage.integer(forKey: "\(prefix).WindowsInput"),
+            readEnabled: storage.object(forKey: "\(prefix).ReadEnabled") == nil
+                ? fallback.readEnabled : storage.bool(forKey: "\(prefix).ReadEnabled")
         )
     }
 
-    private static func saveLegacy(_ configuration: DisplayConfiguration, defaults: UserDefaults) {
+    private static func saveLegacy(
+        _ configuration: DisplayConfiguration,
+        storage: DisplayConfigurationStorage
+    ) {
         let prefix = "Display.\(configuration.index)"
-        defaults.set(configuration.name, forKey: "\(prefix).Name")
-        defaults.set(configuration.selector, forKey: "\(prefix).Selector")
+        storage.set(configuration.name, forKey: "\(prefix).Name")
+        storage.set(configuration.selector, forKey: "\(prefix).Selector")
         if let macInput = configuration.macInput {
-            defaults.set(macInput, forKey: "\(prefix).MacInput")
+            storage.set(macInput, forKey: "\(prefix).MacInput")
         } else {
-            defaults.removeObject(forKey: "\(prefix).MacInput")
+            storage.removeObject(forKey: "\(prefix).MacInput")
         }
         if let windowsInput = configuration.windowsInput {
-            defaults.set(windowsInput, forKey: "\(prefix).WindowsInput")
+            storage.set(windowsInput, forKey: "\(prefix).WindowsInput")
         } else {
-            defaults.removeObject(forKey: "\(prefix).WindowsInput")
+            storage.removeObject(forKey: "\(prefix).WindowsInput")
         }
-        defaults.set(configuration.readEnabled, forKey: "\(prefix).ReadEnabled")
+        storage.set(configuration.readEnabled, forKey: "\(prefix).ReadEnabled")
     }
 
     private static func saveDeviceOverrides(
         _ configuration: DisplayConfiguration,
-        defaults: UserDefaults
+        storage: DisplayConfigurationStorage
     ) {
         guard configuration.selector.contains("-") else { return }
         let prefix = "Device.\(configuration.selector.uppercased())"
         if let macInput = configuration.macInput {
-            defaults.set(macInput, forKey: "\(prefix).MacInput")
+            storage.set(macInput, forKey: "\(prefix).MacInput")
         }
         if let windowsInput = configuration.windowsInput {
-            defaults.set(windowsInput, forKey: "\(prefix).WindowsInput")
+            storage.set(windowsInput, forKey: "\(prefix).WindowsInput")
         }
-        defaults.set(configuration.readEnabled, forKey: "\(prefix).ReadEnabled")
+        storage.set(configuration.readEnabled, forKey: "\(prefix).ReadEnabled")
     }
 
     private static func applyDeviceOverrides(
         to configuration: inout DisplayConfiguration,
-        defaults: UserDefaults
+        storage: DisplayConfigurationStorage
     ) {
         let prefix = "Device.\(configuration.selector.uppercased())"
-        if defaults.object(forKey: "\(prefix).MacInput") != nil {
-            configuration.macInput = defaults.integer(forKey: "\(prefix).MacInput")
+        if storage.object(forKey: "\(prefix).MacInput") != nil {
+            configuration.macInput = storage.integer(forKey: "\(prefix).MacInput")
         }
-        if defaults.object(forKey: "\(prefix).WindowsInput") != nil {
-            configuration.windowsInput = defaults.integer(forKey: "\(prefix).WindowsInput")
+        if storage.object(forKey: "\(prefix).WindowsInput") != nil {
+            configuration.windowsInput = storage.integer(forKey: "\(prefix).WindowsInput")
         }
-        if defaults.object(forKey: "\(prefix).ReadEnabled") != nil {
-            configuration.readEnabled = defaults.bool(forKey: "\(prefix).ReadEnabled")
+        if storage.object(forKey: "\(prefix).ReadEnabled") != nil {
+            configuration.readEnabled = storage.bool(forKey: "\(prefix).ReadEnabled")
         }
     }
 }

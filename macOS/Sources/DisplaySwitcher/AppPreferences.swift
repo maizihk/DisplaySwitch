@@ -2,8 +2,15 @@ import Foundation
 
 enum AppPreferences {
     static var displayConfigurations: [DisplayConfiguration] {
-        get { DisplayConfigurationStore.loadAll() }
-        set { DisplayConfigurationStore.saveAll(newValue) }
+        DisplayConfigurationStore.load().configurations
+    }
+
+    static func loadDisplayConfigurations() -> DisplayConfigurationLoadResult {
+        DisplayConfigurationStore.load()
+    }
+
+    static func saveDisplayConfigurations(_ configurations: [DisplayConfiguration]) throws {
+        try DisplayConfigurationStore.saveAll(configurations)
     }
 
     static var linkedDisplays: Bool {

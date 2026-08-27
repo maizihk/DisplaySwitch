@@ -25,9 +25,9 @@ final class DDCController {
     private let native: NativeDDCBackend
 
     init() {
-        native = NativeDDCBackend(knownDisplays: Self.knownDisplays(
-            from: AppPreferences.displayConfigurations
-        ))
+        // Configuration loading is owned by AppDelegate so a failed migration can
+        // enter safe mode before this backend is allowed to enumerate or control hardware.
+        native = NativeDDCBackend(knownDisplays: [])
     }
 
     func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {

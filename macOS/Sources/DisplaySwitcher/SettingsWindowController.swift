@@ -198,6 +198,7 @@ private final class SettingsTabButton: NSControl {
 
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onSave: (() -> Void)?
+    var onConfigurationSaveFailure: ((DisplayConfigurationStoreError) -> Void)?
     var onImmediateChange: (() -> Void)?
     var onLearnUSB: (() -> Void)?
     var onCancelUSBLearning: (() -> Void)?
@@ -256,6 +257,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func updatePeerConnectionStatus(_ text: String, connected: Bool) {
         peerStatusLabel.stringValue = text
         peerStatusLabel.textColor = connected ? .systemGreen : .secondaryLabelColor
+    }
+
+    func presentConfigurationSafetyWarning(_ error: DisplayConfigurationStoreError) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "配置安全模式"
+        alert.informativeText = "\(error.localizedDescription)\n\n原配置已保留。请检查当前设置并成功保存；在此之前 App 不会执行 USB、DDC、显示器唤醒或网络交接。"
+        alert.beginSheetModal(for: window)
     }
 
     private func buildInterface() {
@@ -901,7 +911,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        AppPreferences.displayConfigurations = configurations
+        do {
+            try AppPreferences.saveDisplayConfigurations(configurations)
+        } catch let error as DisplayConfigurationStoreError {
+            onConfigurationSaveFailure?(error)
+            showValidationError("显示器配置保存失败：\n\(error.localizedDescription)\n\n原数据已保留，App 将继续保持安全模式。")
+            return
+        } catch {
+            onConfigurationSaveFailure?(.writeFailed)
+            showValidationError("显示器配置保存失败：\n\(error.localizedDescription)\n\n原数据已保留，App 将继续保持安全模式。")
+            return
+        }
         AppPreferences.linkedDisplays = linkedCheckbox.state == .on
         AppPreferences.usbAutomationEnabled = usbAutomationCheckbox.state == .on
         AppPreferences.usbSwitchDisplaysOnArrival = usbArrivalSwitchCheckbox.state == .on
