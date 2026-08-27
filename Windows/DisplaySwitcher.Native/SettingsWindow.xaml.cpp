@@ -48,7 +48,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     SettingsWindow::SettingsWindow() { InitializeComponent(); }
 
     void SettingsWindow::Initialize(::DisplaySwitcher::Native::AppConfig const& config,
-        std::function<void(::DisplaySwitcher::Native::AppConfig const&)> saved,
+        std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
         std::function<void()> closed)
     {
         if (initialized_) return;
@@ -705,7 +705,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         else for (auto& display : result.displays) display.macInput = -1;
         result.displayConfigurationSafeMode = false; result.startWithWindows = autoStart_.IsOn();
-        if (saved_) saved_(result); original_ = result; appWindow_.Hide();
+        if (!saved_ || !saved_(result))
+        {
+            ShowValidationError(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。");
+            return;
+        }
+        original_ = result; appWindow_.Hide();
     }
 
     void SettingsWindow::ShowValidationError(std::wstring const& message)

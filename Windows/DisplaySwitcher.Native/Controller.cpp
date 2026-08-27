@@ -67,9 +67,11 @@ namespace DisplaySwitcher::Native
         return config_;
     }
 
-    void Controller::ApplyConfiguration()
+    void Controller::ApplyConfiguration(bool applyAutoStart)
     {
         auto config = Config();
+        if (config.displayConfigurationSafeMode) sideEffectGate_.Block();
+        else sideEffectGate_.Allow();
         std::vector<std::pair<std::wstring, std::wstring>> menuProfiles;
         for (auto const& profile : config.EnabledCompleteProfiles()) menuProfiles.emplace_back(profile.id, profile.name);
         trayIcon_->SetProfiles(std::move(menuProfiles));
@@ -97,8 +99,11 @@ namespace DisplaySwitcher::Native
         }
         else SetPeerConnectionStatus(config.coordinationEnabled ? L"协同配置不完整" : L"协同未启用", false);
         if (initial.usbAutomationEnabled) StartPeerHealthCheck();
-        try { ApplyAutoStart(config.startWithWindows); }
-        catch (hresult_error const& error) { ShowError(L"登录启动设置失败", error.message().c_str()); }
+        if (applyAutoStart)
+        {
+            try { ApplyAutoStart(config.startWithWindows); }
+            catch (hresult_error const& error) { ShowError(L"登录启动设置失败", error.message().c_str()); }
+        }
         if (config.usbAutomationEnabled && !usbConfigured) SetStatus(L"USB 自动切换未配置");
         else if (config.usbAutomationEnabled && !displayConfigured) SetStatus(L"显示器切换未配置");
         else if (!config.usbAutomationEnabled) SetStatus(L"USB 自动切换未开启");
@@ -110,8 +115,23 @@ namespace DisplaySwitcher::Native
         }
     }
 
+    void Controller::EnterSafeStateAfterSaveFailure()
+    {
+        // Close the gate before stopping components so already queued callbacks and
+        // detached hardware work cannot race the transition into the safe state.
+        sideEffectGate_.Block();
+        auto safe = Config();
+        safe.EnterSafeState();
+        {
+            std::scoped_lock lock(configMutex_);
+            config_ = std::move(safe);
+        }
+        ApplyConfiguration(false);
+    }
+
     void Controller::OnUsbPresenceChanged(bool present)
     {
+        if (!sideEffectGate_.AllowsSideEffects()) return;
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
         if (!stateMachine_) return;
         SetStatus(present ? L"USB 已接入 Windows" : L"USB 已离开 Windows，等待确认…");
@@ -120,6 +140,7 @@ namespace DisplaySwitcher::Native
 
     void Controller::ApplyStateMachineActions(std::vector<StateMachineAction> actions)
     {
+        if (!sideEffectGate_.AllowsSideEffects()) return;
         for (auto const& action : actions)
         {
             switch (action.kind)
@@ -144,6 +165,8 @@ namespace DisplaySwitcher::Native
                 std::weak_ptr<Controller> weak = shared_from_this();
                 std::thread([weak, eventId]
                 {
+                    auto controller = weak.lock();
+                    if (!controller || controller->disposed_ || !controller->sideEffectGate_.AllowsSideEffects()) return;
                     auto success = WakeDisplay();
                     if (auto self = weak.lock(); self && !self->disposed_)
                         self->Enqueue([weak, eventId, success]
@@ -169,11 +192,13 @@ namespace DisplaySwitcher::Native
 
     void Controller::AdvanceStateMachine()
     {
-        if (stateMachine_) ApplyStateMachineActions(stateMachine_->Advance(NowMilliseconds()));
+        if (sideEffectGate_.AllowsSideEffects() && stateMachine_)
+            ApplyStateMachineActions(stateMachine_->Advance(NowMilliseconds()));
     }
 
     void Controller::SwitchToMac(std::optional<std::wstring> eventId, bool manual)
     {
+        if (!sideEffectGate_.AllowsSideEffects()) return;
         auto config = Config();
         if (!config.HasDisplayConfiguration())
         {
@@ -187,6 +212,8 @@ namespace DisplaySwitcher::Native
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, config, eventId, manual]
         {
+            auto controller = weak.lock();
+            if (!controller || controller->disposed_ || !controller->sideEffectGate_.AllowsSideEffects()) return;
             auto result = SwitchDisplaysToMac(config);
             if (auto self = weak.lock(); self && !self->disposed_)
             {
@@ -209,6 +236,7 @@ namespace DisplaySwitcher::Native
     void Controller::StartPeerHealthCheck()
     {
         StopPeerHealthCheck();
+        if (!sideEffectGate_.AllowsSideEffects()) return;
         auto config = Config();
         if (config.coordinationEnabled) SetPeerConnectionStatus(L"正在连接 Mac…", false);
         std::weak_ptr<Controller> weak = shared_from_this();
@@ -239,13 +267,13 @@ namespace DisplaySwitcher::Native
 
     void Controller::HandlePeerMessage(PeerMessage const& message)
     {
-        if (!stateMachine_) return;
+        if (!sideEffectGate_.AllowsSideEffects() || !stateMachine_) return;
         ApplyStateMachineActions(stateMachine_->OnPeerMessage(NowMilliseconds(), message));
     }
 
     void Controller::Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
     {
-        if (disposed_ || !peer_) return;
+        if (disposed_ || !peer_ || !sideEffectGate_.AllowsSideEffects()) return;
         auto config = Config();
         if (!config.coordinationEnabled || config.pairingCode.size() < 8) return;
         peer_->Send(PeerMessage{ 1, type, eventId, L"windows", L"mac", UdpPeer::TimestampNow(), config.pairingCode, wakeSucceeded },
@@ -269,6 +297,7 @@ namespace DisplaySwitcher::Native
 
     void Controller::SwitchToProfile(std::wstring const& profileId)
     {
+        if (!sideEffectGate_.AllowsSideEffects()) return;
         auto config = Config();
         auto profile = config.FindCollaborationProfile(profileId);
         if (!profile || !profile->coordinationEnabled)
@@ -286,6 +315,8 @@ namespace DisplaySwitcher::Native
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, actionConfig, name, missing]
         {
+            auto controller = weak.lock();
+            if (!controller || controller->disposed_ || !controller->sideEffectGate_.AllowsSideEffects()) return;
             auto result = SwitchDisplaysToMac(actionConfig);
             if (auto self = weak.lock(); self && !self->disposed_)
                 self->Enqueue([weak, result, name, missing]
@@ -320,15 +351,22 @@ namespace DisplaySwitcher::Native
         settingsWindow_ = projected;
         std::weak_ptr<Controller> weak = shared_from_this();
         get_self<::winrt::DisplaySwitcher::Native::implementation::SettingsWindow>(projected)->Initialize(Config(),
-            [weak](AppConfig const& config)
+            [weak](AppConfig const& config) -> bool
             {
                 if (auto self = weak.lock())
                 {
                     try { config.Save(); }
-                    catch (...) { self->ShowError(L"保存设置失败", L"无法写入设置文件。"); return; }
+                    catch (...)
+                    {
+                        self->EnterSafeStateAfterSaveFailure();
+                        self->ShowError(L"保存设置失败", L"无法写入设置文件；自动协同和硬件操作已安全停用。");
+                        return false;
+                    }
                     { std::scoped_lock lock(self->configMutex_); self->config_ = config; }
                     self->ApplyConfiguration();
+                    return true;
                 }
+                return false;
             },
             [weak] { if (auto self = weak.lock()) self->settingsWindow_ = nullptr; });
         {

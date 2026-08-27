@@ -3,6 +3,26 @@
 
 namespace DisplaySwitcher::Native
 {
+    enum class AppConfigSaveFaultForTesting
+    {
+        None,
+        TemporaryWrite,
+        ReadbackMismatch,
+        AtomicReplace,
+    };
+
+    class RuntimeSafetyGate final
+    {
+    public:
+        explicit RuntimeSafetyGate(bool blocked = false) noexcept : blocked_(blocked) {}
+        void Block() noexcept { blocked_.store(true, std::memory_order_release); }
+        void Allow() noexcept { blocked_.store(false, std::memory_order_release); }
+        bool AllowsSideEffects() const noexcept { return !blocked_.load(std::memory_order_acquire); }
+
+    private:
+        std::atomic<bool> blocked_{};
+    };
+
     struct AppConfig
     {
         bool usbAutomationEnabled{ false };
@@ -45,8 +65,10 @@ namespace DisplaySwitcher::Native
         static bool IsValidConfigurationPath(std::wstring const& path) noexcept;
         static AppConfig Load();
         static AppConfig LoadFromPath(std::filesystem::path const& path);
+        void EnterSafeState() noexcept;
         void Save() const;
-        void SaveToPath(std::filesystem::path const& path) const;
+        void SaveToPath(std::filesystem::path const& path,
+            AppConfigSaveFaultForTesting fault = AppConfigSaveFaultForTesting::None) const;
         static std::filesystem::path ConfigPath();
     };
 }

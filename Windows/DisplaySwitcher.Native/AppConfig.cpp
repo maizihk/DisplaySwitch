@@ -141,15 +141,18 @@ namespace
     std::filesystem::path MarkerPath(std::filesystem::path const& path) { auto value = path; value += L".safety"; return value; }
     std::filesystem::path BackupPath(std::filesystem::path const& path) { auto value = path; value += L".v2.backup"; return value; }
 
-    void SetMarker(std::filesystem::path const& path)
+    bool SetMarker(std::filesystem::path const& path) noexcept
     {
         try
         {
             std::filesystem::create_directories(path.parent_path());
             std::ofstream stream(MarkerPath(path), std::ios::binary | std::ios::trunc);
-            if (stream) stream << "configuration_requires_user_review\n";
+            if (!stream) return false;
+            stream << "configuration_requires_user_review\n";
+            stream.flush();
+            return static_cast<bool>(stream);
         }
-        catch (...) {}
+        catch (...) { return false; }
     }
 
     void ClearMarker(std::filesystem::path const& path)
@@ -309,6 +312,31 @@ namespace
                 if (EqualInsensitive(display.id, mapping.displayId)) { display.macInput = mapping.peerInput; break; }
     }
 
+    DisplaySwitcher::Native::AppConfig ReadCompleteV3Config(JsonObject const& object)
+    {
+        if (SchemaVersion(object) != CurrentConfigVersion) throw std::runtime_error("invalid settings schema");
+        DisplaySwitcher::Native::AppConfig config;
+        config.localEndpointId = RequiredString(object, L"LocalEndpointId");
+        config.localDeviceName = RequiredString(object, L"LocalDeviceName");
+        config.listenPort = RequiredInteger(object, L"ListenPort", 1, 65535);
+        config.usbAutomationEnabled = RequiredBoolean(object, L"UsbAutomationEnabled");
+        config.usbVendorId = RequiredInteger(object, L"UsbVendorId", -1, 65535);
+        config.usbProductId = RequiredInteger(object, L"UsbProductId", -1, 65535);
+        config.usbName = RequiredString(object, L"UsbName");
+        config.displayControlBackend = RequiredString(object, L"DisplayControlBackend");
+        config.controlMyMonitorPath = RequiredString(object, L"ControlMyMonitorPath");
+        config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
+        config.coordinationEnabled = RequiredBoolean(object, L"CoordinationEnabled");
+        config.peerHost = RequiredString(object, L"PeerHost");
+        config.port = config.peerPort = RequiredInteger(object, L"Port", 1, 65535);
+        config.pairingCode = RequiredString(object, L"PairingCode");
+        for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV3Display(value.GetObject()));
+        for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
+        ValidateConfig(config);
+        LegacyBridge(config);
+        return config;
+    }
+
     void EnterSafeMode(DisplaySwitcher::Native::AppConfig& config)
     {
         config.displayConfigurationSafeMode = true;
@@ -410,42 +438,53 @@ namespace
         return object;
     }
 
-    void WriteAtomic(DisplaySwitcher::Native::AppConfig const& config, std::filesystem::path const& path, bool clearMarker)
+    void WriteAtomic(DisplaySwitcher::Native::AppConfig const& config, std::filesystem::path const& path, bool clearMarker,
+        DisplaySwitcher::Native::AppConfigSaveFaultForTesting fault = DisplaySwitcher::Native::AppConfigSaveFaultForTesting::None)
     {
-        auto object = Serialize(config);
-        std::filesystem::create_directories(path.parent_path());
-        auto temporary = path; temporary += L"." + DisplaySwitcher::Native::GenerateIdentifier() + L".tmp";
+        std::filesystem::path temporary;
         try
         {
+            auto object = Serialize(config);
+            std::filesystem::create_directories(path.parent_path());
+            temporary = path; temporary += L"." + DisplaySwitcher::Native::GenerateIdentifier() + L".tmp";
             auto text = to_string(object.Stringify());
             std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
             if (!stream) throw std::runtime_error("cannot open temporary settings file");
+            if (fault == DisplaySwitcher::Native::AppConfigSaveFaultForTesting::TemporaryWrite)
+                throw std::runtime_error("injected temporary settings write failure");
             stream.write(text.data(), static_cast<std::streamsize>(text.size())); stream.flush();
             if (!stream) throw std::runtime_error("cannot save temporary settings file");
             stream.close();
             std::ifstream verify(temporary, std::ios::binary);
             std::string verifyText((std::istreambuf_iterator<char>(verify)), std::istreambuf_iterator<char>());
             auto verifyObject = JsonObject::Parse(to_hstring(verifyText));
-            if (SchemaVersion(verifyObject) != CurrentConfigVersion) throw std::runtime_error("readback failed");
-            DisplaySwitcher::Native::AppConfig readback;
-            readback.localEndpointId = RequiredString(verifyObject, L"LocalEndpointId");
-            readback.localDeviceName = RequiredString(verifyObject, L"LocalDeviceName");
-            readback.listenPort = RequiredInteger(verifyObject, L"ListenPort", 1, 65535);
-            for (auto const& value : RequiredArray(verifyObject, L"Displays")) readback.displays.push_back(ReadV3Display(value.GetObject()));
-            for (auto const& value : RequiredArray(verifyObject, L"CollaborationProfiles")) readback.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
-            ValidateConfig(readback);
-            if (!EqualInsensitive(readback.localEndpointId, config.localEndpointId)
-                || readback.displays.size() != config.displays.size()
-                || readback.collaborationProfiles.size() != config.collaborationProfiles.size())
+            if (fault == DisplaySwitcher::Native::AppConfigSaveFaultForTesting::ReadbackMismatch)
+            {
+                auto profiles = verifyObject.GetNamedArray(L"CollaborationProfiles");
+                auto profile = profiles.GetObjectAt(0);
+                auto mappings = profile.GetNamedArray(L"DisplayInputs");
+                auto mapping = mappings.GetObjectAt(0);
+                auto current = RequiredInteger(mapping, L"PeerInput", 0, 65535);
+                mapping.Insert(L"PeerInput", JsonValue::CreateNumberValue(current == 65535 ? 65534 : current + 1));
+            }
+            auto readback = ReadCompleteV3Config(verifyObject);
+            auto normalizedReadback = Serialize(readback);
+            if (normalizedReadback.Stringify() != object.Stringify())
                 throw std::runtime_error("settings readback mismatch");
             verify.close();
+            if (fault == DisplaySwitcher::Native::AppConfigSaveFaultForTesting::AtomicReplace)
+                throw std::runtime_error("injected atomic settings replace failure");
             if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
                 throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "cannot replace settings file");
             if (clearMarker) ClearMarker(path);
         }
         catch (...)
         {
-            std::error_code ignored; std::filesystem::remove(temporary, ignored); throw;
+            auto failure = std::current_exception();
+            std::error_code ignored;
+            if (!temporary.empty()) std::filesystem::remove(temporary, ignored);
+            if (!SetMarker(path)) throw std::runtime_error("settings save failed and safety marker could not be persisted");
+            std::rethrow_exception(failure);
         }
     }
 }
@@ -676,6 +715,10 @@ namespace DisplaySwitcher::Native
         }
     }
 
+    void AppConfig::EnterSafeState() noexcept { EnterSafeMode(*this); }
     void AppConfig::Save() const { SaveToPath(ConfigPath()); }
-    void AppConfig::SaveToPath(std::filesystem::path const& path) const { WriteAtomic(*this, path, true); }
+    void AppConfig::SaveToPath(std::filesystem::path const& path, AppConfigSaveFaultForTesting fault) const
+    {
+        WriteAtomic(*this, path, true, fault);
+    }
 }

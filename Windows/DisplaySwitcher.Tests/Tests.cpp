@@ -234,6 +234,70 @@ namespace
         SetFileAttributesW(readOnlyPath.c_str(), FILE_ATTRIBUTE_NORMAL);
     }
 
+    void TestNormalV3SaveFailureSafety(std::filesystem::path const& root)
+    {
+        auto runFailure = [&](wchar_t const* fileName, AppConfigSaveFaultForTesting fault, bool invalidEncoding)
+        {
+            auto path = root / fileName;
+            auto original = ConfigWithDisplays(2);
+            original.usbAutomationEnabled = true;
+            original.usbVendorId = 0x1234;
+            original.usbProductId = 0x5678;
+            original.collaborationProfiles[0].coordinationEnabled = true;
+            original.SaveToPath(path);
+            auto oldBytes = ReadBytes(path);
+
+            auto edited = original;
+            edited.localDeviceName = L"已编辑本机";
+            if (invalidEncoding)
+                edited.collaborationProfiles[0].pairingCode = std::wstring(L"1234567") + wchar_t{ 0xD800 };
+
+            bool rejected{};
+            try { edited.SaveToPath(path, fault); }
+            catch (...) { rejected = true; }
+            auto marker = std::filesystem::path(path.wstring() + L".safety");
+            Check(rejected, L"正常 v3 设置保存阶段失败必须重新抛出错误");
+            Check(ReadBytes(path) == oldBytes, L"正常 v3 设置保存失败必须保留磁盘旧配置");
+            Check(std::filesystem::exists(marker), L"正常 v3 设置保存失败必须写入持久安全标记");
+
+            auto currentProcess = original;
+            RuntimeSafetyGate gate;
+            gate.Block();
+            currentProcess.EnterSafeState();
+            Check(currentProcess.displayConfigurationSafeMode && !currentProcess.usbAutomationEnabled
+                && !currentProcess.coordinationEnabled
+                && std::none_of(currentProcess.collaborationProfiles.begin(), currentProcess.collaborationProfiles.end(),
+                    [](auto const& profile) { return profile.coordinationEnabled; }),
+                L"当前进程收到保存失败后必须立即关闭 UDP、USB 自动切换和状态机协同");
+            int udpCalls{}, usbCalls{}, ddcCalls{}, wakeCalls{};
+            if (gate.AllowsSideEffects()) { ++udpCalls; ++usbCalls; ++ddcCalls; ++wakeCalls; }
+            Check(udpCalls == 0 && usbCalls == 0 && ddcCalls == 0 && wakeCalls == 0,
+                L"当前进程进入安全状态后必须产生零 UDP、USB、DDC 和唤醒副作用");
+
+            auto restarted = AppConfig::LoadFromPath(path);
+            Check(restarted.displayConfigurationSafeMode && !restarted.usbAutomationEnabled
+                && !restarted.coordinationEnabled
+                && std::none_of(restarted.collaborationProfiles.begin(), restarted.collaborationProfiles.end(),
+                    [](auto const& profile) { return profile.coordinationEnabled; }),
+                L"保存失败后重启必须继续关闭 UDP、USB 自动切换和状态机协同");
+            Check(!restarted.HasUsbDeviceConfiguration() && !restarted.HasDisplayConfiguration(),
+                L"保存失败后的安全配置必须阻止 DDC 和唤醒前置条件");
+
+            auto recovered = original;
+            recovered.localDeviceName = L"恢复后的本机";
+            recovered.SaveToPath(path);
+            Check(!std::filesystem::exists(marker), L"只有后续成功保存合法 v3 配置才清除安全标记");
+            auto loaded = AppConfig::LoadFromPath(path);
+            Check(!loaded.displayConfigurationSafeMode && loaded.localDeviceName == recovered.localDeviceName,
+                L"成功保存合法配置后应恢复正常加载并保留编辑内容");
+        };
+
+        runFailure(L"encoding-failure.json", AppConfigSaveFaultForTesting::None, true);
+        runFailure(L"temporary-write-failure.json", AppConfigSaveFaultForTesting::TemporaryWrite, false);
+        runFailure(L"readback-mismatch.json", AppConfigSaveFaultForTesting::ReadbackMismatch, false);
+        runFailure(L"atomic-replace-failure.json", AppConfigSaveFaultForTesting::AtomicReplace, false);
+    }
+
     void TestUnknownFieldsVersionsAndDuplicates(std::filesystem::path const& root)
     {
         auto path = root / L"strict.json";
@@ -305,6 +369,7 @@ int wmain()
         TestOrphansInspectionAndSelection();
         TestWindowsV2Migration(root);
         TestSafeFailures(root);
+        TestNormalV3SaveFailureSafety(root);
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
         if (!failures) std::wcout << L"DS-004 passed C-001 through C-015 local-model scenarios\n";

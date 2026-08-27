@@ -21,7 +21,8 @@ namespace DisplaySwitcher::Native
         Controller(winrt::Microsoft::UI::Dispatching::DispatcherQueue const& dispatcher, std::function<void()> exitApplication);
         void Initialize();
         AppConfig Config() const;
-        void ApplyConfiguration();
+        void ApplyConfiguration(bool applyAutoStart = true);
+        void EnterSafeStateAfterSaveFailure();
         void OnUsbPresenceChanged(bool present);
         void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
         void AdvanceStateMachine();
@@ -52,6 +53,7 @@ namespace DisplaySwitcher::Native
         std::wstring peerConnectionStatus_{ L"协同未启用" };
         bool peerConnected_{};
         std::atomic<bool> disposed_{};
+        RuntimeSafetyGate sideEffectGate_;
         std::jthread peerHealthThread_;
     };
 }

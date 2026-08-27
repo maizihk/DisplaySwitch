@@ -11,7 +11,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         SettingsWindow();
         void Initialize(::DisplaySwitcher::Native::AppConfig const& config,
-            std::function<void(::DisplaySwitcher::Native::AppConfig const&)> saved,
+            std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
             std::function<void()> closed);
         void SetConnectionStatus(std::wstring const& status, bool connected);
         void ShowWindow();
@@ -44,7 +44,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void ShowValidationError(std::wstring const& message);
 
         ::DisplaySwitcher::Native::AppConfig original_;
-        std::function<void(::DisplaySwitcher::Native::AppConfig const&)> saved_;
+        std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved_;
         std::function<void()> closed_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
