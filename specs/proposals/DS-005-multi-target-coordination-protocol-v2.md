@@ -2,14 +2,14 @@
 
 ## 状态
 
-- 状态：PROTOCOL_REVIEW（方向决定已确认，认证细节和 contracts 待补齐）
+- 状态：PROTOCOL_REVIEW（方向决定已确认，认证细节和 contracts 已形成待审草案）
 - 功能编号：DS-005
 - 任务类型：cross-platform
 - 基线：`24a4ed7bbfab0eb9726ed6261afe5ad56e3f4df7`
 - 当前生效协议：`PROTOCOL.md`，`version = 1`
 - 建议协议版本：`version = 2`
 - 依赖：DS-004 本机 schema v3、多协同配置和显示器输入映射
-- contracts：尚未创建；详细决定获批后在 `contracts/protocol-v2/` 创建 schema 和公共向量
+- contracts：`contracts/protocol-v2/`，包含消息 schema、认证向量、消息验证向量和状态机向量
 
 用户已接受把本机多配置/UI 与网络新语义拆分：DS-004 负责本机数据和平台功能，DS-005 负责手动定向协同、单目标自动协同、多目标发现、USB/蓝牙通用到达声明以及同系统设备身份。
 
@@ -91,9 +91,9 @@ v1 的 `source` / `target` 只有 `mac` 和 `windows`，`handover_request` 与 U
 | `sourceEndpointID` | UUID string | 是 | 安装实例生成的逻辑 ID，不是硬件 ID |
 | `targetEndpointID` | UUID string/null | 是 | 定向消息必须非空；首次探测可为 `null` |
 | `sourcePlatform` | JSON string | 是 | `macos` 或 `windows`，仅描述平台，不用于身份判断 |
-| `timestamp` | finite JSON number | 是 | Unix 秒；接收时间差绝对值不超过 10 秒 |
-| `nonce` | base64url string | 是 | 每条新逻辑消息使用密码学安全随机值；重发同一逻辑消息保持不变 |
-| `authTag` | base64url string | 是 | HMAC-SHA256 认证标签；配对码本身不得发送 |
+| `timestamp` | JSON integer | 是 | 非负 Unix 整秒；接收时间差绝对值不超过 10 秒 |
+| `nonce` | base64url string | 是 | 16 个密码学安全随机字节，无填充编码为 22 个字符；重发同一逻辑消息保持不变 |
+| `authTag` | base64url string | 是 | 32 字节 HMAC-SHA256，无填充编码为 43 个字符；配对码本身不得发送 |
 
 ### 按类型字段
 
@@ -104,7 +104,9 @@ v1 的 `source` / `target` 只有 `mac` 和 `windows`，`handover_request` 与 U
 | `switchSucceeded` | JSON boolean | `committed` | 源端 DDC 结果 |
 | `reason` | JSON string | `cancelled` | 固定枚举，禁止自由文本泄漏本机信息 |
 
-建议取消原因：`source_input_returned`、`ambiguous_target`、`discovery_timeout`、`configuration_changed`、`user_cancelled`。
+建议取消原因：`source_input_returned`、`configuration_changed`、`user_cancelled`、`peer_unavailable`。
+
+`targetEndpointID = null` 只允许用于尚不知道目标 endpoint 的 `status_probe`。其余消息必须携带非空目标，并在接收端与本机 endpointID 完全匹配。
 
 `input_present` 不包含 USB/Bluetooth 类型、名称、VID/PID、地址、序列号或路径。它只声明发送 endpoint 的本机已检测到该协同配置绑定的逻辑输入设备到达。
 
@@ -152,20 +154,51 @@ v1 的 `source` / `target` 只有 `mac` 和 `windows`，`handover_request` 与 U
 - 不允许把 `input_present` 降级编码为 v1 `usb_present`，也不允许把 `manual` 请求伪装成 v1 USB 交接。
 - 协商失败时保持本机显示器当前状态并提示用户，不猜测协议或目标。
 
-## 已确认的认证方向
+## HMAC 认证规范
 
-v2 采用 HMAC-SHA256。配对码不直接上网，使用明确规定的标准 KDF 派生认证密钥，对消息业务字段、时间戳、nonce 和 endpoint 身份进行认证，并继续使用时间窗和重放缓存。
+v2 采用 HMAC-SHA256。配对码不直接上网；两端按照以下相同字节规则派生发送方向的认证密钥，并对全部已知业务字段、时间戳、nonce 和 endpoint 身份进行认证。
 
-在创建正式 contracts 和派发平台实现前，仍必须补齐并再次审查：
+### 配对码输入与密钥派生
 
-- 配对码文本编码和规范化方式。
-- KDF 算法、salt、迭代次数和输出长度。
-- HMAC 输入的规范化格式与字段顺序。
-- nonce 长度、编码、缓存键和缓存期限。
-- `authTag` 编码及常量时间比较要求。
-- 不含真实配对码或设备信息的公共密码学测试向量。
+- 配对码先按 Unicode NFC 规范化，再编码为 UTF-8；规范化后必须为 8 至 128 字节。
+- 超出范围、无法迁移或无法派生密钥时保留原配置、禁用该配置的 v2 协同，并且不执行网络或硬件动作。
+- KDF 固定为 PBKDF2-HMAC-SHA256，迭代次数 `200000`，输出 `32` 字节。
+- salt 是以下 ASCII 字节串，其中 UUID 必须为小写：`DisplaySwitch-v2-auth|{sourceEndpointID}`。
+- 认证密钥按消息发送者派生。双端可以在本机安全缓存派生结果，但不得写入日志、contracts 或网络消息。
 
-这些细节属于已批准 HMAC 方向的技术规范化，不得由两个平台各自决定。
+### 规范化认证输入
+
+计算 HMAC 前，发送端构造以下 UTF-8 文本。行分隔符固定为单个 LF（`0A`），最后一行后也必须有 LF；UUID 使用小写，JSON 空值或该消息类型不使用的字段写为字面量 `null`，布尔值只写小写 `true`/`false`，整数使用无前导零的十进制：
+
+```text
+DisplaySwitch/v2
+version:2
+type:{type}
+eventID:{eventID}
+sourceEndpointID:{sourceEndpointID}
+targetEndpointID:{targetEndpointID-or-null}
+sourcePlatform:{sourcePlatform}
+timestamp:{timestamp}
+nonce:{nonce}
+intent:{intent-or-null}
+wakeSucceeded:{wakeSucceeded-or-null}
+switchSucceeded:{switchSucceeded-or-null}
+reason:{reason-or-null}
+```
+
+`authTag` 和未知 JSON 字段不进入认证输入。v2 接收端必须忽略未知字段；未来任何需要解释新字段语义的变更必须升级协议版本，不能让未认证的扩展字段影响状态或硬件行为。
+
+HMAC 结果使用 RFC 4648 base64url 且不带 `=` 填充。接收端必须先完成结构、版本、方向、时间窗和 endpoint 检查，再验证 HMAC，并使用常量时间比较认证标签。失败消息不得刷新在线状态、得到回复或产生硬件副作用。
+
+### nonce、重复和重放
+
+- 每条新的逻辑消息生成新的 16 字节随机 nonce；同一消息的网络重发必须复用完全相同的消息、nonce 和 authTag。
+- 接收端以 `sourceEndpointID + nonce` 为键保存至少 20 秒。
+- 相同 nonce 和完全相同的已认证字段属于重复消息：不得重复唤醒或 DDC，可以重发已缓存的同事件响应。
+- 相同 nonce 对应不同认证字段时以 `nonce_reuse` 安全拒绝。
+- 10 秒时间窗过期后仍不得让旧 eventID 改变较新的事件。
+
+公共密码学向量只使用明确标注的合成输入字节和逻辑 UUID，不得包含真实配对码、设备信息、IP 或路径。
 
 ## 公共测试向量草案
 
@@ -220,7 +253,7 @@ v2 采用 HMAC-SHA256。配对码不直接上网，使用明确规定的标准 K
 - v2 与 v1 状态机并存；平台可以回退 v2 实现并继续读取保留的 v1 兼容配置。
 - 回退不得自动删除 DS-004 schema v3 配置；无法理解 v3 的旧版必须保持安全状态。
 - 协议失败时可关闭 v2 协同，不影响本机显示器控制。
-- 未经批准不修改当前 `PROTOCOL.md`；提案回滚只需移除本文件和尚未创建的 v2 contracts。
+- 未经批准不修改当前 `PROTOCOL.md`；提案回滚只需回退本文件和 `contracts/protocol-v2/`。
 
 ## 已批准决定
 

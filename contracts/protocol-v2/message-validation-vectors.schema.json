@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://displayswitch.example/contracts/protocol-v2/message-validation-vectors.schema.json",
+  "title": "DisplaySwitch protocol v2 message validation vectors",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "protocolVersion",
+    "referenceTime",
+    "localEndpointID",
+    "knownSourceEndpointID",
+    "authKeyBase64Url",
+    "vectors"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "protocolVersion": { "type": "integer", "const": 2 },
+    "referenceTime": { "type": "integer", "minimum": 0 },
+    "localEndpointID": { "$ref": "message.schema.json#/$defs/uuid" },
+    "knownSourceEndpointID": { "$ref": "message.schema.json#/$defs/uuid" },
+    "authKeyBase64Url": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "vectors": {
+      "type": "array",
+      "minItems": 20,
+      "items": { "$ref": "#/$defs/vector" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "input": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["encoding", "value"],
+          "properties": {
+            "encoding": { "const": "jsonObject" },
+            "value": { "type": "object" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["encoding", "value"],
+          "properties": {
+            "encoding": { "const": "rawUtf8" },
+            "value": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "expected": {
+      "type": "object",
+      "required": ["accepted", "reason", "refreshPeer", "replyTypes", "hardwareCalls"],
+      "properties": {
+        "accepted": { "type": "boolean" },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "parse_error",
+            "missing_field",
+            "invalid_field_type",
+            "unsupported_version",
+            "unknown_type",
+            "invalid_event_id",
+            "unknown_source",
+            "wrong_target",
+            "timestamp_out_of_window",
+            "invalid_nonce",
+            "invalid_auth_tag",
+            "authentication_failed",
+            "invalid_type_fields"
+          ]
+        },
+        "refreshPeer": { "type": "boolean" },
+        "replyTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "status_probe",
+              "status_response",
+              "input_present",
+              "handover_request",
+              "target_ready",
+              "committed",
+              "cancelled"
+            ]
+          }
+        },
+        "hardwareCalls": {
+          "type": "object",
+          "required": ["wake", "switchDisplay", "inputActions"],
+          "properties": {
+            "wake": { "type": "integer", "const": 0 },
+            "switchDisplay": { "type": "integer", "const": 0 },
+            "inputActions": { "type": "integer", "const": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "vector": {
+      "type": "object",
+      "required": ["id", "description", "input", "expected"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^MSG2-[0-9]{3}$" },
+        "description": { "type": "string", "minLength": 1 },
+        "input": { "$ref": "#/$defs/input" },
+        "expected": { "$ref": "#/$defs/expected" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
