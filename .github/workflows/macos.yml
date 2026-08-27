@@ -33,17 +33,17 @@ jobs:
       - name: Build Debug
         run: |
           xcodebuild \
-            -project DisplaySwitcher.xcodeproj \
+            -project macOS/DisplaySwitcher.xcodeproj \
             -scheme DisplaySwitcher \
             -configuration Debug \
-            -derivedDataPath .build/xcode-debug \
+            -derivedDataPath macOS/.build/xcode-debug \
             CODE_SIGNING_ALLOWED=NO \
             build
 
       - name: Run unit tests
         run: |
           xcodebuild \
-            -project DisplaySwitcher.xcodeproj \
+            -project macOS/DisplaySwitcher.xcodeproj \
             -scheme DisplaySwitcher \
             -configuration Debug \
             -derivedDataPath "$RUNNER_TEMP/DisplaySwitcher-xcode-test" \
@@ -51,17 +51,17 @@ jobs:
             test
 
       - name: Build, package, and verify Release
-        run: ./scripts/build-app.sh
+        run: ./macOS/scripts/build-app.sh
 
       - name: Verify artifacts
         run: |
-          test -d outputs/DisplaySwitcher.app
-          test -f "outputs/DisplaySwitcher-macOS-$(uname -m).zip"
-          codesign --verify --deep --strict outputs/DisplaySwitcher.app
+          test -d macOS/outputs/DisplaySwitcher.app
+          test -f "macOS/outputs/DisplaySwitcher-macOS-$(uname -m).zip"
+          codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app
 
       - name: Upload unsigned test package
         uses: actions/upload-artifact@v6
         with:
           name: DisplaySwitcher-macOS-${{ runner.arch }}-unsigned
-          path: outputs/DisplaySwitcher-macOS-*.zip
+          path: macOS/outputs/DisplaySwitcher-macOS-*.zip
           if-no-files-found: error

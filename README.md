@@ -2,7 +2,7 @@
 
 一个轻量的原生 macOS 菜单栏 App。它不显示 Dock 图标，也不会打开 Terminal，可以替代日常使用中的 MonitorControl 菜单栏功能。
 
-当前 macOS 版本为 `2.1.0 (19)`。正式工程为原生 Swift/AppKit `DisplaySwitcher.xcodeproj`，最低支持 macOS 12。
+当前 macOS 版本为 `2.1.0 (19)`。正式工程为原生 Swift/AppKit `macOS/DisplaySwitcher.xcodeproj`，最低支持 macOS 12。
 
 功能包括：
 
@@ -99,43 +99,43 @@ xcode-select -p
 xcodebuild -version
 ```
 
-`m1ddc` 不是运行依赖。项目保留对 `/opt/homebrew/bin/m1ddc` 和 `/usr/local/bin/m1ddc` 的可选兼容回退，未安装时不影响原生后端。内置实现基于 MIT 许可的 [AppleSiliconDDC](https://github.com/waydabber/AppleSiliconDDC)，许可文件位于 `ThirdParty/AppleSiliconDDC/LICENSE`。该后端使用 macOS 的私有 CoreDisplay/IOAVService 接口，因此 App Sandbox 保持关闭，且系统大版本升级后需重新验证。
+`m1ddc` 不是运行依赖。项目保留对 `/opt/homebrew/bin/m1ddc` 和 `/usr/local/bin/m1ddc` 的可选兼容回退，未安装时不影响原生后端。内置实现基于 MIT 许可的 [AppleSiliconDDC](https://github.com/waydabber/AppleSiliconDDC)，许可文件位于 `macOS/ThirdParty/AppleSiliconDDC/LICENSE`。该后端使用 macOS 的私有 CoreDisplay/IOAVService 接口，因此 App Sandbox 保持关闭，且系统大版本升级后需重新验证。
 
 ## 编译
 
 在本项目目录执行：
 
 ```bash
-chmod +x scripts/build-app.sh
-./scripts/build-app.sh
+chmod +x macOS/scripts/build-app.sh
+./macOS/scripts/build-app.sh
 ```
 
 项目的正式构建入口是 Xcode 原生工程，可直接打开：
 
 ```bash
-open DisplaySwitcher.xcodeproj
+open macOS/DisplaySwitcher.xcodeproj
 ```
 
 完成后会生成：
 
 ```text
-outputs/DisplaySwitcher.app
-outputs/DisplaySwitcher-macOS-arm64.zip
+macOS/outputs/DisplaySwitcher.app
+macOS/outputs/DisplaySwitcher-macOS-arm64.zip
 ```
 
-`scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到输出目录后做本地临时签名和严格验证。ZIP 还会在非 File Provider 临时目录中解压并再次验签，是跨机器分发的推荐产物。项目只以 `DisplaySwitcher.xcodeproj` 作为 macOS 正式构建入口，不再保留容易与实际 Framework、桥接头和资源配置漂移的 Swift Package 清单。
+`macOS/scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到 `macOS/outputs/` 后做本地临时签名和严格验证。ZIP 还会在非 File Provider 临时目录中解压并再次验签，是跨机器分发的推荐产物。项目只以 `macOS/DisplaySwitcher.xcodeproj` 作为 macOS 正式构建入口，不再保留容易与实际 Framework、桥接头和资源配置漂移的 Swift Package 清单。
 
 如果 Xcode Beta 不在系统当前开发者目录，可在单次构建时指定：
 
 ```bash
-DEVELOPER_DIR="/path/to/Xcode-beta.app/Contents/Developer" ./scripts/build-app.sh
+DEVELOPER_DIR="/path/to/Xcode-beta.app/Contents/Developer" ./macOS/scripts/build-app.sh
 ```
 
 将项目放在 NAS 或 File Provider 同步目录时，同步软件可能在签名后重新添加 Finder 扩展属性。因此请优先分发 ZIP；目录中的 `.app` 主要用于当前机器调试。若稍后手动严格验证 `.app` 时出现 `resource fork, Finder information`，可执行：
 
 ```bash
-xattr -d com.apple.FinderInfo outputs/DisplaySwitcher.app 2>/dev/null || true
-codesign --verify --deep --strict outputs/DisplaySwitcher.app
+xattr -cr macOS/outputs/DisplaySwitcher.app
+codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app
 ```
 
 ## 安装与运行
@@ -143,7 +143,7 @@ codesign --verify --deep --strict outputs/DisplaySwitcher.app
 推荐解压经过复验的 ZIP 到“应用程序”目录，然后打开：
 
 ```bash
-ditto -x -k outputs/DisplaySwitcher-macOS-arm64.zip /Applications
+ditto -x -k macOS/outputs/DisplaySwitcher-macOS-arm64.zip /Applications
 open /Applications/DisplaySwitcher.app
 ```
 
