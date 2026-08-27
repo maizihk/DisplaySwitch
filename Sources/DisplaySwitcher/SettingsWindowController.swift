@@ -268,7 +268,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ("常规", "gearshape.fill"),
             ("USB 切换", "cable.connector"),
             ("双端协同", "network"),
-            ("显示器", "display.2")
+            ("显示器", "display.2"),
+            ("关于", "info.circle")
         ]
         tabButtons = tabs.enumerated().map { index, tab in
             let button = SettingsTabButton(title: tab.0, symbolName: tab.1)
@@ -387,6 +388,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         displayStack.alignment = .leading
         displayStack.spacing = 12
         tabView.addTabViewItem(makeDisplayPage())
+        tabView.addTabViewItem(makeAboutPage())
 
         let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
         cancelButton.keyEquivalent = "\u{1b}"
@@ -480,6 +482,84 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             displayStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -18)
         ])
         item.view = scrollView
+        return item
+    }
+
+    private func makeAboutPage() -> NSTabViewItem {
+        let item = NSTabViewItem(identifier: "关于")
+        item.label = "关于"
+
+        let container = NSView()
+        let iconView = NSImageView(image: NSApplication.shared.applicationIconImage)
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "DisplaySwitcher"
+        let nameLabel = NSTextField(labelWithString: appName)
+        nameLabel.font = .systemFont(ofSize: 24, weight: .semibold)
+        nameLabel.alignment = .center
+
+        let introduction = NSTextField(
+            wrappingLabelWithString: "一款在 macOS 与 Windows 之间协同切换显示器和 USB 设备的原生菜单栏工具。"
+        )
+        introduction.font = .systemFont(ofSize: 13)
+        introduction.textColor = .secondaryLabelColor
+        introduction.alignment = .center
+        introduction.maximumNumberOfLines = 2
+        introduction.preferredMaxLayoutWidth = 520
+
+        let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "未知"
+        let buildVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
+            as? String ?? "未知"
+        let versionLabel = NSTextField(
+            labelWithString: "版本 \(shortVersion) (\(buildVersion))"
+        )
+        versionLabel.font = .systemFont(ofSize: 12)
+        versionLabel.textColor = .tertiaryLabelColor
+        versionLabel.alignment = .center
+
+        let githubButton = NSButton(
+            title: "GitHub · maizihk/DisplaySwitch",
+            target: self,
+            action: #selector(openGitHub)
+        )
+        githubButton.isBordered = false
+        githubButton.font = .systemFont(ofSize: 13, weight: .medium)
+        githubButton.contentTintColor = .linkColor
+        githubButton.image = NSImage(
+            systemSymbolName: "arrow.up.right.square",
+            accessibilityDescription: "打开 GitHub"
+        )
+        githubButton.imagePosition = .imageTrailing
+        githubButton.toolTip = "https://github.com/maizihk/DisplaySwitch"
+
+        let stack = NSStackView(views: [
+            iconView,
+            nameLabel,
+            introduction,
+            versionLabel,
+            githubButton
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 12
+        stack.setCustomSpacing(18, after: iconView)
+        stack.setCustomSpacing(6, after: nameLabel)
+        stack.setCustomSpacing(20, after: versionLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            iconView.widthAnchor.constraint(equalToConstant: 112),
+            iconView.heightAnchor.constraint(equalToConstant: 112),
+            introduction.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 64)
+        ])
+
+        item.view = container
         return item
     }
 
@@ -664,6 +744,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 showValidationError("登录启动设置失败：\n\(error.localizedDescription)\n\n请确认 App 已放入“应用程序”文件夹。")
             }
         }
+    }
+
+    @objc private func openGitHub() {
+        guard let url = URL(string: "https://github.com/maizihk/DisplaySwitch") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func reloadLaunchAtLoginState() {
