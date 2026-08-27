@@ -493,7 +493,7 @@ final class HandoffStateMachineVectorTests: XCTestCase {
         let data = try Data(contentsOf: fileURL)
         let vectors = try JSONDecoder().decode(VectorFile.self, from: data)
 
-        XCTAssertEqual(vectors.vectors.count, 15, "expected 15 state-machine vectors")
+        XCTAssertEqual(vectors.vectors.count, 16, "expected 16 state-machine vectors")
 
         for vector in vectors.vectors {
             let harness = VectorStateMachineHarness(
