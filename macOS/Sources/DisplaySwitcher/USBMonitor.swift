@@ -84,7 +84,7 @@ final class USBMonitor {
                 DispatchQueue.main.async { handler([]) }
             }
             self.learningTimeout = timeout
-            self.queue.asyncAfter(deadline: .now() + 15, execute: timeout)
+            self.queue.asyncAfter(deadline: .now() + USBProfileLearningSession.timeoutSeconds, execute: timeout)
         }
     }
 

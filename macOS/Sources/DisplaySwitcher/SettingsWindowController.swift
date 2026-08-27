@@ -202,6 +202,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onImmediateChange: (() -> Void)?
     var onLearnUSB: ((String) -> Void)?
     var onCancelUSBLearning: (() -> Void)?
+    var onUSBLearningFinished: (() -> Void)?
 
     private let linkedCheckbox = NSSwitch()
     private let launchAtLoginCheckbox = NSSwitch()
@@ -1165,12 +1166,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             usbLearningSession.cancel()
             learnUSBButton.isEnabled = true
             updateUSBDeviceLabel()
+            onUSBLearningFinished?()
             return true
         }
         guard !devices.isEmpty else {
             usbLearningSession.cancel()
             learnUSBButton.isEnabled = true
             updateUSBDeviceLabel()
+            onUSBLearningFinished?()
             return true
         }
 
@@ -1189,6 +1192,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 self.usbLearningSession.cancel()
                 self.learnUSBButton.isEnabled = true
                 self.updateUSBDeviceLabel()
+                self.onUSBLearningFinished?()
             }
             if response == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0,
                self.usbLearningSession.pendingProfileID == learningProfileID {

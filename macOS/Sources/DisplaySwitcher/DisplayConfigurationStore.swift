@@ -197,7 +197,10 @@ enum LegacyV1RuntimeSelection: Equatable {
 }
 
 struct USBProfileLearningSession {
+    static let timeoutSeconds: TimeInterval = 30
     private(set) var pendingProfileID: String?
+
+    var blocksAutomaticSideEffects: Bool { pendingProfileID != nil }
 
     mutating func begin(profileID: String) {
         pendingProfileID = profileID
@@ -213,6 +216,32 @@ struct USBProfileLearningSession {
         pendingProfileID = nil
         guard profiles.contains(where: { $0.id == profileID }) else { return profiles }
         return DisplayConfigurationStore.replacingUSBTrigger(trigger, profileID: profileID, in: profiles)
+    }
+}
+
+final class USBLearningSafetyGate {
+    private let lock = NSLock()
+    private var active = false
+
+    func begin() {
+        lock.lock()
+        active = true
+        lock.unlock()
+    }
+
+    @discardableResult
+    func end() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let wasActive = active
+        active = false
+        return wasActive
+    }
+
+    func allows(_ sideEffect: ConfigurationSideEffect) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !active
     }
 }
 

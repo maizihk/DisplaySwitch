@@ -144,16 +144,24 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let first = profile(name: "A")
         let second = profile(name: "B")
         var session = USBProfileLearningSession()
+        let safetyGate = USBLearningSafetyGate()
         session.begin(profileID: first.id)
+        safetyGate.begin()
         let currentlySelectedProfileID = second.id
         let trigger = CollaborationTriggerDevice(kind: "usb", localReference: "7:8", displayName: "A 的设备")
 
+        XCTAssertEqual(USBProfileLearningSession.timeoutSeconds, 30)
+        XCTAssertTrue(session.blocksAutomaticSideEffects)
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
+
         let profiles = session.apply(trigger, to: [first, second])
+        safetyGate.end()
 
         XCTAssertEqual(currentlySelectedProfileID, second.id)
         XCTAssertEqual(profiles[0].triggerDevices, [trigger])
         XCTAssertTrue(profiles[1].triggerDevices.isEmpty)
         XCTAssertNil(session.pendingProfileID)
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { safetyGate.allows($0) })
     }
 
     func testLateUSBLearningResultIsDiscardedWhenTargetProfileWasDeleted() {
@@ -168,6 +176,15 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(profiles, [second])
         XCTAssertTrue(profiles[0].triggerDevices.isEmpty)
         XCTAssertNil(session.pendingProfileID)
+
+        var retained = first
+        let original = CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "原绑定")
+        retained.triggerDevices = [original]
+        session.begin(profileID: retained.id)
+        session.cancel()
+        let afterCancelledLateResult = session.apply(trigger, to: [retained, second])
+        XCTAssertEqual(afterCancelledLateResult[0].triggerDevices, [original])
+        XCTAssertTrue(afterCancelledLateResult[1].triggerDevices.isEmpty)
     }
 
     func testMultipleEnabledProfilesBlockLegacyV1AutomaticSideEffects() {
