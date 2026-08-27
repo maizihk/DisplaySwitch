@@ -16,33 +16,32 @@ struct NativeDDCDisplay {
     let isOnline: Bool
 }
 
-struct NativeDDCKnownDisplay {
-    let name: String
-    let systemUUID: String
-}
-
-enum NativeDDCWriteResult {
-    case success
-    case unavailable
-    case failed
-}
-
-final class NativeDDCBackend {
-    private var knownDisplays: [NativeDDCKnownDisplay]
+final class NativeDDCBackend: DDCBackend {
+    let identifier = "apple-silicon-native"
+    let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
+    private var knownDisplays: [DDCKnownDisplay]
     private let cacheLock = NSLock()
     private var displaysByUUID: [String: NativeDDCDisplay] = [:]
 
-    init(knownDisplays: [NativeDDCKnownDisplay] = []) {
+    init(knownDisplays: [DDCKnownDisplay] = []) {
         self.knownDisplays = knownDisplays
     }
 
-    func updateKnownDisplays(_ values: [NativeDDCKnownDisplay]) {
+    var availability: DDCBackendAvailability {
+#if arch(arm64)
+        return .available
+#else
+        return .unavailable("Apple Silicon 原生 DDC 在 Intel Mac 上不可用")
+#endif
+    }
+
+    func updateKnownDisplays(_ values: [DDCKnownDisplay]) {
         cacheLock.lock()
         knownDisplays = values
         cacheLock.unlock()
     }
 
-    func discover() -> [NativeDDCDisplay] {
+    private func discover() -> [NativeDDCDisplay] {
         #if arch(arm64)
         cacheLock.lock()
         let knownDisplays = self.knownDisplays
@@ -57,29 +56,54 @@ final class NativeDDCBackend {
         #endif
     }
 
-    func read(selector: String, command: UInt8) -> (current: Int, maximum: Int)? {
-        guard let display = display(for: selector) else { return nil }
-        guard display.isOnline else { return nil }
+    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
+        try token.throwIfCancelled()
+        guard availability == .available else { throw DDCBackendError.unavailable(backend: identifier) }
+        let displays = discover()
+        try token.throwIfCancelled()
+        cacheLock.lock()
+        let known = knownDisplays
+        cacheLock.unlock()
+        return displays.map { display in
+            let stableID = known.first { knownDisplay in
+                knownDisplay.selector.caseInsensitiveCompare(display.systemUUID) == .orderedSame
+            }?.stableID ?? display.systemUUID
+            return DDCBackendDisplay(stableID: stableID, name: display.name, selector: display.systemUUID)
+        }
+    }
+
+    func read(stableID: String, selector: String, command: DDCCommand,
+              token: DDCCancellationToken) throws -> DDCReading {
+        try token.throwIfCancelled()
+        guard let display = display(for: selector) else {
+            throw DDCBackendError.displayUnavailable(stableID: stableID)
+        }
+        guard display.isOnline else {
+            throw DDCBackendError.readFailed(stableID: stableID, command: command)
+        }
         guard let value = Self.read(
             service: display.service,
             chipAddress: display.chipAddress,
-            command: command
-        ) else { return nil }
-        return (Int(value.current), Int(value.maximum))
+            command: command.rawValue
+        ) else { throw DDCBackendError.readFailed(stableID: stableID, command: command) }
+        try token.throwIfCancelled()
+        return DDCReading(current: Int(value.current), maximum: Int(value.maximum))
     }
 
-    func hasDisplay(selector: String) -> Bool {
-        display(for: selector) != nil
-    }
-
-    func write(selector: String, command: UInt8, value: UInt16) -> NativeDDCWriteResult {
-        guard let display = display(for: selector) else { return .unavailable }
-        return Self.write(
+    func write(stableID: String, selector: String, command: DDCCommand, value: Int,
+               token: DDCCancellationToken) throws {
+        try token.throwIfCancelled()
+        guard let nativeValue = UInt16(exactly: value) else { throw DDCError.invalidValue(value) }
+        guard let display = display(for: selector) else {
+            throw DDCBackendError.displayUnavailable(stableID: stableID)
+        }
+        guard Self.write(
             service: display.service,
             chipAddress: display.chipAddress,
-            command: command,
-            value: value
-        ) ? .success : .failed
+            command: command.rawValue,
+            value: nativeValue
+        ) else { throw DDCBackendError.writeFailed(stableID: stableID, command: command) }
+        try token.throwIfCancelled()
     }
 
     private func display(for selector: String) -> NativeDDCDisplay? {
@@ -98,7 +122,7 @@ final class NativeDDCBackend {
     }
 
     private static func discoverDisplays(
-        knownDisplays: [NativeDDCKnownDisplay]
+        knownDisplays: [DDCKnownDisplay]
     ) -> [NativeDDCDisplay] {
         let displayIDs = onlineExternalDisplayIDs()
         let onlineDisplays: [NativeDDCDisplay] = displayIDs.enumerated().compactMap { offset, displayID in
@@ -156,7 +180,7 @@ final class NativeDDCBackend {
     }
 
     private static func registryDisplays(
-        knownDisplays: [NativeDDCKnownDisplay]
+        knownDisplays: [DDCKnownDisplay]
     ) -> [NativeDDCDisplay] {
         let root = IORegistryGetRootEntry(kIOMainPortDefault)
         guard root != IO_OBJECT_NULL else { return [] }
@@ -187,7 +211,7 @@ final class NativeDDCBackend {
                 $0.name.caseInsensitiveCompare(name) == .orderedSame
             }
             let selector = knownMatches.count == 1
-                ? knownMatches[0].systemUUID.uppercased()
+                ? knownMatches[0].selector.uppercased()
                 : edidUUID.uppercased()
             displays.append(NativeDDCDisplay(
                 name: name,
