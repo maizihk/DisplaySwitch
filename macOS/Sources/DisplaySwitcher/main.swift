@@ -104,10 +104,11 @@ private final class DisplayControls {
     let menu = NSMenu()
     private(set) var rows: [DisplayControl: SliderRowView] = [:]
 
-    init(displayID: Int, onChange: @escaping (Int, DisplayControl, Int) -> Void) {
+    init(displayID: Int, enabledControls: Set<DisplayControl>,
+         onChange: @escaping (Int, DisplayControl, Int) -> Void) {
         menu.autoenablesItems = false
 
-        for control in DisplayControl.allCases {
+        for control in DisplayControl.allCases where enabledControls.contains(control) {
             let row = SliderRowView(control: control)
             row.onChange = { value in
                 onChange(displayID, control, value)
@@ -238,6 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         guard ownsPrimaryInstance else { return }
         let loadResult = AppPreferences.loadDisplayConfigurations()
         configurationSafetyGate.apply(loadResult)
+        refreshDDCOperationAccess()
         configurations = Dictionary(uniqueKeysWithValues: loadResult.configurations.map {
             ($0.index, $0)
         })
@@ -358,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                                 throw DDCError.inputNotConfigured(displayName: configuration.name)
                             }
                             try ddcController.write(
+                                stableID: configuration.id ?? configuration.selector,
                                 selector: configuration.selector,
                                 command: .input,
                                 value: input
@@ -475,6 +478,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         isRefreshing = true
         let currentConfigurations = configurations
         let ddcController = ddcController
+        let localDocument = AppPreferences.localConfiguration
+        let targets = currentConfigurations.values.map {
+            Self.ddcTarget(for: $0, document: localDocument)
+        }
 
         workerQueue.async { [weak self] in
             guard self?.configurationSafetyGate.allows(.ddc) == true,
@@ -482,40 +489,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 DispatchQueue.main.async { self?.isRefreshing = false }
                 return
             }
+            let resolved = ddcController.read(targets: targets)
             var readings: [Int: [DisplayControl: (current: Int, maximum: Int)]] = [:]
-
-            for displayID in currentConfigurations.keys.sorted() {
-                guard
-                    let configuration = currentConfigurations[displayID],
-                    configuration.readEnabled
-                else {
-                    continue
-                }
-
+            var estimates: [Int: Set<DisplayControl>] = [:]
+            for (displayID, configuration) in currentConfigurations {
+                let stableID = configuration.id ?? configuration.selector
                 for control in DisplayControl.allCases {
-                    guard self?.configurationSafetyGate.allows(.ddc) == true,
-                          self?.usbLearningSafetyGate.allows(.ddc) == true else { break }
-                    guard let reading = ddcController.read(
-                        selector: configuration.selector,
-                        command: control.ddcCommand
-                    ) else {
-                        continue
-                    }
-
-                    let maximum = Self.validatedMaximum(reading.maximum, current: reading.current)
-                    readings[displayID, default: [:]][control] = (reading.current, maximum)
+                    guard let value = resolved[stableID]?[control.ddcCommand] else { continue }
+                    let maximum = Self.validatedMaximum(value.reading.maximum, current: value.reading.current)
+                    readings[displayID, default: [:]][control] = (value.reading.current, maximum)
+                    if value.estimated { estimates[displayID, default: []].insert(control) }
                 }
             }
 
             DispatchQueue.main.async {
                 guard let self else { return }
+                guard self.configurationSafetyGate.allows(.ddc), self.usbLearningSafetyGate.allows(.ddc) else {
+                    self.isRefreshing = false
+                    return
+                }
                 for displayID in currentConfigurations.keys.sorted() {
                     let displayReadings = readings[displayID] ?? [:]
                     let readEnabled = currentConfigurations[displayID]?.readEnabled ?? true
-                    let hasInvalidAllZeroReply = displayReadings.count == DisplayControl.allCases.count
-                        && displayReadings.values.allSatisfy { $0.current == 0 }
 
-                    if !readEnabled || hasInvalidAllZeroReply {
+                    if !readEnabled || displayReadings.isEmpty {
                         self.applyFallbackValues(to: displayID, readings: readings)
                         continue
                     }
@@ -524,9 +521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         self.displayControls[displayID]?.update(
                             control,
                             value: reading.current,
-                            maximum: reading.maximum
+                            maximum: reading.maximum,
+                            estimated: estimates[displayID]?.contains(control) == true
                         )
-                        self.saveCachedValue(reading.current, displayID: displayID, control: control)
                     }
                 }
                 self.lastRefresh = Date()
@@ -540,32 +537,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let targetDisplays = linkedItem.state == .on ? configurations.keys.sorted() : [displayID]
         let currentConfigurations = configurations
         let ddcController = ddcController
+        let document = AppPreferences.localConfiguration
+        let targets = targetDisplays.compactMap { currentConfigurations[$0] }
+            .map { Self.ddcTarget(for: $0, document: document) }
+            .filter { $0.enabledCommands.contains(control.ddcCommand) }
 
+        let enabledStableIDs = Set(targets.map(\.stableID))
         for targetID in targetDisplays {
+            guard let configuration = currentConfigurations[targetID],
+                  enabledStableIDs.contains(configuration.id ?? configuration.selector) else { continue }
             displayControls[targetID]?.update(control, value: value)
         }
 
         workerQueue.async { [weak self] in
-            do {
-                for targetID in targetDisplays {
-                    guard self?.configurationSafetyGate.allows(.ddc) == true,
-                          self?.usbLearningSafetyGate.allows(.ddc) == true else {
-                        throw ConfigurationSafetyBlockedError()
-                    }
-                    guard let configuration = currentConfigurations[targetID] else { continue }
-                    try ddcController.write(
-                        selector: configuration.selector,
-                        command: control.ddcCommand,
-                        value: value
-                    )
-                }
-                DispatchQueue.main.async {
-                    for targetID in targetDisplays {
-                        self?.saveCachedValue(value, displayID: targetID, control: control)
-                    }
-                }
-            } catch {
-                self?.showError(title: "\(control.title)调节失败", error: error)
+            guard self?.configurationSafetyGate.allows(.ddc) == true,
+                  self?.usbLearningSafetyGate.allows(.ddc) == true else { return }
+            let failures = ddcController.write(command: control.ddcCommand, value: value, targets: targets)
+            if let error = failures.values.first {
+                self?.showError(title: "\(control.title)调节部分失败", error: error)
             }
         }
     }
@@ -577,23 +566,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         return reported
     }
 
-    private func cacheKey(displayID: Int, control: DisplayControl) -> String {
-        let selector = configurations[displayID]?.selector ?? "display\(displayID)"
-        return "LastValue.device.\(selector).\(control.rawValue)"
-    }
-
-    private func saveCachedValue(_ value: Int, displayID: Int, control: DisplayControl) {
-        UserDefaults.standard.set(value, forKey: cacheKey(displayID: displayID, control: control))
-    }
-
     private func cachedValue(displayID: Int, control: DisplayControl) -> Int? {
-        let key = cacheKey(displayID: displayID, control: control)
-        if UserDefaults.standard.object(forKey: key) != nil {
-            return UserDefaults.standard.integer(forKey: key)
+        guard let configuration = configurations[displayID] else { return nil }
+        let stableID = configuration.id ?? configuration.selector
+        if let value = ddcController.cachedValue(stableID: stableID, command: control.ddcCommand) {
+            return value
+        }
+        let selectorKey = "LastValue.device.\(configuration.selector).\(control.rawValue)"
+        if UserDefaults.standard.object(forKey: selectorKey) != nil {
+            return UserDefaults.standard.integer(forKey: selectorKey)
         }
         let legacyKey = "LastValue.display\(displayID).\(control.rawValue)"
         guard UserDefaults.standard.object(forKey: legacyKey) != nil else { return nil }
         return UserDefaults.standard.integer(forKey: legacyKey)
+    }
+
+    private static func ddcTarget(
+        for configuration: DisplayConfiguration,
+        document: DisplayConfigurationStoreV3Document
+    ) -> DDCDisplayTarget {
+        let stableID = configuration.id ?? configuration.selector
+        let stored = document.displays.first { $0.id.caseInsensitiveCompare(stableID) == .orderedSame }
+        var enabled: Set<DDCCommand> = []
+        if stored?.brightnessEnabled ?? true { enabled.insert(.luminance) }
+        if stored?.contrastEnabled ?? true { enabled.insert(.contrast) }
+        if stored?.volumeEnabled ?? true { enabled.insert(.volume) }
+        return DDCDisplayTarget(stableID: stableID, selector: configuration.selector,
+                                readEnabled: configuration.readEnabled, enabledCommands: enabled)
     }
 
     private func restoreCachedValues() {
@@ -693,6 +692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func startUSBLearning(profileID: String) {
         guard configurationSafetyGate.allows(.usb) else { return }
         usbLearningSafetyGate.begin()
+        refreshDDCOperationAccess()
         pendingUSBSwitch?.cancel()
         pendingUSBSwitch = nil
         configurePeerTransport()
@@ -711,6 +711,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func finishUSBLearning() {
         guard usbLearningSafetyGate.end() else { return }
+        refreshDDCOperationAccess()
         configureUSBMonitor()
         configurePeerTransport()
     }
@@ -850,8 +851,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func reloadSettings() {
+        ddcController.cancelAll()
         let result = AppPreferences.loadDisplayConfigurations()
         configurationSafetyGate.apply(result)
+        refreshDDCOperationAccess()
         let values = result.configurations
         configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
         ddcController.updateConfigurations(values)
@@ -876,9 +879,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         displayControls.removeAll()
 
         guard var insertionIndex = menu.items.firstIndex(of: linkedItem) else { return }
+        let document = AppPreferences.localConfiguration
         for configuration in configurations.values.sorted(by: { $0.index < $1.index }) {
             let displayID = configuration.index
-            let controls = DisplayControls(displayID: displayID) { [weak self] id, control, value in
+            let target = Self.ddcTarget(for: configuration, document: document)
+            let enabledControls = Set(DisplayControl.allCases.filter { target.enabledCommands.contains($0.ddcCommand) })
+            let controls = DisplayControls(displayID: displayID, enabledControls: enabledControls) { [weak self] id, control, value in
                 self?.setControl(control, value: value, fromDisplay: id)
             }
             let displayItem = NSMenuItem(title: configuration.name, action: nil, keyEquivalent: "")
@@ -912,6 +918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ddcController.cancelAll()
         releaseSingleInstanceLock()
     }
 
@@ -997,6 +1004,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func enterConfigurationSafetyState(_ error: DisplayConfigurationStoreError) {
         configurationSafetyGate.requireUserReview(error)
+        refreshDDCOperationAccess()
         pendingUSBSwitch?.cancel()
         pendingUSBSwitch = nil
         usbMonitor.stop()
@@ -1019,6 +1027,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         )
         updateConfigurationSafetyUI()
         refreshPeerConnectionStatus()
+    }
+
+    private func refreshDDCOperationAccess() {
+        ddcController.setOperationsAllowed(
+            configurationSafetyGate.allows(.ddc) && usbLearningSafetyGate.allows(.ddc)
+        )
     }
 
     private func updateConfigurationSafetyUI() {

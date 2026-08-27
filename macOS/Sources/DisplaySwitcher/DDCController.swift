@@ -1,33 +1,154 @@
 import Foundation
 
-enum DDCCommand: UInt8 {
-    case luminance = 0x10
-    case contrast = 0x12
-    case input = 0x60
-    case volume = 0x62
+final class UserDefaultsDDCValueCache: DDCValueCache {
+    private let defaults: UserDefaults
 
-    var m1ddcName: String {
-        switch self {
-        case .luminance: return "luminance"
-        case .contrast: return "contrast"
-        case .input: return "input"
-        case .volume: return "volume"
-        }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func value(stableID: String, command: DDCCommand) -> Int? {
+        let key = cacheKey(stableID: stableID, command: command)
+        guard defaults.object(forKey: key) != nil else { return nil }
+        return defaults.integer(forKey: key)
+    }
+
+    func setValue(_ value: Int, stableID: String, command: DDCCommand) {
+        defaults.set(value, forKey: cacheKey(stableID: stableID, command: command))
+    }
+
+    private func cacheKey(stableID: String, command: DDCCommand) -> String {
+        "LastValue.stable.\(stableID.lowercased()).\(command.m1ddcName)"
     }
 }
 
-struct DDCReading {
-    let current: Int
-    let maximum: Int
+final class M1DDCBackend: DDCBackend {
+    let identifier = "m1ddc"
+    let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
+    private let executablePath: String?
+    private let processLock = NSLock()
+    private var processes: [Process] = []
+    private var knownDisplays: [DDCKnownDisplay] = []
+
+    init(executablePath: String? = M1DDCBackend.detectedExecutablePath) {
+        self.executablePath = executablePath
+    }
+
+    var availability: DDCBackendAvailability {
+        executablePath == nil ? .unavailable("m1ddc 未安装") : .available
+    }
+
+    func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
+        processLock.lock()
+        knownDisplays = displays
+        processLock.unlock()
+    }
+
+    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
+        let output = try run(arguments: ["display", "list", "detailed"], token: token)
+        processLock.lock()
+        let known = knownDisplays
+        processLock.unlock()
+        return DetectedDisplay.parseList(output).map { display in
+            let stableID = known.first {
+                $0.selector.caseInsensitiveCompare(display.systemUUID) == .orderedSame
+            }?.stableID ?? display.systemUUID
+            return DDCBackendDisplay(stableID: stableID, name: display.name, selector: display.systemUUID)
+        }
+    }
+
+    func read(stableID: String, selector: String, command: DDCCommand,
+              token: DDCCancellationToken) throws -> DDCReading {
+        var lastError: Error?
+        for attempt in 0..<2 {
+            do {
+                let current = try readValue(selector: selector, operation: "get", command: command, token: token)
+                let maximum = try readValue(selector: selector, operation: "max", command: command, token: token)
+                return DDCReading(current: current, maximum: maximum)
+            } catch DDCBackendError.cancelled {
+                throw DDCBackendError.cancelled
+            } catch {
+                lastError = error
+                if attempt == 0 { Thread.sleep(forTimeInterval: 0.08) }
+            }
+        }
+        throw lastError ?? DDCBackendError.readFailed(stableID: stableID, command: command)
+    }
+
+    func write(stableID: String, selector: String, command: DDCCommand, value: Int,
+               token: DDCCancellationToken) throws {
+        guard UInt16(exactly: value) != nil else { throw DDCError.invalidValue(value) }
+        _ = try run(arguments: ["display", selector, "set", command.m1ddcName, "\(value)"], token: token)
+    }
+
+    func cancelAll() {
+        processLock.lock()
+        let running = processes
+        processLock.unlock()
+        running.filter(\.isRunning).forEach { $0.terminate() }
+    }
+
+    static var detectedExecutablePath: String? {
+        ["/opt/homebrew/bin/m1ddc", "/usr/local/bin/m1ddc"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private func readValue(selector: String, operation: String, command: DDCCommand,
+                           token: DDCCancellationToken) throws -> Int {
+        let output = try run(arguments: ["display", selector, operation, command.m1ddcName], token: token)
+        guard let value = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)), value >= 0 else {
+            throw DDCBackendError.readFailed(stableID: selector, command: command)
+        }
+        return value
+    }
+
+    private func run(arguments: [String], token: DDCCancellationToken) throws -> String {
+        try token.throwIfCancelled()
+        guard let executablePath else { throw DDCBackendError.unavailable(backend: identifier) }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        processLock.lock()
+        processes.append(process)
+        do {
+            try token.throwIfCancelled()
+            try process.run()
+            processLock.unlock()
+        } catch {
+            processes.removeAll { $0 === process }
+            processLock.unlock()
+            throw error
+        }
+        defer {
+            processLock.lock()
+            processes.removeAll { $0 === process }
+            processLock.unlock()
+        }
+        process.waitUntilExit()
+        try token.throwIfCancelled()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard process.terminationStatus == 0 else {
+            throw DDCError.commandFailed(arguments: arguments, status: process.terminationStatus,
+                                         detail: text.isEmpty ? nil : text)
+        }
+        return text
+    }
 }
 
 final class DDCController {
-    private let native: NativeDDCBackend
+    private let service: DDCControlService
 
     init() {
-        // Configuration loading is owned by AppDelegate so a failed migration can
-        // enter safe mode before this backend is allowed to enumerate or control hardware.
-        native = NativeDDCBackend(knownDisplays: [])
+        let native = NativeDDCBackend(knownDisplays: [])
+        let fallback = M1DDCBackend()
+        service = DDCControlService(
+            router: DDCBackendRouter(backends: [native, fallback]),
+            cache: UserDefaultsDDCValueCache()
+        )
     }
 
     /// Pure capability hint used by settings validation. It does not enumerate displays or issue DDC traffic.
@@ -35,139 +156,78 @@ final class DDCController {
 #if arch(arm64)
         return true
 #else
-        return hasM1DDC
+        return M1DDCBackend.detectedExecutablePath != nil
 #endif
     }
 
-    func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {
-        let knownDisplays = Self.knownDisplays(from: existingConfigurations)
-        native.updateKnownDisplays(knownDisplays)
-        let nativeDisplays = native.discover()
-        if !nativeDisplays.isEmpty || !Self.hasM1DDC {
-            guard !nativeDisplays.isEmpty else { throw DDCError.detectionFailed }
-            let rank = Dictionary(uniqueKeysWithValues: knownDisplays.enumerated().map {
-                ($0.element.systemUUID.uppercased(), $0.offset)
-            })
-            let ordered = nativeDisplays.enumerated().sorted { lhs, rhs in
-                let lhsRank = rank[lhs.element.systemUUID.uppercased()] ?? (knownDisplays.count + lhs.offset)
-                let rhsRank = rank[rhs.element.systemUUID.uppercased()] ?? (knownDisplays.count + rhs.offset)
-                return lhsRank < rhsRank
-            }.map(\.element)
-            return ordered.enumerated().map { offset, display in
-                DetectedDisplay(
-                    index: offset + 1,
-                    name: display.name,
-                    systemUUID: display.systemUUID
-                )
-            }
-        }
+    static var backendSummaryWithoutHardwareAccess: String {
+#if arch(arm64)
+        return M1DDCBackend.detectedExecutablePath == nil
+            ? "Apple Silicon 原生硬件 DDC 可用；未检测到 m1ddc 回退。"
+            : "Apple Silicon 原生硬件 DDC 可用；m1ddc 作为失败回退。"
+#else
+        return M1DDCBackend.detectedExecutablePath == nil
+            ? "Intel Mac 没有内置原生硬件 DDC 后端，且未检测到 m1ddc；不使用软件调光替代。"
+            : "Intel Mac 使用 m1ddc 硬件 DDC 后端；不使用软件调光替代。"
+#endif
+    }
 
-        let output = try Self.runM1DDC(arguments: ["display", "list", "detailed"])
-        let detected = DetectedDisplay.parseList(output)
-        guard !detected.isEmpty else { throw DDCError.detectionFailed }
-        return detected
+    var availability: DDCBackendAvailability { service.availability }
+    var capabilities: DDCBackendCapabilities { service.capabilities }
+
+    func setOperationsAllowed(_ allowed: Bool) {
+        service.setOperationsAllowed(allowed)
+    }
+
+    func cancelAll() {
+        service.cancelAll()
+    }
+
+    func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {
+        let known = Self.knownDisplays(from: existingConfigurations)
+        service.updateKnownDisplays(known)
+        let detected = try service.enumerateDisplays()
+        let rank = Dictionary(uniqueKeysWithValues: known.enumerated().map {
+            ($0.element.stableID.lowercased(), $0.offset)
+        })
+        let ordered = detected.enumerated().sorted { lhs, rhs in
+            let lhsRank = rank[lhs.element.stableID.lowercased()] ?? (known.count + lhs.offset)
+            let rhsRank = rank[rhs.element.stableID.lowercased()] ?? (known.count + rhs.offset)
+            return lhsRank < rhsRank
+        }.map(\.element)
+        return ordered.enumerated().map { offset, display in
+            DetectedDisplay(index: offset + 1, name: display.name, systemUUID: display.selector.uppercased())
+        }
     }
 
     func updateConfigurations(_ configurations: [DisplayConfiguration]) {
-        native.updateKnownDisplays(Self.knownDisplays(from: configurations))
+        service.updateKnownDisplays(Self.knownDisplays(from: configurations))
     }
 
-    func read(selector: String, command: DDCCommand) -> DDCReading? {
-        if native.hasDisplay(selector: selector) {
-            guard let value = native.read(selector: selector, command: command.rawValue) else {
-                return nil
-            }
-            return DDCReading(current: value.current, maximum: value.maximum)
-        }
-
-        for attempt in 0..<2 {
-            if Self.hasM1DDC,
-               let current = Self.readM1DDC(selector: selector, operation: "get", command: command),
-               let maximum = Self.readM1DDC(selector: selector, operation: "max", command: command)
-            {
-                return DDCReading(current: current, maximum: maximum)
-            }
-
-            if attempt == 0 { Thread.sleep(forTimeInterval: 0.08) }
-        }
-        return nil
+    func read(targets: [DDCDisplayTarget]) -> [String: [DDCCommand: DDCResolvedReading]] {
+        service.read(targets)
     }
 
-    func write(selector: String, command: DDCCommand, value: Int) throws {
-        guard let nativeValue = UInt16(exactly: value) else {
-            throw DDCError.invalidValue(value)
-        }
-
-        switch native.write(selector: selector, command: command.rawValue, value: nativeValue) {
-        case .success:
-            return
-        case .unavailable, .failed:
-            break
-        }
-
-        guard Self.hasM1DDC else {
-            throw DDCError.nativeWriteFailed(command: command, value: value)
-        }
-        _ = try Self.runM1DDC(arguments: [
-            "display", selector, "set", command.m1ddcName, "\(value)"
-        ])
+    func write(command: DDCCommand, value: Int, targets: [DDCDisplayTarget]) -> [String: Error] {
+        service.write(command: command, value: value, targets: targets)
     }
 
-    private static var m1ddcPath: String? {
-        ["/opt/homebrew/bin/m1ddc", "/usr/local/bin/m1ddc"]
-            .first { FileManager.default.isExecutableFile(atPath: $0) }
+    func write(stableID: String, selector: String, command: DDCCommand, value: Int) throws {
+        let target = DDCDisplayTarget(stableID: stableID, selector: selector, readEnabled: true,
+                                      enabledCommands: [command])
+        if let error = service.write(command: command, value: value, targets: [target])[stableID] {
+            throw error
+        }
     }
 
-    private static var hasM1DDC: Bool { m1ddcPath != nil }
+    func cachedValue(stableID: String, command: DDCCommand) -> Int? {
+        service.cachedValue(stableID: stableID, command: command)
+    }
 
-    private static func knownDisplays(
-        from configurations: [DisplayConfiguration]
-    ) -> [NativeDDCKnownDisplay] {
+    private static func knownDisplays(from configurations: [DisplayConfiguration]) -> [DDCKnownDisplay] {
         configurations.map {
-            NativeDDCKnownDisplay(name: $0.name, systemUUID: $0.selector)
+            DDCKnownDisplay(stableID: $0.id ?? $0.selector, name: $0.name, selector: $0.selector)
         }
-    }
-
-    private static func readM1DDC(
-        selector: String,
-        operation: String,
-        command: DDCCommand
-    ) -> Int? {
-        guard
-            let output = try? runM1DDC(arguments: [
-                "display", selector, operation, command.m1ddcName
-            ]),
-            let value = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)),
-            value >= 0
-        else {
-            return nil
-        }
-        return value
-    }
-
-    private static func runM1DDC(arguments: [String]) throws -> String {
-        guard let path = m1ddcPath else { throw DDCError.m1ddcUnavailable }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = output
-        try process.run()
-        process.waitUntilExit()
-
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard process.terminationStatus == 0 else {
-            throw DDCError.commandFailed(
-                arguments: arguments,
-                status: process.terminationStatus,
-                detail: text.isEmpty ? nil : text
-            )
-        }
-        return text
     }
 }
 
@@ -190,7 +250,7 @@ enum DDCError: LocalizedError {
         case let .invalidValue(value):
             return "DDC 数值超出有效范围：\(value)"
         case let .inputNotConfigured(displayName):
-            return "\(displayName) 尚未配置 Mac/Windows 输入源，未执行切屏。"
+            return "\(displayName) 尚未配置输入源，未执行切屏。"
         case .m1ddcUnavailable:
             return "原生 DDC 不可用，且未安装 m1ddc 回退后端。"
         case let .nativeWriteFailed(command, value):
