@@ -5,10 +5,10 @@
 
 ## 当前基线
 
-- 原生 Swift/AppKit 菜单栏 App，正式工程为 `DisplaySwitcher.xcodeproj`。
+- 原生 Swift/AppKit 菜单栏 App，正式工程为 `macOS/DisplaySwitcher.xcodeproj`。
 - Bundle Identifier：`local.maizi.DisplaySwitcher`；最低支持 macOS 12。
-- 正式构建脚本：`scripts/build-app.sh`。
-- 构建产物：`outputs/DisplaySwitcher.app` 和当前架构 ZIP。
+- 正式构建脚本：`macOS/scripts/build-app.sh`。
+- 构建产物：`macOS/outputs/DisplaySwitcher.app` 和当前架构 ZIP。
 - 当前版本：2.1.0（build 19）。
 - 已支持动态多显示器配置、旧双显示器配置迁移和未知显示器安全空输入源。
 - Apple Silicon 优先使用内置 CoreDisplay/IOAVService DDC，`m1ddc` 为可选回退；Intel Mac 尚无内置原生 DDC 后端。
@@ -19,7 +19,7 @@
 ### M-001 Xcode 原生工程迁移
 
 - [x] 标准 macOS Application Target 和共享 Scheme。
-- [x] Xcode Debug/Release 构建和 `scripts/build-app.sh`。
+- [x] Xcode Debug/Release 构建和 `macOS/scripts/build-app.sh`。
 - [x] App 资源、Info.plist、Framework 和本地临时签名。
 - [x] 删除已经过时的 `Package.swift`。
 
@@ -36,6 +36,12 @@
 - [x] Issue/PR 模板。
 - [x] macOS GitHub Actions Debug、测试、Release、签名验证和 artifact。
 - [x] 当前可达 Git 历史的常见私钥/Token 模式检查。
+
+### M-003A macOS 平台目录隔离
+
+- [x] Xcode 工程、源码、资源、测试、第三方许可和构建脚本统一放入 `macOS/`。
+- [x] Xcode、命令行构建、GitHub Actions 和文档统一使用新路径。
+- [x] 共享协议和仓库级文件保留在根目录，Windows 源码不受影响。
 
 ## P0：公开源码前继续完成
 
@@ -114,3 +120,4 @@
 | --- | --- | --- | --- | --- |
 | 2026-08-27 | M-002 动态多显示器 | 完成 | 1229b9b | 6 项配置与迁移测试通过 |
 | 2026-08-27 | M-003 开源仓库基础 | 完成 | f46eb28、0a1ee8c | 本地与 GitHub Actions 均通过 |
+| 2026-08-27 | M-003A macOS 平台目录隔离 | 完成 | 1a0faab | Debug、Release、13 项测试、脚本打包、严格验签和 GitHub Actions 通过 |
