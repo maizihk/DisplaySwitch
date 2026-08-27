@@ -14,10 +14,15 @@
   - 消息验收与拒绝路径统一到状态机前置校验
   - 150ms USB 防抖、在线窗口（6s）和 4 次/600ms 握手重试/兜底逻辑
   - `usb_present` 与 `usb_attached_and_awake` 的事件关联与幂等处理
-- 新增状态机/消息向量测试（不接真实网络/USB/DDC）：
+- 新增并修复状态机/消息向量测试（不接真实网络/USB/DDC）：
   - `macOS/Tests/DisplaySwitcherTests/HandoffMessageVectorTests.swift`（17 条）
   - `macOS/Tests/DisplaySwitcherTests/HandoffStateMachineVectorTests.swift`（15 条）
-- `macOS/DisplaySwitcher.xcodeproj` 已加入新测试源文件；核心源码与测试目标可在 Xcode 中执行。
+- `macOS/DisplaySwitcher.xcodeproj` 已将 `HandoffStateMachine.swift` 正确加入测试目标编译范围。
+- 本次按 PR #4 协调阻塞清单修复了：
+  - `completeOutgoingIfNeeded` 不再在 `requestSwitch` 前清空 `outgoingEventID`
+  - 通过状态机重试/确认路径修正重复 `handover_request` 的确认发送条件（仅 USB 已接入时发送）
+  - `usb_present` mismatch 不再触发额外唤醒动作，避免副作用计数漂移
+  - 统一公共向量文件路径解析到仓库根目录，避免测试找错目录
 
 ## 自动验证
 
@@ -26,19 +31,21 @@
   - `xcodebuild -version`：当前系统 `active developer directory` 为 `CommandLineTools`，不能运行 `xcodebuild`/`build-app.sh`。
   - `xcrun --sdk macosx --show-sdk-path` 可取到 `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`
 - **未能运行自动验证**（受环境限制）：
-  - `xcodebuild -project DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Debug build`
-  - `xcodebuild -project DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Release build`
-  - `./scripts/build-app.sh`
-  - `codesign --verify --deep --strict`
+  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Debug build`（不可运行）
+  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Release build`（不可运行）
+  - `./macOS/scripts/build-app.sh`（不可运行）
+  - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`（尚无产物）
   - 向量测试（Debug/Release 下的 XCTest）
 - 原因：当前终端 `xcode-select` 未指向 Xcode（`xcodebuild` 依赖）。
 
 ## 尚需验证
 
 - 在有 Xcode 的环境中继续执行：
-  - `xcodebuild` Debug/Release 构建
+  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Debug build`
+  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Release build`
   - 相关 XCTest（含 17 条消息向量和 15 条状态机向量）
-  - `./scripts/build-app.sh` 与 `codesign --verify --deep --strict`
+  - `./macOS/scripts/build-app.sh`
+  - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`
 - 实机验证（未执行）：
   - 状态机与协议行为在真实 USB/显示器与网络环境下是否完全一致
 

@@ -401,9 +401,6 @@ private func locateProjectRoot() -> URL {
         if cursor.lastPathComponent == "DisplaySwitch" {
             return cursor
         }
-        if FileManager.default.fileExists(atPath: cursor.appendingPathComponent("AGENTS.md").path) {
-            return cursor.deletingLastPathComponent()
-        }
         cursor = cursor.deletingLastPathComponent()
     }
     return URL(fileURLWithPath: #filePath).deletingLastPathComponent()

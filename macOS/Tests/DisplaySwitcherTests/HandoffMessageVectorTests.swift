@@ -143,13 +143,21 @@ private func expectedTarget(for localPlatform: String) -> String {
 }
 
 private func readMessageVectorFixtures() throws -> MessageValidationVectorFile {
-    let fileURL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
+    let fileURL = resolveProjectRoot(file: #filePath)
         .appendingPathComponent("contracts/protocol-v1/message-validation-vectors.json")
     let data = try Data(contentsOf: fileURL)
     return try JSONDecoder().decode(MessageValidationVectorFile.self, from: data)
+}
+
+private func resolveProjectRoot(file: String) -> URL {
+    var cursor = URL(fileURLWithPath: file)
+    while cursor.path != "/" {
+        if cursor.lastPathComponent == "DisplaySwitch" {
+            return cursor
+        }
+        cursor = cursor.deletingLastPathComponent()
+    }
+    return URL(fileURLWithPath: file).deletingLastPathComponent()
 }
 
 private func messageValidationResult(for vector: MessageValidationVector, now: TimeInterval, pairingCode: String) -> MessageValidationResult {

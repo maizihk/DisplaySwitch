@@ -338,7 +338,8 @@ final class HandoffStateMachine {
             log(.rejectMessage(type: message.type, eventID: message.eventID, reason: "duplicate"))
             if message.type == .handoverRequest,
                let incomingEventID,
-               incomingEventID == message.eventID {
+               incomingEventID == message.eventID,
+               usbPresent {
                 sendUsbReadyBurst(
                     eventID: message.eventID,
                     wakeSucceeded: wakeSucceededByEventID[incomingEventID]
@@ -408,10 +409,6 @@ final class HandoffStateMachine {
                 completeOutgoingIfNeeded(eventID: outgoingEventID)
             } else {
                 completeOutgoingIfNeeded(eventID: outgoingEventID)
-                let eventID = eventIDSource.nextEventID()
-                pendingWakeByEventID[eventID] = .usbPresence
-                log(.requestWake(eventID: eventID))
-                sink.requestWake(eventID: eventID)
             }
         case .usbReady:
             guard outgoingEventID == message.eventID else {
@@ -502,7 +499,7 @@ final class HandoffStateMachine {
 
     private func completeOutgoingIfNeeded(eventID: String) {
         guard outgoingEventID == eventID else { return }
-        cancelOutgoing()
+        clearOutgoingTimers()
         requestSwitch(eventID: eventID)
     }
 
