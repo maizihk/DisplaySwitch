@@ -82,6 +82,7 @@ $releaseFiles = @(
     "DisplaySwitcher.Native.winmd",
     "Microsoft.WindowsAppRuntime.Bootstrap.dll",
     "App.xbf",
+    "AppIcon.ico",
     "SettingsWindow.xbf"
 )
 foreach ($name in $releaseFiles) {

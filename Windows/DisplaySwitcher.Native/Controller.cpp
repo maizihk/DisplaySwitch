@@ -120,6 +120,7 @@ namespace DisplaySwitcher::Native
     {
         // Close the gate before stopping components so already queued callbacks and
         // detached hardware work cannot race the transition into the safe state.
+        ++sideEffectGeneration_;
         sideEffectGate_.Block();
         auto safe = Config();
         safe.EnterSafeState();
@@ -128,6 +129,30 @@ namespace DisplaySwitcher::Native
             config_ = std::move(safe);
         }
         ApplyConfiguration(false);
+    }
+
+    void Controller::BeginUsbLearning()
+    {
+        if (usbLearningActive_.exchange(true)) return;
+        ++sideEffectGeneration_;
+        sideEffectGate_.Block();
+        StopPeerHealthCheck();
+        peer_->Stop();
+        usbWatcher_->Reconfigure(-1, -1);
+        stateMachine_.reset();
+        SetPeerConnectionStatus(L"USB 学习中，协同已暂停", false);
+        SetStatus(L"正在学习 USB 设备；自动协同和硬件操作已暂停");
+    }
+
+    void Controller::EndUsbLearning()
+    {
+        if (!usbLearningActive_.exchange(false)) return;
+        ApplyConfiguration(false);
+    }
+
+    bool Controller::AllowsSideEffects(uint64_t generation) const noexcept
+    {
+        return sideEffectGate_.AllowsSideEffects() && sideEffectGeneration_.load() == generation;
     }
 
     void Controller::OnUsbPresenceChanged(bool present)
@@ -163,16 +188,17 @@ namespace DisplaySwitcher::Native
             case StateMachineAction::Kind::RequestWake:
             {
                 auto eventId = action.eventId;
+                auto generation = sideEffectGeneration_.load();
                 std::weak_ptr<Controller> weak = shared_from_this();
-                std::thread([weak, eventId]
+                std::thread([weak, eventId, generation]
                 {
                     auto controller = weak.lock();
-                    if (!controller || controller->disposed_ || !controller->sideEffectGate_.AllowsSideEffects()) return;
+                    if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
                     auto success = WakeDisplay();
                     if (auto self = weak.lock(); self && !self->disposed_)
-                        self->Enqueue([weak, eventId, success]
+                        self->Enqueue([weak, eventId, success, generation]
                         {
-                            if (auto value = weak.lock(); value && value->stateMachine_)
+                            if (auto value = weak.lock(); value && value->stateMachine_ && value->AllowsSideEffects(generation))
                                 value->ApplyStateMachineActions(value->stateMachine_->OnWakeCompleted(NowMilliseconds(), eventId, success));
                         });
                 }).detach();
@@ -182,7 +208,7 @@ namespace DisplaySwitcher::Native
                 SwitchToMac(action.eventId.empty() ? std::nullopt : std::optional<std::wstring>{ action.eventId }, false);
                 break;
             case StateMachineAction::Kind::SetPeerReachable:
-                SetPeerConnectionStatus(action.value ? L"已连接到 Mac" : L"连接已中断", action.value);
+                SetPeerConnectionStatus(action.value ? L"已连接到对端" : L"连接已中断", action.value);
                 break;
             case StateMachineAction::Kind::CancelOutgoing:
                 WriteDiagnostic("state_machine.outgoing canceled=1");
@@ -209,22 +235,23 @@ namespace DisplaySwitcher::Native
             return;
         }
         WriteDiagnostic(manual ? "display.switch_begin manual=1" : "display.switch_begin manual=0");
-        SetStatus(manual ? L"正在手动切换显示器到 Mac…" : L"正在切换显示器到 Mac…");
+        SetStatus(manual ? L"正在手动切换显示器到对端…" : L"正在切换显示器到对端…");
+        auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, config, eventId, manual]
+        std::thread([weak, config, eventId, manual, generation]
         {
             auto controller = weak.lock();
-            if (!controller || controller->disposed_ || !controller->sideEffectGate_.AllowsSideEffects()) return;
+            if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
             auto result = SwitchDisplaysToMac(config);
             if (auto self = weak.lock(); self && !self->disposed_)
             {
-                self->Enqueue([weak, result, manual, eventId]
+                self->Enqueue([weak, result, manual, eventId, generation]
                 {
-                    if (auto value = weak.lock())
+                    if (auto value = weak.lock(); value && value->AllowsSideEffects(generation))
                     {
                         if (eventId && value->stateMachine_)
                             value->ApplyStateMachineActions(value->stateMachine_->OnSwitchCompleted(NowMilliseconds(), *eventId, result.success));
-                        std::wstring success = manual ? L"已手动切换到 Mac" : L"已切换到 Mac";
+                        std::wstring success = manual ? L"已手动切换到对端" : L"已切换到对端";
                         std::wstring failure = manual ? L"切换失败：" : L"部分切换失败：";
                         value->SetStatus(result.success ? success : failure + result.error);
                         if (!result.success) value->ShowError(L"显示器切换失败", result.error.empty() ? L"未知错误" : result.error);
@@ -239,7 +266,7 @@ namespace DisplaySwitcher::Native
         StopPeerHealthCheck();
         if (!sideEffectGate_.AllowsSideEffects()) return;
         auto config = Config();
-        if (config.coordinationEnabled) SetPeerConnectionStatus(L"正在连接 Mac…", false);
+        if (config.coordinationEnabled) SetPeerConnectionStatus(L"正在连接对端…", false);
         std::weak_ptr<Controller> weak = shared_from_this();
         peerHealthThread_ = std::jthread([weak](std::stop_token token)
         {
@@ -284,13 +311,15 @@ namespace DisplaySwitcher::Native
     void Controller::SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
     {
         Send(type, eventId, wakeSucceeded);
+        auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, type, eventId, wakeSucceeded]
+        std::thread([weak, type, eventId, wakeSucceeded, generation]
         {
             for (int attempt = 1; attempt < 3; ++attempt)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(120));
-                if (auto self = weak.lock(); self && !self->disposed_) self->Send(type, eventId, wakeSucceeded);
+                if (auto self = weak.lock(); self && !self->disposed_ && self->AllowsSideEffects(generation))
+                    self->Send(type, eventId, wakeSucceeded);
                 else return;
             }
         }).detach();
@@ -313,16 +342,17 @@ namespace DisplaySwitcher::Native
         auto actionConfig = config; actionConfig.displays = selection.mappedDisplays;
         auto name = profile->name; auto missing = selection.missingDisplayIds.size();
         SetStatus(L"正在切换到 " + name + L"…");
+        auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, actionConfig, name, missing]
+        std::thread([weak, actionConfig, name, missing, generation]
         {
             auto controller = weak.lock();
-            if (!controller || controller->disposed_ || !controller->sideEffectGate_.AllowsSideEffects()) return;
+            if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
             auto result = SwitchDisplaysToMac(actionConfig);
             if (auto self = weak.lock(); self && !self->disposed_)
-                self->Enqueue([weak, result, name, missing]
+                self->Enqueue([weak, result, name, missing, generation]
                 {
-                    if (auto value = weak.lock())
+                    if (auto value = weak.lock(); value && value->AllowsSideEffects(generation))
                     {
                         auto text = result.success ? L"已切换到 " + name : L"切换到 " + name + L" 失败：" + result.error;
                         if (missing) text += L"；有 " + std::to_wstring(missing) + L" 台显示器缺少映射";
@@ -415,6 +445,8 @@ namespace DisplaySwitcher::Native
                 { std::scoped_lock lock(self->configMutex_); self->config_ = std::move(config); }
                 return true;
             },
+            [weak] { if (auto self = weak.lock()) self->BeginUsbLearning(); },
+            [weak] { if (auto self = weak.lock()) self->EndUsbLearning(); },
             [weak] { if (auto self = weak.lock()) self->settingsWindow_ = nullptr; });
         {
             std::scoped_lock lock(stateMutex_);

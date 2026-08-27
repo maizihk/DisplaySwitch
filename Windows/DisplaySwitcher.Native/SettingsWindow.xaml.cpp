@@ -41,6 +41,21 @@ namespace
         if (errno || end != value.c_str() + value.size() || number < minimum || number > maximum) return std::nullopt;
         return static_cast<int>(number);
     }
+
+    int64_t SteadyMilliseconds()
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    std::vector<::DisplaySwitcher::Native::UsbLearningDevice> LearningDevices(
+        std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> const& devices)
+    {
+        std::vector<::DisplaySwitcher::Native::UsbLearningDevice> result;
+        result.reserve(devices.size());
+        for (auto const& device : devices) result.push_back(device.LearningDevice());
+        return result;
+    }
 }
 
 namespace winrt::DisplaySwitcher::Native::implementation
@@ -55,12 +70,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+        std::function<void()> beginUsbLearning,
+        std::function<void()> endUsbLearning,
         std::function<void()> closed)
     {
         if (initialized_) return;
         initialized_ = true;
         original_ = config; saved_ = std::move(saved); readDdc_ = std::move(readDdc);
-        writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache); closed_ = std::move(closed);
+        writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache);
+        beginUsbLearning_ = std::move(beginUsbLearning); endUsbLearning_ = std::move(endUsbLearning);
+        closed_ = std::move(closed);
         Title(L"常规");
         try { SystemBackdrop(MicaBackdrop()); } catch (...) {}
         auto content = BuildContent();
@@ -68,7 +87,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (auto root = content.try_as<FrameworkElement>())
             root.ActualThemeChanged([this](auto const&, auto const&) { ApplyTitleBarTheme(); });
         LoadValues(config); ResizeAndCenter(); ApplyTitleBarTheme();
-        Closed([this](auto const&, auto const&) { ddcCancellation_.Cancel(); if (closed_) closed_(); });
+        Closed([this](auto const&, auto const&) { ddcCancellation_.Cancel(); EndUsbLearning(); if (closed_) closed_(); });
         LoadUsbDevices();
         LoadDdcMonitors();
     }
@@ -115,13 +134,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
-        commonTab.Content(CreatePage({ CreateSection(L"常规", { autoStart_, commonHint }) }));
+        auto about = Button(); about.Content(box_value(L"关于 DisplaySwitch"));
+        about.Click([this](auto const&, auto const&) { ShowAbout(); });
+        commonTab.Content(CreatePage({ CreateSection(L"常规", { autoStart_, commonHint, about }) }));
 
         auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
         refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
         auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
-        auto usbHint = TextBlock(); usbHint.Text(L"选择用于判断键鼠归属的 USB Hub。协同关闭时，USB 离开 Windows 后将直接切换到 Mac。");
+        auto usbHint = TextBlock(); usbHint.Text(L"此页保留旧版单对端 USB 设置。新绑定请在对应协同配置中使用“学习 USB 设备…”，程序不会猜测候选。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
             usbAutomation_, CreateTwoColumn(usbDevices_, refresh), CreateTwoColumn(vendorId_, productId_), usbHint }) }));
@@ -154,7 +175,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
-        auto displayHint = TextBlock(); displayHint.Text(L"首次使用时请选择控制方式、显示器和 Mac 输入源；未完成配置前不会执行切屏。");
+        auto displayHint = TextBlock(); displayHint.Text(L"首次使用时请选择控制方式和显示器，并在协同配置中填写各自的对端输入源；未完成配置前不会执行切屏。");
         displayHint.TextWrapping(TextWrapping::Wrap); displayHint.Opacity(0.72);
         nativeDdcPanel_ = StackPanel(); nativeDdcPanel_.Spacing(14);
         auto nativeHint = TextBlock(); nativeHint.Text(L"直接调用 Windows DDC/CI，无需外部工具。重新连接显示器后会自动刷新句柄。");
@@ -199,7 +220,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto buttonColumn = ColumnDefinition(); buttonColumn.Width(GridLengthHelper::Auto());
         footer.ColumnDefinitions().Append(messageColumn); footer.ColumnDefinitions().Append(buttonColumn);
         validation_.VerticalAlignment(VerticalAlignment::Center); Grid::SetColumn(validation_, 0); footer.Children().Append(validation_);
-        auto cancel = Button(); cancel.Content(box_value(L"取消")); cancel.Click([this](auto const&, auto const&) { ddcCancellation_.Cancel(); appWindow_.Hide(); });
+        auto cancel = Button(); cancel.Content(box_value(L"取消")); cancel.Click([this](auto const&, auto const&) { ddcCancellation_.Cancel(); EndUsbLearning(); appWindow_.Hide(); });
         auto save = Button(); save.Content(box_value(L"保存")); save.Click([this](auto const&, auto const&) { Save(); });
         try { save.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>()); } catch (...) {}
         auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(12);
@@ -343,6 +364,169 @@ namespace winrt::DisplaySwitcher::Native::implementation
         catch (...) { ShowValidationError(L"读取 USB 失败。"); }
     }
 
+    void SettingsWindow::StartUsbLearning(std::wstring const& profileId)
+    {
+        EndUsbLearning();
+        CaptureProfileEditors();
+        auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
+            { return _wcsicmp(item.id.c_str(), profileId.c_str()) == 0; });
+        if (profile == workingProfiles_.end())
+        {
+            ShowValidationError(L"目标协同配置已不存在，未改变 USB 绑定。");
+            return;
+        }
+
+        ddcCancellation_.Cancel();
+        if (beginUsbLearning_) beginUsbLearning_();
+        usbLearningRuntimePaused_ = true;
+        try
+        {
+            auto baseline = ::DisplaySwitcher::Native::UsbWatcher::EnumerateDevices();
+            usbLearningGeneration_ = usbLearning_.Start(profileId, LearningDevices(baseline), SteadyMilliseconds());
+            usbLearningTimer_ = DispatcherQueue().CreateTimer();
+            usbLearningTimer_.Interval(std::chrono::milliseconds(250));
+            usbLearningTimer_.IsRepeating(true);
+            usbLearningTimer_.Tick([this](auto const&, auto const&) { PollUsbLearning(); });
+            usbLearningTimer_.Start();
+            validation_.Text(L"正在为“" + profile->name + L"”学习 USB 设备：请在 30 秒内接入目标设备。学习完成前自动协同和硬件操作保持暂停。");
+            validation_.Visibility(Visibility::Visible);
+        }
+        catch (...)
+        {
+            EndUsbLearning();
+            ShowValidationError(L"无法开始 USB 学习；原绑定保持不变。");
+        }
+    }
+
+    void SettingsWindow::PollUsbLearning()
+    {
+        if (!usbLearning_.Active() || usbLearningDialogOpen_) return;
+        auto generation = usbLearningGeneration_;
+        auto profileExists = std::any_of(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& profile)
+            { return _wcsicmp(profile.id.c_str(), usbLearning_.ProfileId().c_str()) == 0; });
+        try
+        {
+            auto devices = ::DisplaySwitcher::Native::UsbWatcher::EnumerateDevices();
+            usbLearning_.Observe(generation, LearningDevices(devices), SteadyMilliseconds(), profileExists);
+        }
+        catch (...)
+        {
+            EndUsbLearning(L"读取 USB 设备失败；原绑定保持不变。");
+            return;
+        }
+        if (!usbLearning_.Active())
+        {
+            EndUsbLearning(profileExists ? L"USB 学习已在 30 秒后超时；原绑定保持不变。" :
+                L"目标配置已删除；原 USB 绑定保持不变。");
+            return;
+        }
+        if (!usbLearning_.Candidates().empty()) ShowUsbLearningCandidates();
+    }
+
+    void SettingsWindow::ShowUsbLearningCandidates()
+    {
+        if (!usbLearning_.Active() || usbLearningDialogOpen_) return;
+        usbLearningDialogOpen_ = true;
+        if (usbLearningTimer_) usbLearningTimer_.Stop();
+        auto generation = usbLearningGeneration_;
+        auto profileId = usbLearning_.ProfileId();
+        auto candidates = usbLearning_.Candidates();
+
+        auto picker = ComboBox();
+        picker.Header(box_value(candidates.size() > 1 ? L"检测到多个新增设备，请明确选择" : L"检测到新增设备，请确认"));
+        picker.HorizontalAlignment(HorizontalAlignment::Stretch);
+        for (auto const& candidate : candidates) picker.Items().Append(box_value(candidate.displayName));
+        if (candidates.size() == 1) picker.SelectedIndex(0);
+
+        auto note = TextBlock();
+        note.Text(L"确认前不会修改原绑定，也不会恢复 UDP、自动 USB 交接、DDC 或唤醒。");
+        note.TextWrapping(TextWrapping::Wrap); note.Opacity(0.72);
+        auto content = StackPanel(); content.Spacing(12); content.Children().Append(picker); content.Children().Append(note);
+        auto dialog = ContentDialog(); dialog.Title(box_value(L"选择 USB 学习候选")); dialog.Content(content);
+        dialog.PrimaryButtonText(L"绑定所选设备"); dialog.CloseButtonText(L"取消");
+        dialog.DefaultButton(ContentDialogButton::Close); dialog.IsPrimaryButtonEnabled(picker.SelectedIndex() >= 0);
+        picker.SelectionChanged([dialog](auto const& sender, auto const&)
+            { dialog.IsPrimaryButtonEnabled(sender.template as<ComboBox>().SelectedIndex() >= 0); });
+        dialog.XamlRoot(Content().XamlRoot());
+        dialog.ShowAsync().Completed([this, generation, profileId, candidates, picker, dialog](auto const& operation, auto const& status)
+        {
+            usbLearningDialogOpen_ = false;
+            if (status != Windows::Foundation::AsyncStatus::Completed || operation.GetResults() != ContentDialogResult::Primary)
+            {
+                usbLearning_.Cancel(generation);
+                EndUsbLearning(L"USB 学习已取消；原绑定保持不变。");
+                return;
+            }
+            auto index = picker.SelectedIndex();
+            auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
+                { return _wcsicmp(item.id.c_str(), profileId.c_str()) == 0; });
+            if (index < 0 || static_cast<size_t>(index) >= candidates.size() || profile == workingProfiles_.end())
+            {
+                usbLearning_.Cancel(generation);
+                EndUsbLearning(L"目标配置或候选已失效；原 USB 绑定保持不变。");
+                return;
+            }
+            auto selected = usbLearning_.Confirm(generation, candidates[static_cast<size_t>(index)].localReference,
+                SteadyMilliseconds(), true);
+            if (!selected)
+            {
+                EndUsbLearning(L"USB 学习已超时或结果已失效；原绑定保持不变。");
+                return;
+            }
+            profile->triggerDevices.erase(std::remove_if(profile->triggerDevices.begin(), profile->triggerDevices.end(),
+                [](auto const& item) { return item.kind == L"usb"; }), profile->triggerDevices.end());
+            profile->triggerDevices.push_back({ L"usb", selected->localReference, selected->displayName });
+            wchar_t value[5]{}; swprintf_s(value, L"%04X", selected->vendorId); vendorId_.Text(value);
+            swprintf_s(value, L"%04X", selected->productId); productId_.Text(value);
+            usbDevices_.SelectedIndex(-1); learnedUsbName_ = selected->displayName;
+            auto profileName = profile->name;
+            EndUsbLearning(L"已为“" + profileName + L"”选择 USB 设备；保存设置后生效。");
+            RebuildProfileEditors();
+        });
+    }
+
+    void SettingsWindow::EndUsbLearning(std::wstring const& message)
+    {
+        if (usbLearningTimer_)
+        {
+            usbLearningTimer_.Stop();
+            usbLearningTimer_ = nullptr;
+        }
+        if (usbLearning_.Active()) usbLearning_.Cancel(usbLearningGeneration_);
+        if (usbLearningRuntimePaused_)
+        {
+            usbLearningRuntimePaused_ = false;
+            if (endUsbLearning_) endUsbLearning_();
+        }
+        if (!message.empty())
+        {
+            validation_.Text(message);
+            validation_.Visibility(Visibility::Visible);
+        }
+    }
+
+    void SettingsWindow::ShowAbout()
+    {
+        auto info = ::DisplaySwitcher::Native::PublicAboutInfo();
+        auto icon = Image();
+        icon.Width(64); icon.Height(64); icon.HorizontalAlignment(HorizontalAlignment::Center);
+        icon.Source(Microsoft::UI::Xaml::Media::Imaging::BitmapImage(Windows::Foundation::Uri(L"ms-appx:///AppIcon.ico")));
+        auto title = TextBlock(); title.Text(info.applicationName); title.FontSize(22);
+        title.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); title.HorizontalAlignment(HorizontalAlignment::Center);
+        auto details = TextBlock();
+        details.Text(L"版本 " + info.publicVersion + L"\n" + info.architecture + L"\n" + info.protocol);
+        details.TextAlignment(TextAlignment::Center); details.HorizontalAlignment(HorizontalAlignment::Center);
+        auto notice = TextBlock(); notice.Text(info.buildNotice); notice.TextWrapping(TextWrapping::Wrap);
+        notice.TextAlignment(TextAlignment::Center); notice.Opacity(0.72);
+        auto project = HyperlinkButton(); project.Content(box_value(L"项目主页"));
+        project.NavigateUri(Windows::Foundation::Uri(info.projectUrl)); project.HorizontalAlignment(HorizontalAlignment::Center);
+        auto content = StackPanel(); content.Spacing(10);
+        content.Children().Append(icon); content.Children().Append(title); content.Children().Append(details);
+        content.Children().Append(project); content.Children().Append(notice);
+        auto dialog = ContentDialog(); dialog.Title(box_value(L"关于")); dialog.Content(content);
+        dialog.CloseButtonText(L"关闭"); dialog.XamlRoot(Content().XamlRoot()); dialog.ShowAsync();
+    }
+
     void SettingsWindow::LoadDdcMonitors()
     {
         CaptureDisplayEditors();
@@ -432,7 +616,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.controlMonitorPath = TextBox(); Header(controls.controlMonitorPath, L"ControlMyMonitor 设备路径");
             controls.controlMonitorPath.Text(display.controlMonitorPath);
             controls.controlMyMonitorFields = controls.controlMonitorPath;
-            controls.macInput = TextBox(); Header(controls.macInput, L"Mac 输入源编号"); controls.macInput.MaxLength(5);
+            controls.macInput = TextBox(); Header(controls.macInput, L"旧版单对端输入源编号（兼容）"); controls.macInput.MaxLength(5);
             controls.macInput.Text(display.macInput >= 0 ? std::to_wstring(display.macInput) : L"");
             controls.readEnabled = ToggleSwitch(); Header(controls.readEnabled, L"允许读取硬件 DDC 状态");
             controls.readEnabled.IsOn(display.readEnabled);
@@ -598,19 +782,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto triggerSummary = TextBlock();
             triggerSummary.Text(profile.triggerDevices.empty() ? L"未引用本机触发设备" : L"已引用 " + std::to_wstring(profile.triggerDevices.size()) + L" 个本机触发设备");
             triggerSummary.Opacity(0.72); fields.Children().Append(triggerSummary);
-            auto bindUsb = Button(); bindUsb.Content(box_value(L"引用 USB 页设备"));
-            bindUsb.Click([this, id = profile.id](auto const&, auto const&)
-            {
-                CaptureProfileEditors();
-                auto vendor = ParseInteger(vendorId_.Text().c_str(), 16, 0, 65535);
-                auto product = ParseInteger(productId_.Text().c_str(), 16, 0, 65535);
-                auto target = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item) { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
-                if (!vendor || !product || target == workingProfiles_.end()) { ShowValidationError(L"请先在 USB 页选择或填写完整设备。"); return; }
-                wchar_t reference[32]{}; swprintf_s(reference, L"usb:%04X:%04X", *vendor, *product);
-                target->triggerDevices.erase(std::remove_if(target->triggerDevices.begin(), target->triggerDevices.end(),
-                    [](auto const& item) { return item.kind == L"usb"; }), target->triggerDevices.end());
-                target->triggerDevices.push_back({ L"usb", reference, L"USB 触发设备" }); RebuildProfileEditors();
-            });
+            auto learnUsb = Button(); learnUsb.Content(box_value(L"学习 USB 设备…"));
+            learnUsb.Click([this, id = profile.id](auto const&, auto const&) { StartUsbLearning(id); });
             auto clearTriggers = Button(); clearTriggers.Content(box_value(L"清除触发引用"));
             clearTriggers.Click([this, id = profile.id](auto const&, auto const&)
             {
@@ -636,7 +809,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto remove = Button(); remove.Content(box_value(L"删除")); remove.IsEnabled(workingProfiles_.size() > 1);
             remove.Click([this, id = profile.id](auto const&, auto const&) { RemoveProfile(id); });
             auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(8);
-            buttons.Children().Append(detect); buttons.Children().Append(bindUsb); buttons.Children().Append(clearTriggers);
+            buttons.Children().Append(detect); buttons.Children().Append(learnUsb); buttons.Children().Append(clearTriggers);
             buttons.Children().Append(up); buttons.Children().Append(down); buttons.Children().Append(remove);
             fields.Children().Append(buttons); profileEditorsPanel_.Children().Append(CreateCard(fields));
             profileEditors_.push_back(std::move(controls));
@@ -646,6 +819,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::RemoveProfile(std::wstring const& id)
     {
         CaptureProfileEditors();
+        if (usbLearning_.Active() && _wcsicmp(usbLearning_.ProfileId().c_str(), id.c_str()) == 0)
+            EndUsbLearning(L"目标配置已删除；原 USB 绑定保持不变。");
         if (workingProfiles_.size() <= 1) { ShowValidationError(L"至少保留一个协同配置。"); return; }
         auto found = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item) { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
         if (found == workingProfiles_.end()) return;
@@ -823,6 +998,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::Save()
     {
         ddcCancellation_.Cancel();
+        EndUsbLearning();
         auto vendorText = Trim(vendorId_.Text().c_str()); auto productText = Trim(productId_.Text().c_str());
         auto vendor = ParseInteger(vendorText, 16, 0, 0xFFFF); auto product = ParseInteger(productText, 16, 0, 0xFFFF);
         if ((usbAutomation_.IsOn() || !vendorText.empty() || !productText.empty()) && (!vendor || !product))
@@ -858,7 +1034,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (display.name.empty())
             { tabs_.SelectedIndex(3); ShowValidationError(L"每台显示器都需要填写名称。"); return; }
             if (display.macInput < 0 || display.macInput > 65535)
-            { tabs_.SelectedIndex(3); ShowValidationError(display.name + L"的 Mac 输入源必须为 0–65535 的整数。"); return; }
+            { tabs_.SelectedIndex(3); ShowValidationError(display.name + L"的旧版单对端输入源必须为 0–65535 的整数。"); return; }
             if (display.backend != L"native_ddc" && display.backend != L"control_my_monitor")
             { tabs_.SelectedIndex(3); ShowValidationError(display.name + L"尚未选择硬件 DDC 后端。"); return; }
             auto hardwareId = display.backend == L"native_ddc" ? display.nativeMonitorId : display.controlMonitorPath;
@@ -875,7 +1051,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         auto result = original_; result.usbAutomationEnabled = usbAutomation_.IsOn();
         result.usbVendorId = vendor.value_or(-1); result.usbProductId = product.value_or(-1); auto selected = usbDevices_.SelectedIndex();
-        if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
+        if (learnedUsbName_) result.usbName = *learnedUsbName_;
+        else if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
         else if (!vendor || !product) result.usbName.clear();
         result.displayControlBackend = backendIndex == 0 ? L"native_ddc" : backendIndex == 1 ? L"control_my_monitor" : L"";
         result.controlMyMonitorPath = controlMyMonitorPath; result.displays = workingDisplays_;

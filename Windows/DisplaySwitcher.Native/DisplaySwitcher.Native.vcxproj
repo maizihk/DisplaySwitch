@@ -70,6 +70,7 @@
     <ClInclude Include="resource.h" />
     <ClInclude Include="App.xaml.h"><DependentUpon>App.xaml</DependentUpon></ClInclude>
     <ClInclude Include="SettingsWindow.xaml.h"><DependentUpon>SettingsWindow.xaml</DependentUpon></ClInclude>
+    <ClInclude Include="AboutInfo.h" />
     <ClInclude Include="AppConfig.h" />
     <ClInclude Include="AutoStart.h" />
     <ClInclude Include="Controller.h" />
@@ -83,12 +84,14 @@
     <ClInclude Include="TrayIcon.h" />
     <ClInclude Include="UdpPeer.h" />
     <ClInclude Include="UsbWatcher.h" />
+    <ClInclude Include="UsbLearning.h" />
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="SettingsWindow.xaml" />
     <Midl Include="SettingsWindow.idl"><DependentUpon>SettingsWindow.xaml</DependentUpon></Midl>
     <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
     <ClCompile Include="App.xaml.cpp"><DependentUpon>App.xaml</DependentUpon></ClCompile>
     <ClCompile Include="SettingsWindow.xaml.cpp"><DependentUpon>SettingsWindow.xaml</DependentUpon></ClCompile>
+    <ClCompile Include="AboutInfo.cpp" />
     <ClCompile Include="AppConfig.cpp" />
     <ClCompile Include="AutoStart.cpp" />
     <ClCompile Include="Controller.cpp" />
@@ -102,6 +105,7 @@
     <ClCompile Include="TrayIcon.cpp" />
     <ClCompile Include="UdpPeer.cpp" />
     <ClCompile Include="UsbWatcher.cpp" />
+    <ClCompile Include="UsbLearning.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
     <ResourceCompile Include="AppIcon.rc" />
     <Image Include="AppIcon.ico" />
