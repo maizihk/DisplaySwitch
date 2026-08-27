@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://displayswitch.example/contracts/protocol-v2/message.schema.json",
+  "title": "DisplaySwitch UDP protocol v2 message",
+  "type": "object",
+  "required": [
+    "version",
+    "type",
+    "eventID",
+    "sourceEndpointID",
+    "targetEndpointID",
+    "sourcePlatform",
+    "timestamp",
+    "nonce",
+    "authTag"
+  ],
+  "properties": {
+    "version": { "type": "integer", "const": 2 },
+    "type": {
+      "type": "string",
+      "enum": [
+        "status_probe",
+        "status_response",
+        "input_present",
+        "handover_request",
+        "target_ready",
+        "committed",
+        "cancelled"
+      ]
+    },
+    "eventID": { "$ref": "#/$defs/uuid" },
+    "sourceEndpointID": { "$ref": "#/$defs/uuid" },
+    "targetEndpointID": {
+      "oneOf": [
+        { "$ref": "#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "sourcePlatform": { "type": "string", "enum": ["macos", "windows"] },
+    "timestamp": { "type": "integer", "minimum": 0 },
+    "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22}$" },
+    "authTag": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+    "intent": { "type": "string", "enum": ["manual", "input_handover"] },
+    "wakeSucceeded": { "type": "boolean" },
+    "switchSucceeded": { "type": "boolean" },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "source_input_returned",
+        "configuration_changed",
+        "user_cancelled",
+        "peer_unavailable"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "status_probe" } }, "required": ["type"] },
+      "then": { "$ref": "#/$defs/noTypeSpecificFields" }
+    },
+    {
+      "if": { "properties": { "type": { "enum": ["status_response", "input_present"] } }, "required": ["type"] },
+      "then": {
+        "allOf": [
+          { "properties": { "targetEndpointID": { "$ref": "#/$defs/uuid" } } },
+          { "$ref": "#/$defs/noTypeSpecificFields" }
+        ]
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "handover_request" } }, "required": ["type"] },
+      "then": {
+        "required": ["intent"],
+        "properties": { "targetEndpointID": { "$ref": "#/$defs/uuid" } },
+        "not": { "anyOf": [
+          { "required": ["wakeSucceeded"] },
+          { "required": ["switchSucceeded"] },
+          { "required": ["reason"] }
+        ] }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "target_ready" } }, "required": ["type"] },
+      "then": {
+        "required": ["wakeSucceeded"],
+        "properties": { "targetEndpointID": { "$ref": "#/$defs/uuid" } },
+        "not": { "anyOf": [
+          { "required": ["intent"] },
+          { "required": ["switchSucceeded"] },
+          { "required": ["reason"] }
+        ] }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "committed" } }, "required": ["type"] },
+      "then": {
+        "required": ["switchSucceeded"],
+        "properties": { "targetEndpointID": { "$ref": "#/$defs/uuid" } },
+        "not": { "anyOf": [
+          { "required": ["intent"] },
+          { "required": ["wakeSucceeded"] },
+          { "required": ["reason"] }
+        ] }
+      }
+    },
+    {
+      "if": { "properties": { "type": { "const": "cancelled" } }, "required": ["type"] },
+      "then": {
+        "required": ["reason"],
+        "properties": { "targetEndpointID": { "$ref": "#/$defs/uuid" } },
+        "not": { "anyOf": [
+          { "required": ["intent"] },
+          { "required": ["wakeSucceeded"] },
+          { "required": ["switchSucceeded"] }
+        ] }
+      }
+    }
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    },
+    "noTypeSpecificFields": {
+      "not": { "anyOf": [
+        { "required": ["intent"] },
+        { "required": ["wakeSucceeded"] },
+        { "required": ["switchSucceeded"] },
+        { "required": ["reason"] }
+      ] }
+    }
+  }
+}

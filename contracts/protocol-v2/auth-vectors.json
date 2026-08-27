@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 2,
+  "kdf": {
+    "name": "PBKDF2",
+    "prf": "HMAC-SHA256",
+    "iterations": 200000,
+    "derivedKeyBytes": 32,
+    "saltPrefixAscii": "DisplaySwitch-v2-auth|"
+  },
+  "normalizationVectors": [
+    {
+      "id": "NFC-001",
+      "description": "Normalize a synthetic decomposed Unicode sequence to NFC before UTF-8 key derivation",
+      "inputUtf8Hex": "44532d65cc812d7632",
+      "expectedNfcUtf8Hex": "44532dc3a92d7632"
+    }
+  ],
+  "syntheticInputSecretHex": "44532d56322d53594e5448455449432d5345435245542d4259544553",
+  "vectors": [
+    {
+      "id": "AUTH-001",
+      "description": "Derive the sender-direction key for synthetic endpoint one",
+      "sourceEndpointID": "11111111-1111-4111-8111-111111111111",
+      "expectedDerivedKeyBase64Url": "cXGnxbBzb7LYrfoNBNo6BU8LtqsqghRGggRvgSzYhMo"
+    },
+    {
+      "id": "AUTH-002",
+      "description": "Derive a different sender-direction key for synthetic endpoint two",
+      "sourceEndpointID": "22222222-2222-4222-8222-222222222222",
+      "expectedDerivedKeyBase64Url": "LlKvJY5W8PlAZ1f-TvEHVoBfGZIsD5kJXBtwdGI0Bg0"
+    },
+    {
+      "id": "AUTH-003",
+      "description": "Canonicalize and authenticate an undirected status probe",
+      "sourceEndpointID": "11111111-1111-4111-8111-111111111111",
+      "expectedDerivedKeyBase64Url": "cXGnxbBzb7LYrfoNBNo6BU8LtqsqghRGggRvgSzYhMo",
+      "messageWithoutAuthTag": {
+        "version": 2,
+        "type": "status_probe",
+        "eventID": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA1",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111",
+        "targetEndpointID": null,
+        "sourcePlatform": "macos",
+        "timestamp": 1788000000,
+        "nonce": "AAECAwQFBgcICQoLDA0ODw"
+      },
+      "expectedCanonicalUtf8Hex": "446973706c61795377697463682f76320a76657273696f6e3a320a747970653a7374617475735f70726f62650a6576656e7449443a61616161616161612d616161612d346161612d386161612d6161616161616161616161310a736f75726365456e64706f696e7449443a31313131313131312d313131312d343131312d383131312d3131313131313131313131310a746172676574456e64706f696e7449443a6e756c6c0a736f75726365506c6174666f726d3a6d61636f730a74696d657374616d703a313738383030303030300a6e6f6e63653a41414543417751464267634943516f4c4441304f44770a696e74656e743a6e756c6c0a77616b655375636365656465643a6e756c6c0a7377697463685375636365656465643a6e756c6c0a726561736f6e3a6e756c6c0a",
+      "expectedAuthTag": "zgQDF9u8GEeZENb9M08Ua0k-kNOHEQqbWo17OJZfmZQ"
+    },
+    {
+      "id": "AUTH-004",
+      "description": "Canonicalize and authenticate a manual directed handover request",
+      "sourceEndpointID": "11111111-1111-4111-8111-111111111111",
+      "expectedDerivedKeyBase64Url": "cXGnxbBzb7LYrfoNBNo6BU8LtqsqghRGggRvgSzYhMo",
+      "messageWithoutAuthTag": {
+        "version": 2,
+        "type": "handover_request",
+        "eventID": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAA2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111",
+        "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos",
+        "timestamp": 1788000001,
+        "nonce": "EBESExQVFhcYGRobHB0eHw",
+        "intent": "manual"
+      },
+      "expectedCanonicalUtf8Hex": "446973706c61795377697463682f76320a76657273696f6e3a320a747970653a68616e646f7665725f726571756573740a6576656e7449443a61616161616161612d616161612d346161612d386161612d6161616161616161616161320a736f75726365456e64706f696e7449443a31313131313131312d313131312d343131312d383131312d3131313131313131313131310a746172676574456e64706f696e7449443a32323232323232322d323232322d343232322d383232322d3232323232323232323232320a736f75726365506c6174666f726d3a6d61636f730a74696d657374616d703a313738383030303030310a6e6f6e63653a45424553457851564668635947526f624842306548770a696e74656e743a6d616e75616c0a77616b655375636365656465643a6e756c6c0a7377697463685375636365656465643a6e756c6c0a726561736f6e3a6e756c6c0a",
+      "expectedAuthTag": "qk-8JIrOMY9WPJThRfpGhKn-b8R5nCC6nyfXybK_eLc"
+    }
+  ]
+}
