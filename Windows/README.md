@@ -1,8 +1,8 @@
 # Windows 托盘版安装与测试
 
-> **开发前必读：** Windows 端 Codex 或开发者开始修改前，请先阅读
-> [`DEVELOPMENT_CHECKLIST.md`](DEVELOPMENT_CHECKLIST.md) 和仓库根目录的
-> [`PROTOCOL.md`](../PROTOCOL.md)。清单定义当前优先级、跨端边界、安全限制和验收条件。
+> **开发前必读：** Windows 端 Codex 或开发者开始修改前，请先阅读仓库根目录的
+> [`AGENTS.md`](../AGENTS.md)、[`PROTOCOL.md`](../PROTOCOL.md) 和
+> [`DEVELOPMENT_CHECKLIST.md`](DEVELOPMENT_CHECKLIST.md)。项目约束定义通用流程与安全边界，清单记录 Windows 当前优先级和验收条件。
 
 ## 安装
 
