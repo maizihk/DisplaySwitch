@@ -92,18 +92,18 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(backend.writeCalls.count, 0)
     }
 
-    func testC024DellAllZeroSimulationRemainsEstimatedAndPreservesCache() {
+    func testC024SimulatedDisplayAllZeroRemainsEstimatedAndPreservesCache() {
         let backend = MockDDCBackend()
-        backend.readings = ["display-dell": Dictionary(uniqueKeysWithValues:
+        backend.readings = ["simulated-display": Dictionary(uniqueKeysWithValues:
             DDCCommand.userControls.map { ($0, DDCReading(current: 0, maximum: 0)) })]
-        let cache = MockDDCCache(values: ["display-dell": [.luminance: 63]])
+        let cache = MockDDCCache(values: ["simulated-display": [.luminance: 63]])
         let service = makeService(backends: [backend], cache: cache)
 
-        let result = service.read([target(id: "display-dell")])
+        let result = service.read([target(id: "simulated-display")])
 
-        XCTAssertEqual(result["display-dell"]?[.luminance]?.reading.current, 63)
-        XCTAssertTrue(result["display-dell"]?[.luminance]?.estimated == true)
-        XCTAssertNil(result["display-dell"]?[.contrast])
+        XCTAssertEqual(result["simulated-display"]?[.luminance]?.reading.current, 63)
+        XCTAssertTrue(result["simulated-display"]?[.luminance]?.estimated == true)
+        XCTAssertNil(result["simulated-display"]?[.contrast])
         XCTAssertEqual(cache.writeCount, 0)
     }
 
