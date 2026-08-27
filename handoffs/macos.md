@@ -7,7 +7,7 @@
 - 清单：DS-001 / M-004
 - 基线：`9624ffb9cdf1d39809a66cf11592c2dab43e577d`
 - PR：[#4 DS-001 macOS: Extract state machine and add vector tests](https://github.com/maizihk/DisplaySwitch/pull/4)
-- 最终实现提交：`e6ba99c2f0622293e0aadae6f9c3c6f63ed4630d`
+- 最终实现提交：`1ff24e07f7d5d9a865b1a9c424847ebb74b510e5`
 
 ## 完成内容
 
@@ -42,12 +42,14 @@
 - 重复合法 `status_probe` 在十秒重复窗口内仍会：
   - 使用相同 `eventID` 再次发送 `status_response`。
   - 刷新状态机在线时间并再次通知适配层在线，恢复设置界面的连接状态。
+  - 不额外产生 `rejectMessage(duplicate)`，公共动作与 Windows 一致。
+  - 回归测试先推进到 6001ms，确认六秒窗口过期并通知离线，再重放同一 probe 验证恢复。
   - 保持唤醒、切屏和 USB 硬件副作用为零；其他重复消息行为不变。
 
 ## 自动验证
 
-- GitHub Actions `build-and-test` 在最终实现提交 `e6ba99c2f0622293e0aadae6f9c3c6f63ed4630d` 上完整通过：
-  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33051510614`
+- GitHub Actions `build-and-test` 在最终实现提交 `1ff24e07f7d5d9a865b1a9c424847ebb74b510e5` 上完整通过：
+  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33052109672`
   - Xcode 27.0 / Swift 6.4 / macOS 27 SDK。
   - Debug：`xcodebuild ... -configuration Debug ... build`，`BUILD SUCCEEDED`。
   - 全部 XCTest：19 个测试方法、0 失败；其中 17 条消息向量和 15 条状态机向量全部通过，短/空配对码、协同关闭、USB 自动化关闭和重复合法 `status_probe` 四项无副作用/恢复测试全部通过。
