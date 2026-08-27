@@ -7,7 +7,8 @@
 - 分支：`codex/macos-ds-004-local-model`
 - 基线：`8466c120c15607e7f39645c494b2786eac1f12ac`
 - 实现提交：`26c1e93`
-- PR：待创建
+- handoff 提交：`aad8528`
+- PR：[#20 DS-004 macOS: add schema v3 local collaboration model](https://github.com/maizihk/DisplaySwitch/pull/20)
 
 ## 完成内容
 
