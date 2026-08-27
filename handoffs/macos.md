@@ -33,7 +33,7 @@
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过。
 - 文件同步提供程序曾向被忽略的输出 App 附加 Finder 扩展属性；仅清理该构建产物并重新临时签名后严格验签通过，未修改系统信任或工程签名设置。
 - `git diff --check`：通过。
-- GitHub Actions：等待 PR 创建后验证。
+- GitHub Actions macOS run [`33103309304`](https://github.com/maizihk/DisplaySwitch/actions/runs/33103309304) 在包含实现提交 `dc0c302a101d00ba7ef7dcc543e5a5b911efac91` 的 PR HEAD `4d1ac292ee2f1059989b9962679eb6b29637921b` 上通过：Debug、54 项 XCTest、Release 打包、artifact 检查和严格 codesign 均成功。
 
 ## 尚未执行
 
