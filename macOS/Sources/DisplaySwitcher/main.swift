@@ -198,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var v2LastSeenAtMs: [String: Int64] = [:]
     private var v2OutgoingMessages: [String: Data] = [:]
     private var v2DatagramReplies: [String: PeerTransport.DataReply] = [:]
+    private var v2UnboundProbeResponses: [String: Data] = [:]
     private var pendingPeerInspections: [String: PendingPeerCapabilityInspection] = [:]
     private var inspectionIDByEventID: [String: String] = [:]
     private var displayControls: [Int: DisplayControls] = [:]
@@ -723,8 +724,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         v2ReplayCache.reset()
         v2OutgoingMessages.removeAll(keepingCapacity: true)
         v2DatagramReplies.removeAll(keepingCapacity: true)
+        v2UnboundProbeResponses.removeAll(keepingCapacity: true)
         let v2Enabled = networkAllowed && usbLearningSafetyGate.allows(.network)
             && !v2RoutingTable.routesByEndpointID.isEmpty
+        let unboundProbeEnabled = networkAllowed && usbLearningSafetyGate.allows(.network)
+            && !V2UnboundStatusProbeResolver.eligibleProfiles(in: document).isEmpty
         handoffV2StateMachine.configure(
             localEndpointID: document.localEndpointID,
             coordinationEnabled: v2Enabled,
@@ -739,7 +743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             }
         )
         refreshPeerConnectionStatus()
-        if coordinationEnabled || v2Enabled {
+        if coordinationEnabled || v2Enabled || unboundProbeEnabled {
             peerTransport.start(port: v2Enabled ? document.listenPort : (profile?.peerPort ?? document.listenPort))
         }
         if v2Enabled { scheduleV2StatusProbes() }
@@ -962,8 +966,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func handleV2Datagram(_ data: Data, reply: @escaping PeerTransport.DataReply) {
         let document = AppPreferences.localConfiguration
-        guard let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data),
-              let route = v2RoutingTable.route(for: sourceEndpointID),
+        guard let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data) else { return }
+        guard let route = v2RoutingTable.route(for: sourceEndpointID) else {
+            handleUnboundV2StatusProbe(data, document: document, reply: reply)
+            return
+        }
+        guard
               let key = try? V2Crypto.deriveKey(
                 pairingCode: route.pairingCode,
                 sourceEndpointID: sourceEndpointID
@@ -1037,6 +1045,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 eventID: message.eventID,
                 authenticated: true
             )
+        }
+    }
+
+    private func handleUnboundV2StatusProbe(
+        _ data: Data,
+        document: DisplayConfigurationStoreV3Document,
+        reply: @escaping PeerTransport.DataReply
+    ) {
+        guard let nonce = try? V2Crypto.makeNonce(),
+              let resolution = V2UnboundStatusProbeResolver.resolve(
+                data: data,
+                document: document,
+                routingTable: v2RoutingTable,
+                now: Int64(Date().timeIntervalSince1970),
+                responseNonce: nonce
+              ) else { return }
+
+        let cacheKey = v2ReplyKey(
+            eventID: resolution.request.eventID,
+            endpointID: resolution.request.sourceEndpointID
+        )
+        switch v2ReplayCache.classify(resolution.request, nowMs: currentTimeMs()) {
+        case .nonceReuse:
+            return
+        case .duplicate:
+            guard let cached = v2UnboundProbeResponses[cacheKey] else { return }
+            reply(cached)
+        case .new:
+            if v2UnboundProbeResponses.count >= 128 {
+                v2UnboundProbeResponses.removeAll(keepingCapacity: true)
+            }
+            v2UnboundProbeResponses[cacheKey] = resolution.responseData
+            reply(resolution.responseData)
         }
     }
 

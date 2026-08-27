@@ -166,6 +166,179 @@ final class PeerProtocolV2Tests: XCTestCase {
             "sourcePlatform", "timestamp", "nonce", "authTag"
         ])
     }
+
+    func testUnboundEndpointsCompleteFirstStatusProbeWithoutSavingIdentityOrHardwareEffects() throws {
+        let localEndpoint = "11111111-1111-4111-8111-111111111111"
+        let peerEndpoint = "22222222-2222-4222-8222-222222222222"
+        let eventID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let now: Int64 = 1_788_000_000
+        let pairingCode = "sample-code"
+        let document = unboundDocument(localEndpointID: localEndpoint, pairingCodes: [pairingCode])
+        let originalDocument = document
+        let request = try signedStatusProbe(
+            eventID: eventID,
+            sourceEndpointID: peerEndpoint,
+            targetEndpointID: nil,
+            pairingCode: pairingCode,
+            timestamp: now
+        )
+
+        let resolution = try XCTUnwrap(V2UnboundStatusProbeResolver.resolve(
+            data: request,
+            document: document,
+            routingTable: V2EndpointRoutingTable.build(from: document),
+            now: now,
+            responseNonce: "EBESExQVFhcYGRobHB0eHw"
+        ))
+        let response = try JSONDecoder().decode(V2Message.self, from: resolution.responseData)
+        let responseKey = try V2Crypto.deriveKey(pairingCode: pairingCode, sourceEndpointID: localEndpoint)
+
+        XCTAssertEqual(response.type, .statusResponse)
+        XCTAssertEqual(response.eventID, eventID)
+        XCTAssertEqual(response.sourceEndpointID, localEndpoint)
+        XCTAssertEqual(response.targetEndpointID, peerEndpoint)
+        XCTAssertTrue(V2Crypto.authenticate(response, key: responseKey))
+        XCTAssertNil(document.collaborationProfiles[0].peerEndpointID)
+        XCTAssertNil(document.collaborationProfiles[0].peerProtocolVersion)
+        XCTAssertEqual(document, originalDocument)
+
+        let peerDocument = unboundDocument(localEndpointID: peerEndpoint, pairingCodes: [pairingCode])
+        let reverseRequest = try signedStatusProbe(
+            eventID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            sourceEndpointID: localEndpoint,
+            targetEndpointID: nil,
+            pairingCode: pairingCode,
+            timestamp: now
+        )
+        let reverseResolution = try XCTUnwrap(V2UnboundStatusProbeResolver.resolve(
+            data: reverseRequest,
+            document: peerDocument,
+            routingTable: V2EndpointRoutingTable.build(from: peerDocument),
+            now: now,
+            responseNonce: "ICEiIyQlJicoKSorLC0uLw"
+        ))
+        let reverseResponse = try JSONDecoder().decode(V2Message.self, from: reverseResolution.responseData)
+        XCTAssertEqual(reverseResponse.eventID, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        XCTAssertEqual(reverseResponse.targetEndpointID, localEndpoint)
+        XCTAssertNil(peerDocument.collaborationProfiles[0].peerEndpointID)
+
+        let hardwareCalls = (usb: 0, bluetooth: 0, wake: 0, ddc: 0)
+        _ = resolution.responseData
+        XCTAssertEqual(hardwareCalls.usb, 0)
+        XCTAssertEqual(hardwareCalls.bluetooth, 0)
+        XCTAssertEqual(hardwareCalls.wake, 0)
+        XCTAssertEqual(hardwareCalls.ddc, 0)
+    }
+
+    func testUnboundStatusProbeRequiresExactlyOneAuthenticatedCandidate() throws {
+        let localEndpoint = "11111111-1111-4111-8111-111111111111"
+        let peerEndpoint = "22222222-2222-4222-8222-222222222222"
+        let eventID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let now: Int64 = 1_788_000_000
+        let pairingCode = "sample-code"
+        let request = try signedStatusProbe(
+            eventID: eventID,
+            sourceEndpointID: peerEndpoint,
+            targetEndpointID: nil,
+            pairingCode: pairingCode,
+            timestamp: now
+        )
+
+        let unique = unboundDocument(localEndpointID: localEndpoint, pairingCodes: [pairingCode, "different-code"])
+        XCTAssertNotNil(V2UnboundStatusProbeResolver.resolve(
+            data: request, document: unique, routingTable: V2EndpointRoutingTable.build(from: unique),
+            now: now, responseNonce: "EBESExQVFhcYGRobHB0eHw"
+        ))
+
+        let ambiguous = unboundDocument(localEndpointID: localEndpoint, pairingCodes: [pairingCode, pairingCode])
+        XCTAssertNil(V2UnboundStatusProbeResolver.resolve(
+            data: request, document: ambiguous, routingTable: V2EndpointRoutingTable.build(from: ambiguous),
+            now: now, responseNonce: "EBESExQVFhcYGRobHB0eHw"
+        ))
+
+        let wrongPairing = unboundDocument(localEndpointID: localEndpoint, pairingCodes: ["different-code"])
+        XCTAssertNil(V2UnboundStatusProbeResolver.resolve(
+            data: request, document: wrongPairing, routingTable: V2EndpointRoutingTable.build(from: wrongPairing),
+            now: now, responseNonce: "EBESExQVFhcYGRobHB0eHw"
+        ))
+    }
+
+    func testUnboundStatusProbeRejectsWrongTargetAndEndpointConflict() throws {
+        let localEndpoint = "11111111-1111-4111-8111-111111111111"
+        let peerEndpoint = "22222222-2222-4222-8222-222222222222"
+        let now: Int64 = 1_788_000_000
+        let pairingCode = "sample-code"
+        let document = unboundDocument(localEndpointID: localEndpoint, pairingCodes: [pairingCode])
+        let wrongTarget = try signedStatusProbe(
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            sourceEndpointID: peerEndpoint,
+            targetEndpointID: "33333333-3333-4333-8333-333333333333",
+            pairingCode: pairingCode,
+            timestamp: now
+        )
+        XCTAssertNil(V2UnboundStatusProbeResolver.resolve(
+            data: wrongTarget, document: document, routingTable: V2EndpointRoutingTable.build(from: document),
+            now: now, responseNonce: "EBESExQVFhcYGRobHB0eHw"
+        ))
+
+        var conflict = document
+        conflict.collaborationProfiles.append(CollaborationProfile(
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: "Bound but disabled",
+            peerHost: "peer.example", peerPort: 49_731, pairingCode: "another-code",
+            peerEndpointID: peerEndpoint, peerProtocolVersion: 2, coordinationEnabled: false,
+            displayInputs: conflict.collaborationProfiles[0].displayInputs, triggerDevices: []
+        ))
+        let valid = try signedStatusProbe(
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            sourceEndpointID: peerEndpoint,
+            targetEndpointID: nil,
+            pairingCode: pairingCode,
+            timestamp: now
+        )
+        XCTAssertNil(V2UnboundStatusProbeResolver.resolve(
+            data: valid, document: conflict, routingTable: V2EndpointRoutingTable.build(from: conflict),
+            now: now, responseNonce: "EBESExQVFhcYGRobHB0eHw"
+        ))
+    }
+}
+
+private func unboundDocument(localEndpointID: String, pairingCodes: [String]) -> DisplayConfigurationStoreV3Document {
+    let displayID = "44444444-4444-4444-8444-444444444444"
+    let display = DisplayConfigurationV3Display(
+        id: displayID, name: "Display", selector: "display-selector", localInput: 15,
+        readEnabled: true, brightnessEnabled: true, contrastEnabled: true, volumeEnabled: true
+    )
+    let profiles = pairingCodes.enumerated().map { index, pairingCode in
+        CollaborationProfile(
+            id: String(format: "55555555-5555-4555-8555-%012d", index + 1),
+            name: "Profile \(index + 1)", peerHost: "peer.example", peerPort: 49_731,
+            pairingCode: pairingCode, peerEndpointID: nil, peerProtocolVersion: nil,
+            coordinationEnabled: false,
+            displayInputs: [DisplayInputMapping(displayID: displayID, peerInput: 18)],
+            triggerDevices: []
+        )
+    }
+    return DisplayConfigurationStoreV3Document(
+        schemaVersion: 3, localEndpointID: localEndpointID, localDeviceName: "Local",
+        listenPort: 49_731, displays: [display], collaborationProfiles: profiles
+    )
+}
+
+private func signedStatusProbe(
+    eventID: String,
+    sourceEndpointID: String,
+    targetEndpointID: String?,
+    pairingCode: String,
+    timestamp: Int64
+) throws -> Data {
+    var message = V2Message(
+        type: .statusProbe, eventID: eventID, sourceEndpointID: sourceEndpointID,
+        targetEndpointID: targetEndpointID, sourcePlatform: .windows, timestamp: timestamp,
+        nonce: "AAECAwQFBgcICQoLDA0ODw"
+    )
+    let key = try V2Crypto.deriveKey(pairingCode: pairingCode, sourceEndpointID: sourceEndpointID)
+    message.authTag = V2Crypto.authenticationTag(for: message, key: key)
+    return try JSONEncoder().encode(message)
 }
 
 private func v2FixtureURL(_ name: String) throws -> URL {

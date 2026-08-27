@@ -520,6 +520,90 @@ struct V2EndpointRoutingTable {
     }
 }
 
+struct V2UnboundStatusProbeResolution {
+    let profileID: String
+    let request: V2Message
+    let responseData: Data
+}
+
+enum V2UnboundStatusProbeResolver {
+    static func eligibleProfiles(in document: DisplayConfigurationStoreV3Document) -> [CollaborationProfile] {
+        let knownDisplays = Set(document.displays.map { $0.id.lowercased() })
+        return document.collaborationProfiles.filter { profile in
+            profile.peerEndpointID == nil
+                && profile.peerProtocolVersion != 1
+                && DisplayConfigurationStore.inspectProfile(
+                    profile,
+                    displays: document.displays,
+                    ddcAvailableDisplayIDs: knownDisplays
+                ).issues.isEmpty
+                && (try? V2Crypto.normalizedPairingCodeData(profile.pairingCode)) != nil
+        }
+    }
+
+    static func resolve(
+        data: Data,
+        document: DisplayConfigurationStoreV3Document,
+        routingTable: V2EndpointRoutingTable,
+        now: Int64,
+        responseNonce: String
+    ) -> V2UnboundStatusProbeResolution? {
+        guard let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data),
+              routingTable.route(for: sourceEndpointID) == nil,
+              V2Crypto.base64URLDecode(responseNonce)?.count == 16 else { return nil }
+
+        // A configured identity which is absent from the usable routing table is a conflict,
+        // not an invitation to replace or bootstrap that identity through another profile.
+        let conflictsWithConfiguredEndpoint = document.collaborationProfiles.contains { profile in
+            profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID) == sourceEndpointID
+        }
+        guard !conflictsWithConfiguredEndpoint else { return nil }
+
+        let candidates = eligibleProfiles(in: document)
+
+        let matches: [(CollaborationProfile, V2Message)] = candidates.compactMap { profile in
+            guard let key = try? V2Crypto.deriveKey(
+                pairingCode: profile.pairingCode,
+                sourceEndpointID: sourceEndpointID
+            ) else { return nil }
+            let validation = V2MessageValidator.validate(
+                data: data,
+                context: V2MessageValidationContext(
+                    now: now,
+                    localEndpointID: document.localEndpointID,
+                    knownSourceEndpointID: sourceEndpointID,
+                    authenticationKey: key
+                )
+            )
+            guard validation.accepted, let message = validation.message,
+                  message.type == .statusProbe else { return nil }
+            return (profile, message)
+        }
+        guard matches.count == 1, let match = matches.first,
+              let responseKey = try? V2Crypto.deriveKey(
+                pairingCode: match.0.pairingCode,
+                sourceEndpointID: document.localEndpointID
+              ) else { return nil }
+
+        var response = V2Message(
+            type: .statusResponse,
+            eventID: match.1.eventID,
+            sourceEndpointID: document.localEndpointID,
+            targetEndpointID: sourceEndpointID,
+            sourcePlatform: .macos,
+            timestamp: now,
+            nonce: responseNonce
+        )
+        response.authTag = V2Crypto.authenticationTag(for: response, key: responseKey)
+        guard let responseData = try? JSONEncoder().encode(response) else { return nil }
+        return V2UnboundStatusProbeResolution(
+            profileID: match.0.id,
+            request: match.1,
+            responseData: responseData
+        )
+    }
+}
+
 enum V2MessageEnvelope {
     static func sourceEndpointID(in data: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
