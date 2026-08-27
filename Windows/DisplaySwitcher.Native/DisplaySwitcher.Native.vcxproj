@@ -73,6 +73,7 @@
     <ClInclude Include="AppConfig.h" />
     <ClInclude Include="AutoStart.h" />
     <ClInclude Include="Controller.h" />
+    <ClInclude Include="DisplayModel.h" />
     <ClInclude Include="SystemActions.h" />
     <ClInclude Include="TrayIcon.h" />
     <ClInclude Include="UdpPeer.h" />
@@ -87,6 +88,7 @@
     <ClCompile Include="AutoStart.cpp" />
     <ClCompile Include="Controller.cpp" />
     <ClCompile Include="Diagnostics.cpp" />
+    <ClCompile Include="DisplayModel.cpp" />
     <ClCompile Include="SystemActions.cpp" />
     <ClCompile Include="TrayIcon.cpp" />
     <ClCompile Include="UdpPeer.cpp" />

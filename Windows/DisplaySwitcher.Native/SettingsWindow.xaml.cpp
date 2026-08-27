@@ -83,11 +83,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         displayBackend_.Items().Append(box_value(L"Windows 原生 DDC/CI（推荐）"));
         displayBackend_.Items().Append(box_value(L"ControlMyMonitor"));
         displayBackend_.SelectionChanged([this](auto const&, auto const&) { UpdateDisplayBackendVisibility(); });
-        redmiNativeMonitor_ = ComboBox(); Header(redmiNativeMonitor_, L"显示器 1"); redmiNativeMonitor_.PlaceholderText(L"请选择显示器"); redmiNativeMonitor_.HorizontalAlignment(HorizontalAlignment::Stretch);
-        dellNativeMonitor_ = ComboBox(); Header(dellNativeMonitor_, L"显示器 2"); dellNativeMonitor_.PlaceholderText(L"请选择显示器"); dellNativeMonitor_.HorizontalAlignment(HorizontalAlignment::Stretch);
         controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
-        redmiPath_ = TextBox(); Header(redmiPath_, L"显示器 1 设备路径"); redmiInput_ = TextBox(); Header(redmiInput_, L"显示器 1 Mac 输入源");
-        dellPath_ = TextBox(); Header(dellPath_, L"显示器 2 设备路径"); dellInput_ = TextBox(); Header(dellInput_, L"显示器 2 Mac 输入源");
         autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录 Windows 时自动启动");
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
         {
@@ -145,15 +141,22 @@ namespace winrt::DisplaySwitcher::Native::implementation
         nativeHint.TextWrapping(TextWrapping::Wrap); nativeHint.Opacity(0.72);
         auto refreshDdc = Button(); refreshDdc.Content(box_value(L"重新检测显示器"));
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
-        nativeDdcPanel_.Children().Append(nativeHint); nativeDdcPanel_.Children().Append(redmiNativeMonitor_);
-        nativeDdcPanel_.Children().Append(dellNativeMonitor_); nativeDdcPanel_.Children().Append(refreshDdc);
+        nativeDdcPanel_.Children().Append(nativeHint); nativeDdcPanel_.Children().Append(refreshDdc);
         controlMyMonitorPanel_ = StackPanel(); controlMyMonitorPanel_.Spacing(14);
         auto cmmHint = TextBlock(); cmmHint.Text(L"兼容模式：继续通过外部 ControlMyMonitor 执行切换。");
         cmmHint.TextWrapping(TextWrapping::Wrap); cmmHint.Opacity(0.72);
         controlMyMonitorPanel_.Children().Append(cmmHint); controlMyMonitorPanel_.Children().Append(controlMyMonitor_);
-        controlMyMonitorPanel_.Children().Append(redmiPath_); controlMyMonitorPanel_.Children().Append(dellPath_);
-        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_, nativeDdcPanel_, controlMyMonitorPanel_,
-            CreateSubheading(L"Mac 输入源编号"), CreateTwoColumn(redmiInput_, dellInput_, 0) }) }));
+        auto addDisplay = Button(); addDisplay.Content(box_value(L"添加显示器"));
+        addDisplay.Click([this](auto const&, auto const&)
+        {
+            CaptureDisplayEditors();
+            workingDisplays_.push_back(::DisplaySwitcher::Native::CreateDisplayConfig(
+                L"显示器 " + std::to_wstring(workingDisplays_.size() + 1)));
+            RebuildDisplayEditors();
+        });
+        displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
+        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_, nativeDdcPanel_,
+            controlMyMonitorPanel_, addDisplay, displayEditorsPanel_ }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
         tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab);
@@ -289,9 +292,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
             wchar_t value[5]{}; swprintf_s(value, L"%04X", number); box.Text(value);
         };
         loadHex(vendorId_, config.usbVendorId); loadHex(productId_, config.usbProductId);
-        controlMyMonitor_.Text(config.controlMyMonitorPath); redmiPath_.Text(config.redmiMonitorPath);
-        redmiInput_.Text(config.redmiMacInput >= 0 ? std::to_wstring(config.redmiMacInput) : L"");
-        dellPath_.Text(config.dellMonitorPath); dellInput_.Text(config.dellMacInput >= 0 ? std::to_wstring(config.dellMacInput) : L"");
+        controlMyMonitor_.Text(config.controlMyMonitorPath);
+        workingDisplays_ = config.displays;
+        RebuildDisplayEditors();
         autoStart_.IsOn(config.startWithWindows);
         if (config.displayControlBackend == L"native_ddc") displayBackend_.SelectedIndex(0);
         else if (config.displayControlBackend == L"control_my_monitor") displayBackend_.SelectedIndex(1);
@@ -317,33 +320,121 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::LoadDdcMonitors()
     {
-        std::wstring redmiWanted = original_.redmiNativeMonitorId;
-        std::wstring dellWanted = original_.dellNativeMonitorId;
-        auto redmiIndex = redmiNativeMonitor_.SelectedIndex();
-        auto dellIndex = dellNativeMonitor_.SelectedIndex();
-        if (redmiIndex >= 0 && static_cast<size_t>(redmiIndex) < ddcMonitors_.size()) redmiWanted = ddcMonitors_[redmiIndex].id;
-        if (dellIndex >= 0 && static_cast<size_t>(dellIndex) < ddcMonitors_.size()) dellWanted = ddcMonitors_[dellIndex].id;
-
+        CaptureDisplayEditors();
         try
         {
             ddcMonitors_ = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
-            redmiNativeMonitor_.Items().Clear(); dellNativeMonitor_.Items().Clear();
-            int selectedRedmi = -1, selectedDell = -1;
-            for (size_t index = 0; index < ddcMonitors_.size(); ++index)
+            // Old ControlMyMonitor paths often start with the GDI device name. Use that only once
+            // when no stable native ID has been saved; later matching is always by native ID.
+            for (auto& display : workingDisplays_)
             {
-                redmiNativeMonitor_.Items().Append(box_value(ddcMonitors_[index].displayName));
-                dellNativeMonitor_.Items().Append(box_value(ddcMonitors_[index].displayName));
-                if (!redmiWanted.empty() && _wcsicmp(ddcMonitors_[index].id.c_str(), redmiWanted.c_str()) == 0) selectedRedmi = static_cast<int>(index);
-                if (!dellWanted.empty() && _wcsicmp(ddcMonitors_[index].id.c_str(), dellWanted.c_str()) == 0) selectedDell = static_cast<int>(index);
-                if (redmiWanted.empty() && original_.redmiMonitorPath.starts_with(ddcMonitors_[index].gdiName)) selectedRedmi = static_cast<int>(index);
-                if (dellWanted.empty() && original_.dellMonitorPath.starts_with(ddcMonitors_[index].gdiName)) selectedDell = static_cast<int>(index);
+                if (!display.nativeMonitorId.empty() || display.controlMonitorPath.empty()) continue;
+                auto found = std::find_if(ddcMonitors_.begin(), ddcMonitors_.end(), [&](auto const& monitor)
+                {
+                    return display.controlMonitorPath.starts_with(monitor.gdiName);
+                });
+                if (found != ddcMonitors_.end()) display.nativeMonitorId = found->id;
             }
-            redmiNativeMonitor_.SelectedIndex(selectedRedmi); dellNativeMonitor_.SelectedIndex(selectedDell);
+            RebuildDisplayEditors();
             if (ddcMonitors_.empty() && displayBackend_.SelectedIndex() == 0)
                 ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
             else validation_.Visibility(Visibility::Collapsed);
         }
         catch (...) { ShowValidationError(L"读取原生 DDC/CI 显示器失败。"); }
+    }
+
+    void SettingsWindow::CaptureDisplayEditors()
+    {
+        if (displayEditors_.size() != workingDisplays_.size()) return;
+        for (size_t index = 0; index < displayEditors_.size(); ++index)
+        {
+            auto& display = workingDisplays_[index];
+            auto const& controls = displayEditors_[index];
+            display.name = Trim(controls.name.Text().c_str());
+            display.controlMonitorPath = Trim(controls.controlMonitorPath.Text().c_str());
+            display.macInput = ParseInteger(controls.macInput.Text().c_str(), 10, 0, 65535).value_or(-1);
+            auto selected = controls.nativeMonitor.SelectedIndex();
+            if (selected >= 0 && static_cast<size_t>(selected) < controls.nativeMonitorIds.size())
+                display.nativeMonitorId = controls.nativeMonitorIds[static_cast<size_t>(selected)];
+            else display.nativeMonitorId.clear();
+        }
+    }
+
+    void SettingsWindow::RebuildDisplayEditors()
+    {
+        if (!displayEditorsPanel_) return;
+        displayEditorsPanel_.Children().Clear();
+        displayEditors_.clear();
+
+        for (size_t index = 0; index < workingDisplays_.size(); ++index)
+        {
+            auto const display = workingDisplays_[index];
+            DisplayEditorControls controls;
+            controls.id = display.id;
+            controls.name = TextBox(); Header(controls.name, L"名称"); controls.name.Text(display.name);
+            controls.nativeMonitor = ComboBox(); Header(controls.nativeMonitor, L"Windows DDC/CI 显示器");
+            controls.nativeMonitor.PlaceholderText(L"请选择显示器");
+            controls.nativeMonitor.HorizontalAlignment(HorizontalAlignment::Stretch);
+
+            int selectedMonitor = -1;
+            auto connected = ::DisplaySwitcher::Native::FindDdcMonitorById(ddcMonitors_, display.nativeMonitorId);
+            if (!display.nativeMonitorId.empty() && !connected)
+            {
+                controls.nativeMonitor.Items().Append(box_value(L"当前未连接（保留原配置）"));
+                controls.nativeMonitorIds.push_back(display.nativeMonitorId);
+                selectedMonitor = 0;
+            }
+            for (auto const& monitor : ddcMonitors_)
+            {
+                controls.nativeMonitor.Items().Append(box_value(monitor.displayName));
+                controls.nativeMonitorIds.push_back(monitor.id);
+                if (_wcsicmp(monitor.id.c_str(), display.nativeMonitorId.c_str()) == 0)
+                    selectedMonitor = static_cast<int>(controls.nativeMonitorIds.size() - 1);
+            }
+            controls.nativeMonitor.SelectedIndex(selectedMonitor);
+            controls.nativeFields = controls.nativeMonitor;
+
+            controls.controlMonitorPath = TextBox(); Header(controls.controlMonitorPath, L"ControlMyMonitor 设备路径");
+            controls.controlMonitorPath.Text(display.controlMonitorPath);
+            controls.controlMyMonitorFields = controls.controlMonitorPath;
+            controls.macInput = TextBox(); Header(controls.macInput, L"Mac 输入源编号"); controls.macInput.MaxLength(5);
+            controls.macInput.Text(display.macInput >= 0 ? std::to_wstring(display.macInput) : L"");
+
+            auto up = Button(); up.Content(box_value(L"上移")); up.IsEnabled(index > 0);
+            up.Click([this, id = display.id](auto const&, auto const&)
+            {
+                CaptureDisplayEditors();
+                auto found = ::DisplaySwitcher::Native::FindDisplayById(workingDisplays_, id);
+                if (found && *found > 0) std::swap(workingDisplays_[*found], workingDisplays_[*found - 1]);
+                RebuildDisplayEditors();
+            });
+            auto down = Button(); down.Content(box_value(L"下移")); down.IsEnabled(index + 1 < workingDisplays_.size());
+            down.Click([this, id = display.id](auto const&, auto const&)
+            {
+                CaptureDisplayEditors();
+                auto found = ::DisplaySwitcher::Native::FindDisplayById(workingDisplays_, id);
+                if (found && *found + 1 < workingDisplays_.size()) std::swap(workingDisplays_[*found], workingDisplays_[*found + 1]);
+                RebuildDisplayEditors();
+            });
+            auto remove = Button(); remove.Content(box_value(L"移除"));
+            remove.Click([this, id = display.id](auto const&, auto const&)
+            {
+                CaptureDisplayEditors();
+                auto found = ::DisplaySwitcher::Native::FindDisplayById(workingDisplays_, id);
+                if (found) workingDisplays_.erase(workingDisplays_.begin() + static_cast<ptrdiff_t>(*found));
+                RebuildDisplayEditors();
+            });
+            auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(8);
+            buttons.Children().Append(up); buttons.Children().Append(down); buttons.Children().Append(remove);
+
+            auto fields = StackPanel(); fields.Spacing(12);
+            fields.Children().Append(controls.name); fields.Children().Append(controls.nativeMonitor);
+            fields.Children().Append(controls.controlMonitorPath); fields.Children().Append(controls.macInput);
+            fields.Children().Append(buttons);
+            displayEditorsPanel_.Children().Append(CreateCard(fields));
+            displayEditors_.push_back(std::move(controls));
+        }
+        UpdateDisplayBackendVisibility();
     }
 
     void SettingsWindow::UpdateDisplayBackendVisibility()
@@ -352,6 +443,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto selected = displayBackend_.SelectedIndex();
         nativeDdcPanel_.Visibility(selected == 0 ? Visibility::Visible : Visibility::Collapsed);
         controlMyMonitorPanel_.Visibility(selected == 1 ? Visibility::Visible : Visibility::Collapsed);
+        for (auto const& editor : displayEditors_)
+        {
+            editor.nativeFields.Visibility(selected == 0 ? Visibility::Visible : Visibility::Collapsed);
+            editor.controlMyMonitorFields.Visibility(selected == 1 ? Visibility::Visible : Visibility::Collapsed);
+        }
     }
 
     void SettingsWindow::Save()
@@ -368,30 +464,39 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto backendIndex = displayBackend_.SelectedIndex();
         if (usbAutomation_.IsOn() && backendIndex < 0)
         { tabs_.SelectedIndex(3); ShowValidationError(L"启用 USB 自动切换前，请先完成显示器配置。"); return; }
-        auto redmiInput = ParseInteger(redmiInput_.Text().c_str(), 10, 0, 65535);
-        auto dellInput = ParseInteger(dellInput_.Text().c_str(), 10, 0, 65535);
-        if (backendIndex >= 0 && (!redmiInput || !dellInput))
-        { tabs_.SelectedIndex(3); ShowValidationError(L"两台显示器的输入源必须填写为 0–65535 的整数。"); return; }
-        auto nativeBackend = backendIndex == 0;
-        auto redmiNativeIndex = redmiNativeMonitor_.SelectedIndex(); auto dellNativeIndex = dellNativeMonitor_.SelectedIndex();
-        if (nativeBackend && (redmiNativeIndex < 0 || dellNativeIndex < 0))
-        { tabs_.SelectedIndex(3); ShowValidationError(L"使用原生 DDC/CI 时，请选择显示器 1 和显示器 2。"); return; }
-        if (nativeBackend && redmiNativeIndex == dellNativeIndex)
-        { tabs_.SelectedIndex(3); ShowValidationError(L"显示器 1 和显示器 2 不能选择同一台物理显示器。"); return; }
+        CaptureDisplayEditors();
+        if (backendIndex >= 0 && workingDisplays_.empty())
+        { tabs_.SelectedIndex(3); ShowValidationError(L"请至少添加一台显示器，或清除显示器控制方式。"); return; }
         auto controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
-        auto redmiPath = Trim(redmiPath_.Text().c_str()); auto dellPath = Trim(dellPath_.Text().c_str());
-        if (backendIndex == 1 && (controlMyMonitorPath.empty() || redmiPath.empty() || dellPath.empty()))
-        { tabs_.SelectedIndex(3); ShowValidationError(L"使用 ControlMyMonitor 时，请填写程序路径和两台显示器的设备路径。"); return; }
+        if (backendIndex == 1 && controlMyMonitorPath.empty())
+        { tabs_.SelectedIndex(3); ShowValidationError(L"使用 ControlMyMonitor 时，请填写程序路径。"); return; }
+        std::set<std::wstring> hardwareIds;
+        for (auto const& display : workingDisplays_)
+        {
+            if (backendIndex < 0) break;
+            if (display.name.empty())
+            { tabs_.SelectedIndex(3); ShowValidationError(L"每台显示器都需要填写名称。"); return; }
+            if (display.macInput < 0 || display.macInput > 65535)
+            { tabs_.SelectedIndex(3); ShowValidationError(display.name + L"的 Mac 输入源必须为 0–65535 的整数。"); return; }
+            auto hardwareId = backendIndex == 0 ? display.nativeMonitorId : display.controlMonitorPath;
+            if (hardwareId.empty())
+            {
+                tabs_.SelectedIndex(3);
+                ShowValidationError(display.name + (backendIndex == 0 ? L"尚未选择 DDC/CI 显示器。" : L"尚未填写设备路径。"));
+                return;
+            }
+            std::transform(hardwareId.begin(), hardwareId.end(), hardwareId.begin(), towlower);
+            if (!hardwareIds.insert(hardwareId).second)
+            { tabs_.SelectedIndex(3); ShowValidationError(L"不能让多项配置指向同一台物理显示器。"); return; }
+        }
         auto result = original_; result.usbAutomationEnabled = usbAutomation_.IsOn(); result.coordinationEnabled = coordination_.IsOn();
         result.peerHost = host; result.port = *port; result.pairingCode = code;
         result.usbVendorId = vendor.value_or(-1); result.usbProductId = product.value_or(-1); auto selected = usbDevices_.SelectedIndex();
         if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
         else if (!vendor || !product) result.usbName.clear();
         result.displayControlBackend = backendIndex == 0 ? L"native_ddc" : backendIndex == 1 ? L"control_my_monitor" : L"";
-        if (redmiNativeIndex >= 0 && static_cast<size_t>(redmiNativeIndex) < ddcMonitors_.size()) result.redmiNativeMonitorId = ddcMonitors_[redmiNativeIndex].id;
-        if (dellNativeIndex >= 0 && static_cast<size_t>(dellNativeIndex) < ddcMonitors_.size()) result.dellNativeMonitorId = ddcMonitors_[dellNativeIndex].id;
-        result.controlMyMonitorPath = controlMyMonitorPath; result.redmiMonitorPath = redmiPath; result.redmiMacInput = redmiInput.value_or(-1);
-        result.dellMonitorPath = dellPath; result.dellMacInput = dellInput.value_or(-1); result.startWithWindows = autoStart_.IsOn();
+        result.controlMyMonitorPath = controlMyMonitorPath; result.displays = workingDisplays_;
+        result.displayConfigurationSafeMode = false; result.startWithWindows = autoStart_.IsOn();
         if (saved_) saved_(result); original_ = result; appWindow_.Hide();
     }
 
