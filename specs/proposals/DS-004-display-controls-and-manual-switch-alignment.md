@@ -2,19 +2,19 @@
 
 ## 状态
 
-- 状态：DRAFT（等待用户批准详细本机数据和 UI 行为）
+- 状态：APPROVED（用户于 2026-08-27 批准本机 schema v3、详细 UI 行为和 C-001 至 C-024）
 - 功能编号：DS-004
 - 任务类型：cross-platform
-- 基线：`24a4ed7bbfab0eb9726ed6261afe5ad56e3f4df7`
+- 审批基线：`af8c707a0e031a78b6155463a808f9b61b2bb1b7`
 - 当前网络协议：保持 `version = 1`
-- 公共 contracts：保持 `schemaVersion = 1`
+- 公共 contracts：DS-004 不创建本机配置 contract；已批准的 `contracts/protocol-v2/` 由 DS-005 管理
 - 两端本机配置：建议升级为 `schemaVersion = 3`
 - 关联协调记录：`coordination/DS-004.md`
 - 后续协议提案：DS-005 多目标协同协议 v2
 
 用户已决定 Windows 补齐亮度、对比度、音量和回读控制；每个平台不再提供“切换到本机”，而是按协同配置显示可自定义名称的对端入口；对端信息改为可添加的多个协同配置；Windows 补齐 USB 学习和关于页面。
 
-本提案只定义本机配置、显示器控制和 UI。手动协同唤醒、多配置自动目标发现、USB/蓝牙到达消息以及同系统设备角色由 DS-005 定义。未经 DS-005 批准，平台不得把这些新语义塞入现有 v1 消息。
+本提案只定义本机配置、显示器控制和 UI。手动协同唤醒、多配置自动目标发现、USB/蓝牙到达消息以及同系统设备角色由已批准并合并的 DS-005 定义。在 `PROTOCOL.md` 正式纳入 v2 前，平台不得实现 v2 网络运行时或把新语义塞入现有 v1 消息。
 
 ## 当前行为
 
@@ -115,6 +115,7 @@ Windows 增加与 macOS 对等的关于页面；macOS 核对现有页面。至�
 | 字段 | 类型 | 必填 | 范围与默认 |
 | --- | --- | --- | --- |
 | `schemaVersion` | integer | 是 | 固定为 `3` |
+| `localEndpointID` | UUID string | 是 | 安装实例随机生成且持久保存；不得从硬件、主机名或用户信息派生 |
 | `localDeviceName` | string | 是 | 1...32 个可见 Unicode 字符；新安装为“本机” |
 | `listenPort` | integer | 是 | `1...65535`；新安装为 `49731` |
 | `displays` | array | 是 | 可以为空 |
@@ -142,7 +143,9 @@ Windows 增加与 macOS 对等的关于页面；macOS 核对现有页面。至�
 | `name` | string | 是 | 1...32 个可见字符；忽略大小写后唯一 |
 | `peerHost` | string | 是 | 空表示未配置；非空最长 253 字符 |
 | `peerPort` | integer | 是 | `1...65535`；默认 `49731` |
-| `pairingCode` | string | 是 | 空或至少 8 个字符；不得记录到日志 |
+| `pairingCode` | string | 是 | 空，或经 Unicode NFC 规范化后为 8...128 个 UTF-8 字节；不得记录到日志 |
+| `peerEndpointID` | UUID string/null | 是 | 首次 v2 检测并经用户确认后保存；变化时不得自动替换 |
+| `peerProtocolVersion` | integer/null | 是 | `null`、`1` 或 `2`；只记录最近一次用户确认的检测能力，不用于猜测协议 |
 | `coordinationEnabled` | boolean | 是 | 默认 `false` |
 | `displayInputs` | array | 是 | 可以为空 |
 | `triggerDevices` | array | 是 | 可以为空；只含本机私有引用 |
@@ -171,6 +174,7 @@ Windows 增加与 macOS 对等的关于页面；macOS 核对现有页面。至�
 - v2 `macInput` 原值迁移到全局显示器 `localInput`。
 - 为旧对端创建一个配置；v2 `windowsInput` 原值按显示器 ID 写入该配置的 `peerInput`。
 - 旧 peer host、port、pairing code、USB 触发和协同开关迁入该配置；名称默认“Windows”。
+- 生成新的随机 `localEndpointID`；旧配置的 `peerEndpointID` 和 `peerProtocolVersion` 均为 `null`，等待用户检测确认。
 - v1 数组和更早旧键按现有映射直接生成 v3，原数据继续保留。
 
 ### Windows v2 到 v3
@@ -178,6 +182,7 @@ Windows 增加与 macOS 对等的关于页面；macOS 核对现有页面。至�
 - 全局显示器 `localInput = null`，不得猜测。
 - 为旧对端创建一个配置；v2 `MacInput` 原值按显示器 ID 迁移为 `peerInput`。
 - 旧 peer host、port、pairing code、USB 触发和协同开关迁入该配置；名称默认“Mac”。
+- 生成新的随机 `localEndpointID`；旧配置的 `peerEndpointID` 和 `peerProtocolVersion` 均为 `null`，等待用户检测确认。
 - `readEnabled` 迁移为 `true`，三个控制功能开关迁移为 `true`；读取失败仍按安全降级处理。
 
 ### 共同失败规则
@@ -194,13 +199,13 @@ Windows 增加与 macOS 对等的关于页面；macOS 核对现有页面。至�
 
 | 编号 | 输入 | 预期结果 |
 | --- | --- | --- |
-| C-001 | 全新安装 | 一个空“配置 1”，协同关闭，零硬件和网络副作用 |
+| C-001 | 全新安装 | 生成随机逻辑 localEndpointID；一个空“配置 1”，协同关闭，零硬件和网络副作用 |
 | C-002 | 添加两个协同配置 | 获得不同稳定 UUID，原配置不变 |
 | C-003 | 配置重排 | 显示器映射仍按 UUID 关联 |
 | C-004 | 配置重名、空名或控制字符 | 拒绝保存并保留旧数据 |
 | C-005 | 删除显示器后存在映射 | 映射显示为不可用，不绑定其他显示器 |
 | C-006 | 多个配置同时开启 | 本机数据合法；目标选择留给 DS-005，不选择列表第一项 |
-| C-007 | 检测本机配置 | 只返回完整性和能力结果，零 DDC/USB/蓝牙/唤醒副作用 |
+| C-007 | 检测本机配置 | 只返回完整性和能力结果；peer endpoint/版本变化等待用户确认，零 DDC/USB/蓝牙/唤醒副作用 |
 | C-008 | macOS v2 迁移 | `macInput` 到全局本机输入，`windowsInput` 到旧对端配置，原数据保留 |
 | C-009 | Windows v2 迁移 | `MacInput` 到旧对端配置，本机输入为空，原文件保留 |
 | C-010 | 迁移写入或回读失败 | 持久安全状态，原数据不覆盖，四类副作用为零 |
