@@ -9,6 +9,7 @@
 - push 前同步 main：`6052327de368684b3fa87e6a45e121ba3a4da612`（仅包含后续合并的 macOS CI 路径过滤，与 Windows 实现无冲突）
 - 实现提交：`a6c9a7bd35bded48252b8da992c86e993692c00e`
 - PR：[#21](https://github.com/maizihk/DisplaySwitch/pull/21)，保持未合并
+- Windows CI：run [#8](https://github.com/maizihk/DisplaySwitch/actions/runs/33084261142)，`build-test-and-package` 全部步骤通过
 
 ## 完成内容
 
@@ -24,6 +25,7 @@
 ## 自动验证
 
 - `Windows/build-windows.ps1` x64 Release 完整通过。
+- GitHub 托管 Windows CI 在干净 runner 上完成构建、显式测试、绿色版结构/体积检查和 artifact 上传，结论为 `success`。
 - 自动测试输出：`DS-004 passed C-001 through C-015 local-model scenarios`。
 - v1 公共回归输出：`DS-001 passed 17 message vectors and 16 state-machine vectors`。
 - 覆盖：全新安装、随机 endpoint 持久化、0/1/多显示器、配置 UUID/重排/重命名/多个开启、重复 UUID/名称、控制字符、非法范围和未知版本、NFC 与 UTF-8 字节范围、endpoint 变化需确认、v2 迁移、孤立映射、显示器重排/移除/重新接入、部分映射和失败隔离、写入/解析失败及重启安全状态。
