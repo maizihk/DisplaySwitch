@@ -7,7 +7,7 @@
 - 分支：`codex/macos-ds-005-protocol-v2`
 - 基线：`dec66eca97b6a848b87a4c1ae3c30473134b8d2a`
 - 实现提交：`0d40c1ff31ae7bb76f413448433c5d8b2bb69b1c`
-- PR：待推送后创建
+- PR：[#32 DS-005 macOS: implement protocol v2 coordination](https://github.com/maizihk/DisplaySwitch/pull/32)
 
 ## 完成内容
 
