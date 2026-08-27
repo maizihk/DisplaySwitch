@@ -25,7 +25,10 @@ namespace
 
             DISPLAY_DEVICEW displayDevice{ sizeof(displayDevice) };
             EnumDisplayDevicesW(monitorInfo.szDevice, 0, &displayDevice, EDD_GET_DEVICE_INTERFACE_NAME);
-            std::wstring baseId = displayDevice.DeviceID[0] ? displayDevice.DeviceID : monitorInfo.szDevice;
+            // DeviceID is the monitor interface path requested by EDD_GET_DEVICE_INTERFACE_NAME.
+            // DeviceKey is a stable registry identity fallback. Never persist DISPLAY1/DISPLAY2,
+            // because those GDI names change when enumeration order or cabling changes.
+            std::wstring baseId = displayDevice.DeviceID[0] ? displayDevice.DeviceID : displayDevice.DeviceKey;
             std::wstring friendlyName = displayDevice.DeviceString[0] ? displayDevice.DeviceString : monitorInfo.szDevice;
 
             DWORD count{};
@@ -34,6 +37,11 @@ namespace
             if (!GetPhysicalMonitorsFromHMONITOR(monitor, count, physical.data())) return TRUE;
             for (DWORD index = 0; index < count; ++index)
             {
+                if (baseId.empty())
+                {
+                    DestroyPhysicalMonitor(physical[index].hPhysicalMonitor);
+                    continue;
+                }
                 std::wstring id = baseId + L"|" + std::to_wstring(index);
                 std::wstring label = friendlyName;
                 if (physical[index].szPhysicalMonitorDescription[0] &&
@@ -182,31 +190,17 @@ namespace DisplaySwitcher::Native
         if (!native && !std::filesystem::is_regular_file(config.controlMyMonitorPath))
             return { false, L"找不到 ControlMyMonitor：" + config.controlMyMonitorPath };
 
-        auto redmi = std::async(std::launch::async, [&]
+        auto result = ExecuteDisplayActions(config.displays, [&](DisplayConfig const& display)
         {
             return RunWithRetry([&]
             {
                 return native
-                    ? RunNativeDdc(config.redmiNativeMonitorId, config.redmiMacInput)
-                    : RunControlMyMonitor(config.controlMyMonitorPath, config.redmiMonitorPath, config.redmiMacInput);
+                    ? RunNativeDdc(display.nativeMonitorId, display.macInput)
+                    : RunControlMyMonitor(config.controlMyMonitorPath, display.controlMonitorPath, display.macInput);
             });
         });
-        auto dell = std::async(std::launch::async, [&]
-        {
-            return RunWithRetry([&]
-            {
-                return native
-                    ? RunNativeDdc(config.dellNativeMonitorId, config.dellMacInput)
-                    : RunControlMyMonitor(config.controlMyMonitorPath, config.dellMonitorPath, config.dellMacInput);
-            });
-        });
-        auto redmiResult = redmi.get();
-        auto dellResult = dell.get();
-        WriteDiagnostic("display.switch_complete success=" + std::to_string(redmiResult.success && dellResult.success ? 1 : 0));
-        if (!redmiResult.success && !dellResult.success)
-            return { false, redmiResult.error + L"；" + dellResult.error };
-        if (!redmiResult.success) return redmiResult;
-        if (!dellResult.success) return dellResult;
-        return { true, {} };
+        WriteDiagnostic("display.switch_complete success=" + std::to_string(result.success ? 1 : 0) +
+            " count=" + std::to_string(config.displays.size()));
+        return result;
     }
 }

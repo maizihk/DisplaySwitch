@@ -24,7 +24,7 @@ Windows 端填写：
 - 至少 8 位配对码。
 - 点击“重新读取”，选择实际用于判断键鼠归属的 USB Hub；程序不会预选设备。
 - 在“USB 切换”页开启“启用 USB 自动切换”。
-- 在“显示器”页选择“Windows 原生 DDC/CI”或“ControlMyMonitor”，再为通用的显示器配置项选择设备并填写 Mac 输入源。兼容模式还需要填写 ControlMyMonitor 路径和设备路径。
+- 在“显示器”页选择“Windows 原生 DDC/CI”或“ControlMyMonitor”，按实际数量添加显示器，为每项填写名称和 Mac 输入源并选择对应设备；列表支持上移、下移和移除。兼容模式还需要填写 ControlMyMonitor 路径和每台显示器的设备路径。
 - 根据需要开启“登录 Windows 时自动启动”。
 
 Mac 端进入菜单栏“设置…”→“双端协同”，填写：
@@ -55,7 +55,9 @@ Windows 端关闭双端协同时，USB 离开 Windows 后会直接切换到 Mac�
 - `Windows 原生 DDC/CI`：直接调用系统 `Dxva2.dll` 的物理显示器 API，不依赖外部程序。设置页只进行显示器枚举，不会在检测时改变输入源。
 - `ControlMyMonitor`：保留现有兼容方式，适合原生 DDC/CI 在特定显示器或显卡驱动上不可用时使用。
 
-两种后端都会并行切换当前的两个通用显示器配置项；单台失败后等待 150 ms 并重试一次。首次验证原生模式前可以先准备 ControlMyMonitor 兼容配置，以便需要时回退。
+两种后端都会遍历同一份动态显示器配置并并行切换；单台失败后等待 150 ms 并重试一次，其他显示器仍会独立执行。显示器配置使用独立 UUID 保存，重新排序不改变身份；暂时断开的原生显示器会保留配置，重新接入后按稳定硬件标识恢复匹配。首次验证原生模式前可以先准备 ControlMyMonitor 兼容配置，以便需要时回退。
+
+升级旧版时，程序会将原来的两台固定显示器字段一次性迁移为动态列表，并以原子方式写回配置。解析或写回失败会保留原文件、停用自动硬件操作，等待用户在设置页检查并重新保存。
 
 ## ControlMyMonitor 配置
 
@@ -71,3 +73,5 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 脚本生成根入口 `Windows\dist\DisplaySwitch.exe`，并将 WinUI 程序和依赖放入 `Windows\dist\runtime\`，同时检查整个目录小于 20 MiB。目标电脑只需 Windows App Runtime 2.4 x64；不需要 .NET SDK，也不需要 Visual C++ Redistributable（本项目 Release 使用静态 C/C++ 运行库）。
+
+构建脚本还会编译并运行 `DisplaySwitcher.Tests` 无硬件测试，测试配置迁移、动态数量、稳定匹配、断开重连和单显示器失败隔离，不会调用真实 DDC、USB、睡眠唤醒或防火墙接口。

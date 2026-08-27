@@ -4,6 +4,8 @@ $project = Join-Path $PSScriptRoot "DisplaySwitcher.Native\DisplaySwitcher.Nativ
 $buildOutput = Join-Path $PSScriptRoot "DisplaySwitcher.Native\bin\x64\Release"
 $launcherProject = Join-Path $PSScriptRoot "DisplaySwitcher.Launcher\DisplaySwitcher.Launcher.vcxproj"
 $launcherOutput = Join-Path $PSScriptRoot "DisplaySwitcher.Launcher\bin\x64\Release"
+$testsProject = Join-Path $PSScriptRoot "DisplaySwitcher.Tests\DisplaySwitcher.Tests.vcxproj"
+$testsOutput = Join-Path $PSScriptRoot "DisplaySwitcher.Tests\bin\x64\Release\DisplaySwitcher.Tests.exe"
 $dist = Join-Path $PSScriptRoot "dist"
 
 function Find-MSBuild {
@@ -56,6 +58,11 @@ Invoke-CleanEnvironmentProcess $msbuild @(
 Invoke-CleanEnvironmentProcess $msbuild @(
     $launcherProject, "/m", "/t:Rebuild", "/p:Configuration=Release", "/p:Platform=x64", "/v:minimal"
 )
+Invoke-CleanEnvironmentProcess $msbuild @(
+    $testsProject, "/restore", "/m", "/t:Rebuild", "/p:Configuration=Release", "/p:Platform=x64", "/v:minimal"
+)
+if (-not (Test-Path -LiteralPath $testsOutput)) { throw "构建完成但缺少测试程序：$testsOutput" }
+Invoke-CleanEnvironmentProcess $testsOutput @()
 
 $distPath = [IO.Path]::GetFullPath($dist)
 $windowsPath = [IO.Path]::GetFullPath($PSScriptRoot) + [IO.Path]::DirectorySeparatorChar
