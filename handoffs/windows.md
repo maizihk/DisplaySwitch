@@ -6,8 +6,11 @@
 - 功能：DS-004 / Windows W-201——DDC 后端接口化与亮度、对比度、音量控制
 - 分支：`codex/windows-ds-004-ddc-controls`
 - 任务起始基线：`7c78c537e0ba47c4613063ba5f71560e336115e9`
+- push 前同步 main：`00bceff9e49f27f23c654d04a067b3168af6bbee`（仅包含已合并的 macOS M-005；以普通 merge 纳入，Windows 树无冲突）
 - 实现提交：`9e078a4926ef7d48f2629c63410bf4fc75f9e82b`
-- PR：分支 push 后创建；不得自动合并
+- 首轮 CI 验证 head：`d76762cbb1b0ad59ca800b5c2a10110f92fda6fb`
+- PR：[#24](https://github.com/maizihk/DisplaySwitch/pull/24)，保持未合并
+- Windows CI：run [#13](https://github.com/maizihk/DisplaySwitch/actions/runs/33094329374)（run ID `33094329374`）全部通过
 
 ## 完成内容
 
@@ -30,6 +33,8 @@
 - 模拟覆盖三项正常回读、全零不可信、单项合法零、单台/单项失败隔离、单项关闭零调用、后端不可用、每显示器回退、取消和迟到结果、枚举重排稳定关联、显式联动部分失败及配置/运行时安全门零调用。
 - 测试只使用临时配置和纯模拟后端；未访问真实 DDC、显示器、UDP、USB、Bluetooth、唤醒或防火墙。
 - `Windows/dist/` 已验证入口 `DisplaySwitch.exe`、`runtime/` 和全部必需文件；framework-dependent 绿色版总大小 1.44 MiB，小于 20 MiB。构建产物未进入 Git。
+- GitHub 托管 CI 在 `windows-2025-vs2026` 上完成相同的 x64 Release 构建、显式测试与产物检查；CI 中 dist 为 1.45 MiB。
+- CI artifact：`DisplaySwitcher-Windows-x64-unsigned-framework-dependent`，artifact ID `9655925666`，压缩包 705629 字节；上传步骤通过，保留完整 `Windows/dist/` 结构。
 
 ## 尚需实机验证
 
