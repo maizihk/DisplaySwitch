@@ -4,10 +4,11 @@
 
 - 日期：2026-08-27
 - 分支：`codex/windows-ds-001-state-machine`
-- 基线：`e65d05853496c44cdf54f59a4c9d5af7c230a13a`
+- 共享基线：`8a72c2dede6d6520d8dcfc259278d6bf95e5cb05`
 - 清单：W-003 交接状态机可测试化 / DS-001 Windows
 - 初始实现提交：`beac261e85a731a21e4722351dd15b04172c2cad`
 - 最新实现提交：`323e3f6707f3f4a6612391aa7fda992b3bb337eb`
+- 最终验证提交：`c4acaf8d78a31f2e61d5be267a9dd39119cae1a8`
 - PR：[#5](https://github.com/maizihk/DisplaySwitch/pull/5)
 
 ## 完成内容
@@ -21,7 +22,7 @@
 
 ## 自动验证
 
-- 原生测试直接读取批准的 `contracts/protocol-v1/message-validation-vectors.json`（17 组）与 `state-machine-vectors.json`（15 组），全部通过。
+- 原生测试直接读取批准的 `contracts/protocol-v1/message-validation-vectors.json`（17 组）与 `state-machine-vectors.json`（16 组），全部通过；构建日志明确输出两类向量数量。
 - 虚拟时间覆盖 150 ms 防抖/重发、4 次上限、600 ms 兜底和 6 秒在线边界；假动作计数确保状态探测及非法消息没有硬件副作用。
 - 回归测试覆盖首次 probe、6 秒在线窗口过期及十秒重复窗口内再次接收；第二次回复并恢复在线，wake/switch/USB 调用均为 0。
 - `Windows/build-windows.ps1` x64 Release 构建和全部自动测试通过。
