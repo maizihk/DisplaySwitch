@@ -7,7 +7,9 @@
 - 分支：`codex/windows-ds-006-public-docs`
 - 任务起始基线：`04b7a9397d84735d28de709a142950b3670f4cb1`（已合并 DS-006 协调 PR 的 `main`）
 - 公开文档提交：`69c867c281421e9c929283ac28372296075a46fa`
-- PR：待创建
+- CI 验证 head：`029a6954a6229de62b64e06da4bd21422e3f25d7`
+- PR：[#27](https://github.com/maizihk/DisplaySwitch/pull/27)，保持开放、未合并
+- Windows CI：run [#16](https://github.com/maizihk/DisplaySwitch/actions/runs/33099549484)（run ID `33099549484`）全部通过
 
 ## 完成内容
 
@@ -28,7 +30,8 @@
 - v1 公共回归输出：`DS-001 passed 17 message vectors and 16 state-machine vectors`。
 - `Windows/dist/` 入口、`runtime/` 和必需文件检查通过；framework-dependent 绿色版总大小 1.44 MiB，小于 20 MiB。构建产物未进入 Git。
 - 本机构建的 NuGet 漏洞元数据查询出现 `NU1900` 网络警告，但依赖恢复、编译、测试和产物检查均成功；该警告不通过删除或降低检查规避。
-- GitHub 托管 CI：待 PR 创建后记录对应 run 和结果。
+- GitHub 托管 CI 在 `windows-2025-vs2026` 上完成相同的 x64 Release 构建、显式自动测试和产物检查；日志明确显示 C-001..C-015、C-016..C-020/C-024、17 条消息向量和 16 条状态机向量全部通过，dist 为 1.45 MiB。
+- CI artifact：`DisplaySwitcher-Windows-x64-unsigned-framework-dependent`，artifact ID `9658014613`，压缩包 705630 字节；上传步骤通过并保留完整 `Windows/dist/` 结构。
 
 ## 尚需实机验证
 
@@ -40,4 +43,4 @@
 
 - 允许范围内仅修改 `Windows/DEVELOPMENT_CHECKLIST.md`、`Windows/README.md` 和本文件。
 - framework-dependent 绿色版仍要求目标电脑安装 Windows App Runtime 2.4 x64。
-- PR 创建后等待评审，不自动合并，不创建 tag 或 Release。
+- PR #27 等待评审，不自动合并，不创建 tag 或 Release。
