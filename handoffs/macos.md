@@ -5,9 +5,9 @@
 - 日期：2026-08-27
 - 分支：`codex/macos-ds-001-state-machine`
 - 清单：DS-001 / M-004
-- 基线：`9624ffb9cdf1d39809a66cf11592c2dab43e577d`
+- 共享基线：`8a72c2dede6d6520d8dcfc259278d6bf95e5cb05`
 - PR：[#4 DS-001 macOS: Extract state machine and add vector tests](https://github.com/maizihk/DisplaySwitch/pull/4)
-- 最终实现提交：`1ff24e07f7d5d9a865b1a9c424847ebb74b510e5`
+- 最终实现提交：`84adee3ac6e53faa9be9b018f04b3ce82a2b81f9`
 
 ## 完成内容
 
@@ -18,7 +18,8 @@
   - `usb_present` 与 `usb_attached_and_awake` 的事件关联与幂等处理
 - 新增并修复状态机/消息向量测试（不接真实网络/USB/DDC）：
   - `macOS/Tests/DisplaySwitcherTests/HandoffMessageVectorTests.swift`（17 条）
-  - `macOS/Tests/DisplaySwitcherTests/HandoffStateMachineVectorTests.swift`（15 条）
+  - `macOS/Tests/DisplaySwitcherTests/HandoffStateMachineVectorTests.swift`（16 条）
+- 已使用普通 merge 合入 `origin/main@8a72c2dede6d6520d8dcfc259278d6bf95e5cb05`，未使用 rebase；新增公共 `SM-016` 由 macOS 向量 harness 实际加载和验证。
 - `macOS/DisplaySwitcher.xcodeproj` 已将 `HandoffStateMachine.swift` 正确加入测试目标编译范围。
 - 本次按 PR #4 协调阻塞清单修复了：
   - `completeOutgoingIfNeeded` 不再在 `requestSwitch` 前清空 `outgoingEventID`
@@ -48,11 +49,11 @@
 
 ## 自动验证
 
-- GitHub Actions `build-and-test` 在最终实现提交 `1ff24e07f7d5d9a865b1a9c424847ebb74b510e5` 上完整通过：
-  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33052109672`
+- GitHub Actions `build-and-test` 在最终实现提交 `84adee3ac6e53faa9be9b018f04b3ce82a2b81f9` 上完整通过：
+  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33053280060`
   - Xcode 27.0 / Swift 6.4 / macOS 27 SDK。
   - Debug：`xcodebuild ... -configuration Debug ... build`，`BUILD SUCCEEDED`。
-  - 全部 XCTest：19 个测试方法、0 失败；其中 17 条消息向量和 15 条状态机向量全部通过，短/空配对码、协同关闭、USB 自动化关闭和重复合法 `status_probe` 四项无副作用/恢复测试全部通过。
+  - 全部 XCTest：19 个测试方法、0 失败；其中 17 条消息向量和 16 条状态机向量全部通过，包含公共 `SM-016` 的六秒超时后重复合法 `status_probe` 恢复在线且零硬件副作用场景。
   - Release 与打包：`./macOS/scripts/build-app.sh`，`BUILD SUCCEEDED`，生成 `macOS/outputs/DisplaySwitcher.app` 和 `DisplaySwitcher-macOS-arm64.zip`。
   - 签名：构建脚本内严格验证通过，CI 独立执行 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 的 `Verify artifacts` 步骤通过。
 - 当前本机 Codex 执行环境仍只暴露 `/Library/Developer/CommandLineTools`，因此未把此前失败的本机构建误报为通过；以上构建、测试、打包和签名结论来自 PR #4 的真实 GitHub Actions macOS runner。
