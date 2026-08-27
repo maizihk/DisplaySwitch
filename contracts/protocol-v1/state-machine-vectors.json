@@ -1,0 +1,720 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "referenceTime": 1788000000,
+  "configuredPairingCode": "TEST-CODE-0001",
+  "vectors": [
+    {
+      "id": "SM-001",
+      "description": "Status probe refreshes liveness and replies with the same event ID without hardware actions",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "status_probe",
+              "eventID": "10000000-0000-4000-8000-000000000001",
+              "source": "windows",
+              "target": "mac",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "status_probe", "eventID": "10000000-0000-4000-8000-000000000001" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "sendMessage", "type": "status_response", "eventID": "10000000-0000-4000-8000-000000000001" }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-002",
+      "description": "Offline peer causes one request and immediate switch after USB debounce",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": ["20000000-0000-4000-8000-000000000001"]
+      },
+      "steps": [
+        { "atMs": 0, "input": { "kind": "usbPresenceChanged", "present": false } },
+        { "atMs": 151, "input": { "kind": "switchCompleted", "eventID": "20000000-0000-4000-8000-000000000001", "success": true } }
+      ],
+      "expectedActions": [
+        { "atMs": 150, "kind": "sendMessage", "type": "handover_request", "eventID": "20000000-0000-4000-8000-000000000001" },
+        { "atMs": 150, "kind": "requestSwitch", "eventID": "20000000-0000-4000-8000-000000000001" },
+        { "atMs": 151, "kind": "sendMessage", "type": "committed", "eventID": "20000000-0000-4000-8000-000000000001", "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 1, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-003",
+      "description": "Online peer receives four requests and falls back once at six hundred milliseconds after handover starts",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": ["30000000-0000-4000-8000-000000000001"]
+      },
+      "steps": [
+        { "atMs": 0, "input": { "kind": "usbPresenceChanged", "present": false } },
+        { "atMs": 751, "input": { "kind": "switchCompleted", "eventID": "30000000-0000-4000-8000-000000000001", "success": false } }
+      ],
+      "expectedActions": [
+        { "atMs": 150, "kind": "sendMessage", "type": "handover_request", "eventID": "30000000-0000-4000-8000-000000000001" },
+        { "atMs": 300, "kind": "sendMessage", "type": "handover_request", "eventID": "30000000-0000-4000-8000-000000000001" },
+        { "atMs": 450, "kind": "sendMessage", "type": "handover_request", "eventID": "30000000-0000-4000-8000-000000000001" },
+        { "atMs": 600, "kind": "sendMessage", "type": "handover_request", "eventID": "30000000-0000-4000-8000-000000000001" },
+        { "atMs": 750, "kind": "requestSwitch", "eventID": "30000000-0000-4000-8000-000000000001" },
+        { "atMs": 751, "kind": "sendMessage", "type": "committed", "eventID": "30000000-0000-4000-8000-000000000001", "wakeSucceeded": false }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 1, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-004",
+      "description": "Matching ready acknowledgement completes the current outgoing event and cancels remaining retries",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": ["40000000-0000-4000-8000-000000000001"]
+      },
+      "steps": [
+        { "atMs": 0, "input": { "kind": "usbPresenceChanged", "present": false } },
+        {
+          "atMs": 375,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "usb_attached_and_awake",
+              "eventID": "40000000-0000-4000-8000-000000000001",
+              "source": "windows",
+              "target": "mac",
+              "timestamp": 1788000000.375,
+              "pairingCode": "TEST-CODE-0001",
+              "wakeSucceeded": true
+            }
+          }
+        },
+        { "atMs": 376, "input": { "kind": "switchCompleted", "eventID": "40000000-0000-4000-8000-000000000001", "success": true } },
+        { "atMs": 800, "input": { "kind": "advanceTime" } }
+      ],
+      "expectedActions": [
+        { "atMs": 150, "kind": "sendMessage", "type": "handover_request", "eventID": "40000000-0000-4000-8000-000000000001" },
+        { "atMs": 300, "kind": "sendMessage", "type": "handover_request", "eventID": "40000000-0000-4000-8000-000000000001" },
+        { "atMs": 375, "kind": "acceptMessage", "type": "usb_attached_and_awake", "eventID": "40000000-0000-4000-8000-000000000001" },
+        { "atMs": 375, "kind": "setPeerReachable", "value": true },
+        { "atMs": 375, "kind": "requestSwitch", "eventID": "40000000-0000-4000-8000-000000000001" },
+        { "atMs": 376, "kind": "sendMessage", "type": "committed", "eventID": "40000000-0000-4000-8000-000000000001", "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 1, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 375,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-005",
+      "description": "USB return before debounce prevents handover request and display switch",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": ["50000000-0000-4000-8000-000000000001"]
+      },
+      "steps": [
+        { "atMs": 0, "input": { "kind": "usbPresenceChanged", "present": false } },
+        { "atMs": 100, "input": { "kind": "usbPresenceChanged", "present": true } },
+        { "atMs": 101, "input": { "kind": "wakeCompleted", "eventID": "50000000-0000-4000-8000-000000000001", "success": true } },
+        { "atMs": 800, "input": { "kind": "advanceTime" } }
+      ],
+      "expectedActions": [
+        { "atMs": 100, "kind": "requestWake", "eventID": "50000000-0000-4000-8000-000000000001" },
+        { "atMs": 101, "kind": "sendBurst", "type": "usb_present", "eventID": "50000000-0000-4000-8000-000000000001", "count": 3, "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 1, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-006",
+      "description": "USB return while waiting cancels the outgoing event and prevents fallback switch",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": [
+          "60000000-0000-4000-8000-000000000001",
+          "60000000-0000-4000-8000-000000000002"
+        ]
+      },
+      "steps": [
+        { "atMs": 0, "input": { "kind": "usbPresenceChanged", "present": false } },
+        { "atMs": 225, "input": { "kind": "usbPresenceChanged", "present": true } },
+        { "atMs": 226, "input": { "kind": "wakeCompleted", "eventID": "60000000-0000-4000-8000-000000000002", "success": true } },
+        { "atMs": 800, "input": { "kind": "advanceTime" } }
+      ],
+      "expectedActions": [
+        { "atMs": 150, "kind": "sendMessage", "type": "handover_request", "eventID": "60000000-0000-4000-8000-000000000001" },
+        { "atMs": 225, "kind": "cancelOutgoing", "eventID": "60000000-0000-4000-8000-000000000001" },
+        { "atMs": 225, "kind": "requestWake", "eventID": "60000000-0000-4000-8000-000000000002" },
+        { "atMs": 226, "kind": "sendBurst", "type": "usb_present", "eventID": "60000000-0000-4000-8000-000000000002", "count": 3, "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 1, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-007",
+      "description": "Duplicate current handover request wakes once but may retransmit acknowledgement",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "handover_request",
+              "eventID": "70000000-0000-4000-8000-000000000001",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        },
+        { "atMs": 1, "input": { "kind": "wakeCompleted", "eventID": "70000000-0000-4000-8000-000000000001", "success": true } },
+        {
+          "atMs": 50,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "handover_request",
+              "eventID": "70000000-0000-4000-8000-000000000001",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "handover_request", "eventID": "70000000-0000-4000-8000-000000000001" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "requestWake", "eventID": "70000000-0000-4000-8000-000000000001" },
+        { "atMs": 1, "kind": "sendBurst", "type": "usb_attached_and_awake", "eventID": "70000000-0000-4000-8000-000000000001", "count": 3, "wakeSucceeded": true },
+        { "atMs": 50, "kind": "rejectMessage", "reason": "duplicate" },
+        { "atMs": 50, "kind": "sendBurst", "type": "usb_attached_and_awake", "eventID": "70000000-0000-4000-8000-000000000001", "count": 3, "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 1, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 50,
+        "incomingEventID": "70000000-0000-4000-8000-000000000001",
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-008",
+      "description": "Ready acknowledgement for a stale event does not complete the current outgoing event",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": "80000000-0000-4000-8000-000000000001",
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "usb_attached_and_awake",
+              "eventID": "80000000-0000-4000-8000-000000000002",
+              "source": "windows",
+              "target": "mac",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001",
+              "wakeSucceeded": true
+            }
+          }
+        }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "usb_attached_and_awake", "eventID": "80000000-0000-4000-8000-000000000002" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "rejectMessage", "reason": "stale_event" }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": null,
+        "outgoingEventID": "80000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "id": "SM-009",
+      "description": "USB present with a different event ID completes the single current outgoing event",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": null,
+        "outgoingEventID": "90000000-0000-4000-8000-000000000001",
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "usb_present",
+              "eventID": "90000000-0000-4000-8000-000000000002",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001",
+              "wakeSucceeded": true
+            }
+          }
+        },
+        { "atMs": 1, "input": { "kind": "switchCompleted", "eventID": "90000000-0000-4000-8000-000000000001", "success": true } }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "usb_present", "eventID": "90000000-0000-4000-8000-000000000002" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "requestSwitch", "eventID": "90000000-0000-4000-8000-000000000001" },
+        { "atMs": 1, "kind": "sendMessage", "type": "committed", "eventID": "90000000-0000-4000-8000-000000000001", "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 1, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-010",
+      "description": "Matching committed clears the incoming event and duplicate committed has no second effect",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": "a0000000-0000-4000-8000-000000000001",
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": 1788000000,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "committed",
+              "eventID": "a0000000-0000-4000-8000-000000000001",
+              "source": "windows",
+              "target": "mac",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001",
+              "wakeSucceeded": true
+            }
+          }
+        },
+        {
+          "atMs": 50,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "committed",
+              "eventID": "a0000000-0000-4000-8000-000000000001",
+              "source": "windows",
+              "target": "mac",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001",
+              "wakeSucceeded": true
+            }
+          }
+        }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "committed", "eventID": "a0000000-0000-4000-8000-000000000001" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 50, "kind": "rejectMessage", "reason": "duplicate" }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 50,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-011",
+      "description": "Older handover request is rejected without replacing or waking the current incoming event",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": "b0000000-0000-4000-8000-000000000001",
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": 1788000000,
+        "seenMessages": [
+          { "type": "handover_request", "eventID": "b0000000-0000-4000-8000-000000000001", "seenAtMs": -100 }
+        ],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "handover_request",
+              "eventID": "b0000000-0000-4000-8000-000000000002",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1787999999.5,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "handover_request", "eventID": "b0000000-0000-4000-8000-000000000002" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "rejectMessage", "reason": "out_of_order" }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": "b0000000-0000-4000-8000-000000000001",
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-012",
+      "description": "Disabling coordination clears pending events and prevents old timers from acting",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": "c0000000-0000-4000-8000-000000000001",
+        "outgoingEventID": "c0000000-0000-4000-8000-000000000002",
+        "newestIncomingRequestTimestamp": 1788000000,
+        "seenMessages": [
+          { "type": "handover_request", "eventID": "c0000000-0000-4000-8000-000000000001", "seenAtMs": -100 }
+        ],
+        "nextEventIDs": []
+      },
+      "steps": [
+        { "atMs": 0, "input": { "kind": "coordinationChanged", "enabled": false } },
+        { "atMs": 1000, "input": { "kind": "advanceTime" } }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "cancelOutgoing", "eventID": "c0000000-0000-4000-8000-000000000002" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": false }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": false,
+        "usbPresent": false,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessageCount": 0
+      }
+    },
+    {
+      "id": "SM-013",
+      "description": "Peer remains reachable at six seconds and expires immediately after the inclusive boundary",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": []
+      },
+      "steps": [
+        { "atMs": 6000, "input": { "kind": "advanceTime" } },
+        { "atMs": 6001, "input": { "kind": "advanceTime" } }
+      ],
+      "expectedActions": [
+        { "atMs": 6001, "kind": "setPeerReachable", "value": false }
+      ],
+      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": false,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": null,
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-014",
+      "description": "Request first and USB arrival later sends both presence and ready confirmation after one arrival wake",
+      "initialState": {
+        "localPlatform": "mac",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": false,
+        "peerLastSeenAtMs": null,
+        "incomingEventID": null,
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": null,
+        "seenMessages": [],
+        "nextEventIDs": ["e0000000-0000-4000-8000-000000000002"]
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "handover_request",
+              "eventID": "e0000000-0000-4000-8000-000000000001",
+              "source": "windows",
+              "target": "mac",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        },
+        { "atMs": 1, "input": { "kind": "wakeCompleted", "eventID": "e0000000-0000-4000-8000-000000000001", "success": true } },
+        { "atMs": 50, "input": { "kind": "usbPresenceChanged", "present": true } },
+        { "atMs": 51, "input": { "kind": "wakeCompleted", "eventID": "e0000000-0000-4000-8000-000000000002", "success": true } }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "handover_request", "eventID": "e0000000-0000-4000-8000-000000000001" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "requestWake", "eventID": "e0000000-0000-4000-8000-000000000001" },
+        { "atMs": 50, "kind": "requestWake", "eventID": "e0000000-0000-4000-8000-000000000002" },
+        { "atMs": 51, "kind": "sendBurst", "type": "usb_present", "eventID": "e0000000-0000-4000-8000-000000000002", "count": 3, "wakeSucceeded": true },
+        { "atMs": 51, "kind": "sendBurst", "type": "usb_attached_and_awake", "eventID": "e0000000-0000-4000-8000-000000000001", "count": 3, "wakeSucceeded": true }
+      ],
+      "expectedHardwareCalls": { "wake": 2, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": true,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": "e0000000-0000-4000-8000-000000000001",
+        "outgoingEventID": null
+      }
+    },
+    {
+      "id": "SM-015",
+      "description": "A different handover event with an equal timestamp remains compatible and replaces the current incoming event",
+      "initialState": {
+        "localPlatform": "windows",
+        "coordinationEnabled": true,
+        "usbAutomationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": -1000,
+        "incomingEventID": "f0000000-0000-4000-8000-000000000001",
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": 1788000000,
+        "seenMessages": [
+          { "type": "handover_request", "eventID": "f0000000-0000-4000-8000-000000000001", "seenAtMs": -100 }
+        ],
+        "nextEventIDs": []
+      },
+      "steps": [
+        {
+          "atMs": 0,
+          "input": {
+            "kind": "receiveMessage",
+            "message": {
+              "version": 1,
+              "type": "handover_request",
+              "eventID": "f0000000-0000-4000-8000-000000000002",
+              "source": "mac",
+              "target": "windows",
+              "timestamp": 1788000000,
+              "pairingCode": "TEST-CODE-0001"
+            }
+          }
+        },
+        { "atMs": 1, "input": { "kind": "wakeCompleted", "eventID": "f0000000-0000-4000-8000-000000000002", "success": false } }
+      ],
+      "expectedActions": [
+        { "atMs": 0, "kind": "acceptMessage", "type": "handover_request", "eventID": "f0000000-0000-4000-8000-000000000002" },
+        { "atMs": 0, "kind": "setPeerReachable", "value": true },
+        { "atMs": 0, "kind": "requestWake", "eventID": "f0000000-0000-4000-8000-000000000002" }
+      ],
+      "expectedHardwareCalls": { "wake": 1, "switchDisplay": 0, "usbActions": 0 },
+      "finalState": {
+        "coordinationEnabled": true,
+        "usbPresent": false,
+        "peerReachable": true,
+        "peerLastSeenAtMs": 0,
+        "incomingEventID": "f0000000-0000-4000-8000-000000000002",
+        "outgoingEventID": null,
+        "newestIncomingRequestTimestamp": 1788000000
+      }
+    }
+  ]
+}
