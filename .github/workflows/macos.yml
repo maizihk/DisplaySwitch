@@ -4,7 +4,17 @@ on:
   push:
     branches:
       - main
+    paths:
+      - macOS/**
+      - contracts/**
+      - PROTOCOL.md
+      - .github/workflows/macos.yml
   pull_request:
+    paths:
+      - macOS/**
+      - contracts/**
+      - PROTOCOL.md
+      - .github/workflows/macos.yml
   workflow_dispatch:
 
 permissions:
