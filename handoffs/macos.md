@@ -25,32 +25,30 @@
   - 统一公共向量文件路径解析到仓库根目录，避免测试找错目录
 - 本次补齐了 PR #4 最新协调评论中明确要求的解码问题：
   - `PeerMessageType` 的 `Codable` 解码中显式赋值为 `self = Self(rawValue: rawValue) ?? .unknown(rawValue)`，避免 `self.init(rawValue:)` 的编译歧义。
+- 后续 CI 暴露并已修复测试接线问题：
+  - `.acceptMessage` 测试 pattern 改为与枚举一致的两个关联值。
+  - 测试 harness 使用独立 recorder，避免初始化 `stateMachine` 前捕获 `self`。
+  - `referenceTime` 作为虚拟 Unix 时间，`atMs` 保持场景相对单调时间；初始和最终在线时间按同一基准转换。
+  - 网络发送不再计入 `usbActions` 硬件副作用。
+  - 首次合法消息按 `acceptMessage`、`setPeerReachable` 顺序记录；重复消息只刷新在线时间，不重复记录在线动作。
+  - 请求先到、USB 后到时，等待 USB 到达唤醒完成后依次发送 `usb_present` 和 `usb_attached_and_awake`。
 
 ## 自动验证
 
-- 只读环境检查：
-  - `swift --version` 成功（Swift 6.4）
-  - `xcodebuild -version`：当前系统 `active developer directory` 为 `CommandLineTools`，不能运行 `xcodebuild`/`build-app.sh`。
-  - `xcrun --sdk macosx --show-sdk-path` 可取到 `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`
-- 实际执行结果：
-  - `xcodebuild -version`：`/Library/Developer/CommandLineTools`，非完整 Xcode，xcodebuild 相关命令全部不通
-  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Debug build`：失败
-  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Release build`：失败
-  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Debug test`：失败
-  - `./macOS/scripts/build-app.sh`：失败（同上）
-  - `codesign --verify --deep --strict outputs/DisplaySwitcher.app`：失败（输出：resource fork, Finder information, or similar detritus not allowed）
-- 原因：当前环境缺少可运行的 Xcode 完整套件；`swift` 版本与本机 SDK 也存在不匹配告警，无法做可靠本地编译验证。
+- GitHub Actions `build-and-test` 在实现提交 `35d9e93e62524614e319f48c68b6e70788b1366a` 上完整通过：
+  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33050070960`
+  - Xcode 27.0 / Swift 6.4 / macOS 27 SDK。
+  - Debug：`xcodebuild ... -configuration Debug ... build`，`BUILD SUCCEEDED`。
+  - 全部 XCTest：15 个测试方法、0 失败；其中 `HandoffMessageVectorTests` 对向量数量断言为 17 并全部通过，`HandoffStateMachineVectorTests` 对向量数量断言为 15 并全部通过。
+  - Release 与打包：`./macOS/scripts/build-app.sh`，`BUILD SUCCEEDED`，生成 `macOS/outputs/DisplaySwitcher.app` 和 `DisplaySwitcher-macOS-arm64.zip`。
+  - 签名：构建脚本内严格验证通过，CI 独立执行 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 的 `Verify artifacts` 步骤通过。
+- 当前本机 Codex 执行环境仍只暴露 `/Library/Developer/CommandLineTools`，因此未把此前失败的本机构建误报为通过；以上构建、测试、打包和签名结论来自 PR #4 的真实 GitHub Actions macOS runner。
 
 ## 尚需验证
 
-- 待 Xcode 完整环境补齐后继续执行：
-  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Debug build`
-  - `xcodebuild -project macOS/DisplaySwitcher.xcodeproj -scheme DisplaySwitcher -configuration Release build`
-  - 相关 XCTest（含 17 条消息向量和 15 条状态机向量）
-  - `./macOS/scripts/build-app.sh`
-  - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`
 - 实机验证（未执行）：
   - 状态机与协议行为在真实 USB/显示器与网络环境下是否完全一致
+  - 按任务安全限制，本轮没有执行真实 DDC、USB 交接或显示器唤醒。
 
 ## 对 Windows 端的影响
 
