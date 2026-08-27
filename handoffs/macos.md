@@ -7,7 +7,9 @@
 - 分支：`codex/macos-ds-005-protocol-v2`
 - 基线：`dec66eca97b6a848b87a4c1ae3c30473134b8d2a`
 - 实现提交：`0d40c1ff31ae7bb76f413448433c5d8b2bb69b1c`
-- 已验证 PR HEAD：`e9563bcc0266559506fd8b2e29909a367917bb90`
+- endpoint 引导评审修正提交：`ed00de4e701701e375ad7e9d46806c41ee63e718`
+- 已验证实现 HEAD：`ed00de4e701701e375ad7e9d46806c41ee63e718`
+- 最终 PR HEAD：以本交接记录所在的 PR #32 最新提交为准；该提交只更新验证记录。
 - PR：[#32 DS-005 macOS: implement protocol v2 coordination](https://github.com/maizihk/DisplaySwitch/pull/32)
 
 ## 完成内容
@@ -21,6 +23,8 @@
 - USB 监控在启动时只记录初始 presence，不触发交接；输入返回源端只取消当前事件，不误发 `input_present`。
 - 网络 `input_present` 只表示逻辑到达，不包含 USB/蓝牙类型、名称、标识、序列号或本机引用。
 - “检测”先运行本机完整性检查，再发送零硬件副作用 v2 `status_probe`；无响应时仅回退一次 v1 探测。endpoint 首次或变化需用户确认并手动保存。
+- 修复双方尚未确认 endpoint 时的首次探测死锁：未绑定配置仍监听本机端口；只有恰好一个完整候选通过 HMAC 后才沿原数据报连接定向回复相同 eventID 的 `status_response`。
+- 首次探测不写入、确认或替换 `peerEndpointID`；多个认证候选、错误配对码、错误 target 和已配置 endpoint 冲突均安全拒绝，且不刷新正式路由/在线状态、不进入 USB、蓝牙、唤醒或 DDC 状态机。
 - 配置安全状态、USB 学习状态和配置重载会停止网络/唤醒/DDC 副作用并清理计时器、重放缓存和待处理检测。
 
 ## 本地自动验证
@@ -28,7 +32,7 @@
 - 本机选定的 Xcode 27 Beta 6：
   - Debug：`BUILD SUCCEEDED`。
   - Release：`BUILD SUCCEEDED`，包含 Standard Architectures。
-  - 标准 `xcodebuild test`：63 项 XCTest，0 失败。
+  - 标准 `xcodebuild test`：66 项 XCTest，0 失败。
 - v1 公共向量：17 条消息、16 条状态机，全部通过。
 - v2 公共向量：1 条 NFC、4 条认证、20 条消息、20 条状态机，全部通过。
 - `DEVELOPER_DIR="$DEVELOPER_DIR" ./macOS/scripts/build-app.sh`：成功。
@@ -37,7 +41,8 @@
 - 文件同步提供程序可能在验证后重新附加 Finder 扩展属性；构建脚本和本次最终验证均已清理被忽略的产物并严格验签，未修改系统信任。
 - `contracts/protocol-v1/validate.py` 和 `contracts/protocol-v2/validate.py`：全部通过。
 - `git diff --check`：通过。
-- GitHub Actions macOS run [`33116056089`](https://github.com/maizihk/DisplaySwitch/actions/runs/33116056089) 在 PR HEAD `e9563bcc0266559506fd8b2e29909a367917bb90` 上通过：Debug、63 项 XCTest、Release 打包、产物检查、严格 codesign 和 artifact 上传全部成功。
+- endpoint 引导新增 3 项 XCTest，覆盖双方 endpoint 均为空、唯一/多候选、错误配对码、错误 target、endpoint 冲突、相同 eventID、不自动保存身份和零硬件副作用。
+- GitHub Actions macOS run [`33118330583`](https://github.com/maizihk/DisplaySwitch/actions/runs/33118330583) 在已验证实现 HEAD `ed00de4e701701e375ad7e9d46806c41ee63e718` 上通过：Debug、66 项 XCTest、Release 打包、产物检查、严格 codesign 和 artifact 上传全部成功。
 
 ## 尚未执行
 
