@@ -1116,9 +1116,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                                                                   ddcAvailableDisplayIDs: localIDs)
         let alert = NSAlert()
         alert.messageText = inspection.isComplete ? "本机配置完整" : "本机配置需要检查"
-        alert.informativeText = inspection.isComplete
+        let inspectionText = inspection.isComplete
             ? "名称、地址、端口、配对码和显示器映射均完整。未发送网络消息，也未执行 DDC、USB 或唤醒操作。"
             : inspection.issues.map(\.rawValue).joined(separator: "、")
+        alert.informativeText = "\(inspectionText)\n\n\(DDCController.backendSummaryWithoutHardwareAccess)"
         alert.beginSheetModal(for: window!)
     }
 
