@@ -26,6 +26,10 @@
 		A10000000000000000000012 /* DisplayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* DisplayConfigurationStore.swift */; };
 		A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* DisplayConfigurationStore.swift */; };
 		A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* DisplayConfigurationStoreTests.swift */; };
+		A10000000000000000000015 /* HandoffStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* HandoffStateMachine.swift */; };
+		A10000000000000000000016 /* HandoffMessageVectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001A /* HandoffMessageVectorTests.swift */; };
+		A10000000000000000000017 /* HandoffStateMachineVectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001B /* HandoffStateMachineVectorTests.swift */; };
+		A10000000000000000000018 /* HandoffStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* HandoffStateMachine.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -55,6 +59,9 @@
 		A20000000000000000000016 /* CoreDisplay.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreDisplay.framework; path = System/Library/Frameworks/CoreDisplay.framework; sourceTree = SDKROOT; };
 		A20000000000000000000017 /* DisplayConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayConfigurationStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* DisplayConfigurationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DisplayConfigurationStoreTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000019 /* HandoffStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffStateMachine.swift; sourceTree = "<group>"; };
+		A2000000000000000000001A /* HandoffMessageVectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffMessageVectorTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000001B /* HandoffStateMachineVectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffStateMachineVectorTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,6 +112,7 @@
 				A20000000000000000000003 /* PeerTransport.swift */,
 				A20000000000000000000004 /* SettingsWindowController.swift */,
 				A20000000000000000000005 /* USBMonitor.swift */,
+				A20000000000000000000019 /* HandoffStateMachine.swift */,
 				A20000000000000000000013 /* DDCController.swift */,
 				A20000000000000000000014 /* NativeDDC.swift */,
 				A20000000000000000000015 /* NativeDDCBridge.h */,
@@ -133,6 +141,8 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000008 /* PeerProtocolTests.swift */,
+				A2000000000000000000001A /* HandoffMessageVectorTests.swift */,
+				A2000000000000000000001B /* HandoffStateMachineVectorTests.swift */,
 				A20000000000000000000018 /* DisplayConfigurationStoreTests.swift */,
 			);
 			path = DisplaySwitcherTests;
@@ -252,13 +262,14 @@
 				A10000000000000000000003 /* PeerTransport.swift in Sources */,
 				A10000000000000000000004 /* SettingsWindowController.swift in Sources */,
 				A10000000000000000000005 /* USBMonitor.swift in Sources */,
+				A10000000000000000000015 /* HandoffStateMachine.swift in Sources */,
 				A1000000000000000000000F /* DDCController.swift in Sources */,
 				A10000000000000000000010 /* NativeDDC.swift in Sources */,
 				A10000000000000000000012 /* DisplayConfigurationStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000C /* PeerProtocolTests.swift in Sources */, A1000000000000000000000E /* PeerTransport.swift in Sources */, A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */, A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0;};
+		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000C /* PeerProtocolTests.swift in Sources */, A1000000000000000000000E /* PeerTransport.swift in Sources */, A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */, A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */, A10000000000000000000018 /* HandoffStateMachine.swift in Sources */, A10000000000000000000016 /* HandoffMessageVectorTests.swift in Sources */, A10000000000000000000017 /* HandoffStateMachineVectorTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0;};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */

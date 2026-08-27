@@ -1,13 +1,81 @@
 import Foundation
 import Network
 
-enum PeerMessageType: String, Codable {
-    case handoverRequest = "handover_request"
-    case usbPresent = "usb_present"
-    case usbReady = "usb_attached_and_awake"
+enum PeerMessageType: RawRepresentable, Codable, Hashable {
+    case handoverRequest
+    case usbPresent
+    case usbReady
     case committed
-    case statusProbe = "status_probe"
-    case statusResponse = "status_response"
+    case statusProbe
+    case statusResponse
+    case unknown(String)
+
+    var rawValue: String {
+        switch self {
+        case .handoverRequest:
+            return "handover_request"
+        case .usbPresent:
+            return "usb_present"
+        case .usbReady:
+            return "usb_attached_and_awake"
+        case .committed:
+            return "committed"
+        case .statusProbe:
+            return "status_probe"
+        case .statusResponse:
+            return "status_response"
+        case let .unknown(value):
+            return value
+        }
+    }
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "handover_request":
+            self = .handoverRequest
+        case "usb_present":
+            self = .usbPresent
+        case "usb_attached_and_awake":
+            self = .usbReady
+        case "committed":
+            self = .committed
+        case "status_probe":
+            self = .statusProbe
+        case "status_response":
+            self = .statusResponse
+        default:
+            self = .unknown(rawValue)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unknown(rawValue)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
+enum PeerMessageValidationReason: String {
+    case accepted
+    case unsupported_version
+    case invalid_event_id
+    case timestamp_out_of_window
+    case wrong_direction
+    case pairing_mismatch
+    case unknown_type
+    case missing_field
+    case invalid_field_type
+    case parse_error
+}
+
+struct PeerMessageValidationResult {
+    let accepted: Bool
+    let reason: PeerMessageValidationReason
 }
 
 struct PeerMessage: Codable {
@@ -44,6 +112,42 @@ struct PeerMessage: Codable {
 enum PeerMessageValidation {
     static let version = 1
     static let maximumAge: TimeInterval = 10
+    static let maximumAgeMs = Int64(maximumAge * 1000)
+
+    static func validate(
+        message: PeerMessage,
+        pairingCode: String,
+        expectedSource: String,
+        expectedTarget: String,
+        now: TimeInterval = Date().timeIntervalSince1970
+    ) -> PeerMessageValidationResult {
+        switch message.type {
+        case .unknown:
+            return PeerMessageValidationResult(accepted: false, reason: .unknown_type)
+        default:
+            break
+        }
+
+        guard message.version == version else {
+            return PeerMessageValidationResult(accepted: false, reason: .unsupported_version)
+        }
+        guard message.pairingCode == pairingCode else {
+            return PeerMessageValidationResult(accepted: false, reason: .pairing_mismatch)
+        }
+        guard message.source == expectedSource, message.target == expectedTarget else {
+            return PeerMessageValidationResult(accepted: false, reason: .wrong_direction)
+        }
+        guard UUID(uuidString: message.eventID) != nil else {
+            return PeerMessageValidationResult(accepted: false, reason: .invalid_event_id)
+        }
+        guard message.timestamp.isFinite else {
+            return PeerMessageValidationResult(accepted: false, reason: .timestamp_out_of_window)
+        }
+        guard abs(now - message.timestamp) <= maximumAge else {
+            return PeerMessageValidationResult(accepted: false, reason: .timestamp_out_of_window)
+        }
+        return PeerMessageValidationResult(accepted: true, reason: .accepted)
+    }
 
     static func accepts(
         _ message: PeerMessage,
@@ -52,14 +156,14 @@ enum PeerMessageValidation {
         expectedTarget: String,
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> Bool {
-        pairingCode.count >= 8 &&
-            message.version == version &&
-            message.pairingCode == pairingCode &&
-            message.source == expectedSource &&
-            message.target == expectedTarget &&
-            UUID(uuidString: message.eventID) != nil &&
-            message.timestamp.isFinite &&
-            abs(now - message.timestamp) <= maximumAge
+        let result = validate(
+            message: message,
+            pairingCode: pairingCode,
+            expectedSource: expectedSource,
+            expectedTarget: expectedTarget,
+            now: now
+        )
+        return pairingCode.count >= 8 && result.accepted
     }
 }
 
