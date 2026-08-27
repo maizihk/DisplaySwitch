@@ -6,8 +6,8 @@
 - 分支：`codex/windows-ds-001-state-machine`
 - 基线：`e65d05853496c44cdf54f59a4c9d5af7c230a13a`
 - 清单：W-003 交接状态机可测试化 / DS-001 Windows
-- 实现提交：待本分支提交后补充
-- PR：待创建
+- 实现提交：`beac261e85a731a21e4722351dd15b04172c2cad`
+- PR：[#5](https://github.com/maizihk/DisplaySwitch/pull/5)
 
 ## 完成内容
 
