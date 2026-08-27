@@ -2,6 +2,8 @@
 #include "AppConfig.h"
 #include "HandoverStateMachine.h"
 #include "UdpPeer.h"
+#include "V2Protocol.h"
+#include "V2StateMachine.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -28,13 +30,17 @@ namespace DisplaySwitcher::Native
         bool AllowsSideEffects(uint64_t generation) const noexcept;
         void OnUsbPresenceChanged(bool present);
         void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
+        void ApplyV2Actions(std::vector<V2Action> actions);
         void AdvanceStateMachine();
         void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
-        void SwitchToProfile(std::wstring const& profileId);
+        void SwitchToProfile(std::wstring const& profileId, std::optional<std::wstring> eventId = std::nullopt);
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
+        void HandleDatagram(std::string const& datagram);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
+        void SendV2(V2Action const& action);
+        void SendV2Probe(CollaborationProfile const& profile);
         void SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void ManualSwitch(std::wstring const& profileId);
         void ShowSettings();
@@ -51,6 +57,10 @@ namespace DisplaySwitcher::Native
         std::unique_ptr<UdpPeer> peer_;
         std::unique_ptr<UsbWatcher> usbWatcher_;
         std::unique_ptr<HandoverStateMachine> stateMachine_;
+        std::unique_ptr<V2StateMachine> v2StateMachine_;
+        V2ReplayCache v2ReplayCache_;
+        std::map<std::wstring, V2Message> v2OutgoingMessages_;
+        std::map<std::wstring, int64_t> v2PeerLastSeenMs_;
         winrt::Microsoft::UI::Xaml::Window settingsWindow_{ nullptr };
         std::mutex stateMutex_;
         std::wstring peerConnectionStatus_{ L"协同未启用" };

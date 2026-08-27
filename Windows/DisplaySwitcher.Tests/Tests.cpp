@@ -10,6 +10,7 @@ using namespace DisplaySwitcher::Native;
 using namespace winrt::Windows::Data::Json;
 
 int RunStateMachineVectorTests();
+int RunV2ProtocolVectorTests();
 
 namespace
 {
@@ -617,7 +618,7 @@ namespace
         Check(about.applicationName == L"DisplaySwitch" && about.versionFromApplicationMetadata
             && !about.publicVersion.empty() && about.publicVersion != L"未知"
             && !missingMetadata.versionFromApplicationMetadata && missingMetadata.publicVersion == L"未知"
-            && about.architecture.find(L"Windows") != std::wstring::npos && about.protocol == L"UDP 协议 v1"
+            && about.architecture.find(L"Windows") != std::wstring::npos && about.protocol == L"UDP 协议 v1 / v2"
             && about.projectUrl == L"https://github.com/maizihk/DisplaySwitch"
             && about.licenseUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/LICENSE"
             && about.thirdPartyNoticesUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/THIRD_PARTY_NOTICES.md",
@@ -652,6 +653,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-021 through C-023 USB-learning and about scenarios\n";
         failures += RunStateMachineVectorTests();
+        failures += RunV2ProtocolVectorTests();
     }
     catch (winrt::hresult_error const& error)
     {
