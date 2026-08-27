@@ -13,6 +13,14 @@ enum AppPreferences {
         try DisplayConfigurationStore.saveAll(configurations)
     }
 
+    static var localConfiguration: DisplayConfigurationStoreV3Document {
+        DisplayConfigurationStore.load().document
+    }
+
+    static func saveLocalConfiguration(_ document: DisplayConfigurationStoreV3Document) throws {
+        try DisplayConfigurationStore.saveDocument(document)
+    }
+
     static var linkedDisplays: Bool {
         get {
             let defaults = UserDefaults.standard

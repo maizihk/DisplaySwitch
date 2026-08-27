@@ -34,6 +34,7 @@ final class USBMonitor {
     private var lastPresence: Bool?
     private var learningHandler: (([USBDevice]) -> Void)?
     private var learningBaseline: Set<USBDevice>?
+    private var learningTimeout: DispatchWorkItem?
 
     func start(triggerDevice: USBDevice?) {
         queue.async { [weak self] in
@@ -62,6 +63,8 @@ final class USBMonitor {
             self.previousDevices = nil
             self.learningHandler = nil
             self.learningBaseline = nil
+            self.learningTimeout?.cancel()
+            self.learningTimeout = nil
         }
     }
 
@@ -69,9 +72,19 @@ final class USBMonitor {
         queue.async { [weak self] in
             guard let self else { return }
             let devices = Self.currentDevices()
+            self.learningTimeout?.cancel()
             self.learningBaseline = devices
             self.learningHandler = completion
             self.previousDevices = devices
+            let timeout = DispatchWorkItem { [weak self] in
+                guard let self, let handler = self.learningHandler else { return }
+                self.learningBaseline = nil
+                self.learningHandler = nil
+                self.learningTimeout = nil
+                DispatchQueue.main.async { handler([]) }
+            }
+            self.learningTimeout = timeout
+            self.queue.asyncAfter(deadline: .now() + USBProfileLearningSession.timeoutSeconds, execute: timeout)
         }
     }
 
@@ -79,6 +92,8 @@ final class USBMonitor {
         queue.async { [weak self] in
             self?.learningBaseline = nil
             self?.learningHandler = nil
+            self?.learningTimeout?.cancel()
+            self?.learningTimeout = nil
         }
     }
 
@@ -103,6 +118,8 @@ final class USBMonitor {
             if !changed.isEmpty {
                 learningBaseline = nil
                 learningHandler = nil
+                learningTimeout?.cancel()
+                learningTimeout = nil
                 DispatchQueue.main.async { handler(changed) }
             }
         }

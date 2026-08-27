@@ -30,6 +30,15 @@ final class DDCController {
         native = NativeDDCBackend(knownDisplays: [])
     }
 
+    /// Pure capability hint used by settings validation. It does not enumerate displays or issue DDC traffic.
+    static var hasLocalBackendWithoutHardwareAccess: Bool {
+#if arch(arm64)
+        return true
+#else
+        return hasM1DDC
+#endif
+    }
+
     func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {
         let knownDisplays = Self.knownDisplays(from: existingConfigurations)
         native.updateKnownDisplays(knownDisplays)
