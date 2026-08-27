@@ -21,17 +21,19 @@ namespace DisplaySwitcher::Native
         Controller(winrt::Microsoft::UI::Dispatching::DispatcherQueue const& dispatcher, std::function<void()> exitApplication);
         void Initialize();
         AppConfig Config() const;
-        void ApplyConfiguration();
+        void ApplyConfiguration(bool applyAutoStart = true);
+        void EnterSafeStateAfterSaveFailure();
         void OnUsbPresenceChanged(bool present);
         void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
         void AdvanceStateMachine();
         void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
+        void SwitchToProfile(std::wstring const& profileId);
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
-        void ManualSwitch();
+        void ManualSwitch(std::wstring const& profileId);
         void ShowSettings();
         void SetStatus(std::wstring const& text);
         void SetPeerConnectionStatus(std::wstring const& text, bool connected);
@@ -51,6 +53,7 @@ namespace DisplaySwitcher::Native
         std::wstring peerConnectionStatus_{ L"协同未启用" };
         bool peerConnected_{};
         std::atomic<bool> disposed_{};
+        RuntimeSafetyGate sideEffectGate_;
         std::jthread peerHealthThread_;
     };
 }

@@ -7,7 +7,7 @@ namespace
     constexpr UINT CallbackMessage = WM_APP + 1;
     constexpr UINT PopupCommandMessage = WM_APP + 2;
     constexpr UINT_PTR PopupDismissTimer = 1;
-    constexpr UINT ManualSwitchCommand = 1001;
+    constexpr UINT FirstProfileCommand = 1100;
     constexpr UINT SettingsCommand = 1002;
     constexpr UINT ExitCommand = 1003;
     constexpr GUID TrayGuid{ 0x438e980a, 0x76bb, 0x4e3a, { 0x99, 0x5c, 0x5e, 0xab, 0x0d, 0x26, 0x3e, 0x3a } };
@@ -261,7 +261,7 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
-    TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void()> manualSwitch, std::function<void()> exit) :
+    TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch, std::function<void()> exit) :
         showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
@@ -318,6 +318,11 @@ namespace DisplaySwitcher::Native
         Shell_NotifyIconW(NIM_MODIFY, &data);
     }
 
+    void TrayIcon::SetProfiles(std::vector<std::pair<std::wstring, std::wstring>> profiles)
+    {
+        profiles_ = std::move(profiles);
+    }
+
     void TrayIcon::ShowBalloon(std::wstring const& title, std::wstring const& message)
     {
         if (disposed_) return;
@@ -345,7 +350,8 @@ namespace DisplaySwitcher::Native
         if (message == PopupCommandMessage)
         {
             auto command = static_cast<UINT>(wParam);
-            if (command == ManualSwitchCommand && manualSwitch_) manualSwitch_();
+            if (command >= FirstProfileCommand && command < FirstProfileCommand + profiles_.size() && manualSwitch_)
+                manualSwitch_(profiles_[command - FirstProfileCommand].first);
             else if (command == SettingsCommand && showSettings_) showSettings_();
             else if (command == ExitCommand && exit_) exit_();
             return 0;
@@ -378,11 +384,13 @@ namespace DisplaySwitcher::Native
         state->items = {
             { 0, Limit(status_, 70), false, false },
             { 0, L"", true, false },
-            { ManualSwitchCommand, L"手动切换到 Mac", false, true },
-            { SettingsCommand, L"设置…", false, true },
-            { 0, L"", true, false },
-            { ExitCommand, L"退出", false, true },
         };
+        for (size_t index = 0; index < profiles_.size(); ++index)
+            state->items.push_back({ FirstProfileCommand + static_cast<UINT>(index), L"切换到 " + profiles_[index].second, false, true });
+        if (!profiles_.empty()) state->items.push_back({ 0, L"", true, false });
+        state->items.push_back({ SettingsCommand, L"设置…", false, true });
+        state->items.push_back({ 0, L"", true, false });
+        state->items.push_back({ ExitCommand, L"退出", false, true });
 
         auto rowHeight = ScaleForDpi(32, state->dpi);
         auto separatorHeight = ScaleForDpi(1, state->dpi);
