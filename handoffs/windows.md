@@ -8,9 +8,10 @@
 - 任务起始基线：`dec66eca97b6a848b87a4c1ae3c30473134b8d2a`
 - 实现提交：`7cea2cfae848c312efdedf7d13d4784326654692`
 - 初次验证记录提交：`5cd459a04fd8df5e36737930b27a112038ed43e4`
-- 评审修正提交/最终 head：以本文件所在提交为准
-- PR：本分支推送后创建到 `main`；保持开放，不自动合并
-- GitHub CI：等待评审修正 head 的 Windows workflow；以下结果在 CI 项明确更新前均为本机验证
+- 评审修正代码/CI head：`1068cf24fdf3d974d184a1174695368e2863e816`
+- 最终交接记录提交：本文件所在提交（不改变上述已验证代码）
+- PR：[#33](https://github.com/maizihk/DisplaySwitch/pull/33)；保持开放，不自动合并
+- GitHub CI：[Windows run 33119020540](https://github.com/maizihk/DisplaySwitch/actions/runs/33119020540) 已在 `1068cf2` 成功
 
 ## 完成内容
 
@@ -35,6 +36,7 @@
 - 额外自动检查覆盖完全相同 nonce 重发、同 nonce 不同认证输入拒绝、版本分派和序列化隐私字段；状态向量以模拟时间、逻辑输入到达及唤醒/DDC 调用计数执行，不访问真实设备。
 - 新增模拟网络/时钟探测测试，覆盖 v2 probe/response 同 eventID、错误/过期/重复/非待处理响应、首次 endpoint 确认、endpoint 变化、认证失败、v2 超时后恰好一次 v1 回退、无响应/本机不完整及全流程 USB/蓝牙/唤醒/DDC 调用为零。
 - `Windows/dist/DisplaySwitch.exe`、`runtime/` 和必需文件检查通过；framework-dependent x64 绿色版总大小 1.60 MiB，小于 20 MiB，构建产物未进入 Git。
+- GitHub 托管 Windows CI 的 Release 构建、显式自动测试、dist/体积检查与 artifact 上传全部成功；artifact 为 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent`（ZIP 793142 bytes，保留 7 天）。
 - 本机构建出现 NuGet 漏洞元数据查询 `NU1900` 网络警告；已有依赖恢复、编译、测试和产物检查均成功，未降低或删除检查。
 - `contracts/protocol-v2/validate.py` 的独立 Python 校验未运行：本机 Python 缺少 `jsonschema`；同一批正式 JSON 向量已由原生 `DisplaySwitcher.Tests.exe` 全量读取并通过。
 
