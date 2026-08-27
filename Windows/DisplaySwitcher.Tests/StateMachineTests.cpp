@@ -265,13 +265,17 @@ int RunStateMachineVectorTests()
     auto document = ReadJson(root / L"contracts/protocol-v1/state-machine-vectors.json");
     auto referenceTime = document.GetNamedNumber(L"referenceTime");
     auto pairingCode = std::wstring(document.GetNamedString(L"configuredPairingCode"));
+    auto stateVectorCount = document.GetNamedArray(L"vectors").Size();
     int failures = 0;
     for (auto const& value : document.GetNamedArray(L"vectors")) failures += RunVector(value.GetObject(), referenceTime, pairingCode);
     auto messages = ReadJson(root / L"contracts/protocol-v1/message-validation-vectors.json");
+    auto messageVectorCount = messages.GetNamedArray(L"vectors").Size();
     for (auto const& value : messages.GetNamedArray(L"vectors"))
         failures += RunMessageVector(value.GetObject(), messages.GetNamedNumber(L"referenceTime"),
             messages.GetNamedString(L"configuredPairingCode").c_str());
     failures += TestDuplicateStatusProbeRestoresLiveness();
-    if (!failures) std::wcout << L"DS-001 state-machine vectors passed\n";
+    if (!failures)
+        std::wcout << L"DS-001 passed " << messageVectorCount << L" message vectors and "
+            << stateVectorCount << L" state-machine vectors\n";
     return failures;
 }
