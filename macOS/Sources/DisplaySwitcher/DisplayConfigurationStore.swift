@@ -178,6 +178,19 @@ struct LocalProfileInspection: Equatable {
     var isComplete: Bool { issues.isEmpty && ddcUnavailableDisplayIDs.isEmpty }
 }
 
+enum LegacyV1RuntimeSelection: Equatable {
+    case disabled
+    case compatible(CollaborationProfile)
+    case requiresProtocolV2
+
+    var profile: CollaborationProfile? {
+        guard case .compatible(let profile) = self else { return nil }
+        return profile
+    }
+
+    var allowsAutomaticCoordination: Bool { profile != nil }
+}
+
 enum PeerIdentityCheck: Equatable {
     case unchanged
     case firstConfirmationRequired(endpointID: String, protocolVersion: Int)
@@ -344,10 +357,43 @@ enum DisplayConfigurationStore {
         if !validPairing(profile.pairingCode, allowEmpty: false) { issues.insert(.invalidPairingCode) }
         let known = Set(displays.map { $0.id.lowercased() })
         let mapped = Set(profile.displayInputs.map { $0.displayID.lowercased() })
-        if !known.isSubset(of: mapped) { issues.insert(.missingDisplayMapping) }
+        let validMapped = Set(profile.displayInputs.compactMap { mapping in
+            (0...65535).contains(mapping.peerInput) ? mapping.displayID.lowercased() : nil
+        })
+        if known.isEmpty || validMapped.isEmpty || !known.isSubset(of: validMapped)
+            || validMapped.count != profile.displayInputs.count {
+            issues.insert(.missingDisplayMapping)
+        }
         if !mapped.isSubset(of: known) { issues.insert(.orphanedDisplayMapping) }
         let unavailable = displays.map(\.id).filter { !ddcAvailableDisplayIDs.contains($0.lowercased()) }
         return LocalProfileInspection(issues: issues.sorted { $0.rawValue < $1.rawValue }, ddcUnavailableDisplayIDs: unavailable)
+    }
+
+    static func menuEligibleProfiles(in document: DisplayConfigurationStoreV3Document) -> [CollaborationProfile] {
+        let knownDisplayIDs = Set(document.displays.map { $0.id.lowercased() })
+        return document.collaborationProfiles.filter { profile in
+            profile.coordinationEnabled
+                && inspectProfile(profile, displays: document.displays,
+                                  ddcAvailableDisplayIDs: knownDisplayIDs).issues.isEmpty
+        }
+    }
+
+    static func legacyV1RuntimeSelection(in document: DisplayConfigurationStoreV3Document) -> LegacyV1RuntimeSelection {
+        let enabled = document.collaborationProfiles.filter(\.coordinationEnabled)
+        if enabled.count > 1 { return .requiresProtocolV2 }
+        if let profile = enabled.first { return .compatible(profile) }
+        return .disabled
+    }
+
+    static func replacingUSBTrigger(_ trigger: CollaborationTriggerDevice?, profileID: String,
+                                    in profiles: [CollaborationProfile]) -> [CollaborationProfile] {
+        profiles.map { profile in
+            guard profile.id == profileID else { return profile }
+            var updated = profile
+            updated.triggerDevices.removeAll { $0.kind.caseInsensitiveCompare("usb") == .orderedSame }
+            if let trigger { updated.triggerDevices.append(trigger) }
+            return updated
+        }
     }
 
     static func checkPeerIdentity(_ profile: CollaborationProfile, endpointID: String, protocolVersion: Int) -> PeerIdentityCheck {

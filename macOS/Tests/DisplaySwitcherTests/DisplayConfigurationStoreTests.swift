@@ -106,6 +106,71 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).collaborationProfiles.filter(\.coordinationEnabled).count, 2)
     }
 
+    func testEnabledIncompleteProfileIsNotAMenuCandidate() {
+        var document = populatedDocument()
+        document.collaborationProfiles[0].coordinationEnabled = true
+        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
+
+        document.collaborationProfiles[0].displayInputs = document.displays.map {
+            DisplayInputMapping(displayID: $0.id, peerInput: 18)
+        }
+        XCTAssertEqual(DisplayConfigurationStore.menuEligibleProfiles(in: document).map(\.id),
+                       [document.collaborationProfiles[0].id])
+
+        document.collaborationProfiles[0].displayInputs[0].peerInput = -1
+        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
+        document.collaborationProfiles[0].displayInputs[0].peerInput = 18
+        document.collaborationProfiles[0].peerHost = ""
+        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
+    }
+
+    func testUSBTriggerEditingIsIsolatedByProfile() {
+        let first = profile(name: "A")
+        let second = profile(name: "B")
+        let firstTrigger = CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "键盘 A")
+        let secondTrigger = CollaborationTriggerDevice(kind: "usb", localReference: "3:4", displayName: "键盘 B")
+        var profiles = DisplayConfigurationStore.replacingUSBTrigger(firstTrigger, profileID: first.id, in: [first, second])
+        profiles = DisplayConfigurationStore.replacingUSBTrigger(secondTrigger, profileID: second.id, in: profiles)
+        XCTAssertEqual(profiles[0].triggerDevices, [firstTrigger])
+        XCTAssertEqual(profiles[1].triggerDevices, [secondTrigger])
+
+        let replacement = CollaborationTriggerDevice(kind: "usb", localReference: "5:6", displayName: "键盘 A2")
+        profiles = DisplayConfigurationStore.replacingUSBTrigger(replacement, profileID: first.id, in: profiles)
+        XCTAssertEqual(profiles[0].triggerDevices, [replacement])
+        XCTAssertEqual(profiles[1].triggerDevices, [secondTrigger])
+    }
+
+    func testMultipleEnabledProfilesBlockLegacyV1AutomaticSideEffects() {
+        var document = populatedDocument()
+        document.collaborationProfiles[0].coordinationEnabled = true
+        var second = profile(name: "B")
+        second.coordinationEnabled = true
+        document.collaborationProfiles.append(second)
+
+        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document)
+        XCTAssertEqual(selection, .requiresProtocolV2)
+        let sideEffects = Dictionary(uniqueKeysWithValues: ConfigurationSideEffect.allCases.map {
+            ($0, selection.allowsAutomaticCoordination ? 1 : 0)
+        })
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { sideEffects[$0] == 0 })
+    }
+
+    func testSingleMigratedEnabledProfileKeepsLegacyV1Compatibility() throws {
+        let oldData = try JSONEncoder().encode([legacyDisplay(index: 1, local: 15, peer: 18)])
+        storage.values[DisplayConfigurationStore.legacyArrayStorageKey] = oldData
+        storage.values["Peer.Enabled"] = true
+        storage.values["Peer.Host"] = "peer.example"
+        storage.values["Peer.Port"] = 49731
+        storage.values["Peer.PairingCode"] = ephemeralPairingCode()
+        let document = DisplayConfigurationStore.load(storage: storage).document
+
+        guard case .compatible(let selected) = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document) else {
+            return XCTFail("单个迁移配置应继续由 v1 运行时使用")
+        }
+        XCTAssertEqual(selected.id, document.collaborationProfiles[0].id)
+        XCTAssertEqual(selected.peerHost, "peer.example")
+    }
+
     func testC007InspectionAndPeerIdentityChangesArePureAndRequireConfirmation() {
         let document = populatedDocument()
         let profile = document.collaborationProfiles[0]

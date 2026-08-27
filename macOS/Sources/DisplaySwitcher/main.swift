@@ -639,6 +639,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func configureUSBMonitor() {
         usbMonitor.stop()
         guard configurationSafetyGate.allows(.usb) else { return }
+        guard DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration) != .requiresProtocolV2 else {
+            return
+        }
         let trigger = AppPreferences.usbAutomationEnabled ? AppPreferences.usbTriggerDevice : nil
         usbMonitor.start(triggerDevice: trigger)
     }
@@ -652,9 +655,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         let networkAllowed = configurationSafetyGate.allows(.network)
         let usbAllowed = configurationSafetyGate.allows(.usb)
+        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration)
+        let profile = selection.profile
+        let coordinationEnabled = networkAllowed && profile != nil
+        let pairingCode = profile?.pairingCode ?? ""
         handoffStateMachine.configure(
-            coordinationEnabled: networkAllowed && AppPreferences.peerCoordinationEnabled,
-            usbAutomationEnabled: usbAllowed && AppPreferences.usbAutomationEnabled,
+            coordinationEnabled: coordinationEnabled,
+            usbAutomationEnabled: coordinationEnabled && usbAllowed && AppPreferences.usbAutomationEnabled,
             usbPresent: false,
             peerReachable: false,
             peerLastSeenAtMs: nil,
@@ -662,18 +669,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             outgoingEventID: nil,
             newestIncomingRequestTimestamp: nil,
             seenMessages: [],
-            pairingCode: AppPreferences.pairingCode
+            pairingCode: pairingCode
         )
-        handoffStateMachine.setPairingCode(AppPreferences.pairingCode)
+        handoffStateMachine.setPairingCode(pairingCode)
         handoffStateMachine.setUsbAutomationEnabled(
-            usbAllowed && AppPreferences.usbAutomationEnabled
+            coordinationEnabled && usbAllowed && AppPreferences.usbAutomationEnabled
         )
-        handoffStateMachine.setCoordinationEnabled(
-            networkAllowed && AppPreferences.peerCoordinationEnabled
-        )
+        handoffStateMachine.setCoordinationEnabled(coordinationEnabled)
         refreshPeerConnectionStatus()
-        if networkAllowed && AppPreferences.peerCoordinationEnabled {
-            peerTransport.start(port: AppPreferences.peerPort)
+        if coordinationEnabled, let profile {
+            peerTransport.start(port: profile.peerPort)
         }
     }
 
@@ -686,7 +691,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func handleUSBPresenceChange(_ isPresent: Bool) {
         guard configurationSafetyGate.allows(.usb) else { return }
-        if AppPreferences.peerCoordinationEnabled {
+        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration)
+        guard selection != .requiresProtocolV2 else { return }
+        if selection.allowsAutomaticCoordination {
             handoffStateMachine.handleUSBPresenceChanged(isPresent)
             return
         }
@@ -722,14 +729,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         eventID: String,
         wakeSucceeded: Bool? = nil
     ) {
-        guard configurationSafetyGate.allows(.network) else { return }
-        let message = makePeerMessage(type: type, eventID: eventID, wakeSucceeded: wakeSucceeded)
-        peerTransport.send(message, host: AppPreferences.peerHost, port: AppPreferences.peerPort)
+        guard configurationSafetyGate.allows(.network),
+              let profile = DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration).profile else { return }
+        let message = makePeerMessage(type: type, eventID: eventID, pairingCode: profile.pairingCode,
+                                      wakeSucceeded: wakeSucceeded)
+        peerTransport.send(message, host: profile.peerHost, port: profile.peerPort)
     }
 
     private func makePeerMessage(
         type: PeerMessageType,
         eventID: String,
+        pairingCode: String,
         wakeSucceeded: Bool? = nil
     ) -> PeerMessage {
         PeerMessage(
@@ -737,7 +747,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             eventID: eventID,
             source: "mac",
             target: "windows",
-            pairingCode: AppPreferences.pairingCode,
+            pairingCode: pairingCode,
             wakeSucceeded: wakeSucceeded
         )
     }
@@ -808,9 +818,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         settingsWindowController.updatePeerConnectionStatus(
             configurationBlocked
                 ? "配置安全模式：网络交接已停用"
-                : (AppPreferences.peerCoordinationEnabled
-                    ? (connected ? "已连接到 Windows" : "等待 Windows 心跳…")
-                    : "协同未启用"),
+                : legacyV1StatusText(connected: connected),
             connected: !configurationBlocked && connected
         )
     }
@@ -861,7 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func rebuildProfileSwitchItems(in menu: NSMenu) {
         for item in profileSwitchItems { menu.removeItem(item) }
         profileSwitchItems.removeAll()
-        let profiles = AppPreferences.localConfiguration.collaborationProfiles.filter(\.coordinationEnabled)
+        let profiles = DisplayConfigurationStore.menuEligibleProfiles(in: AppPreferences.localConfiguration)
         for (offset, profile) in profiles.enumerated() {
             let item = NSMenuItem(title: "切换到 \(profile.name)", action: #selector(switchToProfile(_:)), keyEquivalent: "")
             item.target = self
@@ -916,13 +924,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func requestWake(eventID: String) {
-        guard configurationSafetyGate.allows(.wake) else { return }
+        guard configurationSafetyGate.allows(.wake),
+              DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration).allowsAutomaticCoordination else { return }
         let wakeSucceeded = wakeMacDisplay()
         handoffStateMachine.handleWakeCompleted(eventID: eventID, success: wakeSucceeded)
     }
 
     func requestSwitch(eventID: String) {
-        guard configurationSafetyGate.allows(.ddc) else { return }
+        guard configurationSafetyGate.allows(.ddc),
+              DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration).allowsAutomaticCoordination else { return }
         switchInputs(toMac: false) { [weak self] success in
             self?.handoffStateMachine.handleSwitchCompleted(eventID: eventID, success: success)
         }
@@ -941,11 +951,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         settingsWindowController.updatePeerConnectionStatus(
             configurationBlocked
                 ? "配置安全模式：网络交接已停用"
-                : (AppPreferences.peerCoordinationEnabled
-                    ? (snapshot.peerReachable ? "已连接到 Windows" : "等待 Windows 心跳…")
-                    : "协同未启用"),
+                : legacyV1StatusText(connected: snapshot.peerReachable),
             connected: !configurationBlocked && snapshot.peerReachable
         )
+    }
+
+    private func legacyV1StatusText(connected: Bool) -> String {
+        switch DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration) {
+        case .compatible:
+            return connected ? "已连接到 Windows" : "等待 Windows 心跳…"
+        case .requiresProtocolV2:
+            return "多个协同配置等待协议 v2，自动协同已暂停"
+        case .disabled:
+            return "协同未启用"
+        }
     }
 
     private func enterConfigurationSafetyState(_ error: DisplayConfigurationStoreError) {
