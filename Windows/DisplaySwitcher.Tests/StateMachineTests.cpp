@@ -210,6 +210,53 @@ namespace
         if (failures) std::wcerr << L"FAIL " << id << L": " << failures << L" message validation mismatch(es)\n";
         return failures;
     }
+
+    int TestDuplicateStatusProbeRestoresLiveness()
+    {
+        constexpr double ReferenceTime = 1788000000.0;
+        std::wstring const eventId = L"10000000-0000-4000-8000-000000000099";
+        PeerMessage probe{ 1, L"status_probe", eventId, L"mac", L"windows", ReferenceTime,
+            L"TEST-CODE-0001", std::nullopt };
+        HandoverStateMachine machine({ L"windows", L"TEST-CODE-0001", true, true, ReferenceTime, {} },
+            [] { return std::wstring{}; });
+
+        auto first = machine.OnPeerMessage(0, probe);
+        auto expired = machine.Advance(6001);
+        probe.timestamp = ReferenceTime + 6.001;
+        auto repeated = machine.OnPeerMessage(6001, probe);
+
+        auto responseCount = [&](std::vector<StateMachineAction> const& actions)
+        {
+            return std::count_if(actions.begin(), actions.end(), [&](StateMachineAction const& action)
+            {
+                return action.kind == StateMachineAction::Kind::SendMessage &&
+                    action.type == L"status_response" && action.eventId == eventId;
+            });
+        };
+        auto hardwareCount = [](std::vector<StateMachineAction> const& actions)
+        {
+            return std::count_if(actions.begin(), actions.end(), [](StateMachineAction const& action)
+            {
+                return action.kind == StateMachineAction::Kind::RequestWake ||
+                    action.kind == StateMachineAction::Kind::RequestSwitch ||
+                    action.kind == StateMachineAction::Kind::SendBurst;
+            });
+        };
+        bool expiredOffline = std::any_of(expired.begin(), expired.end(), [](StateMachineAction const& action)
+        {
+            return action.kind == StateMachineAction::Kind::SetPeerReachable && !action.value;
+        });
+        bool restoredOnline = std::any_of(repeated.begin(), repeated.end(), [](StateMachineAction const& action)
+        {
+            return action.kind == StateMachineAction::Kind::SetPeerReachable && action.value;
+        });
+        auto snapshot = machine.Snapshot();
+        bool passed = responseCount(first) == 1 && expiredOffline && responseCount(repeated) == 1 &&
+            restoredOnline && snapshot.peerReachable && snapshot.peerLastSeenAtMs == 6001 &&
+            hardwareCount(first) == 0 && hardwareCount(expired) == 0 && hardwareCount(repeated) == 0;
+        if (!passed) std::wcerr << L"FAIL duplicate status probe must reply and restore liveness without hardware calls\n";
+        return passed ? 0 : 1;
+    }
 }
 
 int RunStateMachineVectorTests()
@@ -224,6 +271,7 @@ int RunStateMachineVectorTests()
     for (auto const& value : messages.GetNamedArray(L"vectors"))
         failures += RunMessageVector(value.GetObject(), messages.GetNamedNumber(L"referenceTime"),
             messages.GetNamedString(L"configuredPairingCode").c_str());
+    failures += TestDuplicateStatusProbeRestoresLiveness();
     if (!failures) std::wcout << L"DS-001 state-machine vectors passed\n";
     return failures;
 }

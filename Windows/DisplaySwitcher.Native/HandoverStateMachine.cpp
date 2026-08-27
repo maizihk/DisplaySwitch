@@ -277,6 +277,13 @@ namespace DisplaySwitcher::Native
         {
             peerReachable_ = true;
             peerLastSeenAtMs_ = nowMs;
+            if (message.type == L"status_probe")
+            {
+                return {
+                    { StateMachineAction::Kind::SetPeerReachable, {}, {}, true },
+                    { StateMachineAction::Kind::SendMessage, L"status_response", eventId }
+                };
+            }
             std::vector<StateMachineAction> actions{
                 { StateMachineAction::Kind::RejectMessage, {}, {}, false, false, 1, StateMachineRejectReason::Duplicate }
             };
