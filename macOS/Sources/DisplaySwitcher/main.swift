@@ -170,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     )
     private var displayControls: [Int: DisplayControls] = [:]
     private var displayMenuItems: [Int: NSMenuItem] = [:]
+    private var profileSwitchItems: [NSMenuItem] = []
     private var configurations: [Int: DisplayConfiguration] = [:]
     private var isRefreshing = false
     private var lastRefresh = Date.distantPast
@@ -244,8 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(switchToMacItem)
-        menu.addItem(switchItem)
+        rebuildProfileSwitchItems(in: menu)
         menu.addItem(.separator())
 
         menu.addItem(linkedItem)
@@ -290,6 +290,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         switchInputs(toMac: false)
     }
 
+    @objc private func switchToProfile(_ sender: NSMenuItem) {
+        guard let profileID = sender.representedObject as? String else { return }
+        let document = AppPreferences.localConfiguration
+        guard let profile = document.collaborationProfiles.first(where: { $0.id == profileID }) else { return }
+        let mappings = Dictionary(uniqueKeysWithValues: profile.displayInputs.map { ($0.displayID.lowercased(), $0.peerInput) })
+        let selected = Dictionary(uniqueKeysWithValues: configurations.map { index, configuration in
+            var value = configuration
+            if let id = configuration.id { value.windowsInput = mappings[id.lowercased()] } else { value.windowsInput = nil }
+            return (index, value)
+        })
+        switchInputs(toMac: false, overrideConfigurations: selected, activeMenuItem: sender)
+    }
+
     @objc private func switchToMac() {
         switchInputs(toMac: true)
     }
@@ -297,7 +310,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func switchInputs(
         toMac: Bool,
         displayIDs: [Int]? = nil,
-        completion: ((Bool) -> Void)? = nil
+        completion: ((Bool) -> Void)? = nil,
+        overrideConfigurations: [Int: DisplayConfiguration]? = nil,
+        activeMenuItem: NSMenuItem? = nil
     ) {
         guard configurationSafetyGate.allows(.ddc) else {
             completion?(false)
@@ -308,11 +323,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             completion?(false)
             return
         }
-        let activeItem = toMac ? switchToMacItem : switchItem
+        let activeItem = activeMenuItem ?? (toMac ? switchToMacItem : switchItem)
         activeItem.title = "正在切换…"
         switchToMacItem.isEnabled = false
         switchItem.isEnabled = false
-        let currentConfigurations = configurations
+        profileSwitchItems.forEach { $0.isEnabled = false }
+        let currentConfigurations = overrideConfigurations ?? configurations
         let ddcController = ddcController
 
         workerQueue.async { [weak self] in
@@ -356,11 +372,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             group.wait()
 
             if let firstError = firstError.value {
-                self?.finishSwitch(message: "部分切换失败", toMac: toMac)
+                self?.finishSwitch(message: "部分切换失败", toMac: toMac, activeMenuItem: activeMenuItem)
                 self?.showError(title: "显示器切换失败", error: firstError)
                 DispatchQueue.main.async { completion?(false) }
             } else {
-                self?.finishSwitch(message: toMac ? "已切换到 Mac" : "已切换到 Windows", toMac: toMac)
+                self?.finishSwitch(message: toMac ? "已切换到本机" : "切换完成", toMac: toMac, activeMenuItem: activeMenuItem)
                 DispatchQueue.main.async { completion?(true) }
             }
         }
@@ -605,16 +621,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    private func finishSwitch(message: String, toMac: Bool) {
+    private func finishSwitch(message: String, toMac: Bool, activeMenuItem: NSMenuItem? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let activeItem = toMac ? self.switchToMacItem : self.switchItem
+            let activeItem = activeMenuItem ?? (toMac ? self.switchToMacItem : self.switchItem)
             activeItem.title = message
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 self.switchToMacItem.title = "切换到 Mac"
                 self.switchItem.title = "切换到 Windows"
                 self.switchToMacItem.isEnabled = true
                 self.switchItem.isEnabled = true
+                if let menu = self.statusItem.menu { self.rebuildProfileSwitchItems(in: menu) }
             }
         }
     }
@@ -805,6 +822,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
         ddcController.updateConfigurations(values)
         rebuildDisplayMenuItems()
+        if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
         linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
         configureUSBMonitor()
         configurePeerTransport()
@@ -838,6 +856,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             insertionIndex += 1
         }
         linkedItem.isEnabled = configurations.count > 1
+    }
+
+    private func rebuildProfileSwitchItems(in menu: NSMenu) {
+        for item in profileSwitchItems { menu.removeItem(item) }
+        profileSwitchItems.removeAll()
+        let profiles = AppPreferences.localConfiguration.collaborationProfiles.filter(\.coordinationEnabled)
+        for (offset, profile) in profiles.enumerated() {
+            let item = NSMenuItem(title: "切换到 \(profile.name)", action: #selector(switchToProfile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = profile.id
+            item.image = NSImage(systemSymbolName: "arrow.right.to.line", accessibilityDescription: nil)
+            item.isEnabled = configurationSafetyGate.state == .ready
+            menu.insertItem(item, at: offset)
+            profileSwitchItems.append(item)
+        }
     }
 
     @objc private func quit() {
@@ -945,6 +978,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let enabled = configurationSafetyGate.state == .ready
         switchToMacItem.isEnabled = enabled
         switchItem.isEnabled = enabled
+        profileSwitchItems.forEach { $0.isEnabled = enabled }
         detectItem.isEnabled = enabled
     }
 
