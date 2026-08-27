@@ -4,17 +4,17 @@ Thank you for helping improve DisplaySwitch. Small, focused changes with reprodu
 
 ## Before editing
 
-1. Read `README.md` and `PROTOCOL.md`.
-2. Windows contributors must also read `Windows/DEVELOPMENT_CHECKLIST.md` and `Windows/README.md`.
+1. Read `AGENTS.md`, `README.md`, and `PROTOCOL.md`.
+2. macOS contributors must also read `macOS/DEVELOPMENT_CHECKLIST.md`; Windows contributors must also read `Windows/DEVELOPMENT_CHECKLIST.md` and `Windows/README.md`.
 3. Check existing issues before starting a large change.
 4. Do not commit pairing codes, IP addresses, local paths, device identifiers, signing credentials, logs containing private data, or build products.
 
 ## macOS development
 
-- Open `DisplaySwitcher.xcodeproj` in Xcode.
+- Open `macOS/DisplaySwitcher.xcodeproj` in Xcode.
 - Keep the existing Swift/AppKit implementation and macOS 12 deployment target.
 - Build and test with the shared `DisplaySwitcher` scheme.
-- The command-line release build is `./scripts/build-app.sh`.
+- The command-line release build is `./macOS/scripts/build-app.sh`.
 - Do not perform real DDC input switching or USB handover as part of automated tests.
 
 ## Windows development

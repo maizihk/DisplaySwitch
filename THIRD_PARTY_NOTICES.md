@@ -7,6 +7,6 @@ DisplaySwitch includes or derives portions of the following open-source project.
 - Project: [AppleSiliconDDC](https://github.com/waydabber/AppleSiliconDDC)
 - Copyright: Copyright (c) 2021 Istvan T.
 - License: MIT
-- License text: [`ThirdParty/AppleSiliconDDC/LICENSE`](ThirdParty/AppleSiliconDDC/LICENSE)
+- License text: [`macOS/ThirdParty/AppleSiliconDDC/LICENSE`](macOS/ThirdParty/AppleSiliconDDC/LICENSE)
 
 The macOS native DDC implementation uses private CoreDisplay/IOAVService declarations and behavior derived from AppleSiliconDDC. DisplaySwitch is not affiliated with or endorsed by Apple Inc. or the AppleSiliconDDC authors.
