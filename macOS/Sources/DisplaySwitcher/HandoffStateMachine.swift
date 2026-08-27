@@ -288,16 +288,6 @@ final class HandoffStateMachine {
                 cancelOutgoing(emitAction: true)
             }
 
-            if let incomingID = incomingEventID, shouldSendIncomingReadyAfterUsbArrival {
-                if let wakeSucceeded = wakeSucceededByEventID[incomingID] {
-                    sendUsbReadyBurst(eventID: incomingID, wakeSucceeded: wakeSucceeded)
-                    shouldSendIncomingReadyAfterUsbArrival = false
-                }
-            } else if let incomingID = incomingEventID,
-                      let wakeSucceeded = wakeSucceededByEventID[incomingID] {
-                sendUsbReadyBurst(eventID: incomingID, wakeSucceeded: wakeSucceeded)
-            }
-
             let eventID = eventIDSource.nextEventID()
             pendingWakeByEventID[eventID] = .usbPresence
             log(.requestWake(eventID: eventID))
@@ -523,10 +513,13 @@ final class HandoffStateMachine {
     }
 
     private func markPeerReachable(nowMs: Int64) {
+        let wasReachable = peerReachable
         peerReachable = true
         peerLastSeenAtMs = nowMs
-        log(.setPeerReachable(true))
-        sink.updatePeerReachable(true)
+        if !wasReachable {
+            log(.setPeerReachable(true))
+            sink.updatePeerReachable(true)
+        }
         schedulePeerReachableExpiry(atMs: nowMs)
     }
 

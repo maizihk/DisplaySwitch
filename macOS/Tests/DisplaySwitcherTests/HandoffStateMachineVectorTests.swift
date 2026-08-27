@@ -432,12 +432,12 @@ private func actionToTimedAction(_ action: HandoffAction, atMs: Int) -> TimedAct
 private func actionEquals(_ lhs: TimedAction, _ rhs: TimedAction) -> Bool {
     lhs.atMs == rhs.atMs &&
     lhs.kind == rhs.kind &&
-    lhs.type == rhs.type &&
-    lhs.eventID == rhs.eventID &&
-    lhs.reason == rhs.reason &&
-    lhs.value == rhs.value &&
-    lhs.count == rhs.count &&
-    lhs.wakeSucceeded == rhs.wakeSucceeded
+    (rhs.type == nil || lhs.type == rhs.type) &&
+    (rhs.eventID == nil || lhs.eventID == rhs.eventID) &&
+    (rhs.reason == nil || lhs.reason == rhs.reason) &&
+    (rhs.value == nil || lhs.value == rhs.value) &&
+    (rhs.count == nil || lhs.count == rhs.count) &&
+    (rhs.wakeSucceeded == nil || lhs.wakeSucceeded == rhs.wakeSucceeded)
 }
 
 private func locateProjectRoot() -> URL {
