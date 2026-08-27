@@ -143,6 +143,7 @@ private final class VectorStateMachineRecorder {
     let clock: VirtualClock
     var actions: [TimedAction] = []
     var hardware = VectorHardwareCounter()
+    var networkSends = 0
 
     init(clock: VirtualClock) {
         self.clock = clock
@@ -150,6 +151,10 @@ private final class VectorStateMachineRecorder {
 
     func recordHardware(_ kind: HandoffStateMachineTestSink.RecordedEvent) {
         switch kind {
+        case .sendMessage:
+            networkSends += 1
+        case .sendBurst(let count):
+            networkSends += count
         case .requestWake:
             hardware.wake += 1
         case .requestSwitch:
@@ -270,6 +275,7 @@ private final class VectorStateMachineHarness {
     private let stateMachine: HandoffStateMachine
     var actions: [TimedAction] { recorder.actions }
     var hardware: VectorHardwareCounter { recorder.hardware }
+    var networkSends: Int { recorder.networkSends }
 
     init(initialState: InitialState, configuredPairingCode: String, referenceTime: TimeInterval) {
         clock = VirtualClock(referenceTime: referenceTime)
@@ -336,6 +342,10 @@ private final class VectorStateMachineHarness {
 
             scheduler.runPending(until: Int64(step.atMs), includeEqual: true)
         }
+    }
+
+    func receive(_ message: PeerMessage) {
+        stateMachine.handleIncomingMessage(message)
     }
 
     func snapshot() -> HandoffStateSnapshot {
@@ -452,6 +462,9 @@ private func locateProjectRoot() -> URL {
 }
 
 final class HandoffStateMachineVectorTests: XCTestCase {
+    private let referenceTime: TimeInterval = 1_788_000_000
+    private let validPairingCode = "TEST-CODE-0001"
+
     func testAllStateMachineVectors() throws {
         let root = locateProjectRoot()
         let fileURL = root.appendingPathComponent("contracts/protocol-v1/state-machine-vectors.json")
@@ -506,5 +519,100 @@ final class HandoffStateMachineVectorTests: XCTestCase {
                 XCTAssertEqual(finalState.seenMessageCount, expectedSeenCount)
             }
         }
+    }
+
+    func testShortOrEmptyLocalPairingCodeProducesNoSideEffects() {
+        for pairingCode in ["", "short"] {
+            let harness = makeHarness(pairingCode: pairingCode)
+            sendValidHandoverAndStatusMessages(to: harness, pairingCode: pairingCode)
+            assertNoReceiveSideEffects(harness)
+        }
+    }
+
+    func testDisabledCoordinationProducesNoSideEffects() {
+        let harness = makeHarness(coordinationEnabled: false)
+        sendValidHandoverAndStatusMessages(to: harness, pairingCode: validPairingCode)
+        assertNoReceiveSideEffects(harness)
+    }
+
+    func testDisabledUSBAutomationProducesNoSideEffects() {
+        let harness = makeHarness(usbAutomationEnabled: false)
+        sendValidHandoverAndStatusMessages(to: harness, pairingCode: validPairingCode)
+        assertNoReceiveSideEffects(harness)
+    }
+
+    private func makeHarness(
+        pairingCode: String? = nil,
+        coordinationEnabled: Bool = true,
+        usbAutomationEnabled: Bool = true
+    ) -> VectorStateMachineHarness {
+        let initialState = InitialState(
+            localPlatform: "mac",
+            coordinationEnabled: coordinationEnabled,
+            usbAutomationEnabled: usbAutomationEnabled,
+            usbPresent: false,
+            peerReachable: false,
+            peerLastSeenAtMs: nil,
+            incomingEventID: nil,
+            outgoingEventID: nil,
+            newestIncomingRequestTimestamp: nil,
+            seenMessages: [],
+            nextEventIDs: []
+        )
+        return VectorStateMachineHarness(
+            initialState: initialState,
+            configuredPairingCode: pairingCode ?? validPairingCode,
+            referenceTime: referenceTime
+        )
+    }
+
+    private func sendValidHandoverAndStatusMessages(
+        to harness: VectorStateMachineHarness,
+        pairingCode: String
+    ) {
+        harness.receive(message(
+            type: .handoverRequest,
+            eventID: "aa000000-0000-4000-8000-000000000001",
+            pairingCode: pairingCode
+        ))
+        harness.receive(message(
+            type: .statusProbe,
+            eventID: "aa000000-0000-4000-8000-000000000002",
+            pairingCode: pairingCode
+        ))
+    }
+
+    private func message(
+        type: PeerMessageType,
+        eventID: String,
+        pairingCode: String
+    ) -> PeerMessage {
+        PeerMessage(
+            type: type,
+            eventID: eventID,
+            source: "windows",
+            target: "mac",
+            timestamp: referenceTime,
+            pairingCode: pairingCode
+        )
+    }
+
+    private func assertNoReceiveSideEffects(
+        _ harness: VectorStateMachineHarness,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertTrue(harness.actions.isEmpty, file: file, line: line)
+        XCTAssertEqual(harness.networkSends, 0, file: file, line: line)
+        XCTAssertEqual(harness.hardware.wake, 0, file: file, line: line)
+        XCTAssertEqual(harness.hardware.switchDisplay, 0, file: file, line: line)
+        XCTAssertEqual(harness.hardware.usbActions, 0, file: file, line: line)
+
+        let snapshot = harness.snapshot()
+        XCTAssertFalse(snapshot.peerReachable, file: file, line: line)
+        XCTAssertNil(snapshot.peerLastSeenAtMs, file: file, line: line)
+        XCTAssertNil(snapshot.incomingEventID, file: file, line: line)
+        XCTAssertNil(snapshot.outgoingEventID, file: file, line: line)
+        XCTAssertEqual(snapshot.seenMessageCount, 0, file: file, line: line)
     }
 }

@@ -284,7 +284,7 @@ final class HandoffStateMachine {
             scheduler.cancel(debounceKey)
             scheduledTimerKeys.remove(debounceKey)
 
-            if let outgoingID = outgoingEventID {
+            if outgoingEventID != nil {
                 cancelOutgoing(emitAction: true)
             }
 
@@ -306,6 +306,10 @@ final class HandoffStateMachine {
     }
 
     func handleIncomingMessage(_ message: PeerMessage) {
+        guard coordinationEnabled, usbAutomationEnabled, pairingCode.count >= 8 else {
+            return
+        }
+
         let nowMs = clock.currentTimeMs()
         let validation = PeerMessageValidation.validate(
             message: message,
