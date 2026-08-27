@@ -7,7 +7,7 @@
 - 分支：`codex/macos-ds-004-final-ui-about`
 - 基线：`7703bab10eb432f9f276e35d74d3a896a556d21a`
 - 当前已验证实现提交：`dc0c302a101d00ba7ef7dcc543e5a5b911efac91`
-- PR：待创建
+- PR：[#29 DS-004 macOS: finish manual UI and about page](https://github.com/maizihk/DisplaySwitch/pull/29)
 
 ## 完成内容
 
