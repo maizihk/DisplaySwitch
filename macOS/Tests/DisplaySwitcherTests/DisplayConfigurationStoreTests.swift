@@ -297,6 +297,33 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(network, 0)
     }
 
+    func testFreshInstallEncodingFailureRemainsBlockedAfterRestartUntilReviewedSave() throws {
+        try assertFreshInstallFailurePersistsAcrossRestart { storage, values in
+            XCTAssertThrowsError(
+                try DisplayConfigurationStore.saveAll(
+                    values,
+                    storage: storage,
+                    encodeDocument: { _ in
+                        throw DisplayConfigurationStoreError.encodingFailed
+                    }
+                )
+            ) { error in
+                XCTAssertEqual(error as? DisplayConfigurationStoreError, .encodingFailed)
+            }
+        }
+    }
+
+    func testFreshInstallWriteFailureRemainsBlockedAfterRestartUntilReviewedSave() throws {
+        try assertFreshInstallFailurePersistsAcrossRestart { storage, values in
+            storage.failDocumentWrites = true
+            XCTAssertThrowsError(
+                try DisplayConfigurationStore.saveAll(values, storage: storage)
+            ) { error in
+                XCTAssertEqual(error as? DisplayConfigurationStoreError, .writeFailed)
+            }
+        }
+    }
+
     func testSuccessfulReviewedSaveCanExitSafetyState() throws {
         defaults.set(Data("not-json".utf8), forKey: DisplayConfigurationStore.storageKey)
         let failedResult = DisplayConfigurationStore.load(defaults: defaults)
@@ -325,5 +352,46 @@ final class DisplayConfigurationStoreTests: XCTestCase {
             windowsInput: 21 + index,
             readEnabled: true
         )
+    }
+
+    private func assertFreshInstallFailurePersistsAcrossRestart(
+        firstSave: (TestDisplayConfigurationStorage, [DisplayConfiguration]) throws -> Void
+    ) throws {
+        XCTAssertEqual(DisplayConfigurationStore.load(defaults: defaults).safetyState, .ready)
+        XCTAssertNil(defaults.data(forKey: DisplayConfigurationStore.storageKey))
+        XCTAssertNil(defaults.data(forKey: DisplayConfigurationStore.legacyArrayStorageKey))
+
+        let values = [configuration(selector: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")]
+        let firstStorage = TestDisplayConfigurationStorage(defaults: defaults)
+        try firstSave(firstStorage, values)
+
+        XCTAssertTrue(defaults.bool(forKey: DisplayConfigurationStore.requiresReviewKey))
+        XCTAssertNil(defaults.data(forKey: DisplayConfigurationStore.storageKey))
+        XCTAssertNil(defaults.data(forKey: DisplayConfigurationStore.legacyArrayStorageKey))
+
+        let restartedStorage = TestDisplayConfigurationStorage(defaults: defaults)
+        let restartedResult = DisplayConfigurationStore.load(storage: restartedStorage)
+        XCTAssertEqual(
+            restartedResult.safetyState,
+            .requiresUserReview(.previousFailureRequiresReview)
+        )
+        XCTAssertTrue(restartedResult.configurations.isEmpty)
+
+        let restartedGate = ConfigurationSafetyGate(state: restartedResult.safetyState)
+        var sideEffectCounts = Dictionary(
+            uniqueKeysWithValues: ConfigurationSideEffect.allCases.map { ($0, 0) }
+        )
+        for sideEffect in ConfigurationSideEffect.allCases where restartedGate.allows(sideEffect) {
+            sideEffectCounts[sideEffect, default: 0] += 1
+        }
+        XCTAssertEqual(sideEffectCounts[.usb], 0)
+        XCTAssertEqual(sideEffectCounts[.ddc], 0)
+        XCTAssertEqual(sideEffectCounts[.wake], 0)
+        XCTAssertEqual(sideEffectCounts[.network], 0)
+
+        restartedStorage.failDocumentWrites = false
+        try DisplayConfigurationStore.saveAll(values, storage: restartedStorage)
+        XCTAssertFalse(defaults.bool(forKey: DisplayConfigurationStore.requiresReviewKey))
+        XCTAssertEqual(DisplayConfigurationStore.load(storage: restartedStorage).safetyState, .ready)
     }
 }

@@ -78,7 +78,7 @@ struct DisplayConfigurationLoadResult: Equatable {
     let safetyState: DisplayConfigurationSafetyState
 }
 
-enum ConfigurationSideEffect: CaseIterable {
+enum ConfigurationSideEffect: CaseIterable, Hashable {
     case usb
     case ddc
     case wake
@@ -206,7 +206,12 @@ enum DisplayConfigurationStore {
         }
 
         guard hasLegacyConfiguration(storage: storage) else {
-            return DisplayConfigurationLoadResult(configurations: [], safetyState: .ready)
+            return DisplayConfigurationLoadResult(
+                configurations: [],
+                safetyState: storage.bool(forKey: requiresReviewKey)
+                    ? .requiresUserReview(.previousFailureRequiresReview)
+                    : .ready
+            )
         }
 
         let migrated = (1...2).map { loadLegacy(index: $0, storage: storage) }
