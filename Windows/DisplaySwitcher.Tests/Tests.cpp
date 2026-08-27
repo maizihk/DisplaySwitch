@@ -4,6 +4,7 @@
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
 #include "../DisplaySwitcher.Native/ProfileDetection.h"
+#include "../DisplaySwitcher.Native/UnboundProbeRouter.h"
 #include "../DisplaySwitcher.Native/UsbLearning.h"
 #include <iostream>
 
@@ -749,6 +750,63 @@ namespace
         Check(noHardware(first) && noHardware(changed) && noHardware(known) && noHardware(authentication) &&
             noHardware(fallback) && noHardware(timeout) && noHardware(incomplete),
             L"网络检测：模拟全流程必须保持 USB、蓝牙、唤醒和 DDC 调用为零");
+
+        // Simulate first contact where neither side has persisted the peer endpoint.
+        auto senderEndpoint = GenerateIdentifier();
+        auto receiverEndpoint = GenerateIdentifier();
+        std::wstring senderSavedPeerEndpoint;
+        auto receiverProfile = Profile(L"首次接收端", true);
+        receiverProfile.peerHost = L"simulated-peer";
+        receiverProfile.peerPort = 49152;
+        receiverProfile.peerEndpointId.clear();
+        receiverProfile.peerProtocolVersion.reset();
+        V2Message probe;
+        probe.type = L"status_probe"; probe.eventId = GenerateIdentifier();
+        probe.sourceEndpointId = senderEndpoint; probe.targetEndpointId.reset();
+        probe.sourcePlatform = L"macos"; probe.timestamp = 5000; probe.nonce = GenerateV2Nonce();
+        auto probeSecret = NormalizeV2PairingSecret(receiverProfile.pairingCode);
+        probe = SignV2Message(std::move(probe), DeriveV2AuthenticationKey(probeSecret, senderEndpoint));
+        DatagramSource simulatedSource{ L"simulated-address", 49152 };
+        auto hostMatcher = [](CollaborationProfile const& profile, DatagramSource const& source)
+        { return profile.peerHost == L"simulated-peer" && profile.peerPort == source.port && source.address == L"simulated-address"; };
+        V2ReplayCache unboundReplay;
+        auto unbound = MatchUnboundStatusProbe({ receiverProfile }, receiverEndpoint, simulatedSource,
+            probe, 5000, 1000, hostMatcher, &unboundReplay);
+        Check(senderSavedPeerEndpoint.empty() && receiverProfile.peerEndpointId.empty() &&
+            unbound.status == UnboundProbeMatchStatus::Matched && unbound.profileIndex == 0,
+            L"首次 endpoint：双方 peerEndpointID 为空时必须按 host/port、配对凭据和唯一规则匹配");
+        auto response = CreateUnboundStatusResponse(probe, receiverEndpoint, 5000,
+            GenerateV2Nonce(), receiverProfile.pairingCode);
+        auto responseKey = DeriveV2AuthenticationKey(probeSecret, receiverEndpoint);
+        Check(response.eventId == probe.eventId && response.targetEndpointId == senderEndpoint &&
+            ValidateV2Message(response, senderEndpoint, receiverEndpoint, responseKey, 5000).accepted &&
+            senderSavedPeerEndpoint.empty() && receiverProfile.peerEndpointId.empty(),
+            L"首次 endpoint：响应必须复用 eventID 且不得自动保存或信任 endpoint");
+        ProfileDetectionSession unboundSender;
+        unboundSender.Start(1000, true, senderSavedPeerEndpoint, probe.eventId);
+        auto discovered = unboundSender.OnV2StatusResponse(1100, response.eventId, receiverEndpoint, true);
+        Check(discovered.kind == ProfileDetectionAction::Kind::Complete &&
+            discovered.result.endpointConfirmationRequired && senderSavedPeerEndpoint.empty(),
+            L"首次 endpoint：发送端收到合法响应后仍必须等待用户确认");
+
+        auto duplicateProfile = receiverProfile; duplicateProfile.id = GenerateIdentifier(); duplicateProfile.name = L"重复候选";
+        auto ambiguous = MatchUnboundStatusProbe({ receiverProfile, duplicateProfile }, receiverEndpoint,
+            simulatedSource, probe, 5000, 1100, hostMatcher);
+        Check(ambiguous.status == UnboundProbeMatchStatus::Ambiguous,
+            L"首次 endpoint：多个 host/port 和凭据均匹配的配置必须安全拒绝");
+        auto wrongSecretProfile = receiverProfile; wrongSecretProfile.pairingCode = L"SYNTHETIC-WRONG-CODE";
+        auto unauthenticated = MatchUnboundStatusProbe({ wrongSecretProfile }, receiverEndpoint,
+            simulatedSource, probe, 5000, 1200, hostMatcher);
+        Check(unauthenticated.status == UnboundProbeMatchStatus::AuthenticationFailed,
+            L"首次 endpoint：配对凭据认证失败必须安全拒绝");
+        auto conflictingProfile = receiverProfile; conflictingProfile.peerEndpointId = senderEndpoint;
+        auto conflict = MatchUnboundStatusProbe({ receiverProfile, conflictingProfile }, receiverEndpoint,
+            simulatedSource, probe, 5000, 1300, hostMatcher);
+        Check(conflict.status == UnboundProbeMatchStatus::EndpointConflict,
+            L"首次 endpoint：本机已有相同 endpoint 绑定时必须拒绝空目标探测");
+        Check(noHardware(first) && first.usbCalls == 0 && first.bluetoothCalls == 0 &&
+            first.wakeCalls == 0 && first.ddcCalls == 0,
+            L"首次 endpoint：匹配、拒绝和回复过程必须保持零硬件副作用");
     }
 }
 

@@ -48,7 +48,7 @@ namespace DisplaySwitcher::Native
         {
             if (auto self = weak.lock()) self->Enqueue([weak, present] { if (auto value = weak.lock()) value->OnUsbPresenceChanged(present); });
         });
-        peer_ = std::make_unique<UdpPeer>([weak](std::string const& datagram)
+        peer_ = std::make_unique<UdpPeer>([weak](UdpPeer::Datagram const& datagram)
         {
             if (auto self = weak.lock()) self->Enqueue([weak, datagram] { if (auto value = weak.lock()) value->HandleDatagram(datagram); });
         }, [weak](std::wstring const& error)
@@ -113,14 +113,17 @@ namespace DisplaySwitcher::Native
                 { return candidate.peerProtocolVersion == 2 && EqualId(candidate.peerEndpointId, profile.peerEndpointId); }) == 1)
                 v2Targets.push_back({ profile.peerEndpointId, 2, false });
         auto hasV2 = std::any_of(v2Targets.begin(), v2Targets.end(), [](auto const& target) { return target.protocolVersion == 2; });
+        auto hasUnboundV2 = std::any_of(completeProfiles.begin(), completeProfiles.end(), [](auto const& profile)
+        { return profile.peerEndpointId.empty() && profile.peerProtocolVersion != 1; });
         v2StateMachine_ = std::make_unique<V2StateMachine>(V2StateInitial{
             config.localEndpointId, hasV2, usbWatcher_->IsPresent(), usbWatcher_->IsPresent(),
             V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
         v1HealthProbe_.Clear(); v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
-        if (hasV1 || hasV2) peer_->Start(config.listenPort);
+        if (hasV1 || hasV2 || hasUnboundV2) peer_->Start(config.listenPort);
         else SetPeerConnectionStatus(!config.ReadonlyEnabledProfiles().empty() ? L"协同配置不完整" : L"协同未启用", false);
+        if (hasUnboundV2 && !hasV1 && !hasV2) SetPeerConnectionStatus(L"等待首次 endpoint 检测", false);
         if (hasV1 || hasV2) StartPeerHealthCheck();
         if (applyAutoStart)
         {
@@ -414,13 +417,13 @@ namespace DisplaySwitcher::Native
         ApplyStateMachineActions(stateMachine_->OnPeerMessage(NowMilliseconds(), message));
     }
 
-    void Controller::HandleDatagram(std::string const& datagram)
+    void Controller::HandleDatagram(UdpPeer::Datagram const& datagram)
     {
         if (!sideEffectGate_.AllowsSideEffects()) return;
-        auto version = ParseProtocolVersion(datagram);
+        auto version = ParseProtocolVersion(datagram.data);
         if (version == 1)
         {
-            PeerMessage message; auto parsed = ParsePeerMessage(datagram, message);
+            PeerMessage message; auto parsed = ParsePeerMessage(datagram.data, message);
             if (!parsed.accepted) return;
             if (profileDetection_ && profileDetection_->session.WaitingForV1() && message.type == L"status_response" &&
                 EqualId(message.eventId, profileDetection_->session.PendingEventId()))
@@ -441,7 +444,7 @@ namespace DisplaySwitcher::Native
             return;
         }
         if (version != 2) return;
-        V2Message message; auto parsed = ParseV2Message(datagram, message); if (!parsed.accepted) return;
+        V2Message message; auto parsed = ParseV2Message(datagram.data, message); if (!parsed.accepted) return;
         if (profileDetection_ && profileDetection_->session.WaitingForV2() && message.type == L"status_response" &&
             EqualId(message.eventId, profileDetection_->session.PendingEventId()))
         {
@@ -459,6 +462,11 @@ namespace DisplaySwitcher::Native
             catch (...) { return; }
             ApplyProfileDetectionAction(profileDetection_->session.OnV2StatusResponse(
                 NowMilliseconds(), message.eventId, message.sourceEndpointId, authenticated));
+            return;
+        }
+        if (message.type == L"status_probe" && !message.targetEndpointId)
+        {
+            HandleUnboundStatusProbe(message, datagram.source);
             return;
         }
         if (!v2StateMachine_) return;
@@ -506,6 +514,48 @@ namespace DisplaySwitcher::Native
         ApplyV2Actions(std::move(actions));
     }
 
+    bool Controller::HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source)
+    {
+        auto config = Config();
+        std::vector<CollaborationProfile> candidates = config.EnabledCompleteProfiles();
+        if (profileDetection_)
+        {
+            auto const& draft = profileDetection_->profile;
+            auto inspection = profileDetection_->workingConfig.InspectProfile(draft.id);
+            if (inspection.complete && draft.peerEndpointId.empty() && draft.peerProtocolVersion != 1)
+            {
+                auto existing = std::find_if(candidates.begin(), candidates.end(), [&](auto const& profile)
+                { return EqualId(profile.id, draft.id); });
+                if (existing == candidates.end()) candidates.push_back(draft); else *existing = draft;
+            }
+        }
+        auto match = MatchUnboundStatusProbe(candidates, config.localEndpointId, source, message,
+            static_cast<int64_t>(UdpPeer::TimestampNow()), NowMilliseconds(),
+            [](CollaborationProfile const& profile, DatagramSource const& sender)
+            { return UdpPeer::SourceMatches(sender, profile.peerHost, profile.peerPort); }, &v2ReplayCache_);
+        if (match.status != UnboundProbeMatchStatus::Matched || !match.profileIndex) return false;
+        auto const& profile = candidates[*match.profileIndex];
+        try
+        {
+            auto now = static_cast<int64_t>(UdpPeer::TimestampNow());
+            for (auto item = v2OutgoingMessages_.begin(); item != v2OutgoingMessages_.end();)
+                if (now - item->second.timestamp > 30) item = v2OutgoingMessages_.erase(item); else ++item;
+            auto cacheKey = L"unbound_status_response|" + message.eventId + L"|" + message.sourceEndpointId;
+            auto cached = v2OutgoingMessages_.find(cacheKey);
+            V2Message response;
+            if (cached != v2OutgoingMessages_.end()) response = cached->second;
+            else
+            {
+                response = CreateUnboundStatusResponse(message, config.localEndpointId, now,
+                    GenerateV2Nonce(), profile.pairingCode);
+                v2OutgoingMessages_.emplace(cacheKey, response);
+            }
+            peer_->SendRaw(SerializeV2Message(response), source.address, source.port, false);
+            return true;
+        }
+        catch (...) { return false; }
+    }
+
     void Controller::Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
     {
         if (disposed_ || !peer_ || !sideEffectGate_.AllowsSideEffects()) return;
@@ -537,7 +587,7 @@ namespace DisplaySwitcher::Native
         else
         {
             message.type = action.type; message.eventId = action.eventId; message.sourceEndpointId = config.localEndpointId;
-            if (action.type != L"status_probe") message.targetEndpointId = profile->peerEndpointId;
+            message.targetEndpointId = profile->peerEndpointId;
             message.sourcePlatform = L"windows"; message.timestamp = now; message.nonce = GenerateV2Nonce();
             if (!action.intent.empty()) message.intent = action.intent;
             if (action.wakeSucceeded) message.wakeSucceeded = action.wakeSucceeded;

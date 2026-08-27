@@ -26,6 +26,8 @@
 - v2 检测按当前编辑中的 host、port 与配对码验证；报告 `v2 可用`、`仅 v1`、`认证失败`、`无响应` 或 `本机配置不完整`。首次发现或已保存 endpoint 变化都只弹出确认，不自动覆盖或写入磁盘。
 - 检测期间暂停常规心跳并阻断 USB 事件、手动/自动切屏、DDC 与唤醒入口；检测结束后恢复原运行配置。检测专用 UDP socket 仅在原运行时未监听时临时启用并在完成后关闭。
 - 常规 v1/v2 在线心跳也记录待处理 eventID；错误、过期、重复或非待处理 `status_response` 不再刷新在线状态。v2 `status_probe` 仍可按协议原 eventID 回复，但本身不直接标记对端在线。
+- 双方尚未保存 `peerEndpointID` 时，接收端保留 UDP 数据报的来源地址与端口，并只在 host/port、HMAC 凭据及配置唯一性共同匹配时回复定向 `status_response`；响应复用探测 eventID，但不写配置、不刷新在线状态或信任 endpoint。
+- 多个候选都通过、认证失败、来源不匹配、本机/既有配置 endpoint 冲突时安全拒绝且不回复。已绑定配置的常规 v2 心跳改为携带目标 endpoint，只有未绑定首次探测使用 `targetEndpointID = null`。
 
 ## 自动验证
 
@@ -35,14 +37,15 @@
 - DS-004 C-001..C-024 既有本机模型、保存安全、DDC、USB 学习和关于页面回归全部通过。
 - 额外自动检查覆盖完全相同 nonce 重发、同 nonce 不同认证输入拒绝、版本分派和序列化隐私字段；状态向量以模拟时间、逻辑输入到达及唤醒/DDC 调用计数执行，不访问真实设备。
 - 新增模拟网络/时钟探测测试，覆盖 v2 probe/response 同 eventID、错误/过期/重复/非待处理响应、首次 endpoint 确认、endpoint 变化、认证失败、v2 超时后恰好一次 v1 回退、无响应/本机不完整及全流程 USB/蓝牙/唤醒/DDC 调用为零。
-- `Windows/dist/DisplaySwitch.exe`、`runtime/` 和必需文件检查通过；framework-dependent x64 绿色版总大小 1.60 MiB，小于 20 MiB，构建产物未进入 Git。
+- 双端空 endpoint 模拟测试覆盖来源 host/port、相同 eventID 定向响应、HMAC、首次确认、候选歧义、错误凭据、endpoint 冲突、双方配置不被自动修改及零硬件调用。
+- `Windows/dist/DisplaySwitch.exe`、`runtime/` 和必需文件检查通过；framework-dependent x64 绿色版总大小 1.61 MiB，小于 20 MiB，构建产物未进入 Git。
 - GitHub 托管 Windows CI 的 Release 构建、显式自动测试、dist/体积检查与 artifact 上传全部成功；artifact 为 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent`（ZIP 793142 bytes，保留 7 天）。
 - 本机构建出现 NuGet 漏洞元数据查询 `NU1900` 网络警告；已有依赖恢复、编译、测试和产物检查均成功，未降低或删除检查。
 - `contracts/protocol-v2/validate.py` 的独立 Python 校验未运行：本机 Python 缺少 `jsonschema`；同一批正式 JSON 向量已由原生 `DisplaySwitcher.Tests.exe` 全量读取并通过。
 
 ## 尚需实机验证
 
-- 设置页在两台真实设备间的 v2 检测、首次/变化 endpoint 确认、v1 回退、认证失败与无响应显示；同端口 v1/v2 互操作、6 秒在线状态过期与恢复。
+- 设置页在两台真实设备间的 v2 检测、双方空 endpoint 首次引导、首次/变化 endpoint 确认、v1 回退、认证失败与无响应显示；同端口 v1/v2 互操作、6 秒在线状态过期与恢复。
 - 用户手动定向唤醒/确认/切屏、单配置 USB 自动交接、多个配置 3 秒发现与先到先得，以及发现超时的零 DDC 提示。
 - Windows/Windows、Windows/macOS 的 endpoint 路由，真实网络丢包/重排/时钟偏差和系统睡眠后的恢复。
 - 真实 USB 与平台后续蓝牙到达适配、显示器唤醒和 DDC 输入源结果。

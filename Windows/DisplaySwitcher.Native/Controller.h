@@ -38,7 +38,8 @@ namespace DisplaySwitcher::Native
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
-        void HandleDatagram(std::string const& datagram);
+        void HandleDatagram(UdpPeer::Datagram const& datagram);
+        bool HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source);
         void BeginProfileDetection(AppConfig const& workingConfig, std::wstring const& profileId,
             std::function<void(ProfileDetectionResult const&)> completed);
         void AdvanceProfileDetection(uint64_t generation);

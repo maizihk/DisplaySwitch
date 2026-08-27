@@ -1,12 +1,18 @@
 #pragma once
 #include "ProtocolTypes.h"
+#include "UnboundProbeRouter.h"
 
 namespace DisplaySwitcher::Native
 {
     class UdpPeer
     {
     public:
-        using MessageCallback = std::function<void(std::string const&)>;
+        struct Datagram
+        {
+            std::string data;
+            DatagramSource source;
+        };
+        using MessageCallback = std::function<void(Datagram const&)>;
         using ErrorCallback = std::function<void(std::wstring const&)>;
 
         UdpPeer(MessageCallback messageCallback, ErrorCallback errorCallback);
@@ -19,6 +25,7 @@ namespace DisplaySwitcher::Native
         bool IsRunning() const;
         void Send(PeerMessage const& message, std::wstring const& host, int port);
         void SendRaw(std::string const& data, std::wstring const& host, int port, bool trace = true);
+        static bool SourceMatches(DatagramSource const& source, std::wstring const& configuredHost, int configuredPort);
         static double TimestampNow();
 
     private:
