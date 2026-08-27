@@ -48,6 +48,7 @@
     <ClCompile Include="StateMachineTests.cpp" />
     <ClCompile Include="..\DisplaySwitcher.Native\AppConfig.cpp"><Link>Native\AppConfig.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DisplayModel.cpp"><Link>Native\DisplayModel.cpp</Link></ClCompile>
+    <ClCompile Include="..\DisplaySwitcher.Native\DdcControl.cpp"><Link>Native\DdcControl.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\HandoverStateMachine.cpp"><Link>Native\HandoverStateMachine.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\ProtocolMessage.cpp"><Link>Native\ProtocolMessage.cpp</Link></ClCompile>
   </ItemGroup>

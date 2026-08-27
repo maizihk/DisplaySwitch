@@ -2,6 +2,7 @@
 #include "Controller.h"
 #include "AutoStart.h"
 #include "Diagnostics.h"
+#include "DdcBackends.h"
 #include "SettingsWindow.xaml.h"
 #include "SystemActions.h"
 #include "TrayIcon.h"
@@ -367,6 +368,52 @@ namespace DisplaySwitcher::Native
                     return true;
                 }
                 return false;
+            },
+            [weak](AppConfig& config, std::vector<std::wstring> const& displayIds,
+                DdcCancellationToken const& cancellation)
+            {
+                if (auto self = weak.lock())
+                {
+                    DdcBackendSet backends(config);
+                    DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
+                        [weak] { if (auto value = weak.lock()) return value->sideEffectGate_.AllowsSideEffects(); return false; });
+                    return service.Read(config, displayIds, cancellation);
+                }
+                DdcControlBatchResult result; result.canceled = true; return result;
+            },
+            [weak](AppConfig& config, std::wstring const& displayId, DdcVcpCode code, int value,
+                bool linkAllDisplays, DdcCancellationToken const& cancellation)
+            {
+                if (auto self = weak.lock())
+                {
+                    DdcBackendSet backends(config);
+                    DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
+                        [weak] { if (auto current = weak.lock()) return current->sideEffectGate_.AllowsSideEffects(); return false; });
+                    return service.Write(config, displayId, code, value, linkAllDisplays, cancellation);
+                }
+                DdcControlBatchResult result; result.canceled = true; return result;
+            },
+            [weak](std::vector<DisplayConfig> const& displays)
+            {
+                auto self = weak.lock(); if (!self || !self->sideEffectGate_.AllowsSideEffects()) return false;
+                auto config = self->Config();
+                for (auto const& source : displays)
+                {
+                    auto target = FindDisplayById(config.displays, source.id); if (!target) continue;
+                    auto& destination = config.displays[*target];
+                    destination.brightnessValue = source.brightnessValue; destination.brightnessMax = source.brightnessMax;
+                    destination.contrastValue = source.contrastValue; destination.contrastMax = source.contrastMax;
+                    destination.volumeValue = source.volumeValue; destination.volumeMax = source.volumeMax;
+                }
+                try { config.Save(); }
+                catch (...)
+                {
+                    self->EnterSafeStateAfterSaveFailure();
+                    self->ShowError(L"保存 DDC 缓存失败", L"无法安全保存 DDC 估计值；自动协同和硬件操作已停用。");
+                    return false;
+                }
+                { std::scoped_lock lock(self->configMutex_); self->config_ = std::move(config); }
+                return true;
             },
             [weak] { if (auto self = weak.lock()) self->settingsWindow_ = nullptr; });
         {

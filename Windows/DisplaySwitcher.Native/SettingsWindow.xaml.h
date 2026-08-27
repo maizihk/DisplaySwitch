@@ -2,6 +2,7 @@
 
 #include "SettingsWindow.g.h"
 #include "AppConfig.h"
+#include "DdcControl.h"
 #include "SystemActions.h"
 #include "UsbWatcher.h"
 
@@ -12,6 +13,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
         SettingsWindow();
         void Initialize(::DisplaySwitcher::Native::AppConfig const& config,
             std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
+            std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
+                std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc,
+            std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
+                std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
+                ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
+            std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
             std::function<void()> closed);
         void SetConnectionStatus(std::wstring const& status, bool connected);
         void ShowWindow();
@@ -40,12 +47,25 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void RemoveProfile(std::wstring const& id);
         void DetectProfile(std::wstring const& id);
         void UpdateDisplayBackendVisibility();
+        ::DisplaySwitcher::Native::AppConfig WorkingDdcConfig();
+        void ReadDdc(std::wstring const& displayId);
+        void WriteDdc(std::wstring const& displayId, ::DisplaySwitcher::Native::DdcVcpCode code, int value);
+        void CompleteDdcOperation(::DisplaySwitcher::Native::AppConfig const& config,
+            ::DisplaySwitcher::Native::DdcControlBatchResult const& result,
+            ::DisplaySwitcher::Native::DdcCancellationToken const& cancellation, bool write);
         void Save();
         void ShowValidationError(std::wstring const& message);
 
         ::DisplaySwitcher::Native::AppConfig original_;
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved_;
+        std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
+            std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc_;
+        std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
+            std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
+            ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc_;
+        std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
         std::function<void()> closed_;
+        ::DisplaySwitcher::Native::DdcCancellationSource ddcCancellation_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
@@ -54,10 +74,19 @@ namespace winrt::DisplaySwitcher::Native::implementation
         {
             std::wstring id;
             Microsoft::UI::Xaml::Controls::TextBox name{ nullptr };
+            Microsoft::UI::Xaml::Controls::ComboBox backend{ nullptr };
             Microsoft::UI::Xaml::Controls::ComboBox nativeMonitor{ nullptr };
             std::vector<std::wstring> nativeMonitorIds;
             Microsoft::UI::Xaml::Controls::TextBox controlMonitorPath{ nullptr };
             Microsoft::UI::Xaml::Controls::TextBox macInput{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch readEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch brightnessEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch contrastEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch volumeEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::Slider brightness{ nullptr };
+            Microsoft::UI::Xaml::Controls::Slider contrast{ nullptr };
+            Microsoft::UI::Xaml::Controls::Slider volume{ nullptr };
+            Microsoft::UI::Xaml::Controls::TextBlock status{ nullptr };
             Microsoft::UI::Xaml::FrameworkElement nativeFields{ nullptr };
             Microsoft::UI::Xaml::FrameworkElement controlMyMonitorFields{ nullptr };
         };
@@ -93,6 +122,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::StackPanel nativeDdcPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel controlMyMonitorPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox controlMyMonitor_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
     };

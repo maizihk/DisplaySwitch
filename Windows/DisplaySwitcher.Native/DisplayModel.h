@@ -8,6 +8,7 @@ namespace DisplaySwitcher::Native
     {
         std::wstring id;
         std::wstring name;
+        std::wstring backend;
         std::optional<int> localInput;
         bool readEnabled{ false };
         bool brightnessEnabled{ true };
@@ -22,6 +23,11 @@ namespace DisplaySwitcher::Native
         std::optional<int> brightnessValue;
         std::optional<int> contrastValue;
         std::optional<int> volumeValue;
+
+        std::wstring const& BackendMonitorId(std::wstring const& backendKey) const noexcept
+        {
+            return backendKey == L"control_my_monitor" ? controlMonitorPath : nativeMonitorId;
+        }
     };
 
     struct DisplayInputMapping

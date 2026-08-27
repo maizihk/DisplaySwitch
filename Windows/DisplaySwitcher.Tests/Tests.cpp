@@ -1,5 +1,6 @@
 #include "../DisplaySwitcher.Native/pch.h"
 #include "../DisplaySwitcher.Native/AppConfig.h"
+#include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
 #include <iostream>
 
@@ -57,6 +58,73 @@ namespace
         for (auto const& display : config.displays) profile.displayInputs.push_back({ display.id, display.macInput });
         config.collaborationProfiles.push_back(std::move(profile));
         return config;
+    }
+
+    struct FakeDdcBackend final : IDdcBackend
+    {
+        std::wstring key{ L"native_ddc" };
+        DdcBackendStatus status{ DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
+        std::map<std::pair<std::wstring, DdcVcpCode>, DdcValueResult> values;
+        std::set<std::pair<std::wstring, DdcVcpCode>> writeFailures;
+        std::vector<std::pair<std::wstring, DdcVcpCode>> reads;
+        std::vector<std::tuple<std::wstring, DdcVcpCode, int>> writes;
+        std::function<void()> onRead;
+        std::function<void()> onWrite;
+
+        std::wstring Key() const override { return key; }
+        std::wstring DisplayName() const override { return L"模拟硬件 DDC/CI"; }
+        DdcBackendStatus Status() const override { return status; }
+        std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const&) override { return {}; }
+        DdcCapabilities Capabilities(std::wstring const&, DdcCancellationToken const&) override
+        {
+            return { status, false, {}, {} };
+        }
+        DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
+            DdcCancellationToken const& cancellation) override
+        {
+            reads.emplace_back(monitorId, code);
+            if (onRead) onRead();
+            if (cancellation.IsCanceled()) return { false, 0, 0, DdcErrorKind::Canceled, L"已取消" };
+            auto found = values.find({ monitorId, code });
+            return found == values.end() ? DdcValueResult{ false, 0, 0, DdcErrorKind::ReadFailed, L"模拟读取失败" } : found->second;
+        }
+        DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
+            DdcCancellationToken const& cancellation) override
+        {
+            writes.emplace_back(monitorId, code, value);
+            if (onWrite) onWrite();
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"已取消" };
+            if (writeFailures.contains({ monitorId, code })) return { false, DdcErrorKind::WriteFailed, L"模拟写入失败" };
+            return { true, DdcErrorKind::None, {} };
+        }
+    };
+
+    void EnableDdcControls(DisplayConfig& display)
+    {
+        display.readEnabled = true;
+        display.brightnessEnabled = true;
+        display.contrastEnabled = true;
+        display.volumeEnabled = true;
+        display.backend = L"native_ddc";
+    }
+
+    DdcControlService FakeService(FakeDdcBackend& native, FakeDdcBackend* fallback = nullptr,
+        std::function<bool()> allowed = {})
+    {
+        return DdcControlService([&](std::wstring const& key) -> IDdcBackend*
+        {
+            if (_wcsicmp(key.c_str(), native.key.c_str()) == 0) return &native;
+            if (fallback && _wcsicmp(key.c_str(), fallback->key.c_str()) == 0) return fallback;
+            return nullptr;
+        }, std::move(allowed));
+    }
+
+    void SetThreeValues(FakeDdcBackend& backend, std::wstring const& monitor, int brightness, int contrast, int volume,
+        int maximum = 100)
+    {
+        backend.values[{ monitor, DdcVcpCode::Brightness }] = { true, brightness, maximum, DdcErrorKind::None, {} };
+        backend.values[{ monitor, DdcVcpCode::Contrast }] = { true, contrast, maximum, DdcErrorKind::None, {} };
+        backend.values[{ monitor, DdcVcpCode::Volume }] = { true, volume, maximum, DdcErrorKind::None, {} };
     }
 
     std::string ReadBytes(std::filesystem::path const& path)
@@ -354,6 +422,119 @@ namespace
         monitors.push_back({ L"monitor-c", L"重新接入", L"DISPLAY7" });
         Check(FindDdcMonitorById(monitors, L"monitor-c").has_value(), L"显示器重新接入后应恢复稳定匹配");
     }
+
+    void TestDdcControls()
+    {
+        auto config = ConfigWithDisplays(2);
+        for (auto& display : config.displays) EnableDdcControls(display);
+        auto firstId = config.displays[0].id;
+        auto secondId = config.displays[1].id;
+        FakeDdcBackend native;
+        SetThreeValues(native, L"monitor-0", 35, 45, 55, 0);
+        SetThreeValues(native, L"monitor-1", 65, 75, 85, 120);
+        DdcCancellationSource cancellation;
+        auto service = FakeService(native);
+
+        auto normal = service.Read(config, {}, cancellation.Begin());
+        Check(normal.success && normal.items.size() == 6 && config.displays[0].brightnessValue == 35
+            && config.displays[0].brightnessMax == 100 && config.displays[1].volumeMax == 120,
+            L"C-016: 三项正常回读应按稳定显示器 ID 缓存，并修正异常最大值");
+
+        auto cachedFirst = config.displays[0];
+        SetThreeValues(native, L"monitor-0", 0, 0, 0);
+        auto allZero = service.Read(config, { firstId }, cancellation.Begin());
+        Check(!allZero.success && allZero.items.size() == 3
+            && std::all_of(allZero.items.begin(), allZero.items.end(), [](auto const& item) { return !item.trusted && item.estimated; })
+            && config.displays[0].brightnessValue == cachedFirst.brightnessValue
+            && config.displays[0].contrastValue == cachedFirst.contrastValue
+            && config.displays[0].volumeValue == cachedFirst.volumeValue,
+            L"C-017/C-024: 同一显示器三项全零应判为不可信且不得覆盖估计缓存");
+
+        SetThreeValues(native, L"monitor-0", 0, 52, 63);
+        auto singleZero = service.Read(config, { firstId }, cancellation.Begin());
+        Check(singleZero.success && config.displays[0].brightnessValue == 0
+            && config.displays[0].contrastValue == 52 && config.displays[0].volumeValue == 63,
+            L"C-018: 单项零值必须作为合法遥测更新缓存");
+
+        native.values.erase({ L"monitor-0", DdcVcpCode::Contrast });
+        SetThreeValues(native, L"monitor-1", 70, 80, 90);
+        auto isolated = service.Read(config, {}, cancellation.Begin());
+        auto failedContrast = std::find_if(isolated.items.begin(), isolated.items.end(), [&](auto const& item)
+        { return item.displayId == firstId && item.code == DdcVcpCode::Contrast; });
+        Check(!isolated.success && failedContrast != isolated.items.end() && failedContrast->estimated
+            && config.displays[0].contrastValue == 52 && config.displays[1].volumeValue == 90,
+            L"C-019: 单项读取失败应使用自身缓存且不阻止其他显示器更新");
+
+        native.reads.clear(); native.writes.clear();
+        config.displays[0].contrastEnabled = false;
+        service.Read(config, { firstId }, cancellation.Begin());
+        service.Write(config, firstId, DdcVcpCode::Contrast, 30, false, cancellation.Begin());
+        Check(std::none_of(native.reads.begin(), native.reads.end(), [](auto const& item) { return item.second == DdcVcpCode::Contrast; })
+            && native.writes.empty(), L"C-020: 单项功能关闭后必须零读取、零写入");
+        config.displays[0].contrastEnabled = true;
+
+        native.status = { DdcAvailability::TemporarilyUnavailable, L"模拟后端暂时不可用" };
+        auto unavailable = service.Read(config, { firstId }, cancellation.Begin());
+        Check(unavailable.items.size() == 3
+            && std::all_of(unavailable.items.begin(), unavailable.items.end(), [](auto const& item)
+                { return !item.success && item.estimated && item.availability == DdcAvailability::TemporarilyUnavailable; }),
+            L"后端不可用时应明确报告暂时失败并仅回退到稳定 ID/VCP 缓存");
+        native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
+
+        FakeDdcBackend fallback; fallback.key = L"control_my_monitor";
+        config.displays[1].backend = fallback.key;
+        SetThreeValues(fallback, L"path-monitor-1", 21, 22, 23);
+        native.reads.clear(); fallback.reads.clear();
+        auto mixed = FakeService(native, &fallback).Read(config, {}, cancellation.Begin());
+        Check(!native.reads.empty() && !fallback.reads.empty() && config.displays[1].brightnessValue == 21,
+            L"每台显示器应选择独立后端，ControlMyMonitor 回退不得改变其他显示器语义");
+
+        auto reordered = config;
+        std::swap(reordered.displays[0], reordered.displays[1]);
+        native.reads.clear(); fallback.reads.clear();
+        FakeService(native, &fallback).Read(reordered, { firstId }, cancellation.Begin());
+        Check(!native.reads.empty() && fallback.reads.empty() && native.reads.front().first == L"monitor-0",
+            L"显示器枚举重排后仍须按稳定逻辑 ID 关联后端监视器 ID");
+
+        config.displays[1].backend = L"native_ddc";
+        native.writes.clear(); native.writeFailures = { { L"monitor-1", DdcVcpCode::Brightness } };
+        auto oldSecond = config.displays[1].brightnessValue;
+        auto linked = service.Write(config, firstId, DdcVcpCode::Brightness, 42, true, cancellation.Begin());
+        Check(!linked.success && native.writes.size() == 2 && config.displays[0].brightnessValue == 42
+            && config.displays[1].brightnessValue == oldSecond,
+            L"显式联动模式的部分失败不得阻止成功显示器，也不得污染失败显示器缓存");
+
+        native.reads.clear(); native.writes.clear();
+        config.displayConfigurationSafeMode = true;
+        auto safeRead = service.Read(config, {}, cancellation.Begin());
+        auto safeWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 10, true, cancellation.Begin());
+        Check(safeRead.canceled && safeWrite.canceled && native.reads.empty() && native.writes.empty(),
+            L"配置安全状态下所有 DDC 调用计数必须为零");
+        config.displayConfigurationSafeMode = false;
+
+        auto canceledToken = cancellation.Begin(); cancellation.Cancel();
+        service.Read(config, {}, canceledToken); service.Write(config, firstId, DdcVcpCode::Brightness, 11, false, canceledToken);
+        Check(native.reads.empty() && native.writes.empty(), L"调用前取消必须阻断读取与写入");
+
+        auto oldBrightness = config.displays[0].brightnessValue;
+        native.onRead = [&] { cancellation.Cancel(); };
+        auto lateRead = service.Read(config, { firstId }, cancellation.Begin());
+        Check(lateRead.canceled && config.displays[0].brightnessValue == oldBrightness,
+            L"读取完成后的迟到取消必须阻断缓存提交");
+        native.onRead = {};
+        native.writeFailures.clear();
+        native.onWrite = [&] { cancellation.Cancel(); };
+        auto lateWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 77, false, cancellation.Begin());
+        Check(lateWrite.canceled && config.displays[0].brightnessValue == oldBrightness,
+            L"写入完成后的迟到取消必须阻断缓存提交");
+        native.onWrite = {};
+
+        bool allowed = false;
+        native.reads.clear(); native.writes.clear();
+        auto gated = FakeService(native, nullptr, [&] { return allowed; });
+        gated.Read(config, {}, cancellation.Begin()); gated.Write(config, firstId, DdcVcpCode::Brightness, 12, true, cancellation.Begin());
+        Check(native.reads.empty() && native.writes.empty(), L"运行时安全门关闭时所有 DDC 调用计数必须为零");
+    }
 }
 
 int wmain()
@@ -372,7 +553,9 @@ int wmain()
         TestNormalV3SaveFailureSafety(root);
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
+        TestDdcControls();
         if (!failures) std::wcout << L"DS-004 passed C-001 through C-015 local-model scenarios\n";
+        if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
         failures += RunStateMachineVectorTests();
     }
     catch (winrt::hresult_error const& error)
