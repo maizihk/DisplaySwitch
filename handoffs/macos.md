@@ -6,7 +6,7 @@
 - 功能：DS-004 / macOS 手动入口与关于页面收尾（M-004C）
 - 分支：`codex/macos-ds-004-final-ui-about`
 - 基线：`7703bab10eb432f9f276e35d74d3a896a556d21a`
-- 当前已验证实现提交：待提交
+- 当前已验证实现提交：`dc0c302a101d00ba7ef7dcc543e5a5b911efac91`
 - PR：待创建
 
 ## 完成内容
