@@ -144,6 +144,12 @@ private final class LockedFirstError: @unchecked Sendable {
     }
 }
 
+private struct ConfigurationSafetyBlockedError: LocalizedError {
+    var errorDescription: String? {
+        "显示器配置需要用户检查，本次硬件操作已取消。"
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HandoffClock, HandoffScheduler, HandoffEventIDSource, HandoffActionSink {
     private lazy var statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var instanceLockFD: Int32 = -1
@@ -152,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private let ddcController = DDCController()
     private let usbMonitor = USBMonitor()
     private let peerTransport = PeerTransport()
+    private let configurationSafetyGate = ConfigurationSafetyGate()
     private var pendingUSBSwitch: DispatchWorkItem?
     private var pendingSchedulerItems: [String: DispatchWorkItem] = [:]
     private lazy var handoffStateMachine = HandoffStateMachine(
@@ -172,6 +179,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let controller = SettingsWindowController()
         controller.onSave = { [weak self] in
             self?.reloadSettings()
+        }
+        controller.onConfigurationSaveFailure = { [weak self] error in
+            self?.enterConfigurationSafetyState(error)
         }
         controller.onImmediateChange = { [weak self] in
             self?.linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
@@ -221,9 +231,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ownsPrimaryInstance else { return }
-        configurations = Dictionary(uniqueKeysWithValues: AppPreferences.displayConfigurations.map {
+        let loadResult = AppPreferences.loadDisplayConfigurations()
+        configurationSafetyGate.apply(loadResult)
+        configurations = Dictionary(uniqueKeysWithValues: loadResult.configurations.map {
             ($0.index, $0)
         })
+        ddcController.updateConfigurations(loadResult.configurations)
 
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "显示器控制")
@@ -252,6 +265,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         menu.addItem(quitItem)
         statusItem.menu = menu
         rebuildDisplayMenuItems()
+        updateConfigurationSafetyUI()
         restoreCachedValues()
 
         usbMonitor.onPresenceChanged = { [weak self] isPresent in
@@ -285,6 +299,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         displayIDs: [Int]? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
+        guard configurationSafetyGate.allows(.ddc) else {
+            completion?(false)
+            return
+        }
         let targetDisplayIDs = displayIDs ?? configurations.keys.sorted()
         guard !targetDisplayIDs.isEmpty else {
             completion?(false)
@@ -303,8 +321,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             for displayID in targetDisplayIDs {
                 guard let configuration = currentConfigurations[displayID] else { continue }
                 group.enter()
-                DispatchQueue.global(qos: .userInitiated).async {
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                     defer { group.leave() }
+                    guard self?.configurationSafetyGate.allows(.ddc) == true else {
+                        firstError.record(ConfigurationSafetyBlockedError())
+                        return
+                    }
                     var succeeded = false
                     var displayError: Error?
                     for attempt in 0..<2 {
@@ -358,6 +380,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func detectDisplays(showFailure: Bool) {
+        guard configurationSafetyGate.allows(.ddc) else {
+            if showFailure, case .requiresUserReview(let error) = configurationSafetyGate.state {
+                showError(title: "配置安全模式已启用", error: error)
+            }
+            return
+        }
         detectItem.isEnabled = false
         detectItem.title = "正在检测…"
         let ddcController = ddcController
@@ -371,18 +399,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    let merged = DisplayConfigurationStore.merge(
-                        detected: detectedDisplays,
-                        existing: existing
-                    )
-                    self.configurations = Dictionary(uniqueKeysWithValues: merged.map {
-                        ($0.index, $0)
-                    })
-                    ddcController.updateConfigurations(merged)
-                    self.rebuildDisplayMenuItems()
-                    self.restoreCachedValues()
-                    self.finishDetection()
-                    self.refreshValues(force: true)
+                    guard self.configurationSafetyGate.allows(.ddc) else {
+                        self.finishDetection()
+                        return
+                    }
+                    do {
+                        let merged = try DisplayConfigurationStore.merge(
+                            detected: detectedDisplays,
+                            existing: existing
+                        )
+                        self.configurations = Dictionary(uniqueKeysWithValues: merged.map {
+                            ($0.index, $0)
+                        })
+                        ddcController.updateConfigurations(merged)
+                        self.rebuildDisplayMenuItems()
+                        self.restoreCachedValues()
+                        self.finishDetection()
+                        self.refreshValues(force: true)
+                    } catch let error as DisplayConfigurationStoreError {
+                        self.finishDetection()
+                        self.enterConfigurationSafetyState(error)
+                        if showFailure {
+                            self.showError(title: "显示器配置保存失败", error: error)
+                        }
+                    } catch {
+                        self.finishDetection()
+                        self.enterConfigurationSafetyState(.writeFailed)
+                        if showFailure {
+                            self.showError(title: "显示器配置保存失败", error: error)
+                        }
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -402,6 +448,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func refreshValues(force: Bool) {
+        guard configurationSafetyGate.allows(.ddc) else { return }
         guard !isRefreshing else { return }
         guard force || Date().timeIntervalSince(lastRefresh) > 3 else { return }
         isRefreshing = true
@@ -409,6 +456,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let ddcController = ddcController
 
         workerQueue.async { [weak self] in
+            guard self?.configurationSafetyGate.allows(.ddc) == true else {
+                DispatchQueue.main.async { self?.isRefreshing = false }
+                return
+            }
             var readings: [Int: [DisplayControl: (current: Int, maximum: Int)]] = [:]
 
             for displayID in currentConfigurations.keys.sorted() {
@@ -420,6 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 }
 
                 for control in DisplayControl.allCases {
+                    guard self?.configurationSafetyGate.allows(.ddc) == true else { break }
                     guard let reading = ddcController.read(
                         selector: configuration.selector,
                         command: control.ddcCommand
@@ -461,6 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func setControl(_ control: DisplayControl, value: Int, fromDisplay displayID: Int) {
+        guard configurationSafetyGate.allows(.ddc) else { return }
         let targetDisplays = linkedItem.state == .on ? configurations.keys.sorted() : [displayID]
         let currentConfigurations = configurations
         let ddcController = ddcController
@@ -472,6 +525,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         workerQueue.async { [weak self] in
             do {
                 for targetID in targetDisplays {
+                    guard self?.configurationSafetyGate.allows(.ddc) == true else {
+                        throw ConfigurationSafetyBlockedError()
+                    }
                     guard let configuration = currentConfigurations[targetID] else { continue }
                     try ddcController.write(
                         selector: configuration.selector,
@@ -564,6 +620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func configureUSBMonitor() {
+        usbMonitor.stop()
+        guard configurationSafetyGate.allows(.usb) else { return }
         let trigger = AppPreferences.usbAutomationEnabled ? AppPreferences.usbTriggerDevice : nil
         usbMonitor.start(triggerDevice: trigger)
     }
@@ -575,9 +633,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         pendingSchedulerItems.removeAll()
 
+        let networkAllowed = configurationSafetyGate.allows(.network)
+        let usbAllowed = configurationSafetyGate.allows(.usb)
         handoffStateMachine.configure(
-            coordinationEnabled: AppPreferences.peerCoordinationEnabled,
-            usbAutomationEnabled: AppPreferences.usbAutomationEnabled,
+            coordinationEnabled: networkAllowed && AppPreferences.peerCoordinationEnabled,
+            usbAutomationEnabled: usbAllowed && AppPreferences.usbAutomationEnabled,
             usbPresent: false,
             peerReachable: false,
             peerLastSeenAtMs: nil,
@@ -588,21 +648,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             pairingCode: AppPreferences.pairingCode
         )
         handoffStateMachine.setPairingCode(AppPreferences.pairingCode)
-        handoffStateMachine.setUsbAutomationEnabled(AppPreferences.usbAutomationEnabled)
-        handoffStateMachine.setCoordinationEnabled(AppPreferences.peerCoordinationEnabled)
+        handoffStateMachine.setUsbAutomationEnabled(
+            usbAllowed && AppPreferences.usbAutomationEnabled
+        )
+        handoffStateMachine.setCoordinationEnabled(
+            networkAllowed && AppPreferences.peerCoordinationEnabled
+        )
         refreshPeerConnectionStatus()
-        if AppPreferences.peerCoordinationEnabled {
+        if networkAllowed && AppPreferences.peerCoordinationEnabled {
             peerTransport.start(port: AppPreferences.peerPort)
         }
     }
 
     private func startUSBLearning() {
+        guard configurationSafetyGate.allows(.usb) else { return }
         usbMonitor.beginLearning { [weak self] devices in
             self?.settingsWindowController.presentDetectedUSBDevices(devices)
         }
     }
 
     private func handleUSBPresenceChange(_ isPresent: Bool) {
+        guard configurationSafetyGate.allows(.usb) else { return }
         if AppPreferences.peerCoordinationEnabled {
             handoffStateMachine.handleUSBPresenceChanged(isPresent)
             return
@@ -639,6 +705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         eventID: String,
         wakeSucceeded: Bool? = nil
     ) {
+        guard configurationSafetyGate.allows(.network) else { return }
         let message = makePeerMessage(type: type, eventID: eventID, wakeSucceeded: wakeSucceeded)
         peerTransport.send(message, host: AppPreferences.peerHost, port: AppPreferences.peerPort)
     }
@@ -671,6 +738,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func wakeMacDisplay() -> Bool {
+        guard configurationSafetyGate.allows(.wake) else { return false }
         var assertionID: IOPMAssertionID = 0
         let result = IOPMAssertionDeclareUserActivity(
             "DisplaySwitcher handover" as CFString,
@@ -681,6 +749,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func switchInactiveDisplaysToMac() {
+        guard configurationSafetyGate.allows(.ddc) else { return }
         let activeUUIDs = Set(NSScreen.screens.compactMap { screen -> String? in
             guard
                 let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
@@ -714,6 +783,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     @objc private func showSettings() {
         settingsWindowHasBeenShown = true
         settingsWindowController.show()
+        if case .requiresUserReview(let error) = configurationSafetyGate.state {
+            settingsWindowController.presentConfigurationSafetyWarning(error)
+        }
         let connected = handoffStateMachine.snapshot().peerReachable
         settingsWindowController.updatePeerConnectionStatus(
             AppPreferences.peerCoordinationEnabled
@@ -724,13 +796,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func reloadSettings() {
-        let values = AppPreferences.displayConfigurations
+        let result = AppPreferences.loadDisplayConfigurations()
+        configurationSafetyGate.apply(result)
+        let values = result.configurations
         configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
         ddcController.updateConfigurations(values)
         rebuildDisplayMenuItems()
         linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
         configureUSBMonitor()
         configurePeerTransport()
+        updateConfigurationSafetyUI()
         lastRefresh = .distantPast
         restoreCachedValues()
         refreshValues(force: true)
@@ -791,10 +866,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func sendMessage(type: PeerMessageType, eventID: String, wakeSucceeded: Bool?) {
+        guard configurationSafetyGate.allows(.network) else { return }
         sendPeerMessage(type: type, eventID: eventID, wakeSucceeded: wakeSucceeded)
     }
 
     func sendBurst(type: PeerMessageType, count: Int, eventID: String, wakeSucceeded: Bool?) {
+        guard configurationSafetyGate.allows(.network) else { return }
         for attempt in 0..<count {
             DispatchQueue.main.asyncAfter(deadline: .now() + (Double(attempt) * 0.12)) { [weak self] in
                 self?.sendPeerMessage(type: type, eventID: eventID, wakeSucceeded: wakeSucceeded)
@@ -803,11 +880,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func requestWake(eventID: String) {
+        guard configurationSafetyGate.allows(.wake) else { return }
         let wakeSucceeded = wakeMacDisplay()
         handoffStateMachine.handleWakeCompleted(eventID: eventID, success: wakeSucceeded)
     }
 
     func requestSwitch(eventID: String) {
+        guard configurationSafetyGate.allows(.ddc) else { return }
         switchInputs(toMac: false) { [weak self] success in
             self?.handoffStateMachine.handleSwitchCompleted(eventID: eventID, success: success)
         }
@@ -828,6 +907,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 : "协同未启用",
             connected: snapshot.peerReachable
         )
+    }
+
+    private func enterConfigurationSafetyState(_ error: DisplayConfigurationStoreError) {
+        configurationSafetyGate.requireUserReview(error)
+        pendingUSBSwitch?.cancel()
+        pendingUSBSwitch = nil
+        usbMonitor.stop()
+        peerTransport.stop()
+        for (_, item) in pendingSchedulerItems {
+            item.cancel()
+        }
+        pendingSchedulerItems.removeAll()
+        handoffStateMachine.configure(
+            coordinationEnabled: false,
+            usbAutomationEnabled: false,
+            usbPresent: false,
+            peerReachable: false,
+            peerLastSeenAtMs: nil,
+            incomingEventID: nil,
+            outgoingEventID: nil,
+            newestIncomingRequestTimestamp: nil,
+            seenMessages: [],
+            pairingCode: AppPreferences.pairingCode
+        )
+        updateConfigurationSafetyUI()
+        refreshPeerConnectionStatus()
+    }
+
+    private func updateConfigurationSafetyUI() {
+        let enabled = configurationSafetyGate.state == .ready
+        switchToMacItem.isEnabled = enabled
+        switchItem.isEnabled = enabled
+        detectItem.isEnabled = enabled
     }
 
     private func acquireSingleInstanceLock() -> Bool {

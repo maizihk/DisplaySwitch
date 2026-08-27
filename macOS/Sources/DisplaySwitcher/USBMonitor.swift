@@ -52,6 +52,19 @@ final class USBMonitor {
         }
     }
 
+    func stop() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.timer?.cancel()
+            self.timer = nil
+            self.triggerDevice = nil
+            self.lastPresence = nil
+            self.previousDevices = nil
+            self.learningHandler = nil
+            self.learningBaseline = nil
+        }
+    }
+
     func beginLearning(completion: @escaping ([USBDevice]) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
