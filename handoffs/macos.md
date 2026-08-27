@@ -6,6 +6,8 @@
 - 分支：`codex/macos-ds-001-state-machine`
 - 清单：DS-001 / M-004
 - 基线：`9624ffb9cdf1d39809a66cf11592c2dab43e577d`
+- PR：[#4 DS-001 macOS: Extract state machine and add vector tests](https://github.com/maizihk/DisplaySwitch/pull/4)
+- 最终实现提交：`5672c1b12bedff9bf40f85feea306bc5f90c4031`
 
 ## 完成内容
 
@@ -32,14 +34,19 @@
   - 网络发送不再计入 `usbActions` 硬件副作用。
   - 首次合法消息按 `acceptMessage`、`setPeerReachable` 顺序记录；重复消息只刷新在线时间，不重复记录在线动作。
   - 请求先到、USB 后到时，等待 USB 到达唤醒完成后依次发送 `usb_present` 和 `usb_attached_and_awake`。
+- 最终安全审计修复：
+  - `handleIncomingMessage` 在任何消息校验、在线状态或重放记录变更前检查协同开关、USB 自动化开关及本机配对码至少 8 位。
+  - 短或空本机配对码即使与报文完全相同也会静默拒绝，不刷新在线状态、不回复且不触发硬件动作。
+  - 协同关闭或 USB 自动化关闭时，合法 `handover_request` 和 `status_probe` 均保持零网络和硬件副作用。
+  - 清理 USB 返回分支未使用的 `outgoingID` 变量；最终 CI 日志未再出现对应警告。
 
 ## 自动验证
 
-- GitHub Actions `build-and-test` 在实现提交 `35d9e93e62524614e319f48c68b6e70788b1366a` 上完整通过：
-  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33050070960`
+- GitHub Actions `build-and-test` 在最终实现提交 `5672c1b12bedff9bf40f85feea306bc5f90c4031` 上完整通过：
+  - Run：`https://github.com/maizihk/DisplaySwitch/actions/runs/33050989250`
   - Xcode 27.0 / Swift 6.4 / macOS 27 SDK。
   - Debug：`xcodebuild ... -configuration Debug ... build`，`BUILD SUCCEEDED`。
-  - 全部 XCTest：15 个测试方法、0 失败；其中 `HandoffMessageVectorTests` 对向量数量断言为 17 并全部通过，`HandoffStateMachineVectorTests` 对向量数量断言为 15 并全部通过。
+  - 全部 XCTest：18 个测试方法、0 失败；其中 17 条消息向量和 15 条状态机向量全部通过，新增的短/空配对码、协同关闭和 USB 自动化关闭三项无副作用测试全部通过。
   - Release 与打包：`./macOS/scripts/build-app.sh`，`BUILD SUCCEEDED`，生成 `macOS/outputs/DisplaySwitcher.app` 和 `DisplaySwitcher-macOS-arm64.zip`。
   - 签名：构建脚本内严格验证通过，CI 独立执行 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 的 `Verify artifacts` 步骤通过。
 - 当前本机 Codex 执行环境仍只暴露 `/Library/Developer/CommandLineTools`，因此未把此前失败的本机构建误报为通过；以上构建、测试、打包和签名结论来自 PR #4 的真实 GitHub Actions macOS runner。
