@@ -365,7 +365,7 @@ private final class HandoffStateMachineTestSink: HandoffActionSink {
 
 private func actionToTimedAction(_ action: HandoffAction, atMs: Int) -> TimedAction {
     switch action {
-    case .acceptMessage(let type, let eventID, _):
+    case .acceptMessage(let type, let eventID):
         return TimedAction(atMs: atMs, kind: "acceptMessage", type: type.rawValue, eventID: eventID, reason: nil, value: nil, count: nil, wakeSucceeded: nil)
     case .rejectMessage(let type, let eventID, let reason):
         return TimedAction(atMs: atMs, kind: "rejectMessage", type: type.rawValue, eventID: eventID, reason: reason, value: nil, count: nil, wakeSucceeded: nil)
