@@ -44,17 +44,17 @@
 - [x] 覆盖 USB 在等待时返回、请求与 USB 到达顺序互换、确认丢包、对端离线和 `committed` 收尾。
 - [x] 覆盖重复、过期、乱序、错误 source/target、错误配对码和错误 version。
 - [x] `status_probe` / `status_response` 使用相同 `eventID`，且状态探测绝不触发唤醒、USB 或 DDC。
-- [x] 自动测试只消费 `contracts/protocol-v1/` 的 17 组消息验证向量和 15 组状态机向量，不调用真实 DDC、USB 切换或系统睡眠/唤醒。
+- [x] 自动测试只消费 `contracts/protocol-v1/` 的 17 组消息验证向量和 16 组状态机向量，不调用真实 DDC、USB 切换或系统睡眠/唤醒。
 
 验收：测试不依赖局域网和真实硬件，可重复运行且结果稳定。
 
 ### W-004 Windows CI
 
-- [ ] 新增 GitHub Actions Windows 工作流，至少执行依赖恢复、x64 Release 构建和自动测试。
-- [ ] 验证 `Windows/build-windows.ps1` 生成完整 `Windows/dist/`。
-- [ ] 检查入口、runtime 文件和体积限制。
-- [ ] CI 不包含签名私钥、配对码、个人路径或硬件 ID。
-- [ ] 构建产物可作为 workflow artifact 下载，但不能提交到 Git。
+- [x] 新增 GitHub Actions Windows 工作流，至少执行依赖恢复、x64 Release 构建和自动测试。
+- [x] 验证 `Windows/build-windows.ps1` 生成完整 `Windows/dist/`。
+- [x] 检查入口、runtime 文件和体积限制。
+- [x] CI 不包含签名私钥、配对码、个人路径或硬件 ID。
+- [x] 构建产物可作为 workflow artifact 下载，但不能提交到 Git。
 
 验收：全新 GitHub Actions runner 可以从空缓存完成构建和测试。
 
@@ -130,3 +130,5 @@
 | 2026-08-27 | 建立 Windows 跨设备开发清单 | 完成 | 36aa59b | 仅文档，不修改 Windows 代码 |
 | 2026-08-27 | W-001 清除个人硬件默认值 | 代码完成；实机验收待确认 | 980befd | x64 Release 构建通过；dist 1.24 MiB；源码与产物个人默认值扫描通过；未启动新版或执行硬件动作 |
 | 2026-08-27 | W-002 动态多显示器模型 | 代码已完成；设置页和高 DPI 实机验证待确认 | 46ecfd0 | 0/1/2/3/4 台、UUID/枚举顺序、旧配置迁移、增删重连和单台失败隔离测试通过；未启动新版或执行硬件动作；PR #2 |
+| 2026-08-27 | W-003 交接状态机可测试化 | 完成 | c4acaf8 | 17 组消息向量和 16 组状态机向量通过；x64 Release 构建通过；未执行真实硬件动作；PR #5 |
+| 2026-08-27 | W-004 Windows CI | 完成 | 4ffd077 | `windows-2025-vs2026` 全新托管 runner 构建、17+16 向量测试、dist 结构与小于 20 MiB 检查、artifact 上传均通过；PR #9 / run #1 |

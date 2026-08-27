@@ -3,40 +3,44 @@
 ## 当前任务
 
 - 日期：2026-08-27
-- 分支：`codex/windows-ds-001-state-machine`
-- 共享基线：`8a72c2dede6d6520d8dcfc259278d6bf95e5cb05`
-- 清单：W-003 交接状态机可测试化 / DS-001 Windows
-- 初始实现提交：`beac261e85a731a21e4722351dd15b04172c2cad`
-- 最新实现提交：`323e3f6707f3f4a6612391aa7fda992b3bb337eb`
-- 最终验证提交：`c4acaf8d78a31f2e61d5be267a9dd39119cae1a8`
-- PR：[#5](https://github.com/maizihk/DisplaySwitch/pull/5)
+- 分支：`codex/windows-w004-ci`
+- 共享基线：`925d9634db2e7176df9dd7678ae7468e8f2ab1e2`
+- 清单：W-004 Windows CI / DS-002
+- 最终功能提交：`4ffd077c44d911c72a5a9db40ea79317b952c4df`
+- PR：[#9](https://github.com/maizihk/DisplaySwitch/pull/9)
+- Windows workflow run：[#1](https://github.com/maizihk/DisplaySwitch/actions/runs/33056123299)
 
 ## 完成内容
 
-- 从 `Controller` 提取无 WinUI、Winsock、USB 或 DDC 依赖的 `HandoverStateMachine`；Controller 只负责传入时钟/USB/网络事件并执行发送、唤醒和切屏动作。
-- 状态机实现 150 ms USB 防抖、在线对端 4 次请求、600 ms 兜底、离线快速路径、USB 返回取消、6 秒在线窗口，以及重复、乱序和陈旧事件保护。
-- UDP 接收增加严格 JSON 必填字段和类型解析；协议校验覆盖 version、UUID、方向、配对码精确匹配、封闭消息类型和 10 秒时间边界。
-- 重复合法 `status_probe` 在十秒重复窗口内仍以相同 `eventID` 回复 `status_response`，刷新并恢复在线状态，且不产生硬件动作。
-- 保留 W-001 安全默认值、W-002 动态多显示器、无协同时的本机 USB 自动切换，以及现有 WinUI 3、UDP、USB、唤醒和 DDC 适配器。
-- 未修改 `PROTOCOL.md`、`contracts/`、`specs/`、`coordination/`、GitHub Actions 或 macOS 源码。
+- 新增 `.github/workflows/windows.yml`，在 `windows-2025-vs2026` 托管映像上执行 x64 Release 构建、自动测试、绿色版结构/体积检查和 artifact 上传。
+- workflow 支持 pull request、main push 和手动触发；路径限定为 Windows、协议契约及 workflow 自身，并使用并发取消和 45 分钟超时。
+- 权限仅为 `contents: read`，使用 `actions/checkout@v6` 和 `actions/upload-artifact@v6`；未使用项目 secret、签名或任何硬件配置。
+- 未修改 `Windows/build-windows.ps1`、三个工程、Windows 应用运行时代码、共享协议或 macOS 源码。
 
-## 自动验证
+## GitHub 托管 CI 验证
 
-- 原生测试直接读取批准的 `contracts/protocol-v1/message-validation-vectors.json`（17 组）与 `state-machine-vectors.json`（16 组），全部通过；构建日志明确输出两类向量数量。
-- 虚拟时间覆盖 150 ms 防抖/重发、4 次上限、600 ms 兜底和 6 秒在线边界；假动作计数确保状态探测及非法消息没有硬件副作用。
-- 回归测试覆盖首次 probe、6 秒在线窗口过期及十秒重复窗口内再次接收；第二次回复并恢复在线，wake/switch/USB 调用均为 0。
-- `Windows/build-windows.ps1` x64 Release 构建和全部自动测试通过。
-- `Windows/dist/` framework-dependent 绿色版目录为 1.28 MiB，构建产物未进入 Git。
+- runner：`windows-2025-vs2026`，Windows Server 2025，映像版本 `20260818.207.1`，Visual Studio 18.9 / MSBuild 18.9.1。
+- PR #9 的 Windows run #1 从全新 GitHub 托管环境完成 NuGet 恢复、三个原生 C++ 工程的 x64 Release 构建及测试，所有步骤通过。
+- 构建脚本和 workflow 的显式测试步骤均输出：`DS-001 passed 17 message vectors and 16 state-machine vectors`；没有局域网或真实硬件依赖。
+- `Windows/dist/` 结构检查通过：根目录为 `DisplaySwitch.exe`，`runtime/` 包含 `DisplaySwitcher.Windows.exe`、PRI、WinMD、Windows App Runtime bootstrap DLL 和两个 XBF 文件，共 7 个文件、1.30 MiB。
+- artifact：`DisplaySwitcher-Windows-x64-unsigned-framework-dependent`，完整上传 `Windows/dist/`，ZIP 637,904 bytes，保留 7 天；artifact ID `9639820437`。
+- framework-dependent 产物仍要求目标电脑安装 Windows App Runtime 2.4 x64；workflow 不进行签名。
+
+## 本机验证
+
+- `Windows/build-windows.ps1` x64 Release 构建和全部自动测试通过，日志明确显示 17 组消息向量和 16 组状态机向量通过。
+- 本机 `Windows/dist/` 为 1.28 MiB，入口和 6 个 runtime 文件均存在，构建产物未提交到 Git。
+- 本机验证复用已安装的开发环境；GitHub CI 则在全新托管 runner 上恢复依赖和构建，证明构建不依赖本机缓存或个人路径。
 
 ## 尚需验证
 
-- 未启动新版，未执行真实 DDC、USB 交接、显示器睡眠/唤醒或防火墙修改。
-- GitHub 当前只有 macOS check；Windows x64 Release 构建属于本机验证。合并后可在用户另行确认时进行 Windows/macOS 双机状态探测与交接冒烟测试。
+- 未启动应用，也未执行真实 UDP 通信、DDC 输入源切换、USB 交接、显示器睡眠/唤醒或防火墙修改。
+- 未创建签名、Release 或 tag；PR #9 保持未合并，等待协调层评审。
 
-## 对 macOS 端的影响
+## 对其他平台和共享文件的影响
 
-- 无。Windows 消费已批准的 DS-001 公共向量，协议和 macOS 源码均未修改。
+- 无。没有修改 macOS、`PROTOCOL.md`、`contracts/`、`specs/` 或 `coordination/`。
 
 ## 回滚
 
-- 回退本分支 W-003 实现提交即可恢复旧 Controller 流程；本机配置格式与公共协议均未变化。
+- 回退 workflow 提交 `4ffd077c44d911c72a5a9db40ea79317b952c4df` 即可移除 Windows CI；Windows 应用、构建脚本和配置格式均未变化。

@@ -1,0 +1,89 @@
+name: Windows
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Windows/**
+      - contracts/**
+      - PROTOCOL.md
+      - .github/workflows/windows.yml
+  pull_request:
+    paths:
+      - Windows/**
+      - contracts/**
+      - PROTOCOL.md
+      - .github/workflows/windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-and-package:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          & $vswhere -latest -prerelease -products * -property installationPath
+          & $vswhere -latest -prerelease -products * -property installationVersion
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Directory |
+            Select-Object -ExpandProperty Name
+
+      - name: Build, test, and package x64 Release
+        shell: pwsh
+        run: ./Windows/build-windows.ps1
+
+      - name: Run Windows automatic tests explicitly
+        shell: pwsh
+        run: ./Windows/DisplaySwitcher.Tests/bin/x64/Release/DisplaySwitcher.Tests.exe
+
+      - name: Verify framework-dependent distribution
+        shell: pwsh
+        run: |
+          $requiredFiles = @(
+            "Windows/dist/DisplaySwitch.exe",
+            "Windows/dist/runtime/DisplaySwitcher.Windows.exe",
+            "Windows/dist/runtime/DisplaySwitcher.Windows.pri",
+            "Windows/dist/runtime/DisplaySwitcher.Native.winmd",
+            "Windows/dist/runtime/Microsoft.WindowsAppRuntime.Bootstrap.dll",
+            "Windows/dist/runtime/App.xbf",
+            "Windows/dist/runtime/SettingsWindow.xbf"
+          )
+          if (-not (Test-Path -LiteralPath "Windows/dist/runtime" -PathType Container)) {
+            throw "Missing Windows/dist/runtime directory"
+          }
+          foreach ($file in $requiredFiles) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Missing required distribution file: $file"
+            }
+          }
+          $files = Get-ChildItem -LiteralPath "Windows/dist" -File -Recurse
+          $bytes = ($files | Measure-Object Length -Sum).Sum
+          if ($bytes -ge 20MB) {
+            throw ("Windows/dist is {0:N2} MiB; expected less than 20 MiB" -f ($bytes / 1MB))
+          }
+          $files | ForEach-Object {
+            $relative = [IO.Path]::GetRelativePath((Resolve-Path "Windows/dist"), $_.FullName)
+            "{0} ({1} bytes)" -f $relative, $_.Length
+          }
+          "Verified Windows x64 unsigned framework-dependent artifact: {0:N2} MiB" -f ($bytes / 1MB)
+
+      - name: Upload Windows x64 unsigned framework-dependent artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: DisplaySwitcher-Windows-x64-unsigned-framework-dependent
+          path: Windows/dist/
+          if-no-files-found: error
+          retention-days: 7
