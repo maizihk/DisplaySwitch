@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：DRAFT
+- 状态：PROTOCOL_REVIEW
 - 功能编号：DS-001
 - 任务类型：cross-platform
 - 基线：`0fed95d4df54536889e1ec6b5a2c54db254c64c5`
