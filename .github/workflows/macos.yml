@@ -1,0 +1,67 @@
+name: macOS
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # The settings UI currently uses an API introduced in the macOS 27 SDK.
+    # GitHub provides this Xcode 27 image as a public-preview runner.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          xcrun --sdk macosx --show-sdk-path
+
+      - name: Build Debug
+        run: |
+          xcodebuild \
+            -project DisplaySwitcher.xcodeproj \
+            -scheme DisplaySwitcher \
+            -configuration Debug \
+            -derivedDataPath .build/xcode-debug \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Run unit tests
+        run: |
+          xcodebuild \
+            -project DisplaySwitcher.xcodeproj \
+            -scheme DisplaySwitcher \
+            -configuration Debug \
+            -derivedDataPath "$RUNNER_TEMP/DisplaySwitcher-xcode-test" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      - name: Build, package, and verify Release
+        run: ./scripts/build-app.sh
+
+      - name: Verify artifacts
+        run: |
+          test -d outputs/DisplaySwitcher.app
+          test -f "outputs/DisplaySwitcher-macOS-$(uname -m).zip"
+          codesign --verify --deep --strict outputs/DisplaySwitcher.app
+
+      - name: Upload unsigned test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: DisplaySwitcher-macOS-${{ runner.arch }}-unsigned
+          path: outputs/DisplaySwitcher-macOS-*.zip
+          if-no-files-found: error

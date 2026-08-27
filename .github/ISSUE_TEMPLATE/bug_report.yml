@@ -1,0 +1,66 @@
+name: Bug report
+description: Report reproducible DisplaySwitch behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove pairing codes, IP addresses, user names, local paths, serial numbers, and other private data before submitting.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Mac/Windows coordination
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DisplaySwitch version
+      placeholder: "For example: 2.1.0 (19)"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and architecture
+      placeholder: "For example: macOS 26 arm64 or Windows 11 x64"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Do not perform a real DDC or USB handover solely to fill out this form.
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Relevant hardware path
+      description: Monitor model, GPU, cable, adapter, dock, or USB switch. Do not include serial numbers.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted diagnostics
+      description: Paste only the minimal, reviewed, redacted output.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed pairing codes, credentials, IP addresses, personal paths, serial numbers, and unrelated logs.
+          required: true

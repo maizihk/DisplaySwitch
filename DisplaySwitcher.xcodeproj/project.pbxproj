@@ -48,7 +48,6 @@
 		A2000000000000000000000E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000F /* DisplaySwitcher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DisplaySwitcher.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000010 /* DisplaySwitcherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DisplaySwitcherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A20000000000000000000011 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
 		A20000000000000000000012 /* build-app.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "build-app.sh"; sourceTree = "<group>"; };
 		A20000000000000000000013 /* DDCController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDCController.swift; sourceTree = "<group>"; };
 		A20000000000000000000014 /* NativeDDC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDDC.swift; sourceTree = "<group>"; };
@@ -88,7 +87,6 @@
 				A70000000000000000000004 /* Tests */,
 				A70000000000000000000005 /* Frameworks */,
 				A70000000000000000000006 /* Scripts */,
-				A20000000000000000000011 /* Package.swift */,
 				A70000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";

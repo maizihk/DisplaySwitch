@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a generally useful improvement
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the user problem before proposing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Cross-platform protocol
+        - Documentation or community
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Hardware and security impact
+      description: Note any DDC, USB, wake, network, authentication, or migration implications.

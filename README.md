@@ -129,7 +129,7 @@ outputs/DisplaySwitcher.app
 outputs/DisplaySwitcher-macOS-arm64.zip
 ```
 
-`scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到输出目录后做本地临时签名和严格验证。ZIP 还会在非 File Provider 临时目录中解压并再次验签，是跨机器分发的推荐产物。`Package.swift` 仅作为迁移期参考，不再是正式构建入口。
+`scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到输出目录后做本地临时签名和严格验证。ZIP 还会在非 File Provider 临时目录中解压并再次验签，是跨机器分发的推荐产物。项目只以 `DisplaySwitcher.xcodeproj` 作为 macOS 正式构建入口，不再保留容易与实际 Framework、桥接头和资源配置漂移的 Swift Package 清单。
 
 如果 Xcode Beta 不在系统当前开发者目录，可在单次构建时指定：
 
