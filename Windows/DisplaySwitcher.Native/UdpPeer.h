@@ -1,12 +1,18 @@
 #pragma once
 #include "ProtocolTypes.h"
+#include "UnboundProbeRouter.h"
 
 namespace DisplaySwitcher::Native
 {
     class UdpPeer
     {
     public:
-        using MessageCallback = std::function<void(PeerMessage const&)>;
+        struct Datagram
+        {
+            std::string data;
+            DatagramSource source;
+        };
+        using MessageCallback = std::function<void(Datagram const&)>;
         using ErrorCallback = std::function<void(std::wstring const&)>;
 
         UdpPeer(MessageCallback messageCallback, ErrorCallback errorCallback);
@@ -16,7 +22,10 @@ namespace DisplaySwitcher::Native
 
         void Start(int port);
         void Stop();
+        bool IsRunning() const;
         void Send(PeerMessage const& message, std::wstring const& host, int port);
+        void SendRaw(std::string const& data, std::wstring const& host, int port, bool trace = true);
+        static bool SourceMatches(DatagramSource const& source, std::wstring const& configuredHost, int configuredPort);
         static double TimestampNow();
 
     private:
@@ -24,7 +33,7 @@ namespace DisplaySwitcher::Native
         void Report(std::wstring const& message) const;
         MessageCallback messageCallback_;
         ErrorCallback errorCallback_;
-        std::mutex mutex_;
+        mutable std::mutex mutex_;
         SOCKET socket_{ INVALID_SOCKET };
         std::jthread receiveThread_;
         bool winsockStarted_{};

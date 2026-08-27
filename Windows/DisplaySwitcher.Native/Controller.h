@@ -1,7 +1,10 @@
 #pragma once
 #include "AppConfig.h"
 #include "HandoverStateMachine.h"
+#include "ProfileDetection.h"
 #include "UdpPeer.h"
+#include "V2Protocol.h"
+#include "V2StateMachine.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -28,13 +31,23 @@ namespace DisplaySwitcher::Native
         bool AllowsSideEffects(uint64_t generation) const noexcept;
         void OnUsbPresenceChanged(bool present);
         void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
+        void ApplyV2Actions(std::vector<V2Action> actions);
         void AdvanceStateMachine();
         void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
-        void SwitchToProfile(std::wstring const& profileId);
+        void SwitchToProfile(std::wstring const& profileId, std::optional<std::wstring> eventId = std::nullopt);
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
+        void HandleDatagram(UdpPeer::Datagram const& datagram);
+        bool HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source);
+        void BeginProfileDetection(AppConfig const& workingConfig, std::wstring const& profileId,
+            std::function<void(ProfileDetectionResult const&)> completed);
+        void AdvanceProfileDetection(uint64_t generation);
+        void ApplyProfileDetectionAction(ProfileDetectionAction action);
+        void CompleteProfileDetection(ProfileDetectionResult const& result);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
+        void SendV2(V2Action const& action);
+        void SendV2Probe(CollaborationProfile const& profile);
         void SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void ManualSwitch(std::wstring const& profileId);
         void ShowSettings();
@@ -51,6 +64,25 @@ namespace DisplaySwitcher::Native
         std::unique_ptr<UdpPeer> peer_;
         std::unique_ptr<UsbWatcher> usbWatcher_;
         std::unique_ptr<HandoverStateMachine> stateMachine_;
+        std::unique_ptr<V2StateMachine> v2StateMachine_;
+        V2ReplayCache v2ReplayCache_;
+        std::map<std::wstring, V2Message> v2OutgoingMessages_;
+        std::map<std::wstring, int64_t> v2PeerLastSeenMs_;
+        PendingStatusProbe v1HealthProbe_;
+        std::map<std::wstring, PendingStatusProbe> v2HealthProbes_;
+        struct PendingProfileDetection
+        {
+            ProfileDetectionSession session;
+            AppConfig workingConfig;
+            CollaborationProfile profile;
+            std::function<void(ProfileDetectionResult const&)> completed;
+            uint64_t generation{};
+            bool startedPeer{};
+        };
+        std::optional<PendingProfileDetection> profileDetection_;
+        V2ReplayCache profileDetectionReplayCache_;
+        std::atomic<bool> profileDetectionActive_{};
+        uint64_t profileDetectionGeneration_{};
         winrt::Microsoft::UI::Xaml::Window settingsWindow_{ nullptr };
         std::mutex stateMutex_;
         std::wstring peerConnectionStatus_{ L"协同未启用" };

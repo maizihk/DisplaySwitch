@@ -61,7 +61,7 @@
       <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
       <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
       <GenerateDebugInformation Condition="'$(Configuration)'=='Release'">false</GenerateDebugInformation>
-      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;Gdi32.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;Gdi32.lib;Version.lib;Bcrypt.lib;Normaliz.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -79,10 +79,14 @@
     <ClInclude Include="DisplayModel.h" />
     <ClInclude Include="HandoverStateMachine.h" />
     <ClInclude Include="ProtocolMessage.h" />
+    <ClInclude Include="ProfileDetection.h" />
     <ClInclude Include="ProtocolTypes.h" />
+    <ClInclude Include="V2Protocol.h" />
+    <ClInclude Include="V2StateMachine.h" />
     <ClInclude Include="SystemActions.h" />
     <ClInclude Include="TrayIcon.h" />
     <ClInclude Include="UdpPeer.h" />
+    <ClInclude Include="UnboundProbeRouter.h" />
     <ClInclude Include="UsbWatcher.h" />
     <ClInclude Include="UsbLearning.h" />
     <ApplicationDefinition Include="App.xaml" />
@@ -101,9 +105,13 @@
     <ClCompile Include="DisplayModel.cpp" />
     <ClCompile Include="HandoverStateMachine.cpp" />
     <ClCompile Include="ProtocolMessage.cpp" />
+    <ClCompile Include="ProfileDetection.cpp" />
+    <ClCompile Include="V2Protocol.cpp" />
+    <ClCompile Include="V2StateMachine.cpp" />
     <ClCompile Include="SystemActions.cpp" />
     <ClCompile Include="TrayIcon.cpp" />
     <ClCompile Include="UdpPeer.cpp" />
+    <ClCompile Include="UnboundProbeRouter.cpp" />
     <ClCompile Include="UsbWatcher.cpp" />
     <ClCompile Include="UsbLearning.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />

@@ -70,6 +70,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
+            std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
         std::function<void()> beginUsbLearning,
         std::function<void()> endUsbLearning,
         std::function<void()> closed)
@@ -78,6 +80,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         initialized_ = true;
         original_ = config; saved_ = std::move(saved); readDdc_ = std::move(readDdc);
         writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache);
+        detectProfile_ = std::move(detectProfile);
         beginUsbLearning_ = std::move(beginUsbLearning); endUsbLearning_ = std::move(endUsbLearning);
         closed_ = std::move(closed);
         Title(L"常规");
@@ -154,7 +157,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         connectionStatus_ = TextBlock(); connectionStatus_.VerticalAlignment(VerticalAlignment::Center);
         peerStatus.Children().Append(connectionDot_); peerStatus.Children().Append(connectionStatus_);
         SetConnectionStatus(L"协同未启用", false);
-        auto peerHint = TextBlock(); peerHint.Text(L"可保存多个目标配置并同时开启。检测仅检查本机字段和显示器引用，不发送网络消息，也不执行硬件操作。");
+        auto peerHint = TextBlock(); peerHint.Text(L"可保存多个目标配置并同时开启。检测会先尝试 v2，再最多回退一次 v1；只发送状态探测，不执行 USB、蓝牙、唤醒或显示器操作。");
         peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
         auto addProfile = Button(); addProfile.Content(box_value(L"添加配置"));
         addProfile.Click([this](auto const&, auto const&)
@@ -853,27 +856,84 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto config = original_; config.displays = workingDisplays_; config.collaborationProfiles = workingProfiles_;
         auto result = config.InspectProfile(id);
         if (config.displayConfigurationSafeMode) result.problems.push_back(L"配置处于安全状态，需成功保存后解除");
-        auto selection = config.SelectProfileDisplays(id);
-        for (auto const& display : selection.mappedDisplays)
+        auto profile = config.FindCollaborationProfile(id);
+        if (profile && profile->peerProtocolVersion && *profile->peerProtocolVersion != 1 && *profile->peerProtocolVersion != 2)
+            result.problems.push_back(L"协议版本无效");
+        if (!::DisplaySwitcher::Native::IsValidDisplayId(config.localEndpointId) || config.listenPort < 1 || config.listenPort > 65535)
+            result.problems.push_back(L"本机 endpoint 或监听端口无效");
+        if (!result.problems.empty() || !detectProfile_)
         {
-            auto backend = display.backend.empty() ? config.displayControlBackend : display.backend;
-            if (backend == L"native_ddc")
-            {
-                if (display.nativeMonitorId.empty() || !::DisplaySwitcher::Native::FindDdcMonitorById(ddcMonitors_, display.nativeMonitorId))
-                    result.problems.push_back(display.name + L"的原生硬件 DDC/CI 后端当前不可用");
-            }
-            else if (backend == L"control_my_monitor")
-            {
-                if (config.controlMyMonitorPath.empty()) result.problems.push_back(L"未配置 ControlMyMonitor 程序路径");
-                if (display.controlMonitorPath.empty()) result.problems.push_back(display.name + L"缺少 ControlMyMonitor 设备路径");
-            }
-            else result.problems.push_back(display.name + L"未选择显示器控制后端");
+            SetConnectionStatus(L"本机配置不完整", false);
+            std::wstring message = L"本机配置不完整";
+            for (auto const& problem : result.problems) message += L"；" + problem;
+            ShowValidationError(message);
+            return;
         }
-        result.complete = result.problems.empty() && !result.endpointConfirmationRequired;
-        if (result.complete) { validation_.Text(L"本机检查通过；未发送网络消息，未执行 DDC、USB、蓝牙或唤醒操作。"); validation_.Visibility(Visibility::Visible); return; }
-        std::wstring message = L"本机检查未通过：";
-        for (size_t index = 0; index < result.problems.size(); ++index) { if (index) message += L"；"; message += result.problems[index]; }
-        ShowValidationError(message);
+        validation_.Text(L"正在检测；不会执行 USB、蓝牙、唤醒或显示器操作。");
+        validation_.Visibility(Visibility::Visible);
+        SetConnectionStatus(L"正在检测…", false);
+        detectProfile_(config, id, [this, id](auto const& detection) { CompleteProfileDetection(id, detection); });
+    }
+
+    void SettingsWindow::CompleteProfileDetection(std::wstring const& id,
+        ::DisplaySwitcher::Native::ProfileDetectionResult const& result)
+    {
+        using Outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome;
+        if (result.outcome == Outcome::LocalConfigurationIncomplete)
+        {
+            SetConnectionStatus(L"本机配置不完整", false); ShowValidationError(L"本机配置不完整，未发送探测消息。"); return;
+        }
+        if (result.outcome == Outcome::AuthenticationFailed)
+        {
+            SetConnectionStatus(L"认证失败", false); ShowValidationError(L"v2 对端已响应，但认证失败。请检查配对码。"); return;
+        }
+        if (result.outcome == Outcome::NoResponse)
+        {
+            SetConnectionStatus(L"无响应", false); ShowValidationError(L"v2 与一次 v1 状态探测均无响应。"); return;
+        }
+        auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
+        { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
+        if (profile == workingProfiles_.end()) return;
+        if (result.outcome == Outcome::V1Only)
+        {
+            ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*profile, result, false);
+            SetConnectionStatus(L"仅 v1", true);
+            validation_.Text(L"仅 v1；结果尚未保存，未执行任何硬件操作。"); validation_.Visibility(Visibility::Visible);
+            return;
+        }
+        if (result.outcome != Outcome::V2Available) return;
+        if (!result.endpointConfirmationRequired)
+        {
+            ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*profile, result, false);
+            SetConnectionStatus(L"v2 可用", true);
+            validation_.Text(L"v2 可用；结果尚未保存，未执行任何硬件操作。"); validation_.Visibility(Visibility::Visible);
+            return;
+        }
+        auto title = result.endpointChanged ? L"对端 endpoint 已变化" : L"确认首次发现的对端";
+        auto message = result.endpointChanged
+            ? L"检测到的 endpoint 与已保存值不同。只有确认后才会更新当前编辑内容；仍需点击“保存”。\n\n旧值：" + profile->peerEndpointId + L"\n新值：" + result.observedEndpointId
+            : L"检测到新的 endpoint。只有确认后才会加入当前编辑内容；仍需点击“保存”。\n\nEndpoint ID：" + result.observedEndpointId;
+        auto dialog = ContentDialog(); dialog.Title(box_value(title)); dialog.Content(box_value(message));
+        dialog.PrimaryButtonText(L"确认对端"); dialog.CloseButtonText(L"保留原值"); dialog.DefaultButton(ContentDialogButton::Close);
+        dialog.XamlRoot(Content().XamlRoot());
+        auto observed = result.observedEndpointId;
+        dialog.ShowAsync().Completed([this, id, observed, dialog](auto const& operation, auto const& status)
+        {
+            if (status != Windows::Foundation::AsyncStatus::Completed || operation.GetResults() != ContentDialogResult::Primary)
+            {
+                SetConnectionStatus(L"v2 可用，endpoint 未确认", false);
+                validation_.Text(L"未确认 endpoint；原配置保持不变。"); validation_.Visibility(Visibility::Visible); return;
+            }
+            auto target = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
+            { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
+            if (target == workingProfiles_.end()) return;
+            ::DisplaySwitcher::Native::ProfileDetectionResult confirmed;
+            confirmed.outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome::V2Available;
+            confirmed.observedEndpointId = observed; confirmed.endpointConfirmationRequired = true;
+            ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*target, confirmed, true);
+            SetConnectionStatus(L"v2 可用，endpoint 已确认", true);
+            validation_.Text(L"endpoint 已加入当前编辑内容；点击“保存”后才会持久化。"); validation_.Visibility(Visibility::Visible);
+        });
     }
 
     void SettingsWindow::UpdateDisplayBackendVisibility()

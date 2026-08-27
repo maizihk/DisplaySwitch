@@ -75,6 +75,12 @@ namespace DisplaySwitcher::Native
         if (receiveThread_.joinable()) receiveThread_.join();
     }
 
+    bool UdpPeer::IsRunning() const
+    {
+        std::scoped_lock lock(mutex_);
+        return socket_ != INVALID_SOCKET;
+    }
+
     void UdpPeer::Receive(std::stop_token token, SOCKET socket)
     {
         while (!token.stop_requested())
@@ -91,35 +97,43 @@ namespace DisplaySwitcher::Native
                 break;
             }
             char buffer[8192]{};
-            auto received = recvfrom(socket, buffer, static_cast<int>(sizeof(buffer)), 0, nullptr, nullptr);
+            sockaddr_in sender{}; int senderLength = sizeof(sender);
+            auto received = recvfrom(socket, buffer, static_cast<int>(sizeof(buffer)), 0,
+                reinterpret_cast<sockaddr*>(&sender), &senderLength);
             if (received == SOCKET_ERROR)
             {
                 if (!token.stop_requested()) Report(L"接收失败：" + SocketError(WSAGetLastError()));
                 break;
             }
-            PeerMessage message;
-            auto parsed = ParsePeerMessage(std::string_view(buffer, static_cast<size_t>(received)), message);
-            if (parsed.accepted)
-            {
-                if (messageCallback_) messageCallback_(message);
-                if (message.type != L"status_probe" && message.type != L"status_response")
-                    WriteDiagnostic("udp.receive parsed=1");
-            }
+            wchar_t address[INET_ADDRSTRLEN]{};
+            if (!InetNtopW(AF_INET, &sender.sin_addr, address, ARRAYSIZE(address))) continue;
+            if (messageCallback_) messageCallback_({ std::string(buffer, static_cast<size_t>(received)),
+                { address, static_cast<int>(ntohs(sender.sin_port)) } });
         }
+    }
+
+    bool UdpPeer::SourceMatches(DatagramSource const& source, std::wstring const& configuredHost, int configuredPort)
+    {
+        if (source.address.empty() || source.port != configuredPort || configuredHost.empty()) return false;
+        addrinfoW hints{}; hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM; hints.ai_protocol = IPPROTO_UDP;
+        addrinfoW* addresses{};
+        if (GetAddrInfoW(configuredHost.c_str(), nullptr, &hints, &addresses) != 0) return false;
+        bool matched{};
+        for (auto current = addresses; current && !matched; current = current->ai_next)
+        {
+            auto ipv4 = reinterpret_cast<sockaddr_in const*>(current->ai_addr);
+            wchar_t address[INET_ADDRSTRLEN]{};
+            if (InetNtopW(AF_INET, const_cast<IN_ADDR*>(&ipv4->sin_addr), address, ARRAYSIZE(address)) &&
+                _wcsicmp(address, source.address.c_str()) == 0) matched = true;
+        }
+        FreeAddrInfoW(addresses);
+        return matched;
     }
 
     void UdpPeer::Send(PeerMessage const& message, std::wstring const& host, int port)
     {
         if (host.empty()) return;
         auto trace = message.type != L"status_probe" && message.type != L"status_response";
-        auto started = std::chrono::steady_clock::now();
-        SOCKET socket;
-        {
-            std::scoped_lock lock(mutex_);
-            socket = socket_;
-        }
-        if (socket == INVALID_SOCKET) return;
-
         JsonObject object;
         object.Insert(L"version", JsonValue::CreateNumberValue(message.version));
         object.Insert(L"type", JsonValue::CreateStringValue(message.type));
@@ -128,9 +142,20 @@ namespace DisplaySwitcher::Native
         object.Insert(L"target", JsonValue::CreateStringValue(message.target));
         object.Insert(L"timestamp", JsonValue::CreateNumberValue(message.timestamp));
         object.Insert(L"pairingCode", JsonValue::CreateStringValue(message.pairingCode));
-        if (message.wakeSucceeded)
-            object.Insert(L"wakeSucceeded", JsonValue::CreateBooleanValue(*message.wakeSucceeded));
-        auto data = to_string(object.Stringify());
+        if (message.wakeSucceeded) object.Insert(L"wakeSucceeded", JsonValue::CreateBooleanValue(*message.wakeSucceeded));
+        SendRaw(to_string(object.Stringify()), host, port, trace);
+    }
+
+    void UdpPeer::SendRaw(std::string const& data, std::wstring const& host, int port, bool trace)
+    {
+        if (host.empty()) return;
+        auto started = std::chrono::steady_clock::now();
+        SOCKET socket;
+        {
+            std::scoped_lock lock(mutex_);
+            socket = socket_;
+        }
+        if (socket == INVALID_SOCKET) return;
 
         addrinfoW hints{};
         hints.ai_family = AF_INET;

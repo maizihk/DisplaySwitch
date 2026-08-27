@@ -4,6 +4,7 @@
 #include "AboutInfo.h"
 #include "AppConfig.h"
 #include "DdcControl.h"
+#include "ProfileDetection.h"
 #include "SystemActions.h"
 #include "UsbWatcher.h"
 
@@ -20,6 +21,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
                 ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
             std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+            std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
+                std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
             std::function<void()> beginUsbLearning,
             std::function<void()> endUsbLearning,
             std::function<void()> closed);
@@ -54,6 +57,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void RebuildProfileEditors();
         void RemoveProfile(std::wstring const& id);
         void DetectProfile(std::wstring const& id);
+        void CompleteProfileDetection(std::wstring const& id,
+            ::DisplaySwitcher::Native::ProfileDetectionResult const& result);
         void UpdateDisplayBackendVisibility();
         ::DisplaySwitcher::Native::AppConfig WorkingDdcConfig();
         void ReadDdc(std::wstring const& displayId);
@@ -72,6 +77,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc_;
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
+            std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile_;
         std::function<void()> beginUsbLearning_;
         std::function<void()> endUsbLearning_;
         std::function<void()> closed_;
