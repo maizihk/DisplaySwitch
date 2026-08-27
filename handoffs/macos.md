@@ -7,7 +7,7 @@
 - 分支：`codex/macos-ds-006-public-docs`
 - 基线：`04b7a9397d84735d28de709a142950b3670f4cb1`
 - 当前已验证实现提交：`55d933bd077d4f04fab5885e38fed70df1393ad1`
-- PR：待创建
+- PR：[#26 DS-006 macOS: sanitize public display samples](https://github.com/maizihk/DisplaySwitch/pull/26)
 
 ## 完成内容
 
@@ -36,7 +36,7 @@
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过。
 - 输出目录由文件同步提供程序附加的 Finder 扩展属性曾导致独立严格验签拒绝；只清除被忽略构建产物的扩展属性并重新临时签名后通过，未修改系统签名信任或工程设置。
 - `git diff --check`：通过。
-- GitHub Actions：待推送后记录。
+- GitHub Actions macOS run [`33099308922`](https://github.com/maizihk/DisplaySwitch/actions/runs/33099308922) 在实现提交 `55d933bd077d4f04fab5885e38fed70df1393ad1` 上通过：Debug、50 项 XCTest、Release 打包、artifact 检查和严格 codesign 均成功。
 
 ## 尚需实机验证
 
