@@ -8,8 +8,9 @@
 - 任务起始基线：`8466c120c15607e7f39645c494b2786eac1f12ac`
 - push 前同步 main：`6052327de368684b3fa87e6a45e121ba3a4da612`（仅包含后续合并的 macOS CI 路径过滤，与 Windows 实现无冲突）
 - 实现提交：`a6c9a7bd35bded48252b8da992c86e993692c00e`
+- 设置保存安全修复提交：`bc6b2344051b1b4d4e6ab3045232cd1c2a5a32ca`
 - PR：[#21](https://github.com/maizihk/DisplaySwitch/pull/21)，保持未合并
-- Windows CI：run [#8](https://github.com/maizihk/DisplaySwitch/actions/runs/33084261142)，`build-test-and-package` 全部步骤通过
+- Windows CI：当前代码 SHA `bc6b2344051b1b4d4e6ab3045232cd1c2a5a32ca` 对应 run [#10](https://github.com/maizihk/DisplaySwitch/actions/runs/33087036335)，`build-test-and-package`、显式自动测试、dist 验证和 artifact 上传全部通过
 
 ## 完成内容
 
@@ -21,6 +22,8 @@
 - 检测只读取编辑中的本机字段、显示器 UUID 引用和已缓存的后端枚举结果，不发送网络消息，不写 DDC，不切换输入源，不触发 USB/Bluetooth 或唤醒。
 - 托盘菜单使用已启用且本机完整的配置名称生成 `切换到 {名称}`，不提供“切换到本机”。手动选择只读取所选配置的 UUID 映射并沿用现有本机 DDC 执行路径，不发送 v1 `handover_request` 冒充 DS-005 手动意图。
 - 多个配置同时开启时，旧 v1 自动链路保持关闭，不选择第一项；DS-005 v2 UDP、HMAC、版本协商和多目标状态机均未实现。
+- 正常 v3 设置保存把编码、临时文件写入、完整回读验证和原子替换纳入同一故障事务：任一失败都会保留旧文件、写入持久安全标记并重新抛出；回读会完整解析显示器、协同配置、映射和触发引用，再按规范化后的完整 schema v3 JSON 比较。
+- Controller 收到保存失败后先关闭原子运行期闸门，再停止 UDP、USB 监测/自动切换和状态机协同；排队中的网络发送、DDC 与唤醒动作在执行边界再次检查闸门。设置窗口只有在回调确认保存成功后才更新原值并关闭，字段校验或持久化失败均不会误报成功。
 
 ## 自动验证
 
@@ -29,6 +32,7 @@
 - 自动测试输出：`DS-004 passed C-001 through C-015 local-model scenarios`。
 - v1 公共回归输出：`DS-001 passed 17 message vectors and 16 state-machine vectors`。
 - 覆盖：全新安装、随机 endpoint 持久化、0/1/多显示器、配置 UUID/重排/重命名/多个开启、重复 UUID/名称、控制字符、非法范围和未知版本、NFC 与 UTF-8 字节范围、endpoint 变化需确认、v2 迁移、孤立映射、显示器重排/移除/重新接入、部分映射和失败隔离、写入/解析失败及重启安全状态。
+- 新增正常编辑保存故障覆盖：编码失败、临时写入失败、合法但嵌套映射不同的回读、原子替换失败；逐项验证旧文件不变、安全标记存在、当前实例零 UDP/USB/DDC/唤醒副作用、重启继续安全，以及后续合法保存成功才清除标记。
 - 测试只使用临时配置和纯模型/模拟动作；未调用真实 UDP、USB、Bluetooth、DDC、显示器唤醒或防火墙。
 - 绿色版输出为 `Windows/dist/DisplaySwitch.exe` 加 `runtime/`，总大小 1.37 MiB，小于 20 MiB；构建产物未进入 Git。
 
