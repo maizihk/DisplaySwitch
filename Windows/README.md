@@ -1,5 +1,9 @@
 # Windows 托盘版安装与测试
 
+> **开发前必读：** Windows 端 Codex 或开发者开始修改前，请先阅读
+> [`DEVELOPMENT_CHECKLIST.md`](DEVELOPMENT_CHECKLIST.md) 和仓库根目录的
+> [`PROTOCOL.md`](../PROTOCOL.md)。清单定义当前优先级、跨端边界、安全限制和验收条件。
+
 ## 安装
 
 1. 在目标电脑安装一次 Microsoft Windows App Runtime 2.4 x64（已安装则跳过）。程序本身不依赖 .NET。
