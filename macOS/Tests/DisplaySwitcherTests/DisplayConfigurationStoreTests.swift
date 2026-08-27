@@ -134,7 +134,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let oldData = try JSONEncoder().encode(old)
         storage.values[DisplayConfigurationStore.legacyDocumentStorageKey] = oldData
         storage.values["Peer.Host"] = "172.16.10.20"
-        storage.values["Peer.PairingCode"] = "12345678"
+        storage.values["Peer.PairingCode"] = ephemeralPairingCode()
         let result = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(result.safetyState, .ready)
         XCTAssertEqual(result.document.displays.map(\.localInput), [15, 17])
@@ -279,7 +279,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let displays = [display(name: "Left"), display(name: "Right")]
         var profile = profile(name: "Windows")
         profile.peerHost = "172.16.10.20"
-        profile.pairingCode = "12345678"
+        profile.pairingCode = ephemeralPairingCode()
         profile.displayInputs = [DisplayInputMapping(displayID: displays[0].id, peerInput: 18)]
         return DisplayConfigurationStoreV3Document(schemaVersion: 3, localEndpointID: UUID().uuidString,
             localDeviceName: "Mac", listenPort: 49731, displays: displays, collaborationProfiles: [profile])
@@ -299,5 +299,9 @@ final class DisplayConfigurationStoreTests: XCTestCase {
     private func legacyDisplay(index: Int, local: Int, peer: Int) -> DisplayConfiguration {
         DisplayConfiguration(index: index, name: "Display \(index)", selector: UUID().uuidString,
             macInput: local, windowsInput: peer, readEnabled: true)
+    }
+
+    private func ephemeralPairingCode() -> String {
+        UUID().uuidString
     }
 }
