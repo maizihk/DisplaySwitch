@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：PROTOCOL_REVIEW（方向决定已确认，认证细节和 contracts 已形成待审草案）
+- 状态：APPROVED（用户于 2026-08-27 确认协议方向、认证细节和公共 contracts）
 - 功能编号：DS-005
 - 任务类型：cross-platform
 - 基线：`24a4ed7bbfab0eb9726ed6261afe5ad56e3f4df7`
@@ -20,7 +20,7 @@
 - 不设置 250 ms 仲裁窗口；首个通过认证的合法 `input_present` 立即且不可变地锁定目标。
 - 3 秒内没有合法目标时保持零 DDC，并要求用户手动选择。
 
-本提案未获批准前，不修改 `PROTOCOL.md`、平台实现或现有 `contracts/protocol-v1/`。
+本提案和 `contracts/protocol-v2/` 已获用户批准。PR 合并进入 `main` 前不派发平台实现；未经用户另行明确授权，仍不修改当前 `PROTOCOL.md` 或现有 `contracts/protocol-v1/`。
 
 ## 为什么必须升级版本
 
