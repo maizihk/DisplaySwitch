@@ -44,7 +44,7 @@
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过。
 - `git diff --check`：通过。
 - Xcode 27 Beta 6 的 `xcodebuild test` 在当前中文路径下错误报告找不到实际存在的 test bundle executable；使用同一 Xcode 构建出的 `xctest` 直接执行 bundle，完整 40 项测试通过。这是测试启动器问题，不是编译或测试失败。
-- GitHub Actions macOS run [`33086641406`](https://github.com/maizihk/DisplaySwitch/actions/runs/33086641406) 在上一轮实现 HEAD `9ccf84708ab67e1c6d6171094d312c31465af8b9` 上完整通过；当前实现 HEAD `7581b05e1f2bf4242c498ecd81414abeaf6d225c` 的最新 CI 待推送后记录。
+- GitHub Actions macOS run [`33088068267`](https://github.com/maizihk/DisplaySwitch/actions/runs/33088068267) 在当前实现 HEAD `7581b05e1f2bf4242c498ecd81414abeaf6d225c` 上完整通过：Debug、40 项 XCTest、Release 打包、artifact 检查和严格 codesign 均成功。
 
 ## 尚需实机验证
 
