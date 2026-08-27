@@ -1,0 +1,259 @@
+#include "pch.h"
+#include "DdcBackends.h"
+#include "Diagnostics.h"
+
+namespace
+{
+    using namespace DisplaySwitcher::Native;
+
+    struct NativeMonitor
+    {
+        DdcMonitorInfo info;
+        HANDLE handle{};
+    };
+
+    std::vector<NativeMonitor> EnumerateNativeMonitors()
+    {
+        std::vector<NativeMonitor> result;
+        EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM parameter) -> BOOL
+        {
+            auto& monitors = *reinterpret_cast<std::vector<NativeMonitor>*>(parameter);
+            MONITORINFOEXW monitorInfo{ sizeof(monitorInfo) };
+            if (!GetMonitorInfoW(monitor, &monitorInfo)) return TRUE;
+            DISPLAY_DEVICEW displayDevice{ sizeof(displayDevice) };
+            EnumDisplayDevicesW(monitorInfo.szDevice, 0, &displayDevice, EDD_GET_DEVICE_INTERFACE_NAME);
+            std::wstring baseId = displayDevice.DeviceID[0] ? displayDevice.DeviceID : displayDevice.DeviceKey;
+            std::wstring friendlyName = displayDevice.DeviceString[0] ? displayDevice.DeviceString : monitorInfo.szDevice;
+            DWORD count{};
+            if (baseId.empty() || !GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, &count) || count == 0) return TRUE;
+            std::vector<PHYSICAL_MONITOR> physical(count);
+            if (!GetPhysicalMonitorsFromHMONITOR(monitor, count, physical.data())) return TRUE;
+            for (DWORD index = 0; index < count; ++index)
+            {
+                std::wstring id = baseId + L"|" + std::to_wstring(index);
+                std::wstring label = friendlyName;
+                if (physical[index].szPhysicalMonitorDescription[0]
+                    && _wcsicmp(physical[index].szPhysicalMonitorDescription, friendlyName.c_str()) != 0)
+                    label += L" · " + std::wstring(physical[index].szPhysicalMonitorDescription);
+                label += L" (" + std::wstring(monitorInfo.szDevice) + L")";
+                monitors.push_back({ { std::move(id), std::move(label), monitorInfo.szDevice }, physical[index].hPhysicalMonitor });
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&result));
+        return result;
+    }
+
+    void CloseNativeMonitors(std::vector<NativeMonitor>& monitors)
+    {
+        for (auto& monitor : monitors) if (monitor.handle) DestroyPhysicalMonitor(monitor.handle);
+    }
+
+    template<typename Action>
+    auto WithNativeMonitor(std::wstring const& monitorId, Action const& action)
+    {
+        auto monitors = EnumerateNativeMonitors();
+        auto found = std::find_if(monitors.begin(), monitors.end(), [&](auto const& monitor)
+        { return _wcsicmp(monitor.info.id.c_str(), monitorId.c_str()) == 0; });
+        if (found == monitors.end())
+        {
+            CloseNativeMonitors(monitors);
+            using Result = decltype(action(HANDLE{}));
+            if constexpr (std::is_same_v<Result, DdcValueResult>)
+                return Result{ false, 0, 0, DdcErrorKind::MonitorUnavailable, L"找不到按稳定 ID 配置的原生 DDC/CI 显示器" };
+            else
+                return Result{ false, DdcErrorKind::MonitorUnavailable, L"找不到按稳定 ID 配置的原生 DDC/CI 显示器" };
+        }
+        auto result = action(found->handle);
+        CloseNativeMonitors(monitors);
+        return result;
+    }
+
+    std::wstring Quote(std::wstring const& value)
+    {
+        std::wstring result = L"\"";
+        unsigned slashes{};
+        for (auto character : value)
+        {
+            if (character == L'\\') { ++slashes; continue; }
+            if (character == L'\"')
+            {
+                result.append(slashes * 2 + 1, L'\\'); result.push_back(character); slashes = 0; continue;
+            }
+            result.append(slashes, L'\\'); slashes = 0; result.push_back(character);
+        }
+        result.append(slashes * 2, L'\\'); result.push_back(L'\"'); return result;
+    }
+
+    std::wstring HexCode(DdcVcpCode code)
+    {
+        wchar_t value[5]{};
+        swprintf_s(value, L"%02X", static_cast<unsigned>(code));
+        return value;
+    }
+
+    struct ProcessResult
+    {
+        bool completed{};
+        bool canceled{};
+        DWORD exitCode{};
+        std::wstring error;
+    };
+
+    ProcessResult RunProcess(std::wstring const& executable, std::wstring command,
+        DdcCancellationToken const& cancellation)
+    {
+        std::vector<wchar_t> mutableCommand(command.begin(), command.end()); mutableCommand.push_back(L'\0');
+        STARTUPINFOW startup{ sizeof(startup) }; PROCESS_INFORMATION process{};
+        if (!CreateProcessW(executable.c_str(), mutableCommand.data(), nullptr, nullptr, FALSE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
+            return { false, false, 0, L"无法启动 ControlMyMonitor，错误 " + std::to_wstring(GetLastError()) };
+        CloseHandle(process.hThread);
+        DWORD wait{};
+        for (int elapsed = 0; elapsed < 5000; elapsed += 25)
+        {
+            if (cancellation.IsCanceled())
+            {
+                TerminateProcess(process.hProcess, ERROR_CANCELLED); WaitForSingleObject(process.hProcess, 1000);
+                CloseHandle(process.hProcess); return { false, true, 0, L"操作已取消" };
+            }
+            wait = WaitForSingleObject(process.hProcess, 25);
+            if (wait == WAIT_OBJECT_0) break;
+        }
+        if (wait != WAIT_OBJECT_0)
+        {
+            TerminateProcess(process.hProcess, ERROR_TIMEOUT); CloseHandle(process.hProcess);
+            return { false, false, 0, L"ControlMyMonitor 等待超时" };
+        }
+        DWORD exitCode{}; GetExitCodeProcess(process.hProcess, &exitCode); CloseHandle(process.hProcess);
+        return { true, false, exitCode, {} };
+    }
+
+    class NativeDdcBackend final : public IDdcBackend
+    {
+    public:
+        std::wstring Key() const override { return L"native_ddc"; }
+        std::wstring DisplayName() const override { return L"Windows 原生 DDC/CI"; }
+        DdcBackendStatus Status() const override { return { DdcAvailability::Available, L"Windows 物理显示器 DDC/CI" }; }
+
+        std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const& cancellation) override
+        {
+            if (cancellation.IsCanceled()) return {};
+            auto native = EnumerateNativeMonitors(); std::vector<DdcMonitorInfo> result;
+            for (auto const& monitor : native) result.push_back(monitor.info);
+            CloseNativeMonitors(native);
+            std::sort(result.begin(), result.end(), [](auto const& left, auto const& right)
+            { return _wcsicmp(left.displayName.c_str(), right.displayName.c_str()) < 0; });
+            return cancellation.IsCanceled() ? std::vector<DdcMonitorInfo>{} : result;
+        }
+
+        DdcCapabilities Capabilities(std::wstring const& monitorId,
+            DdcCancellationToken const& cancellation) override
+        {
+            if (cancellation.IsCanceled())
+                return { { DdcAvailability::TemporarilyUnavailable, L"操作已取消" }, true, {}, {} };
+            auto monitors = EnumerateNativeMonitors();
+            auto found = std::find_if(monitors.begin(), monitors.end(), [&](auto const& monitor)
+            { return _wcsicmp(monitor.info.id.c_str(), monitorId.c_str()) == 0; });
+            auto available = found != monitors.end(); CloseNativeMonitors(monitors);
+            if (!available) return { { DdcAvailability::TemporarilyUnavailable, L"显示器当前未连接" }, true, {}, {} };
+            // MCCS capability strings are optional and frequently incomplete. Unknown means
+            // that the actual Get/Set VCP call is the authoritative capability probe.
+            return { { DdcAvailability::Available, L"原生硬件 DDC/CI 可用" }, false, {}, {} };
+        }
+
+        DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
+            DdcCancellationToken const& cancellation) override
+        {
+            if (cancellation.IsCanceled()) return { false, 0, 0, DdcErrorKind::Canceled, L"操作已取消" };
+            return WithNativeMonitor(monitorId, [&](HANDLE handle)
+            {
+                DWORD current{}, maximum{}; MC_VCP_CODE_TYPE type{}; SetLastError(ERROR_SUCCESS);
+                auto success = GetVCPFeatureAndVCPFeatureReply(handle, static_cast<BYTE>(code), &type, &current, &maximum) != FALSE;
+                auto error = GetLastError();
+                if (cancellation.IsCanceled()) return DdcValueResult{ false, 0, 0, DdcErrorKind::Canceled, L"操作已取消" };
+                if (!success) return DdcValueResult{ false, 0, 0, DdcErrorKind::ReadFailed,
+                    L"原生硬件 DDC/CI 读取失败，错误 " + std::to_wstring(error) };
+                return DdcValueResult{ true, static_cast<int>(current), static_cast<int>(maximum), DdcErrorKind::None, {} };
+            });
+        }
+
+        DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
+            DdcCancellationToken const& cancellation) override
+        {
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消" };
+            return WithNativeMonitor(monitorId, [&](HANDLE handle)
+            {
+                SetLastError(ERROR_SUCCESS);
+                auto success = SetVCPFeature(handle, static_cast<BYTE>(code), static_cast<DWORD>(value)) != FALSE;
+                auto error = GetLastError();
+                if (cancellation.IsCanceled()) return DdcWriteResult{ false, DdcErrorKind::Canceled, L"操作已取消" };
+                if (!success) return DdcWriteResult{ false, DdcErrorKind::WriteFailed,
+                    L"原生硬件 DDC/CI 写入失败，错误 " + std::to_wstring(error) };
+                return DdcWriteResult{ true, DdcErrorKind::None, {} };
+            });
+        }
+    };
+
+    class ControlMyMonitorBackend final : public IDdcBackend
+    {
+    public:
+        explicit ControlMyMonitorBackend(std::wstring executable) : executable_(std::move(executable)) {}
+        std::wstring Key() const override { return L"control_my_monitor"; }
+        std::wstring DisplayName() const override { return L"ControlMyMonitor 硬件 DDC/CI"; }
+        DdcBackendStatus Status() const override
+        {
+            std::error_code error;
+            auto available = std::filesystem::is_regular_file(executable_, error);
+            return available && !error
+                ? DdcBackendStatus{ DdcAvailability::Available, L"ControlMyMonitor 硬件 DDC/CI 可用" }
+                : DdcBackendStatus{ DdcAvailability::TemporarilyUnavailable, L"ControlMyMonitor 程序当前不可用" };
+        }
+        std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const&) override { return {}; }
+        DdcCapabilities Capabilities(std::wstring const& monitorId, DdcCancellationToken const& cancellation) override
+        {
+            auto status = Status();
+            if (cancellation.IsCanceled()) status = { DdcAvailability::TemporarilyUnavailable, L"操作已取消" };
+            if (monitorId.empty()) status = { DdcAvailability::Unsupported, L"未配置 ControlMyMonitor 稳定显示器字符串" };
+            return { status, false, {}, {} };
+        }
+        DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
+            DdcCancellationToken const& cancellation) override
+        {
+            auto command = Quote(executable_) + L" /GetValue " + Quote(monitorId) + L" " + HexCode(code);
+            auto result = RunProcess(executable_, std::move(command), cancellation);
+            if (result.canceled) return { false, 0, 0, DdcErrorKind::Canceled, result.error };
+            if (!result.completed) return { false, 0, 0, DdcErrorKind::ReadFailed, result.error };
+            return { true, static_cast<int>(result.exitCode), 100, DdcErrorKind::None, {} };
+        }
+        DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
+            DdcCancellationToken const& cancellation) override
+        {
+            auto command = Quote(executable_) + L" /SetValue " + Quote(monitorId) + L" " + HexCode(code) + L" " + std::to_wstring(value);
+            auto result = RunProcess(executable_, std::move(command), cancellation);
+            if (result.canceled) return { false, DdcErrorKind::Canceled, result.error };
+            if (!result.completed) return { false, DdcErrorKind::WriteFailed, result.error };
+            if (result.exitCode != 0) return { false, DdcErrorKind::WriteFailed,
+                L"ControlMyMonitor 返回退出码 " + std::to_wstring(result.exitCode) };
+            return { true, DdcErrorKind::None, {} };
+        }
+
+    private:
+        std::wstring executable_;
+    };
+}
+
+namespace DisplaySwitcher::Native
+{
+    DdcBackendSet::DdcBackendSet(AppConfig const& config) :
+        native_(std::make_unique<NativeDdcBackend>()),
+        controlMyMonitor_(std::make_unique<ControlMyMonitorBackend>(config.controlMyMonitorPath))
+    {
+    }
+
+    IDdcBackend* DdcBackendSet::Lookup(std::wstring const& key) const noexcept
+    {
+        if (key == L"native_ddc") return native_.get();
+        if (key == L"control_my_monitor") return controlMyMonitor_.get();
+        return nullptr;
+    }
+}

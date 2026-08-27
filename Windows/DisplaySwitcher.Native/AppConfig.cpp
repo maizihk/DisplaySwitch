@@ -166,6 +166,7 @@ namespace
         DisplaySwitcher::Native::DisplayConfig display;
         display.id = RequiredString(object, L"Id");
         display.name = RequiredString(object, L"Name");
+        display.backend = OptionalString(object, L"Backend");
         display.localInput = NullableInteger(object, L"LocalInput", 0, 65535, true);
         display.readEnabled = RequiredBoolean(object, L"ReadEnabled");
         display.brightnessEnabled = RequiredBoolean(object, L"BrightnessEnabled");
@@ -255,6 +256,8 @@ namespace
             if (!DisplaySwitcher::Native::IsValidDisplayId(display.id) || !ids.insert(Lower(display.id)).second)
                 throw std::runtime_error("invalid or duplicate display id");
             if (!VisibleText(display.name, 1, 64)) throw std::runtime_error("invalid display name");
+            if (!display.backend.empty() && display.backend != L"native_ddc" && display.backend != L"control_my_monitor")
+                throw std::runtime_error("invalid display backend");
             if (display.localInput && (*display.localInput < 0 || *display.localInput > 65535)) throw std::runtime_error("invalid local input");
         }
     }
@@ -331,6 +334,7 @@ namespace
         config.port = config.peerPort = RequiredInteger(object, L"Port", 1, 65535);
         config.pairingCode = RequiredString(object, L"PairingCode");
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV3Display(value.GetObject()));
+        for (auto& display : config.displays) if (display.backend.empty()) display.backend = config.displayControlBackend;
         for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
         ValidateConfig(config);
         LegacyBridge(config);
@@ -359,7 +363,11 @@ namespace
         if (config.localEndpointId.empty()) config.localEndpointId = DisplaySwitcher::Native::GenerateIdentifier();
         config.localDeviceName = Trim(config.localDeviceName);
         EnsureDefaultProfile(config);
-        for (auto& display : config.displays) display.name = Trim(display.name);
+        for (auto& display : config.displays)
+        {
+            display.name = Trim(display.name);
+            if (display.backend.empty()) display.backend = config.displayControlBackend;
+        }
         for (auto& profile : config.collaborationProfiles)
         {
             profile.name = Trim(profile.name); profile.peerHost = Trim(profile.peerHost);
@@ -390,6 +398,7 @@ namespace
         {
             JsonObject item;
             item.Insert(L"Id", JsonValue::CreateStringValue(display.id)); item.Insert(L"Name", JsonValue::CreateStringValue(display.name));
+            item.Insert(L"Backend", JsonValue::CreateStringValue(display.backend));
             item.Insert(L"LocalInput", display.localInput ? JsonValue::CreateNumberValue(*display.localInput) : JsonValue::CreateNullValue());
             item.Insert(L"ReadEnabled", JsonValue::CreateBooleanValue(display.readEnabled));
             item.Insert(L"BrightnessEnabled", JsonValue::CreateBooleanValue(display.brightnessEnabled));
@@ -506,12 +515,17 @@ namespace DisplaySwitcher::Native
             if (!IsValidDisplayId(display.id) || !VisibleText(display.name, 1, 64) || !ids.insert(Lower(display.id)).second) return false;
             if (profileId.empty() && (display.macInput < 0 || display.macInput > 65535)) return false;
             std::wstring hardwareId;
-            if (displayControlBackend == L"native_ddc") hardwareId = display.nativeMonitorId;
-            else if (displayControlBackend == L"control_my_monitor") hardwareId = display.controlMonitorPath;
+            auto backend = display.backend.empty() ? displayControlBackend : display.backend;
+            if (backend == L"native_ddc") hardwareId = display.nativeMonitorId;
+            else if (backend == L"control_my_monitor") hardwareId = display.controlMonitorPath;
             else return false;
-            if (hardwareId.empty() || !hardwareIds.insert(Lower(hardwareId)).second) return false;
+            if (hardwareId.empty()) return false;
+            hardwareId = backend + L":" + hardwareId;
+            if (!hardwareIds.insert(Lower(hardwareId)).second) return false;
         }
-        if (displayControlBackend == L"control_my_monitor" && controlMyMonitorPath.empty()) return false;
+        if (std::any_of(displays.begin(), displays.end(), [&](auto const& display)
+            { return (display.backend.empty() ? displayControlBackend : display.backend) == L"control_my_monitor"; })
+            && controlMyMonitorPath.empty()) return false;
         return profileId.empty() || IsProfileDisplayMappingComplete(profileId);
     }
 
@@ -662,6 +676,7 @@ namespace DisplaySwitcher::Native
             if (schema == CurrentConfigVersion)
             {
                 for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV3Display(value.GetObject()));
+                for (auto& display : config.displays) if (display.backend.empty()) display.backend = config.displayControlBackend;
                 for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
             }
             else
@@ -675,6 +690,7 @@ namespace DisplaySwitcher::Native
                     if (HasLegacyDisplay(object, L"DellMonitorPath", L"DellNativeMonitorId", L"DellMacInput"))
                         config.displays.push_back(ReadLegacyDisplay(object, L"显示器 2", L"DellMonitorPath", L"DellNativeMonitorId", L"DellMacInput"));
                 }
+                for (auto& display : config.displays) display.backend = config.displayControlBackend;
                 CollaborationProfile profile;
                 profile.id = GenerateIdentifier(); profile.name = L"Mac";
                 profile.peerHost = OptionalString(object, L"PeerHost");

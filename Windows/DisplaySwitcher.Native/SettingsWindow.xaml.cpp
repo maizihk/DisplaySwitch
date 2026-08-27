@@ -49,11 +49,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::Initialize(::DisplaySwitcher::Native::AppConfig const& config,
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
+        std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
+            std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc,
+        std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
+            std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
+            ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
+        std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
         std::function<void()> closed)
     {
         if (initialized_) return;
         initialized_ = true;
-        original_ = config; saved_ = std::move(saved); closed_ = std::move(closed);
+        original_ = config; saved_ = std::move(saved); readDdc_ = std::move(readDdc);
+        writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache); closed_ = std::move(closed);
         Title(L"常规");
         try { SystemBackdrop(MicaBackdrop()); } catch (...) {}
         auto content = BuildContent();
@@ -61,7 +68,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (auto root = content.try_as<FrameworkElement>())
             root.ActualThemeChanged([this](auto const&, auto const&) { ApplyTitleBarTheme(); });
         LoadValues(config); ResizeAndCenter(); ApplyTitleBarTheme();
-        Closed([this](auto const&, auto const&) { if (closed_) closed_(); });
+        Closed([this](auto const&, auto const&) { ddcCancellation_.Cancel(); if (closed_) closed_(); });
         LoadUsbDevices();
         LoadDdcMonitors();
     }
@@ -80,6 +87,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         displayBackend_.Items().Append(box_value(L"ControlMyMonitor"));
         displayBackend_.SelectionChanged([this](auto const&, auto const&) { UpdateDisplayBackendVisibility(); });
         controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
+        linkAllDisplays_ = ToggleSwitch(); Header(linkAllDisplays_, L"联动所有显示器");
+        linkAllDisplays_.OffContent(box_value(L"仅控制当前显示器"));
+        linkAllDisplays_.OnContent(box_value(L"显式联动已开启"));
         autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录 Windows 时自动启动");
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
         {
@@ -161,13 +171,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         {
             CaptureProfileEditors();
             CaptureDisplayEditors();
-            workingDisplays_.push_back(::DisplaySwitcher::Native::CreateDisplayConfig(
-                L"显示器 " + std::to_wstring(workingDisplays_.size() + 1)));
+            auto display = ::DisplaySwitcher::Native::CreateDisplayConfig(
+                L"显示器 " + std::to_wstring(workingDisplays_.size() + 1));
+            display.backend = displayBackend_.SelectedIndex() == 1 ? L"control_my_monitor" : L"native_ddc";
+            workingDisplays_.push_back(std::move(display));
             RebuildDisplayEditors();
             RebuildProfileEditors();
         });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
-        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_, nativeDdcPanel_,
+        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_, linkAllDisplays_, nativeDdcPanel_,
             controlMyMonitorPanel_, addDisplay, displayEditorsPanel_ }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
@@ -187,7 +199,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto buttonColumn = ColumnDefinition(); buttonColumn.Width(GridLengthHelper::Auto());
         footer.ColumnDefinitions().Append(messageColumn); footer.ColumnDefinitions().Append(buttonColumn);
         validation_.VerticalAlignment(VerticalAlignment::Center); Grid::SetColumn(validation_, 0); footer.Children().Append(validation_);
-        auto cancel = Button(); cancel.Content(box_value(L"取消")); cancel.Click([this](auto const&, auto const&) { appWindow_.Hide(); });
+        auto cancel = Button(); cancel.Content(box_value(L"取消")); cancel.Click([this](auto const&, auto const&) { ddcCancellation_.Cancel(); appWindow_.Hide(); });
         auto save = Button(); save.Content(box_value(L"保存")); save.Click([this](auto const&, auto const&) { Save(); });
         try { save.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>()); } catch (...) {}
         auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(12);
@@ -284,7 +296,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     }
 
     void SettingsWindow::ShowWindow() { appWindow_.Show(); Activate(); }
-    void SettingsWindow::CloseForExit() { Close(); }
+    void SettingsWindow::CloseForExit() { ddcCancellation_.Cancel(); Close(); }
 
     void SettingsWindow::SetConnectionStatus(std::wstring const& status, bool connected)
     {
@@ -364,8 +376,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto& display = workingDisplays_[index];
             auto const& controls = displayEditors_[index];
             display.name = Trim(controls.name.Text().c_str());
+            display.backend = controls.backend.SelectedIndex() == 0 ? L"native_ddc" :
+                controls.backend.SelectedIndex() == 1 ? L"control_my_monitor" : L"";
             display.controlMonitorPath = Trim(controls.controlMonitorPath.Text().c_str());
             display.macInput = ParseInteger(controls.macInput.Text().c_str(), 10, 0, 65535).value_or(-1);
+            display.readEnabled = controls.readEnabled.IsOn();
+            display.brightnessEnabled = controls.brightnessEnabled.IsOn();
+            display.contrastEnabled = controls.contrastEnabled.IsOn();
+            display.volumeEnabled = controls.volumeEnabled.IsOn();
             auto selected = controls.nativeMonitor.SelectedIndex();
             if (selected >= 0 && static_cast<size_t>(selected) < controls.nativeMonitorIds.size())
                 display.nativeMonitorId = controls.nativeMonitorIds[static_cast<size_t>(selected)];
@@ -385,6 +403,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             DisplayEditorControls controls;
             controls.id = display.id;
             controls.name = TextBox(); Header(controls.name, L"名称"); controls.name.Text(display.name);
+            controls.backend = ComboBox(); Header(controls.backend, L"硬件 DDC 后端");
+            controls.backend.Items().Append(box_value(L"Windows 原生 Dxva2"));
+            controls.backend.Items().Append(box_value(L"ControlMyMonitor 回退"));
+            controls.backend.SelectedIndex(display.backend == L"control_my_monitor" ? 1 : 0);
             controls.nativeMonitor = ComboBox(); Header(controls.nativeMonitor, L"Windows DDC/CI 显示器");
             controls.nativeMonitor.PlaceholderText(L"请选择显示器");
             controls.nativeMonitor.HorizontalAlignment(HorizontalAlignment::Stretch);
@@ -412,6 +434,51 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.controlMyMonitorFields = controls.controlMonitorPath;
             controls.macInput = TextBox(); Header(controls.macInput, L"Mac 输入源编号"); controls.macInput.MaxLength(5);
             controls.macInput.Text(display.macInput >= 0 ? std::to_wstring(display.macInput) : L"");
+            controls.readEnabled = ToggleSwitch(); Header(controls.readEnabled, L"允许读取硬件 DDC 状态");
+            controls.readEnabled.IsOn(display.readEnabled);
+            controls.brightnessEnabled = ToggleSwitch(); Header(controls.brightnessEnabled, L"启用亮度（VCP 0x10）");
+            controls.brightnessEnabled.IsOn(display.brightnessEnabled);
+            controls.contrastEnabled = ToggleSwitch(); Header(controls.contrastEnabled, L"启用对比度（VCP 0x12）");
+            controls.contrastEnabled.IsOn(display.contrastEnabled);
+            controls.volumeEnabled = ToggleSwitch(); Header(controls.volumeEnabled, L"启用音量（VCP 0x62）");
+            controls.volumeEnabled.IsOn(display.volumeEnabled);
+            auto configureSlider = [](Slider const& slider, std::optional<int> value, std::optional<int> maximum)
+            {
+                auto current = value.value_or(0);
+                slider.Minimum(0); slider.Maximum(::DisplaySwitcher::Native::DdcControlService::EffectiveMaximum(
+                    current, maximum.value_or(100)));
+                slider.Value(current); slider.StepFrequency(1); slider.SmallChange(1); slider.LargeChange(10);
+            };
+            controls.brightness = Slider(); configureSlider(controls.brightness, display.brightnessValue, display.brightnessMax);
+            controls.contrast = Slider(); configureSlider(controls.contrast, display.contrastValue, display.contrastMax);
+            controls.volume = Slider(); configureSlider(controls.volume, display.volumeValue, display.volumeMax);
+            controls.status = TextBlock(); controls.status.Text(L"状态尚未读取"); controls.status.Opacity(0.72);
+            controls.status.TextWrapping(TextWrapping::Wrap);
+
+            auto read = Button(); read.Content(box_value(L"读取三项"));
+            read.Click([this, id = display.id](auto const&, auto const&) { ReadDdc(id); });
+            auto controlRow = [&](wchar_t const* name, ::DisplaySwitcher::Native::DdcVcpCode code, Slider const& slider,
+                ToggleSwitch const& enabled)
+            {
+                auto apply = Button(); apply.Content(box_value(L"应用")); apply.VerticalAlignment(VerticalAlignment::Center);
+                apply.Click([this, id = display.id, code, slider](auto const&, auto const&)
+                { WriteDdc(id, code, static_cast<int>(std::lround(slider.Value()))); });
+                auto panel = StackPanel(); panel.Spacing(6);
+                auto label = TextBlock(); label.Text(name); label.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+                panel.Children().Append(label); panel.Children().Append(CreateTwoColumn(slider, apply));
+                enabled.Toggled([slider, apply](auto const& sender, auto const&)
+                {
+                    auto on = sender.template as<ToggleSwitch>().IsOn(); slider.IsEnabled(on); apply.IsEnabled(on);
+                });
+                slider.IsEnabled(enabled.IsOn()); apply.IsEnabled(enabled.IsOn());
+                return panel;
+            };
+            auto brightnessRow = controlRow(L"亮度", ::DisplaySwitcher::Native::DdcVcpCode::Brightness,
+                controls.brightness, controls.brightnessEnabled);
+            auto contrastRow = controlRow(L"对比度", ::DisplaySwitcher::Native::DdcVcpCode::Contrast,
+                controls.contrast, controls.contrastEnabled);
+            auto volumeRow = controlRow(L"音量", ::DisplaySwitcher::Native::DdcVcpCode::Volume,
+                controls.volume, controls.volumeEnabled);
 
             auto up = Button(); up.Content(box_value(L"上移")); up.IsEnabled(index > 0);
             up.Click([this, id = display.id](auto const&, auto const&)
@@ -447,11 +514,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
             buttons.Children().Append(up); buttons.Children().Append(down); buttons.Children().Append(remove);
 
             auto fields = StackPanel(); fields.Spacing(12);
-            fields.Children().Append(controls.name); fields.Children().Append(controls.nativeMonitor);
+            fields.Children().Append(controls.name); fields.Children().Append(controls.backend);
+            fields.Children().Append(controls.nativeMonitor);
             fields.Children().Append(controls.controlMonitorPath); fields.Children().Append(controls.macInput);
+            fields.Children().Append(controls.readEnabled);
+            fields.Children().Append(CreateTwoColumn(controls.brightnessEnabled, controls.contrastEnabled, 0));
+            fields.Children().Append(controls.volumeEnabled);
+            fields.Children().Append(brightnessRow); fields.Children().Append(contrastRow); fields.Children().Append(volumeRow);
+            fields.Children().Append(CreateTwoColumn(controls.status, read));
             fields.Children().Append(buttons);
             displayEditorsPanel_.Children().Append(CreateCard(fields));
             displayEditors_.push_back(std::move(controls));
+            displayEditors_.back().backend.SelectionChanged([this](auto const&, auto const&) { UpdateDisplayBackendVisibility(); });
         }
         UpdateDisplayBackendVisibility();
     }
@@ -599,19 +673,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto result = config.InspectProfile(id);
         if (config.displayConfigurationSafeMode) result.problems.push_back(L"配置处于安全状态，需成功保存后解除");
         auto selection = config.SelectProfileDisplays(id);
-        if (config.displayControlBackend == L"native_ddc")
+        for (auto const& display : selection.mappedDisplays)
         {
-            for (auto const& display : selection.mappedDisplays)
+            auto backend = display.backend.empty() ? config.displayControlBackend : display.backend;
+            if (backend == L"native_ddc")
+            {
                 if (display.nativeMonitorId.empty() || !::DisplaySwitcher::Native::FindDdcMonitorById(ddcMonitors_, display.nativeMonitorId))
-                    result.problems.push_back(display.name + L"的原生 DDC/CI 后端当前不可用");
-        }
-        else if (config.displayControlBackend == L"control_my_monitor")
-        {
-            if (config.controlMyMonitorPath.empty()) result.problems.push_back(L"未配置 ControlMyMonitor 程序路径");
-            for (auto const& display : selection.mappedDisplays)
+                    result.problems.push_back(display.name + L"的原生硬件 DDC/CI 后端当前不可用");
+            }
+            else if (backend == L"control_my_monitor")
+            {
+                if (config.controlMyMonitorPath.empty()) result.problems.push_back(L"未配置 ControlMyMonitor 程序路径");
                 if (display.controlMonitorPath.empty()) result.problems.push_back(display.name + L"缺少 ControlMyMonitor 设备路径");
+            }
+            else result.problems.push_back(display.name + L"未选择显示器控制后端");
         }
-        else result.problems.push_back(L"未选择显示器控制后端");
         result.complete = result.problems.empty() && !result.endpointConfirmationRequired;
         if (result.complete) { validation_.Text(L"本机检查通过；未发送网络消息，未执行 DDC、USB、蓝牙或唤醒操作。"); validation_.Visibility(Visibility::Visible); return; }
         std::wstring message = L"本机检查未通过：";
@@ -623,17 +699,130 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (!nativeDdcPanel_ || !controlMyMonitorPanel_) return;
         auto selected = displayBackend_.SelectedIndex();
-        nativeDdcPanel_.Visibility(selected == 0 ? Visibility::Visible : Visibility::Collapsed);
-        controlMyMonitorPanel_.Visibility(selected == 1 ? Visibility::Visible : Visibility::Collapsed);
+        auto hasNative = selected == 0;
+        auto hasControlMyMonitor = selected == 1;
         for (auto const& editor : displayEditors_)
         {
-            editor.nativeFields.Visibility(selected == 0 ? Visibility::Visible : Visibility::Collapsed);
-            editor.controlMyMonitorFields.Visibility(selected == 1 ? Visibility::Visible : Visibility::Collapsed);
+            auto backend = editor.backend.SelectedIndex();
+            editor.nativeFields.Visibility(backend == 0 ? Visibility::Visible : Visibility::Collapsed);
+            editor.controlMyMonitorFields.Visibility(backend == 1 ? Visibility::Visible : Visibility::Collapsed);
+            hasNative = hasNative || backend == 0;
+            hasControlMyMonitor = hasControlMyMonitor || backend == 1;
+        }
+        nativeDdcPanel_.Visibility(hasNative ? Visibility::Visible : Visibility::Collapsed);
+        controlMyMonitorPanel_.Visibility(hasControlMyMonitor ? Visibility::Visible : Visibility::Collapsed);
+    }
+
+    ::DisplaySwitcher::Native::AppConfig SettingsWindow::WorkingDdcConfig()
+    {
+        CaptureDisplayEditors();
+        auto config = original_;
+        config.displayControlBackend = displayBackend_.SelectedIndex() == 1 ? L"control_my_monitor" : L"native_ddc";
+        config.controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
+        config.displays = workingDisplays_;
+        return config;
+    }
+
+    void SettingsWindow::ReadDdc(std::wstring const& displayId)
+    {
+        if (!readDdc_) { ShowValidationError(L"硬件 DDC 读取服务不可用。"); return; }
+        auto config = WorkingDdcConfig();
+        auto token = ddcCancellation_.Begin();
+        auto operation = readDdc_;
+        auto dispatcher = DispatcherQueue();
+        auto strong = get_strong();
+        validation_.Text(L"正在读取硬件 DDC 状态…"); validation_.Visibility(Visibility::Visible);
+        std::thread([strong, dispatcher, operation, config = std::move(config), displayId, token]() mutable
+        {
+            ::DisplaySwitcher::Native::DdcControlBatchResult result;
+            try { result = operation(config, { displayId }, token); }
+            catch (...) { result.items.push_back({ displayId, {}, false, false, false, false, {}, {},
+                ::DisplaySwitcher::Native::DdcAvailability::TemporarilyUnavailable,
+                ::DisplaySwitcher::Native::DdcErrorKind::ReadFailed, L"读取硬件 DDC 状态时发生异常" }); }
+            dispatcher.TryEnqueue([strong, config = std::move(config), result = std::move(result), token]()
+            { strong->CompleteDdcOperation(config, result, token, false); });
+        }).detach();
+    }
+
+    void SettingsWindow::WriteDdc(std::wstring const& displayId, ::DisplaySwitcher::Native::DdcVcpCode code, int value)
+    {
+        if (!writeDdc_) { ShowValidationError(L"硬件 DDC 写入服务不可用。"); return; }
+        auto config = WorkingDdcConfig();
+        auto token = ddcCancellation_.Begin();
+        auto operation = writeDdc_;
+        auto linkAll = linkAllDisplays_.IsOn();
+        auto dispatcher = DispatcherQueue();
+        auto strong = get_strong();
+        validation_.Text(L"正在提交硬件 DDC 设置…"); validation_.Visibility(Visibility::Visible);
+        std::thread([strong, dispatcher, operation, config = std::move(config), displayId, code, value, linkAll, token]() mutable
+        {
+            ::DisplaySwitcher::Native::DdcControlBatchResult result;
+            try { result = operation(config, displayId, code, value, linkAll, token); }
+            catch (...) { result.items.push_back({ displayId, code, false, false, false, false, {}, {},
+                ::DisplaySwitcher::Native::DdcAvailability::TemporarilyUnavailable,
+                ::DisplaySwitcher::Native::DdcErrorKind::WriteFailed, L"写入硬件 DDC 设置时发生异常" }); }
+            dispatcher.TryEnqueue([strong, config = std::move(config), result = std::move(result), token]()
+            { strong->CompleteDdcOperation(config, result, token, true); });
+        }).detach();
+    }
+
+    void SettingsWindow::CompleteDdcOperation(::DisplaySwitcher::Native::AppConfig const& config,
+        ::DisplaySwitcher::Native::DdcControlBatchResult const& result,
+        ::DisplaySwitcher::Native::DdcCancellationToken const& cancellation, bool write)
+    {
+        if (cancellation.IsCanceled() || result.canceled) return;
+        auto cacheChanged = std::any_of(result.items.begin(), result.items.end(), [](auto const& item)
+        { return item.success && item.trusted; });
+        if (cacheChanged)
+        {
+            auto cacheDisplays = workingDisplays_;
+            for (auto const& updated : config.displays)
+            {
+                auto found = ::DisplaySwitcher::Native::FindDisplayById(cacheDisplays, updated.id);
+                if (!found) continue;
+                auto& current = cacheDisplays[*found];
+                current.brightnessValue = updated.brightnessValue; current.brightnessMax = updated.brightnessMax;
+                current.contrastValue = updated.contrastValue; current.contrastMax = updated.contrastMax;
+                current.volumeValue = updated.volumeValue; current.volumeMax = updated.volumeMax;
+            }
+            if (!commitDdcCache_ || !commitDdcCache_(cacheDisplays))
+            {
+                ddcCancellation_.Cancel();
+                ShowValidationError(L"无法保存 DDC 估计缓存；当前进程已进入安全状态。");
+                return;
+            }
+            workingDisplays_ = std::move(cacheDisplays);
+            RebuildDisplayEditors();
+        }
+        for (auto const& editor : displayEditors_)
+        {
+            auto first = std::find_if(result.items.begin(), result.items.end(), [&](auto const& item)
+            { return _wcsicmp(item.displayId.c_str(), editor.id.c_str()) == 0; });
+            if (first == result.items.end()) continue;
+            auto failed = std::find_if(first, result.items.end(), [&](auto const& item)
+            { return _wcsicmp(item.displayId.c_str(), editor.id.c_str()) == 0 && (!item.success || !item.trusted); });
+            if (failed != result.items.end())
+                editor.status.Text(failed->message.empty() ? L"硬件 DDC 暂时不可用或不支持" : failed->message);
+            else editor.status.Text(write ? L"硬件 DDC 写入成功" : L"硬件 DDC 回读成功");
+        }
+        auto failures = std::count_if(result.items.begin(), result.items.end(), [](auto const& item) { return !item.success || !item.trusted; });
+        if (result.items.empty()) ShowValidationError(L"未执行 DDC 操作：功能可能已关闭或显示器配置不完整。");
+        else if (failures)
+        {
+            auto first = std::find_if(result.items.begin(), result.items.end(), [](auto const& item) { return !item.success || !item.trusted; });
+            ShowValidationError((write ? L"部分硬件 DDC 写入失败：" : L"部分硬件 DDC 读取失败：")
+                + (first->message.empty() ? L"后端暂时不可用或不支持该功能" : first->message));
+        }
+        else
+        {
+            validation_.Text(write ? L"硬件 DDC 设置已提交。" : L"硬件 DDC 状态已读取。");
+            validation_.Visibility(Visibility::Visible);
         }
     }
 
     void SettingsWindow::Save()
     {
+        ddcCancellation_.Cancel();
         auto vendorText = Trim(vendorId_.Text().c_str()); auto productText = Trim(productId_.Text().c_str());
         auto vendor = ParseInteger(vendorText, 16, 0, 0xFFFF); auto product = ParseInteger(productText, 16, 0, 0xFFFF);
         if ((usbAutomation_.IsOn() || !vendorText.empty() || !productText.empty()) && (!vendor || !product))
@@ -654,30 +843,32 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 if (mapping.peerInput < 0 || mapping.peerInput > 65535)
                 { tabs_.SelectedIndex(2); ShowValidationError(profile.name + L"包含无效的显示器输入源编号。"); return; }
         }
-        auto backendIndex = displayBackend_.SelectedIndex();
-        if (usbAutomation_.IsOn() && backendIndex < 0)
-        { tabs_.SelectedIndex(3); ShowValidationError(L"启用 USB 自动切换前，请先完成显示器配置。"); return; }
         CaptureDisplayEditors();
-        if (backendIndex >= 0 && workingDisplays_.empty())
-        { tabs_.SelectedIndex(3); ShowValidationError(L"请至少添加一台显示器，或清除显示器控制方式。"); return; }
+        auto backendIndex = displayBackend_.SelectedIndex();
+        if (usbAutomation_.IsOn() && workingDisplays_.empty())
+        { tabs_.SelectedIndex(3); ShowValidationError(L"启用 USB 自动切换前，请先完成显示器配置。"); return; }
         auto controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
-        if (backendIndex == 1 && controlMyMonitorPath.empty())
+        auto anyControlMyMonitor = std::any_of(workingDisplays_.begin(), workingDisplays_.end(), [](auto const& display)
+        { return display.backend == L"control_my_monitor"; });
+        if (anyControlMyMonitor && controlMyMonitorPath.empty())
         { tabs_.SelectedIndex(3); ShowValidationError(L"使用 ControlMyMonitor 时，请填写程序路径。"); return; }
         std::set<std::wstring> hardwareIds;
         for (auto const& display : workingDisplays_)
         {
-            if (backendIndex < 0) break;
             if (display.name.empty())
             { tabs_.SelectedIndex(3); ShowValidationError(L"每台显示器都需要填写名称。"); return; }
             if (display.macInput < 0 || display.macInput > 65535)
             { tabs_.SelectedIndex(3); ShowValidationError(display.name + L"的 Mac 输入源必须为 0–65535 的整数。"); return; }
-            auto hardwareId = backendIndex == 0 ? display.nativeMonitorId : display.controlMonitorPath;
+            if (display.backend != L"native_ddc" && display.backend != L"control_my_monitor")
+            { tabs_.SelectedIndex(3); ShowValidationError(display.name + L"尚未选择硬件 DDC 后端。"); return; }
+            auto hardwareId = display.backend == L"native_ddc" ? display.nativeMonitorId : display.controlMonitorPath;
             if (hardwareId.empty())
             {
                 tabs_.SelectedIndex(3);
-                ShowValidationError(display.name + (backendIndex == 0 ? L"尚未选择 DDC/CI 显示器。" : L"尚未填写设备路径。"));
+                ShowValidationError(display.name + (display.backend == L"native_ddc" ? L"尚未选择 DDC/CI 显示器。" : L"尚未填写设备路径。"));
                 return;
             }
+            hardwareId = display.backend + L":" + hardwareId;
             std::transform(hardwareId.begin(), hardwareId.end(), hardwareId.begin(), towlower);
             if (!hardwareIds.insert(hardwareId).second)
             { tabs_.SelectedIndex(3); ShowValidationError(L"不能让多项配置指向同一台物理显示器。"); return; }

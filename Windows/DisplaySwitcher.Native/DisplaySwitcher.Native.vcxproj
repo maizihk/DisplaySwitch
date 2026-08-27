@@ -73,6 +73,8 @@
     <ClInclude Include="AppConfig.h" />
     <ClInclude Include="AutoStart.h" />
     <ClInclude Include="Controller.h" />
+    <ClInclude Include="DdcBackends.h" />
+    <ClInclude Include="DdcControl.h" />
     <ClInclude Include="DisplayModel.h" />
     <ClInclude Include="HandoverStateMachine.h" />
     <ClInclude Include="ProtocolMessage.h" />
@@ -90,6 +92,8 @@
     <ClCompile Include="AppConfig.cpp" />
     <ClCompile Include="AutoStart.cpp" />
     <ClCompile Include="Controller.cpp" />
+    <ClCompile Include="DdcBackends.cpp" />
+    <ClCompile Include="DdcControl.cpp" />
     <ClCompile Include="Diagnostics.cpp" />
     <ClCompile Include="DisplayModel.cpp" />
     <ClCompile Include="HandoverStateMachine.cpp" />
