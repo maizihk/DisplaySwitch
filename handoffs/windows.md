@@ -31,3 +31,9 @@
 ## 对 macOS 端的影响
 
 - 无。协议和 macOS 源码均未修改。
+
+## 后续边界
+
+- 当前分支只继续收敛 W-002，不启动 W-003，不在本分支实现跨端交接状态机。
+- 等待 DS-001 提案及公共测试向量正式批准；批准后从批准基线新建 `codex/windows-ds-001-state-machine`。
+- DS-001 开始前不得修改 `macOS/`、`PROTOCOL.md`、`coordination/`、`specs/` 或 `contracts/`。
