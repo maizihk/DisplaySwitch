@@ -5,7 +5,8 @@
 - 日期：2026-08-27
 - 功能：DS-004 / Windows 第一阶段——本机模型、配置迁移和 UI
 - 分支：`codex/windows-ds-004-local-model`
-- 共享基线：`8466c120c15607e7f39645c494b2786eac1f12ac`
+- 任务起始基线：`8466c120c15607e7f39645c494b2786eac1f12ac`
+- push 前同步 main：`6052327de368684b3fa87e6a45e121ba3a4da612`（仅包含后续合并的 macOS CI 路径过滤，与 Windows 实现无冲突）
 - 实现提交：`a6c9a7bd35bded48252b8da992c86e993692c00e`
 - PR：待创建
 
