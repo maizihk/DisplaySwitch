@@ -144,6 +144,7 @@ private final class VectorStateMachineRecorder {
     var actions: [TimedAction] = []
     var hardware = VectorHardwareCounter()
     var networkSends = 0
+    var peerReachabilityUpdates: [Bool] = []
 
     init(clock: VirtualClock) {
         self.clock = clock
@@ -159,6 +160,8 @@ private final class VectorStateMachineRecorder {
             hardware.wake += 1
         case .requestSwitch:
             hardware.switchDisplay += 1
+        case .updatePeerReachable(let reachable):
+            peerReachabilityUpdates.append(reachable)
         default:
             break
         }
@@ -168,6 +171,13 @@ private final class VectorStateMachineRecorder {
         actions.append(
             actionToTimedAction(action, atMs: Int(clock.currentRelativeTimeMs()))
         )
+    }
+
+    func resetObservations() {
+        actions.removeAll()
+        hardware = VectorHardwareCounter()
+        networkSends = 0
+        peerReachabilityUpdates.removeAll()
     }
 }
 
@@ -276,6 +286,7 @@ private final class VectorStateMachineHarness {
     var actions: [TimedAction] { recorder.actions }
     var hardware: VectorHardwareCounter { recorder.hardware }
     var networkSends: Int { recorder.networkSends }
+    var peerReachabilityUpdates: [Bool] { recorder.peerReachabilityUpdates }
 
     init(initialState: InitialState, configuredPairingCode: String, referenceTime: TimeInterval) {
         clock = VirtualClock(referenceTime: referenceTime)
@@ -348,6 +359,15 @@ private final class VectorStateMachineHarness {
         stateMachine.handleIncomingMessage(message)
     }
 
+    func advance(to timeMs: Int) {
+        scheduler.runPending(until: Int64(timeMs), includeEqual: true)
+        clock.advance(to: Int64(timeMs))
+    }
+
+    func resetRecordedObservations() {
+        recorder.resetObservations()
+    }
+
     func snapshot() -> HandoffStateSnapshot {
         let snapshot = stateMachine.snapshot()
         return HandoffStateSnapshot(
@@ -390,7 +410,7 @@ private final class HandoffStateMachineTestSink: HandoffActionSink {
         case sendBurst(Int)
         case requestWake
         case requestSwitch
-        case requestNone
+        case updatePeerReachable(Bool)
     }
 
     private let hardwareRecorder: (RecordedEvent, PeerMessageType, String?, Bool?, Int?) -> Void
@@ -415,7 +435,9 @@ private final class HandoffStateMachineTestSink: HandoffActionSink {
         hardwareRecorder(.requestSwitch, .handoverRequest, eventID, nil, nil)
     }
 
-    func updatePeerReachable(_ reachable: Bool) {}
+    func updatePeerReachable(_ reachable: Bool) {
+        hardwareRecorder(.updatePeerReachable(reachable), .statusResponse, nil, nil, nil)
+    }
 }
 
 private func actionToTimedAction(_ action: HandoffAction, atMs: Int) -> TimedAction {
@@ -539,6 +561,42 @@ final class HandoffStateMachineVectorTests: XCTestCase {
         let harness = makeHarness(usbAutomationEnabled: false)
         sendValidHandoverAndStatusMessages(to: harness, pairingCode: validPairingCode)
         assertNoReceiveSideEffects(harness)
+    }
+
+    func testDuplicateStatusProbeRepliesAndRestoresAdapterWithoutHardwareSideEffects() {
+        let harness = makeHarness()
+        let eventID = "aa000000-0000-4000-8000-000000000003"
+        let probe = message(
+            type: .statusProbe,
+            eventID: eventID,
+            pairingCode: validPairingCode
+        )
+
+        harness.receive(probe)
+        harness.advance(to: 100)
+        harness.resetRecordedObservations()
+        harness.receive(probe)
+
+        XCTAssertEqual(harness.actions.map(\.kind), [
+            "rejectMessage",
+            "setPeerReachable",
+            "sendMessage"
+        ])
+        XCTAssertEqual(harness.actions.first?.reason, "duplicate")
+
+        let response = harness.actions.last
+        XCTAssertEqual(response?.type, PeerMessageType.statusResponse.rawValue)
+        XCTAssertEqual(response?.eventID, eventID)
+        XCTAssertEqual(harness.networkSends, 1)
+        XCTAssertEqual(harness.peerReachabilityUpdates, [true])
+        XCTAssertEqual(harness.hardware.wake, 0)
+        XCTAssertEqual(harness.hardware.switchDisplay, 0)
+        XCTAssertEqual(harness.hardware.usbActions, 0)
+
+        let snapshot = harness.snapshot()
+        XCTAssertTrue(snapshot.peerReachable)
+        XCTAssertEqual(snapshot.peerLastSeenAtMs, 100)
+        XCTAssertEqual(snapshot.seenMessageCount, 1)
     }
 
     private func makeHarness(
