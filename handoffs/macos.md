@@ -5,7 +5,8 @@
 - 日期：2026-08-27
 - 分支：`codex/macos-directory-layout`
 - 清单：M-003A macOS 平台目录隔离
-- 提交：待创建
+- 实现提交：`1a0faab`
+- PR：[#1](https://github.com/maizihk/DisplaySwitch/pull/1)
 
 ## 完成内容
 
@@ -20,10 +21,10 @@
 - 13 项单元测试全部通过。
 - `macOS/scripts/build-app.sh` 构建、打包和签名验证通过。
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 通过。
+- GitHub Actions [run 33041637028](https://github.com/maizihk/DisplaySwitch/actions/runs/33041637028) 通过。
 
 ## 尚需验证
 
-- GitHub Actions 和 PR 检查等待分支推送后执行。
 - 本次为纯目录迁移，不需要执行真实 DDC、USB 交接、显示器唤醒或 GUI 实机测试。
 
 ## 对 Windows 端的影响
