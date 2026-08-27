@@ -286,6 +286,13 @@ enum PeerIdentityCheck: Equatable {
     case firstConfirmationRequired(endpointID: String, protocolVersion: Int)
     case changeConfirmationRequired(previousEndpointID: String, endpointID: String, protocolVersion: Int)
     case invalid
+
+    var requiresConfirmation: Bool {
+        switch self {
+        case .firstConfirmationRequired, .changeConfirmationRequired: return true
+        case .unchanged, .invalid: return false
+        }
+    }
 }
 
 enum DisplayConfigurationStore {

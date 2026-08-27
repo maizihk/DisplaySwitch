@@ -162,8 +162,6 @@ private final class VectorStateMachineRecorder {
             hardware.switchDisplay += 1
         case .updatePeerReachable(let reachable):
             peerReachabilityUpdates.append(reachable)
-        default:
-            break
         }
     }
 
@@ -472,24 +470,13 @@ private func actionEquals(_ lhs: TimedAction, _ rhs: TimedAction) -> Bool {
     (rhs.wakeSucceeded == nil || lhs.wakeSucceeded == rhs.wakeSucceeded)
 }
 
-private func locateProjectRoot() -> URL {
-    var cursor = URL(fileURLWithPath: #filePath)
-    while cursor.path != "/" {
-        if cursor.lastPathComponent == "DisplaySwitch" {
-            return cursor
-        }
-        cursor = cursor.deletingLastPathComponent()
-    }
-    return URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-}
-
 final class HandoffStateMachineVectorTests: XCTestCase {
     private let referenceTime: TimeInterval = 1_788_000_000
     private let validPairingCode = "TEST-CODE-0001"
 
     func testAllStateMachineVectors() throws {
-        let root = locateProjectRoot()
-        let fileURL = root.appendingPathComponent("contracts/protocol-v1/state-machine-vectors.json")
+        let fileURL = try XCTUnwrap(Bundle(for: HandoffStateMachineVectorTests.self).resourceURL)
+            .appendingPathComponent("contracts/protocol-v1/state-machine-vectors.json")
         let data = try Data(contentsOf: fileURL)
         let vectors = try JSONDecoder().decode(VectorFile.self, from: data)
 

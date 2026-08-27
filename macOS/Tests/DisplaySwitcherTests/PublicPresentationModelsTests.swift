@@ -42,7 +42,7 @@ final class PublicPresentationModelsTests: XCTestCase {
         ])
         XCTAssertEqual(content.productName, "DisplaySwitcher")
         XCTAssertEqual(content.versionText, "版本 2.1.0 (19)")
-        XCTAssertEqual(content.platformText, "macOS · simulated-arch · 协议 v1")
+        XCTAssertEqual(content.platformText, "macOS · simulated-arch · 协议 v1/v2")
         for privateValue in metadata.values.values where privateValue.hasPrefix("private-") {
             XCTAssertFalse(renderedPublicText.contains(privateValue))
         }

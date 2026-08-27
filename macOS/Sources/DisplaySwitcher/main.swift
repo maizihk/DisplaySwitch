@@ -151,7 +151,23 @@ private struct ConfigurationSafetyBlockedError: LocalizedError {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HandoffClock, HandoffScheduler, HandoffEventIDSource, HandoffActionSink {
+private final class PendingPeerCapabilityInspection {
+    let id: String
+    let profile: CollaborationProfile
+    let v2EventID: String
+    var v1EventID: String?
+    let completion: (PeerCapabilityInspectionResult) -> Void
+
+    init(id: String, profile: CollaborationProfile, v2EventID: String,
+         completion: @escaping (PeerCapabilityInspectionResult) -> Void) {
+        self.id = id
+        self.profile = profile
+        self.v2EventID = v2EventID
+        self.completion = completion
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HandoffClock, HandoffScheduler, HandoffEventIDSource, HandoffActionSink, V2HandoffActionSink {
     private lazy var statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var instanceLockFD: Int32 = -1
     private var ownsPrimaryInstance = false
@@ -170,6 +186,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         scheduler: self,
         eventIDSource: self
     )
+    private lazy var handoffV2StateMachine = HandoffV2StateMachine(
+        localEndpointID: AppPreferences.localConfiguration.localEndpointID,
+        sink: self,
+        scheduler: self,
+        eventIDSource: self
+    )
+    private var v2RoutingTable = V2EndpointRoutingTable(routesByEndpointID: [:], rejectedProfileIDs: [])
+    private var v2ReplayCache = V2NonceReplayCache()
+    private var v2ReachableEndpoints = Set<String>()
+    private var v2LastSeenAtMs: [String: Int64] = [:]
+    private var v2OutgoingMessages: [String: Data] = [:]
+    private var v2DatagramReplies: [String: PeerTransport.DataReply] = [:]
+    private var pendingPeerInspections: [String: PendingPeerCapabilityInspection] = [:]
+    private var inspectionIDByEventID: [String: String] = [:]
     private var displayControls: [Int: DisplayControls] = [:]
     private var displayMenuItems: [Int: NSMenuItem] = [:]
     private var profileSwitchItems: [NSMenuItem] = []
@@ -197,6 +227,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         controller.onUSBLearningFinished = { [weak self] in
             self?.finishUSBLearning()
+        }
+        controller.onInspectPeer = { [weak self] profile, completion in
+            self?.beginPeerCapabilityInspection(profile: profile, completion: completion)
         }
         return controller
     }()
@@ -265,8 +298,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         usbMonitor.onPresenceChanged = { [weak self] isPresent in
             self?.handleUSBPresenceChange(isPresent)
         }
-        peerTransport.onMessage = { [weak self] message, _ in
-            self?.handoffStateMachine.handleIncomingMessage(message)
+        usbMonitor.onInitialPresenceObserved = { [weak self] isPresent in
+            self?.recordInitialInputPresence(isPresent)
+        }
+        peerTransport.onDatagram = { [weak self] data, reply in
+            self?.handlePeerDatagram(data, reply: reply)
         }
         peerTransport.onError = { message in
             NSLog("DisplaySwitcher: %@", message)
@@ -284,6 +320,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         guard let profileID = sender.representedObject as? String else { return }
         let document = AppPreferences.localConfiguration
         guard let profile = document.collaborationProfiles.first(where: { $0.id == profileID }) else { return }
+        if profile.peerProtocolVersion == 2,
+           let endpointID = profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID),
+           v2RoutingTable.route(for: endpointID)?.profileID == profile.id {
+            handoffV2StateMachine.handleManualSelect(endpointID: endpointID, eventID: nextEventID())
+            return
+        }
         let mappings = Dictionary(uniqueKeysWithValues: profile.displayInputs.map { ($0.displayID.lowercased(), $0.peerInput) })
         let selected = Dictionary(uniqueKeysWithValues: configurations.map { index, configuration in
             var value = configuration
@@ -618,9 +660,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func configureUSBMonitor() {
         usbMonitor.stop()
         guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
-        guard !DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration).blocksAutomaticSideEffects else {
+        let document = AppPreferences.localConfiguration
+        let routingTable = V2EndpointRoutingTable.build(from: document)
+        let v2Profiles = routingTable.routesByEndpointID.values.compactMap { route in
+            document.collaborationProfiles.first { $0.id == route.profileID }
+        }
+        let v2USBReferences = Set(v2Profiles.flatMap { profile in
+            profile.triggerDevices.compactMap { trigger in
+                trigger.kind.caseInsensitiveCompare("usb") == .orderedSame ? trigger.localReference : nil
+            }
+        })
+        if AppPreferences.usbAutomationEnabled, v2USBReferences.count == 1,
+           let value = v2USBReferences.first, let reference = USBDeviceReference(localReference: value) {
+            usbMonitor.start(triggerReference: reference)
             return
         }
+        guard !DisplayConfigurationStore.legacyV1RuntimeSelection(in: document).blocksAutomaticSideEffects else { return }
         let trigger = AppPreferences.usbAutomationEnabled ? AppPreferences.usbTriggerDevice : nil
         usbMonitor.start(triggerDevice: trigger)
     }
@@ -632,9 +687,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         pendingSchedulerItems.removeAll()
 
+        let interruptedInspections = Array(pendingPeerInspections.keys)
+        for inspectionID in interruptedInspections {
+            completePeerCapabilityInspection(inspectionID, result: .noResponse)
+        }
+
         let networkAllowed = configurationSafetyGate.allows(.network)
         let usbAllowed = configurationSafetyGate.allows(.usb)
-        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration)
+        let document = AppPreferences.localConfiguration
+        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document)
         let profile = selection.profile
         let coordinationEnabled = networkAllowed && usbLearningSafetyGate.allows(.network) && profile != nil
         let pairingCode = profile?.pairingCode ?? ""
@@ -655,10 +716,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             coordinationEnabled && usbAllowed && AppPreferences.usbAutomationEnabled
         )
         handoffStateMachine.setCoordinationEnabled(coordinationEnabled)
+        v2RoutingTable = V2EndpointRoutingTable.build(from: document)
+        let configuredEndpointIDs = Set(v2RoutingTable.routesByEndpointID.keys)
+        v2ReachableEndpoints.formIntersection(configuredEndpointIDs)
+        v2LastSeenAtMs = v2LastSeenAtMs.filter { configuredEndpointIDs.contains($0.key) }
+        v2ReplayCache.reset()
+        v2OutgoingMessages.removeAll(keepingCapacity: true)
+        v2DatagramReplies.removeAll(keepingCapacity: true)
+        let v2Enabled = networkAllowed && usbLearningSafetyGate.allows(.network)
+            && !v2RoutingTable.routesByEndpointID.isEmpty
+        handoffV2StateMachine.configure(
+            localEndpointID: document.localEndpointID,
+            coordinationEnabled: v2Enabled,
+            sourceInputPresent: false,
+            targetInputPresent: false,
+            enabledTargets: v2RoutingTable.routesByEndpointID.values.map {
+                V2HandoffTarget(
+                    endpointID: $0.endpointID,
+                    capability: .v2,
+                    reachable: v2ReachableEndpoints.contains($0.endpointID)
+                )
+            }
+        )
         refreshPeerConnectionStatus()
-        if coordinationEnabled, let profile {
-            peerTransport.start(port: profile.peerPort)
+        if coordinationEnabled || v2Enabled {
+            peerTransport.start(port: v2Enabled ? document.listenPort : (profile?.peerPort ?? document.listenPort))
         }
+        if v2Enabled { scheduleV2StatusProbes() }
     }
 
     private func startUSBLearning(profileID: String) {
@@ -690,7 +774,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func handleUSBPresenceChange(_ isPresent: Bool) {
         guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
-        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration)
+        let document = AppPreferences.localConfiguration
+        if !v2RoutingTable.routesByEndpointID.isEmpty, AppPreferences.usbAutomationEnabled {
+            handoffV2StateMachine.handleLocalInputPresenceChanged(isPresent)
+            return
+        }
+        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document)
         guard !selection.blocksAutomaticSideEffects else { return }
         if selection.allowsAutomaticCoordination {
             handoffStateMachine.handleUSBPresenceChanged(isPresent)
@@ -721,6 +810,263 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         pendingUSBSwitch = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+    }
+
+    private func recordInitialInputPresence(_ isPresent: Bool) {
+        guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
+        if !v2RoutingTable.routesByEndpointID.isEmpty, AppPreferences.usbAutomationEnabled {
+            handoffV2StateMachine.recordInitialLocalInputPresence(isPresent)
+        } else {
+            handoffStateMachine.recordInitialUSBPresence(isPresent)
+        }
+    }
+
+    private func beginPeerCapabilityInspection(
+        profile: CollaborationProfile,
+        completion: @escaping (PeerCapabilityInspectionResult) -> Void
+    ) {
+        guard configurationSafetyGate.allows(.network), usbLearningSafetyGate.allows(.network),
+              (try? V2Crypto.normalizedPairingCodeData(profile.pairingCode)) != nil else {
+            completion(.authenticationFailed)
+            return
+        }
+        let inspectionID = UUID().uuidString.lowercased()
+        let eventID = nextEventID().lowercased()
+        let pending = PendingPeerCapabilityInspection(
+            id: inspectionID,
+            profile: profile,
+            v2EventID: eventID,
+            completion: completion
+        )
+        pendingPeerInspections[inspectionID] = pending
+        inspectionIDByEventID[eventID] = inspectionID
+        peerTransport.start(port: AppPreferences.localConfiguration.listenPort)
+        guard let data = makeV2StatusProbe(eventID: eventID, profile: profile) else {
+            completePeerCapabilityInspection(inspectionID, result: .authenticationFailed)
+            return
+        }
+        peerTransport.send(data, host: profile.peerHost, port: profile.peerPort)
+        schedule("v2-inspection-\(inspectionID)", after: 1_000) { [weak self] in
+            self?.beginV1InspectionFallback(inspectionID)
+        }
+    }
+
+    private func makeV2StatusProbe(eventID: String, profile: CollaborationProfile) -> Data? {
+        let localEndpointID = AppPreferences.localConfiguration.localEndpointID
+        guard let nonce = try? V2Crypto.makeNonce(),
+              let key = try? V2Crypto.deriveKey(
+                pairingCode: profile.pairingCode,
+                sourceEndpointID: localEndpointID
+              ) else { return nil }
+        var message = V2Message(
+            type: .statusProbe,
+            eventID: eventID,
+            sourceEndpointID: localEndpointID,
+            targetEndpointID: nil,
+            sourcePlatform: .macos,
+            timestamp: Int64(Date().timeIntervalSince1970),
+            nonce: nonce
+        )
+        message.authTag = V2Crypto.authenticationTag(for: message, key: key)
+        return try? JSONEncoder().encode(message)
+    }
+
+    private func beginV1InspectionFallback(_ inspectionID: String) {
+        guard let pending = pendingPeerInspections[inspectionID] else { return }
+        let eventID = nextEventID().lowercased()
+        pending.v1EventID = eventID
+        inspectionIDByEventID[eventID] = inspectionID
+        let message = makePeerMessage(
+            type: .statusProbe,
+            eventID: eventID,
+            pairingCode: pending.profile.pairingCode
+        )
+        peerTransport.send(message, host: pending.profile.peerHost, port: pending.profile.peerPort)
+        schedule("v1-inspection-\(inspectionID)", after: 1_000) { [weak self] in
+            self?.completePeerCapabilityInspection(inspectionID, result: .noResponse)
+        }
+    }
+
+    private func completePeerCapabilityInspection(
+        _ inspectionID: String,
+        result: PeerCapabilityInspectionResult
+    ) {
+        guard let pending = pendingPeerInspections.removeValue(forKey: inspectionID) else { return }
+        cancel("v2-inspection-\(inspectionID)")
+        cancel("v1-inspection-\(inspectionID)")
+        inspectionIDByEventID.removeValue(forKey: pending.v2EventID)
+        if let v1EventID = pending.v1EventID { inspectionIDByEventID.removeValue(forKey: v1EventID) }
+        pending.completion(result)
+    }
+
+    private func handlePendingV2Inspection(_ data: Data) -> Bool {
+        guard let eventID = V2MessageEnvelope.eventID(in: data),
+              let inspectionID = inspectionIDByEventID[eventID],
+              let pending = pendingPeerInspections[inspectionID],
+              eventID == pending.v2EventID,
+              let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data),
+              let key = try? V2Crypto.deriveKey(
+                pairingCode: pending.profile.pairingCode,
+                sourceEndpointID: sourceEndpointID
+              ) else { return false }
+        let validation = V2MessageValidator.validate(
+            data: data,
+            context: V2MessageValidationContext(
+                now: Int64(Date().timeIntervalSince1970),
+                localEndpointID: AppPreferences.localConfiguration.localEndpointID,
+                knownSourceEndpointID: sourceEndpointID,
+                authenticationKey: key
+            )
+        )
+        if validation.reason == .authenticationFailed {
+            completePeerCapabilityInspection(inspectionID, result: .authenticationFailed)
+            return true
+        }
+        guard validation.accepted, validation.message?.type == .statusResponse else { return true }
+        completePeerCapabilityInspection(inspectionID, result: .v2(endpointID: sourceEndpointID))
+        return true
+    }
+
+    private func handlePendingV1Inspection(_ message: PeerMessage) -> Bool {
+        let eventID = message.eventID.lowercased()
+        guard let inspectionID = inspectionIDByEventID[eventID],
+              let pending = pendingPeerInspections[inspectionID],
+              pending.v1EventID == eventID else { return false }
+        let valid = PeerMessageValidation.accepts(
+            message,
+            pairingCode: pending.profile.pairingCode,
+            expectedSource: "windows",
+            expectedTarget: "mac"
+        )
+        if valid, message.type == .statusResponse {
+            completePeerCapabilityInspection(inspectionID, result: .v1Only)
+        }
+        return true
+    }
+
+    private func handlePeerDatagram(_ data: Data, reply: @escaping PeerTransport.DataReply) {
+        guard configurationSafetyGate.allows(.network), usbLearningSafetyGate.allows(.network) else { return }
+        switch PeerProtocolVersionDispatcher.version(in: data) {
+        case .v1:
+            guard let message = try? JSONDecoder().decode(PeerMessage.self, from: data) else { return }
+            if handlePendingV1Inspection(message) { return }
+            handoffV2StateMachine.handleV1Message()
+            handoffStateMachine.handleIncomingMessage(message)
+        case .v2:
+            if handlePendingV2Inspection(data) { return }
+            handleV2Datagram(data, reply: reply)
+        case .unsupported, nil:
+            return
+        }
+    }
+
+    private func handleV2Datagram(_ data: Data, reply: @escaping PeerTransport.DataReply) {
+        let document = AppPreferences.localConfiguration
+        guard let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data),
+              let route = v2RoutingTable.route(for: sourceEndpointID),
+              let key = try? V2Crypto.deriveKey(
+                pairingCode: route.pairingCode,
+                sourceEndpointID: sourceEndpointID
+              ) else { return }
+        let validation = V2MessageValidator.validate(
+            data: data,
+            context: V2MessageValidationContext(
+                now: Int64(Date().timeIntervalSince1970),
+                localEndpointID: document.localEndpointID,
+                knownSourceEndpointID: sourceEndpointID,
+                authenticationKey: key
+            )
+        )
+        guard validation.accepted, let message = validation.message else { return }
+
+        switch v2ReplayCache.classify(message, nowMs: currentTimeMs()) {
+        case .nonceReuse:
+            return
+        case .duplicate:
+            guard message.type == .statusProbe else { return }
+        case .new:
+            break
+        }
+        updateV2PeerReachable(true, endpointID: sourceEndpointID)
+
+        if message.type == .statusProbe {
+            v2DatagramReplies[v2ReplyKey(eventID: message.eventID, endpointID: sourceEndpointID)] = reply
+        }
+        switch message.type {
+        case .statusProbe:
+            handoffV2StateMachine.handleStatusProbe(
+                endpointID: sourceEndpointID,
+                eventID: message.eventID,
+                authenticated: true
+            )
+        case .statusResponse:
+            handoffV2StateMachine.handleStatusResponse(endpointID: sourceEndpointID, authenticated: true)
+        case .inputPresent:
+            handoffV2StateMachine.handlePeerInputPresent(
+                endpointID: sourceEndpointID,
+                eventID: message.eventID,
+                authenticated: true
+            )
+        case .handoverRequest:
+            guard let intent = message.intent else { return }
+            handoffV2StateMachine.handleHandoverRequest(
+                endpointID: sourceEndpointID,
+                eventID: message.eventID,
+                authenticated: true,
+                intent: intent
+            )
+        case .targetReady:
+            guard let wakeSucceeded = message.wakeSucceeded else { return }
+            handoffV2StateMachine.handleTargetReady(
+                endpointID: sourceEndpointID,
+                eventID: message.eventID,
+                authenticated: true,
+                wakeSucceeded: wakeSucceeded
+            )
+        case .committed:
+            guard let switchSucceeded = message.switchSucceeded else { return }
+            handoffV2StateMachine.handleCommitted(
+                endpointID: sourceEndpointID,
+                eventID: message.eventID,
+                authenticated: true,
+                switchSucceeded: switchSucceeded
+            )
+        case .cancelled:
+            handoffV2StateMachine.handleCancelled(
+                endpointID: sourceEndpointID,
+                eventID: message.eventID,
+                authenticated: true
+            )
+        }
+    }
+
+    private func v2ReplyKey(eventID: String, endpointID: String) -> String {
+        "\(eventID.lowercased()):\(endpointID.lowercased())"
+    }
+
+    private func scheduleV2StatusProbes() {
+        schedule("v2-status-probes", after: 2_000) { [weak self] in
+            guard let self, self.configurationSafetyGate.allows(.network),
+                  self.usbLearningSafetyGate.allows(.network),
+                  !self.v2RoutingTable.routesByEndpointID.isEmpty else { return }
+            let now = self.currentTimeMs()
+            for endpointID in self.v2RoutingTable.routesByEndpointID.keys.sorted() {
+                if let lastSeen = self.v2LastSeenAtMs[endpointID], now - lastSeen > 6_000 {
+                    self.v2ReachableEndpoints.remove(endpointID)
+                    self.handoffV2StateMachine.setTargetReachable(false, endpointID: endpointID)
+                }
+                self.sendV2Message(
+                    type: .statusProbe,
+                    eventID: self.nextEventID(),
+                    endpointID: endpointID,
+                    intent: nil,
+                    wakeSucceeded: nil,
+                    switchSucceeded: nil,
+                    reason: nil
+                )
+            }
+            self.scheduleV2StatusProbes()
+        }
     }
 
     private func sendPeerMessage(
@@ -947,18 +1293,128 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         refreshPeerConnectionStatus()
     }
 
+    func sendV2Message(
+        type: V2MessageType,
+        eventID: String,
+        endpointID: String,
+        intent: V2HandoverIntent?,
+        wakeSucceeded: Bool?,
+        switchSucceeded: Bool?,
+        reason: V2CancellationReason?
+    ) {
+        guard configurationSafetyGate.allows(.network), usbLearningSafetyGate.allows(.network),
+              let route = v2RoutingTable.route(for: endpointID) else { return }
+        let cacheKey = [
+            type.rawValue, eventID.lowercased(), endpointID.lowercased(), intent?.rawValue ?? "",
+            wakeSucceeded.map(String.init) ?? "", switchSucceeded.map(String.init) ?? "", reason?.rawValue ?? ""
+        ].joined(separator: "|")
+        let data: Data
+        if let cached = v2OutgoingMessages[cacheKey] {
+            data = cached
+        } else {
+            let document = AppPreferences.localConfiguration
+            guard let nonce = try? V2Crypto.makeNonce(),
+                  let key = try? V2Crypto.deriveKey(
+                    pairingCode: route.pairingCode,
+                    sourceEndpointID: document.localEndpointID
+                  ) else { return }
+            var message = V2Message(
+                type: type,
+                eventID: eventID,
+                sourceEndpointID: document.localEndpointID,
+                targetEndpointID: endpointID,
+                sourcePlatform: .macos,
+                timestamp: Int64(Date().timeIntervalSince1970),
+                nonce: nonce,
+                intent: intent,
+                wakeSucceeded: wakeSucceeded,
+                switchSucceeded: switchSucceeded,
+                reason: reason
+            )
+            message.authTag = V2Crypto.authenticationTag(for: message, key: key)
+            guard let encoded = try? JSONEncoder().encode(message) else { return }
+            data = encoded
+            if v2OutgoingMessages.count >= 512 { v2OutgoingMessages.removeAll(keepingCapacity: true) }
+            v2OutgoingMessages[cacheKey] = data
+        }
+        let replyKey = v2ReplyKey(eventID: eventID, endpointID: endpointID)
+        if type == .statusResponse, let reply = v2DatagramReplies.removeValue(forKey: replyKey) {
+            reply(data)
+        } else {
+            peerTransport.send(data, host: route.host, port: route.port)
+        }
+    }
+
+    func requestV2Wake(eventID: String) {
+        guard configurationSafetyGate.allows(.wake), usbLearningSafetyGate.allows(.wake) else { return }
+        handoffV2StateMachine.handleWakeCompleted(eventID: eventID, success: wakeMacDisplay())
+    }
+
+    func requestV2Switch(eventID: String, endpointID: String) {
+        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc),
+              let route = v2RoutingTable.route(for: endpointID) else { return }
+        let document = AppPreferences.localConfiguration
+        guard let profile = document.collaborationProfiles.first(where: { $0.id == route.profileID }) else { return }
+        let mappings = Dictionary(uniqueKeysWithValues: profile.displayInputs.map {
+            ($0.displayID.lowercased(), $0.peerInput)
+        })
+        let selected = Dictionary(uniqueKeysWithValues: configurations.map { index, configuration in
+            var value = configuration
+            value.windowsInput = configuration.id.flatMap { mappings[$0.lowercased()] }
+            return (index, value)
+        })
+        switchInputs(
+            toMac: false,
+            completion: { [weak self] success in
+                self?.handoffV2StateMachine.handleSwitchCompleted(eventID: eventID, success: success)
+            },
+            overrideConfigurations: selected
+        )
+    }
+
+    func promptV2ManualSelection() {
+        guard settingsWindowHasBeenShown else { return }
+        settingsWindowController.updatePeerConnectionStatus(
+            "未检测到已认证目标，请从菜单手动选择配置",
+            connected: false
+        )
+    }
+
+    func updateV2PeerReachable(_ reachable: Bool, endpointID: String) {
+        let normalized = endpointID.lowercased()
+        if reachable {
+            v2ReachableEndpoints.insert(normalized)
+            v2LastSeenAtMs[normalized] = currentTimeMs()
+        } else {
+            v2ReachableEndpoints.remove(normalized)
+            v2LastSeenAtMs.removeValue(forKey: normalized)
+        }
+        handoffV2StateMachine.setTargetReachable(reachable, endpointID: normalized)
+        refreshPeerConnectionStatus()
+    }
+
     private func refreshPeerConnectionStatus() {
         guard settingsWindowHasBeenShown else {
             return
         }
         let snapshot = handoffStateMachine.snapshot()
+        let v2Snapshot = handoffV2StateMachine.snapshot()
         let configurationBlocked = configurationSafetyGate.state != .ready
         settingsWindowController.updatePeerConnectionStatus(
             configurationBlocked
                 ? "配置安全模式：网络交接已停用"
-                : legacyV1StatusText(connected: snapshot.peerReachable),
-            connected: !configurationBlocked && snapshot.peerReachable
+                : collaborationStatusText(v1Connected: snapshot.peerReachable, v2Snapshot: v2Snapshot),
+            connected: !configurationBlocked && (snapshot.peerReachable || !v2ReachableEndpoints.isEmpty)
         )
+    }
+
+    private func collaborationStatusText(v1Connected: Bool, v2Snapshot: V2HandoffSnapshot) -> String {
+        if !v2RoutingTable.routesByEndpointID.isEmpty {
+            let reachable = v2ReachableEndpoints.count
+            if reachable > 0 { return "协议 v2：已连接 \(reachable) 个协同配置" }
+            return v2Snapshot.coordinationEnabled ? "协议 v2：等待已配置目标…" : "协议 v2：自动协同已暂停"
+        }
+        return legacyV1StatusText(connected: v1Connected)
     }
 
     private func legacyV1StatusText(connected: Bool) -> String {
@@ -985,6 +1441,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             item.cancel()
         }
         pendingSchedulerItems.removeAll()
+        let interruptedInspections = Array(pendingPeerInspections.keys)
+        for inspectionID in interruptedInspections {
+            completePeerCapabilityInspection(inspectionID, result: .noResponse)
+        }
         handoffStateMachine.configure(
             coordinationEnabled: false,
             usbAutomationEnabled: false,
@@ -997,6 +1457,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             seenMessages: [],
             pairingCode: AppPreferences.pairingCode
         )
+        handoffV2StateMachine.configure(
+            localEndpointID: AppPreferences.localConfiguration.localEndpointID,
+            coordinationEnabled: false,
+            sourceInputPresent: false,
+            targetInputPresent: false,
+            enabledTargets: []
+        )
+        v2ReplayCache.reset()
+        v2OutgoingMessages.removeAll(keepingCapacity: true)
+        v2DatagramReplies.removeAll(keepingCapacity: true)
         updateConfigurationSafetyUI()
         refreshPeerConnectionStatus()
     }

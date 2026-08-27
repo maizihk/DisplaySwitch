@@ -203,6 +203,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onLearnUSB: ((String) -> Void)?
     var onCancelUSBLearning: (() -> Void)?
     var onUSBLearningFinished: (() -> Void)?
+    var onInspectPeer: ((CollaborationProfile, @escaping (PeerCapabilityInspectionResult) -> Void) -> Void)?
 
     private let linkedCheckbox = NSSwitch()
     private let launchAtLoginCheckbox = NSSwitch()
@@ -384,7 +385,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         peerGrid.column(at: 0).xPlacement = .trailing
         peerGrid.column(at: 1).width = 410
         peerStatusLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        let peerHint = NSTextField(wrappingLabelWithString: "可保存并同时开启多个对端配置。检测仅检查本机字段、显示器映射和 DDC 可用性，不会联网或执行硬件操作。")
+        let peerHint = NSTextField(wrappingLabelWithString: "可保存并同时开启多个对端配置。检测会先检查本机字段，再发送零硬件副作用的 v2/v1 状态探测。首次 endpoint 或 endpoint 变化必须由用户确认。")
         peerHint.textColor = .secondaryLabelColor
         peerHint.font = .systemFont(ofSize: 11)
         tabView.addTabViewItem(makePage(label: "USB 切换", views: [
@@ -1148,13 +1149,59 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ? Set(document.displays.map { $0.id.lowercased() }) : Set<String>()
         let inspection = DisplayConfigurationStore.inspectProfile(editingProfiles[selectedProfileIndex], displays: document.displays,
                                                                   ddcAvailableDisplayIDs: localIDs)
-        let alert = NSAlert()
-        alert.messageText = inspection.isComplete ? "本机配置完整" : "本机配置需要检查"
-        let inspectionText = inspection.isComplete
-            ? "名称、地址、端口、配对码和显示器映射均完整。未发送网络消息，也未执行 DDC、USB 或唤醒操作。"
-            : inspection.issues.map(\.rawValue).joined(separator: "、")
-        alert.informativeText = "\(inspectionText)\n\n\(DDCController.backendSummaryWithoutHardwareAccess)"
-        alert.beginSheetModal(for: window!)
+        guard inspection.isComplete else {
+            let alert = NSAlert()
+            alert.messageText = "本机配置需要检查"
+            alert.informativeText = "\(inspection.issues.map(\.rawValue).joined(separator: "、"))\n\n\(DDCController.backendSummaryWithoutHardwareAccess)"
+            alert.beginSheetModal(for: window!)
+            return
+        }
+        let profile = editingProfiles[selectedProfileIndex]
+        guard let onInspectPeer else {
+            showPeerInspectionResult(.noResponse, profileID: profile.id)
+            return
+        }
+        inspectProfileButton.isEnabled = false
+        peerStatusLabel.stringValue = "正在检测 \(profile.name)…"
+        onInspectPeer(profile) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.inspectProfileButton.isEnabled = true
+                self?.showPeerInspectionResult(result, profileID: profile.id)
+            }
+        }
+    }
+
+    private func showPeerInspectionResult(_ result: PeerCapabilityInspectionResult, profileID: String) {
+        guard let index = editingProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+        let profile = editingProfiles[index]
+        switch result {
+        case .v2(let endpointID):
+            let identity = DisplayConfigurationStore.checkPeerIdentity(profile, endpointID: endpointID, protocolVersion: 2)
+            if identity == .unchanged {
+                peerStatusLabel.stringValue = "\(profile.name)：v2 可用"
+                return
+            }
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = identity.requiresConfirmation ? "确认对端逻辑身份" : "检测结果无效"
+            alert.informativeText = "\(profile.name) 返回了协议 v2 endpoint。只有确认这是预期对端后才会用于协同。"
+            alert.addButton(withTitle: "确认")
+            alert.addButton(withTitle: "取消")
+            alert.beginSheetModal(for: window!) { [weak self] response in
+                guard let self, response == .alertFirstButtonReturn,
+                      let current = self.editingProfiles.firstIndex(where: { $0.id == profileID }) else { return }
+                self.editingProfiles[current].peerEndpointID = endpointID.lowercased()
+                self.editingProfiles[current].peerProtocolVersion = 2
+                self.peerStatusLabel.stringValue = "\(self.editingProfiles[current].name)：v2 已确认，保存后生效"
+            }
+        case .v1Only:
+            editingProfiles[index].peerProtocolVersion = 1
+            peerStatusLabel.stringValue = "\(profile.name)：仅 v1；多目标、同系统和手动唤醒不可用"
+        case .authenticationFailed:
+            peerStatusLabel.stringValue = "\(profile.name)：认证失败"
+        case .noResponse:
+            peerStatusLabel.stringValue = "\(profile.name)：无响应"
+        }
     }
 
     @available(macOS 13.0, *)
