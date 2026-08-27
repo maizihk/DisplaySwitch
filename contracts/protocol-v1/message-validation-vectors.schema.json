@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://displayswitch.example/contracts/protocol-v1/message-validation-vectors.schema.json",
+  "title": "DisplaySwitch protocol v1 message validation vectors",
+  "type": "object",
+  "required": ["schemaVersion", "protocolVersion", "referenceTime", "configuredPairingCode", "vectors"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "protocolVersion": { "type": "integer", "const": 1 },
+    "referenceTime": { "type": "number" },
+    "configuredPairingCode": { "type": "string", "const": "TEST-CODE-0001" },
+    "vectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/vector" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "platform": {
+      "type": "string",
+      "enum": ["mac", "windows"]
+    },
+    "input": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["encoding", "value"],
+          "properties": {
+            "encoding": { "const": "jsonObject" },
+            "value": { "type": "object" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["encoding", "value"],
+          "properties": {
+            "encoding": { "const": "rawUtf8" },
+            "value": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "expected": {
+      "type": "object",
+      "required": ["accepted", "reason", "refreshPeer", "replyTypes", "hardwareCalls"],
+      "properties": {
+        "accepted": { "type": "boolean" },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "parse_error",
+            "missing_field",
+            "invalid_field_type",
+            "unsupported_version",
+            "unknown_type",
+            "invalid_event_id",
+            "wrong_direction",
+            "pairing_mismatch",
+            "timestamp_out_of_window"
+          ]
+        },
+        "refreshPeer": { "type": "boolean" },
+        "replyTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "handover_request",
+              "usb_present",
+              "usb_attached_and_awake",
+              "committed",
+              "status_probe",
+              "status_response"
+            ]
+          }
+        },
+        "hardwareCalls": {
+          "type": "object",
+          "required": ["wake", "switchDisplay", "usbActions"],
+          "properties": {
+            "wake": { "type": "integer", "minimum": 0 },
+            "switchDisplay": { "type": "integer", "minimum": 0 },
+            "usbActions": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "vector": {
+      "type": "object",
+      "required": ["id", "description", "localPlatform", "input", "expected"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^MSG-[0-9]{3}$" },
+        "description": { "type": "string", "minLength": 1 },
+        "localPlatform": { "$ref": "#/$defs/platform" },
+        "input": { "$ref": "#/$defs/input" },
+        "expected": { "$ref": "#/$defs/expected" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
