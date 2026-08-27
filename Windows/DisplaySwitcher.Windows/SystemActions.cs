@@ -23,7 +23,7 @@ internal static class SystemActions
         if (!File.Exists(config.ControlMyMonitorPath))
             return (false, $"找不到 ControlMyMonitor：{config.ControlMyMonitorPath}");
 
-        // 小米先切：切离 Windows 后它可能不再接受当前链路上的 DDC 指令。
+        // 保持配置顺序：第一台切离 Windows 后可能不再接受当前链路上的 DDC 指令。
         var commands = new[] {
             (config.RedmiMonitorPath, config.RedmiMacInput),
             (config.DellMonitorPath, config.DellMacInput)

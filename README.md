@@ -62,15 +62,9 @@
 
 USB 消失防抖为 150 ms。最近收到过对端心跳时，确认等待上限为 600 ms；对端离线时发送一次通知后立即切屏，不再等待无效超时。确认消息短间隔重复发送，等待期间 USB 回到源端会取消交接；超时后仍会切屏，退化成没有网络协同时的原有行为。重复、过期和乱序请求不会重复触发切换。具体消息格式见 `PROTOCOL.md`。
 
-Windows 托盘版当前源码位于 `Windows/DisplaySwitcher.Native`，使用原生 C++/WinUI 3；托盘、USB、UDP 和登录启动分别调用 Win32 API。旧的 `Windows/DisplaySwitcher.Windows` C# 工程保留为迁移行为参照，不再由构建脚本发布。默认配置沿用已验证的环境：
+Windows 托盘版当前源码位于 `Windows/DisplaySwitcher.Native`，使用原生 C++/WinUI 3；托盘、USB、UDP 和登录启动分别调用 Win32 API。旧的 `Windows/DisplaySwitcher.Windows` C# 工程保留为迁移行为参照，不再由构建脚本发布。
 
-```text
-显示器后端：Windows 原生 DDC/CI 或 ControlMyMonitor（兼容模式）
-ControlMyMonitor：D:\Soft\ControlMyMonitor\ControlMyMonitor.exe
-小米：\\.\DISPLAY2\Monitor0，切到 Mac 输入 16
-Dell：\\.\DISPLAY1\Monitor0，切到 Mac 输入 17
-USB Hub：0BDA:5409
-```
+Windows 新安装不会预设 USB、显示器、输入源或 ControlMyMonitor 路径，也不会自动执行 USB/DDC 动作。首次使用时需要在设置页选择本机设备并填写对应参数；已经保存的配置会继续从用户配置目录加载。
 
 构建机安装 Visual Studio 的 C++ 桌面开发和 Windows App SDK C++ 组件后，以 PowerShell 执行：
 

@@ -175,6 +175,8 @@ namespace DisplaySwitcher::Native
 
     ActionResult SwitchDisplaysToMac(AppConfig const& config)
     {
+        if (!config.HasDisplayConfiguration())
+            return { false, L"显示器配置不完整，未执行切换" };
         auto native = config.displayControlBackend == L"native_ddc";
         WriteDiagnostic(native ? "display.backend native_ddc" : "display.backend control_my_monitor");
         if (!native && !std::filesystem::is_regular_file(config.controlMyMonitorPath))

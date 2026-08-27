@@ -19,6 +19,28 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
+    bool AppConfig::HasUsbDeviceConfiguration() const noexcept
+    {
+        return usbVendorId >= 0 && usbVendorId <= 0xFFFF && usbProductId >= 0 && usbProductId <= 0xFFFF;
+    }
+
+    bool AppConfig::HasDisplayConfiguration() const noexcept
+    {
+        auto inputsConfigured = redmiMacInput >= 0 && redmiMacInput <= 0xFFFF &&
+            dellMacInput >= 0 && dellMacInput <= 0xFFFF;
+        if (!inputsConfigured) return false;
+        if (displayControlBackend == L"native_ddc")
+        {
+            return !redmiNativeMonitorId.empty() && !dellNativeMonitorId.empty() &&
+                _wcsicmp(redmiNativeMonitorId.c_str(), dellNativeMonitorId.c_str()) != 0;
+        }
+        if (displayControlBackend == L"control_my_monitor")
+        {
+            return !controlMyMonitorPath.empty() && !redmiMonitorPath.empty() && !dellMonitorPath.empty();
+        }
+        return false;
+    }
+
     std::filesystem::path AppConfig::ConfigPath()
     {
         PWSTR roaming{};
@@ -30,16 +52,19 @@ namespace DisplaySwitcher::Native
 
     AppConfig AppConfig::Load()
     {
-        AppConfig config;
+        AppConfig defaults;
         try
         {
             auto path = ConfigPath();
             std::ifstream stream(path, std::ios::binary);
-            if (!stream) return config;
+            if (!stream) return defaults;
             std::string json((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
             auto object = JsonObject::Parse(to_hstring(json));
+            auto config = defaults;
+            auto hasUsbAutomationSetting = object.HasKey(L"UsbAutomationEnabled");
+            auto hasDisplayBackendSetting = object.HasKey(L"DisplayControlBackend");
             config.coordinationEnabled = object.GetNamedBoolean(L"CoordinationEnabled", config.coordinationEnabled);
-            config.usbAutomationEnabled = object.GetNamedBoolean(L"UsbAutomationEnabled", config.coordinationEnabled);
+            config.usbAutomationEnabled = object.GetNamedBoolean(L"UsbAutomationEnabled", config.usbAutomationEnabled);
             config.peerHost = String(object, L"PeerHost", config.peerHost);
             config.port = Number(object, L"Port", config.port);
             config.pairingCode = String(object, L"PairingCode", config.pairingCode);
@@ -55,9 +80,19 @@ namespace DisplaySwitcher::Native
             config.dellNativeMonitorId = String(object, L"DellNativeMonitorId", config.dellNativeMonitorId);
             config.dellMacInput = Number(object, L"DellMacInput", config.dellMacInput);
             config.startWithWindows = object.GetNamedBoolean(L"StartWithWindows", config.startWithWindows);
+            // The retired C# build did not persist these two fields. Migrate only a complete existing
+            // configuration; a missing file or an incomplete JSON object remains safely unconfigured.
+            if (!hasDisplayBackendSetting && !config.controlMyMonitorPath.empty() &&
+                !config.redmiMonitorPath.empty() && !config.dellMonitorPath.empty() &&
+                config.redmiMacInput >= 0 && config.dellMacInput >= 0)
+                config.displayControlBackend = L"control_my_monitor";
+            if (!hasUsbAutomationSetting && config.coordinationEnabled &&
+                config.HasUsbDeviceConfiguration() && config.HasDisplayConfiguration())
+                config.usbAutomationEnabled = true;
+            return config;
         }
         catch (...) {}
-        return config;
+        return defaults;
     }
 
     void AppConfig::Save() const

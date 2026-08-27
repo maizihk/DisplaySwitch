@@ -8,14 +8,14 @@ internal sealed class AppConfig
     public string PeerHost { get; set; } = "";
     public int Port { get; set; } = 49731;
     public string PairingCode { get; set; } = "";
-    public int UsbVendorId { get; set; } = 0x0BDA;
-    public int UsbProductId { get; set; } = 0x5409;
-    public string UsbName { get; set; } = "4-Port USB 2.0 Hub";
-    public string ControlMyMonitorPath { get; set; } = @"D:\Soft\ControlMyMonitor\ControlMyMonitor.exe";
-    public string RedmiMonitorPath { get; set; } = @"\\.\DISPLAY2\Monitor0";
-    public int RedmiMacInput { get; set; } = 16;
-    public string DellMonitorPath { get; set; } = @"\\.\DISPLAY1\Monitor0";
-    public int DellMacInput { get; set; } = 17;
+    public int UsbVendorId { get; set; } = -1;
+    public int UsbProductId { get; set; } = -1;
+    public string UsbName { get; set; } = "";
+    public string ControlMyMonitorPath { get; set; } = "";
+    public string RedmiMonitorPath { get; set; } = "";
+    public int RedmiMacInput { get; set; } = -1;
+    public string DellMonitorPath { get; set; } = "";
+    public int DellMacInput { get; set; } = -1;
     public bool StartWithWindows { get; set; }
 
     private static string ConfigDirectory => Path.Combine(

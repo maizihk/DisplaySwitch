@@ -22,9 +22,9 @@ Windows 端填写：
 - Mac 的局域网 IP。
 - 通信端口，默认 `49731`。
 - 至少 8 位配对码。
-- 点击“读取当前 USB”，选择 `4-Port USB 2.0 Hub (0BDA:5409)`。
+- 点击“重新读取”，选择实际用于判断键鼠归属的 USB Hub；程序不会预选设备。
 - 在“USB 切换”页开启“启用 USB 自动切换”。
-- 在“显示器”页选择“Windows 原生 DDC/CI”或“ControlMyMonitor”。原生模式下选择两台显示器；兼容模式下检查 ControlMyMonitor 路径和设备路径。
+- 在“显示器”页选择“Windows 原生 DDC/CI”或“ControlMyMonitor”，再为通用的显示器配置项选择设备并填写 Mac 输入源。兼容模式还需要填写 ControlMyMonitor 路径和设备路径。
 - 根据需要开启“登录 Windows 时自动启动”。
 
 Mac 端进入菜单栏“设置…”→“双端协同”，填写：
@@ -46,7 +46,7 @@ Windows 端关闭双端协同时，USB 离开 Windows 后会直接切换到 Mac�
 2. 按 USB 切换器切到 Windows。
 3. Windows 收到 USB 后唤醒显示输出并回复；Mac 随后把显示器切到 Windows。
 4. 再按一次切回 Mac。
-5. Mac 收到 USB 后唤醒显示输出并回复；Windows 使用选定的 DDC 后端按“小米 16、Dell 17”切回 Mac。
+5. Mac 收到 USB 后唤醒显示输出并回复；Windows 使用已经配置的 DDC 后端和输入源切回 Mac。
 
 如果对端已离线，源端发送一次通知后立即切屏；在线但确认丢失时，600 ms 后仍会执行切屏，不会永久卡住。托盘菜单顶部会显示最近状态。
 
@@ -55,16 +55,11 @@ Windows 端关闭双端协同时，USB 离开 Windows 后会直接切换到 Mac�
 - `Windows 原生 DDC/CI`：直接调用系统 `Dxva2.dll` 的物理显示器 API，不依赖外部程序。设置页只进行显示器枚举，不会在检测时改变输入源。
 - `ControlMyMonitor`：保留现有兼容方式，适合原生 DDC/CI 在特定显示器或显卡驱动上不可用时使用。
 
-两种后端都会并行切换两台显示器；单台失败后等待 150 ms 并重试一次。首次验证原生模式前应保持 ControlMyMonitor 配置可用，以便需要时切回兼容模式。
+两种后端都会并行切换当前的两个通用显示器配置项；单台失败后等待 150 ms 并重试一次。首次验证原生模式前可以先准备 ControlMyMonitor 兼容配置，以便需要时回退。
 
-## 默认 ControlMyMonitor 参数
+## ControlMyMonitor 配置
 
-```text
-小米：\\.\DISPLAY2\Monitor0，VCP 60，Mac 输入 16
-Dell：\\.\DISPLAY1\Monitor0，VCP 60，Mac 输入 17
-```
-
-兼容模式会使用上述路径和输入源编号。设备路径变化时可直接在设置中修改。
+程序不提供 ControlMyMonitor 可执行文件路径、显示器设备路径或输入源编号的默认值。请根据本机环境填写这些字段；设备路径变化时可直接在设置中修改。未完成配置时，手动或自动切换都会被安全拦截。
 
 ## 构建
 

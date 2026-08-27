@@ -84,6 +84,7 @@ namespace DisplaySwitcher::Native
     {
         auto vendor = vendorId_.load();
         auto product = productId_.load();
+        if (vendor < 0 || vendor > 0xFFFF || product < 0 || product > 0xFFFF) return false;
         auto devices = EnumerateDevices();
         return std::any_of(devices.begin(), devices.end(), [=](auto const& device)
         {

@@ -22,12 +22,12 @@ internal sealed class SettingsWindow : Window
         Visibility = Visibility.Collapsed
     };
     private readonly ToggleSwitch _coordinationToggle = new() { Header = "启用 Mac / Windows 网络协同" };
-    private readonly TextBox _peerHostTextBox = new() { Header = "Mac IP 或主机名", PlaceholderText = "例如 192.168.1.20" };
+    private readonly TextBox _peerHostTextBox = new() { Header = "Mac IP 或主机名", PlaceholderText = "请输入目标 Mac 地址" };
     private readonly TextBox _portTextBox = new() { Header = "UDP 端口", PlaceholderText = "49731" };
     private readonly PasswordBox _pairingCodeBox = new() { Header = "配对码", PlaceholderText = "至少 8 位，两端保持一致" };
     private readonly ComboBox _usbDevicesComboBox = new() { Header = "当前 USB 设备", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox _vendorIdTextBox = new() { Header = "Vendor ID", PlaceholderText = "0BDA", MaxLength = 4 };
-    private readonly TextBox _productIdTextBox = new() { Header = "Product ID", PlaceholderText = "5409", MaxLength = 4 };
+    private readonly TextBox _vendorIdTextBox = new() { Header = "Vendor ID", PlaceholderText = "4 位十六进制", MaxLength = 4 };
+    private readonly TextBox _productIdTextBox = new() { Header = "Product ID", PlaceholderText = "4 位十六进制", MaxLength = 4 };
     private readonly TextBox _controlMyMonitorTextBox = new() { Header = "ControlMyMonitor 路径" };
     private readonly TextBox _redmiPathTextBox = new() { Header = "设备路径" };
     private readonly TextBox _redmiInputTextBox = new() { Header = "Mac 输入源" };
@@ -110,8 +110,8 @@ internal sealed class SettingsWindow : Window
             CreateTwoColumn(_usbDevicesComboBox, refreshUsbButton, double.NaN),
             CreateTwoColumn(_vendorIdTextBox, _productIdTextBox)));
 
-        var redmiTitle = CreateSubheading("小米显示器");
-        var dellTitle = CreateSubheading("Dell 显示器");
+        var redmiTitle = CreateSubheading("显示器 1");
+        var dellTitle = CreateSubheading("显示器 2");
         content.Children.Add(CreateSection("显示器控制",
             _controlMyMonitorTextBox,
             redmiTitle,
@@ -235,13 +235,13 @@ internal sealed class SettingsWindow : Window
         _peerHostTextBox.Text = config.PeerHost;
         _portTextBox.Text = config.Port.ToString(CultureInfo.InvariantCulture);
         _pairingCodeBox.Password = config.PairingCode;
-        _vendorIdTextBox.Text = config.UsbVendorId.ToString("X4");
-        _productIdTextBox.Text = config.UsbProductId.ToString("X4");
+        _vendorIdTextBox.Text = config.UsbVendorId >= 0 ? config.UsbVendorId.ToString("X4") : "";
+        _productIdTextBox.Text = config.UsbProductId >= 0 ? config.UsbProductId.ToString("X4") : "";
         _controlMyMonitorTextBox.Text = config.ControlMyMonitorPath;
         _redmiPathTextBox.Text = config.RedmiMonitorPath;
-        _redmiInputTextBox.Text = config.RedmiMacInput.ToString(CultureInfo.InvariantCulture);
+        _redmiInputTextBox.Text = config.RedmiMacInput >= 0 ? config.RedmiMacInput.ToString(CultureInfo.InvariantCulture) : "";
         _dellPathTextBox.Text = config.DellMonitorPath;
-        _dellInputTextBox.Text = config.DellMacInput.ToString(CultureInfo.InvariantCulture);
+        _dellInputTextBox.Text = config.DellMacInput >= 0 ? config.DellMacInput.ToString(CultureInfo.InvariantCulture) : "";
         _autoStartToggle.IsOn = config.StartWithWindows;
     }
 
@@ -282,7 +282,7 @@ internal sealed class SettingsWindow : Window
         if (!int.TryParse(_vendorIdTextBox.Text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var vid) ||
             !int.TryParse(_productIdTextBox.Text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var pid))
         {
-            ShowValidationError("USB Vendor ID 和 Product ID 必须是十六进制，例如 0BDA、5409。");
+            ShowValidationError("USB Vendor ID 和 Product ID 必须同时填写为 4 位十六进制。");
             return;
         }
 

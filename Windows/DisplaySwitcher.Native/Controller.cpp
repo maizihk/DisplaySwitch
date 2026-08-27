@@ -46,8 +46,7 @@ namespace DisplaySwitcher::Native
     {
         ResetDiagnosticLog();
         std::weak_ptr<Controller> weak = shared_from_this();
-        auto config = Config();
-        usbWatcher_ = std::make_unique<UsbWatcher>(config.usbVendorId, config.usbProductId, [weak](bool present)
+        usbWatcher_ = std::make_unique<UsbWatcher>(-1, -1, [weak](bool present)
         {
             if (auto self = weak.lock()) self->Enqueue([weak, present] { if (auto value = weak.lock()) value->OnUsbPresenceChanged(present); });
         });
@@ -83,26 +82,37 @@ namespace DisplaySwitcher::Native
         CancelOutgoing();
         StopPeerHealthCheck();
         peer_->Stop();
-        usbWatcher_->Reconfigure(config.usbVendorId, config.usbProductId);
-        if (config.usbAutomationEnabled && config.coordinationEnabled)
+        auto usbConfigured = config.HasUsbDeviceConfiguration();
+        auto displayConfigured = config.HasDisplayConfiguration();
+        auto automationConfigured = usbConfigured && displayConfigured;
+        usbWatcher_->Reconfigure(config.usbAutomationEnabled && automationConfigured ? config.usbVendorId : -1,
+            config.usbAutomationEnabled && automationConfigured ? config.usbProductId : -1);
+        auto coordinationConfigured = automationConfigured && !config.peerHost.empty() &&
+            config.port >= 1 && config.port <= 65535 && config.pairingCode.size() >= 8;
+        if (config.usbAutomationEnabled && config.coordinationEnabled && coordinationConfigured)
         {
             peer_->Start(config.port);
             StartPeerHealthCheck();
         }
-        else SetPeerConnectionStatus(L"协同未启用", false);
+        else SetPeerConnectionStatus(config.coordinationEnabled ? L"协同配置不完整" : L"协同未启用", false);
         try { ApplyAutoStart(config.startWithWindows); }
         catch (hresult_error const& error) { ShowError(L"登录启动设置失败", error.message().c_str()); }
-        wchar_t ids[16]{}; swprintf_s(ids, L"%04X:%04X", config.usbVendorId, config.usbProductId);
-        if (!config.usbAutomationEnabled) SetStatus(L"USB 自动切换未开启");
-        else if (config.coordinationEnabled) SetStatus(L"协同已开启 · USB " + std::wstring(ids));
-        else SetStatus(L"USB 自动切换已开启 · USB " + std::wstring(ids));
+        if (config.usbAutomationEnabled && !usbConfigured) SetStatus(L"USB 自动切换未配置");
+        else if (config.usbAutomationEnabled && !displayConfigured) SetStatus(L"显示器切换未配置");
+        else if (!config.usbAutomationEnabled) SetStatus(L"USB 自动切换未开启");
+        else
+        {
+            wchar_t ids[16]{}; swprintf_s(ids, L"%04X:%04X", config.usbVendorId, config.usbProductId);
+            if (config.coordinationEnabled && coordinationConfigured) SetStatus(L"协同已开启 · USB " + std::wstring(ids));
+            else SetStatus(L"USB 自动切换已开启 · USB " + std::wstring(ids));
+        }
     }
 
     void Controller::OnUsbPresenceChanged(bool present)
     {
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
         auto config = Config();
-        if (!config.usbAutomationEnabled) return;
+        if (!config.usbAutomationEnabled || !config.HasUsbDeviceConfiguration() || !config.HasDisplayConfiguration()) return;
         if (present)
         {
             CancelOutgoing();
@@ -183,9 +193,17 @@ namespace DisplaySwitcher::Native
 
     void Controller::SwitchToMac(std::optional<std::wstring> eventId, bool manual)
     {
+        auto config = Config();
+        if (!config.HasDisplayConfiguration())
+        {
+            WriteDiagnostic("display.switch_blocked configuration_missing=1");
+            SetStatus(L"显示器尚未配置，未执行切换");
+            if (manual) ShowError(L"无法切换显示器", L"请先在设置的“显示器”页完成配置。");
+            return;
+        }
         WriteDiagnostic(manual ? "display.switch_begin manual=1" : "display.switch_begin manual=0");
         SetStatus(manual ? L"正在手动切换显示器到 Mac…" : L"正在切换显示器到 Mac…");
-        auto config = Config(); std::weak_ptr<Controller> weak = shared_from_this();
+        std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, config, eventId, manual]
         {
             auto result = SwitchDisplaysToMac(config);
