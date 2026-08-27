@@ -33,13 +33,13 @@
 
 ## 自动验证
 
-- Xcode 27 Beta 6（`/Users/maizi/Downloads/Xcode-beta.app`）：
+- 本机选定的 Xcode 27 Beta 6：
   - Debug：`BUILD SUCCEEDED`。
   - Release：`BUILD SUCCEEDED`。
   - XCTest bundle：40 项，0 失败。
   - 本机配置测试：27 项，覆盖 C-001 至 C-015 的 macOS 适用路径，以及 30 秒学习超时、学习期间四类自动副作用阻断、学习目标固定、编辑切换不串值、取消保留原绑定、删除目标或超时后丢弃迟到结果、v1 全字段完整性、非当前唯一不完整配置安全停用和完整迁移配置兼容回归。
   - 公共协议回归：17 条消息向量、16 条状态机向量继续通过。
-- `DEVELOPER_DIR=/Users/maizi/Downloads/Xcode-beta.app/Contents/Developer ./macOS/scripts/build-app.sh`：成功。
+- `DEVELOPER_DIR="$DEVELOPER_DIR" ./macOS/scripts/build-app.sh`：成功。
 - 产物：`macOS/outputs/DisplaySwitcher.app`、`macOS/outputs/DisplaySwitcher-macOS-arm64.zip`。
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过。
 - `git diff --check`：通过。

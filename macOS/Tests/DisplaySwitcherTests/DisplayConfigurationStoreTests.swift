@@ -309,7 +309,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let old = DisplayConfigurationDocument(schemaVersion: 2, displays: legacy)
         let oldData = try JSONEncoder().encode(old)
         storage.values[DisplayConfigurationStore.legacyDocumentStorageKey] = oldData
-        storage.values["Peer.Host"] = "172.16.10.20"
+        storage.values["Peer.Host"] = "peer.example"
         storage.values["Peer.PairingCode"] = ephemeralPairingCode()
         let result = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(result.safetyState, .ready)
@@ -454,7 +454,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
     private func populatedDocument() -> DisplayConfigurationStoreV3Document {
         let displays = [display(name: "Left"), display(name: "Right")]
         var profile = profile(name: "Windows")
-        profile.peerHost = "172.16.10.20"
+        profile.peerHost = "peer.example"
         profile.pairingCode = ephemeralPairingCode()
         profile.displayInputs = [DisplayInputMapping(displayID: displays[0].id, peerInput: 18)]
         return DisplayConfigurationStoreV3Document(schemaVersion: 3, localEndpointID: UUID().uuidString,

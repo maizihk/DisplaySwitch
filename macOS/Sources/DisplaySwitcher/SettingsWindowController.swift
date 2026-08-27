@@ -370,7 +370,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         profileToolbar.alignment = .centerY
         profileToolbar.spacing = 6
         profilePopup.widthAnchor.constraint(equalToConstant: 270).isActive = true
-        peerHostField.placeholderString = "IP 或主机名，例如 192.168.1.20"
+        peerHostField.placeholderString = "IP 或主机名，例如 peer.example"
         peerPortField.placeholderString = "49731"
         pairingCodeField.placeholderString = "两端填写相同的配对码"
         let peerGrid = NSGridView(views: [
