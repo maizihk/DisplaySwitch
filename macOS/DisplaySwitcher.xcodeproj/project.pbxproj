@@ -36,6 +36,13 @@
 		A1000000000000000000001C /* PublicPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001E /* PublicPresentationModels.swift */; };
 		A1000000000000000000001D /* PublicPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001E /* PublicPresentationModels.swift */; };
 		A1000000000000000000001E /* PublicPresentationModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000001F /* PublicPresentationModelsTests.swift */; };
+		A1000000000000000000001F /* PeerProtocolV2.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* PeerProtocolV2.swift */; };
+		A10000000000000000000020 /* PeerProtocolV2.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000020 /* PeerProtocolV2.swift */; };
+		A10000000000000000000021 /* HandoffV2StateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* HandoffV2StateMachine.swift */; };
+		A10000000000000000000022 /* HandoffV2StateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* HandoffV2StateMachine.swift */; };
+		A10000000000000000000023 /* PeerProtocolV2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000022 /* PeerProtocolV2Tests.swift */; };
+		A10000000000000000000024 /* HandoffV2StateMachineVectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023 /* HandoffV2StateMachineVectorTests.swift */; };
+		A10000000000000000000025 /* contracts in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024 /* contracts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +79,11 @@
 		A2000000000000000000001D /* DDCBackendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDCBackendTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000001E /* PublicPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicPresentationModels.swift; sourceTree = "<group>"; };
 		A2000000000000000000001F /* PublicPresentationModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicPresentationModelsTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000020 /* PeerProtocolV2.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerProtocolV2.swift; sourceTree = "<group>"; };
+		A20000000000000000000021 /* HandoffV2StateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffV2StateMachine.swift; sourceTree = "<group>"; };
+		A20000000000000000000022 /* PeerProtocolV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerProtocolV2Tests.swift; sourceTree = "<group>"; };
+		A20000000000000000000023 /* HandoffV2StateMachineVectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandoffV2StateMachineVectorTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000024 /* contracts */ = {isa = PBXFileReference; lastKnownFileType = folder; name = contracts; path = ../contracts; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +135,8 @@
 				A20000000000000000000004 /* SettingsWindowController.swift */,
 				A20000000000000000000005 /* USBMonitor.swift */,
 				A20000000000000000000019 /* HandoffStateMachine.swift */,
+				A20000000000000000000020 /* PeerProtocolV2.swift */,
+				A20000000000000000000021 /* HandoffV2StateMachine.swift */,
 				A20000000000000000000013 /* DDCController.swift */,
 				A2000000000000000000001C /* DDCBackend.swift */,
 				A20000000000000000000014 /* NativeDDC.swift */,
@@ -145,7 +159,10 @@
 		};
 		A70000000000000000000004 /* Tests */ = {
 			isa = PBXGroup;
-			children = (A70000000000000000000009 /* DisplaySwitcherTests */,);
+			children = (
+				A70000000000000000000009 /* DisplaySwitcherTests */,
+				A20000000000000000000024 /* contracts */,
+			);
 			path = Tests;
 			sourceTree = "<group>";
 		};
@@ -158,6 +175,8 @@
 				A20000000000000000000018 /* DisplayConfigurationStoreTests.swift */,
 				A2000000000000000000001D /* DDCBackendTests.swift */,
 				A2000000000000000000001F /* PublicPresentationModelsTests.swift */,
+				A20000000000000000000022 /* PeerProtocolV2Tests.swift */,
+				A20000000000000000000023 /* HandoffV2StateMachineVectorTests.swift */,
 			);
 			path = DisplaySwitcherTests;
 			sourceTree = "<group>";
@@ -263,7 +282,12 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A90000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+		A90000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000025 /* contracts in Resources */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -277,6 +301,8 @@
 				A10000000000000000000004 /* SettingsWindowController.swift in Sources */,
 				A10000000000000000000005 /* USBMonitor.swift in Sources */,
 				A10000000000000000000015 /* HandoffStateMachine.swift in Sources */,
+				A1000000000000000000001F /* PeerProtocolV2.swift in Sources */,
+				A10000000000000000000021 /* HandoffV2StateMachine.swift in Sources */,
 				A1000000000000000000000F /* DDCController.swift in Sources */,
 				A10000000000000000000019 /* DDCBackend.swift in Sources */,
 				A10000000000000000000010 /* NativeDDC.swift in Sources */,
@@ -285,7 +311,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000C /* PeerProtocolTests.swift in Sources */, A1000000000000000000000E /* PeerTransport.swift in Sources */, A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */, A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */, A10000000000000000000018 /* HandoffStateMachine.swift in Sources */, A10000000000000000000016 /* HandoffMessageVectorTests.swift in Sources */, A10000000000000000000017 /* HandoffStateMachineVectorTests.swift in Sources */, A1000000000000000000001A /* DDCBackend.swift in Sources */, A1000000000000000000001B /* DDCBackendTests.swift in Sources */, A1000000000000000000001D /* PublicPresentationModels.swift in Sources */, A1000000000000000000001E /* PublicPresentationModelsTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0;};
+		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000C /* PeerProtocolTests.swift in Sources */, A1000000000000000000000E /* PeerTransport.swift in Sources */, A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */, A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */, A10000000000000000000018 /* HandoffStateMachine.swift in Sources */, A10000000000000000000016 /* HandoffMessageVectorTests.swift in Sources */, A10000000000000000000017 /* HandoffStateMachineVectorTests.swift in Sources */, A1000000000000000000001A /* DDCBackend.swift in Sources */, A1000000000000000000001B /* DDCBackendTests.swift in Sources */, A1000000000000000000001D /* PublicPresentationModels.swift in Sources */, A1000000000000000000001E /* PublicPresentationModelsTests.swift in Sources */, A10000000000000000000020 /* PeerProtocolV2.swift in Sources */, A10000000000000000000022 /* HandoffV2StateMachine.swift in Sources */, A10000000000000000000023 /* PeerProtocolV2Tests.swift in Sources */, A10000000000000000000024 /* HandoffV2StateMachineVectorTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0;};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */

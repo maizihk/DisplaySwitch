@@ -210,8 +210,10 @@ struct PeerReplayGuard {
 
 final class PeerTransport {
     typealias Reply = (PeerMessage) -> Void
+    typealias DataReply = (Data) -> Void
 
     var onMessage: ((PeerMessage, @escaping Reply) -> Void)?
+    var onDatagram: ((Data, @escaping DataReply) -> Void)?
     var onError: ((String) -> Void)?
 
     private let queue = DispatchQueue(label: "DisplaySwitcher.peer-network")
@@ -219,8 +221,10 @@ final class PeerTransport {
     private var connections: [NWConnection] = []
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private(set) var listeningPort: Int?
 
     func start(port: Int) {
+        if listener != nil, listeningPort == port { return }
         stop()
         guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             onError?("通信端口无效：\(port)")
@@ -238,6 +242,7 @@ final class PeerTransport {
                 }
             }
             self.listener = listener
+            listeningPort = port
             listener.start(queue: queue)
         } catch {
             onError?("无法监听端口 \(port)：\(error.localizedDescription)")
@@ -247,6 +252,7 @@ final class PeerTransport {
     func stop() {
         listener?.cancel()
         listener = nil
+        listeningPort = nil
         connections.forEach { $0.cancel() }
         connections.removeAll()
     }
@@ -260,7 +266,16 @@ final class PeerTransport {
             return
         }
 
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .udp)
+        send(data, host: host, port: nwPort)
+    }
+
+    func send(_ data: Data, host: String, port: Int) {
+        guard !host.isEmpty, let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return }
+        send(data, host: host, port: nwPort)
+    }
+
+    private func send(_ data: Data, host: String, port: NWEndpoint.Port) {
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .udp)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
@@ -298,12 +313,20 @@ final class PeerTransport {
         connection.receiveMessage { [weak self, weak connection] data, _, _, error in
             guard let self, let connection else { return }
 
-            if let data, let message = try? self.decoder.decode(PeerMessage.self, from: data) {
-                let reply: Reply = { [weak self, weak connection] response in
-                    guard let self, let connection else { return }
-                    self.send(response, on: connection)
+            if let data {
+                if let onDatagram = self.onDatagram {
+                    let reply: DataReply = { [weak self, weak connection] response in
+                        guard let self, let connection else { return }
+                        self.send(response, on: connection)
+                    }
+                    DispatchQueue.main.async { onDatagram(data, reply) }
+                } else if let message = try? self.decoder.decode(PeerMessage.self, from: data) {
+                    let reply: Reply = { [weak self, weak connection] response in
+                        guard let self, let connection else { return }
+                        self.send(response, on: connection)
+                    }
+                    DispatchQueue.main.async { self.onMessage?(message, reply) }
                 }
-                DispatchQueue.main.async { self.onMessage?(message, reply) }
             }
 
             if error == nil {
@@ -316,6 +339,10 @@ final class PeerTransport {
 
     private func send(_ message: PeerMessage, on connection: NWConnection) {
         guard let data = try? encoder.encode(message) else { return }
+        send(data, on: connection)
+    }
+
+    private func send(_ data: Data, on connection: NWConnection) {
         connection.send(content: data, completion: .contentProcessed { [weak self] error in
             if let error {
                 self?.reportError("UDP 回复失败：\(error.localizedDescription)")

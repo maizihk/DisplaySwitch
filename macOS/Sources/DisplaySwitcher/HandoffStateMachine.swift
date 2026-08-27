@@ -273,6 +273,10 @@ final class HandoffStateMachine {
         checkPeerReachability(nowMs: timeMs)
     }
 
+    func recordInitialUSBPresence(_ present: Bool) {
+        usbPresent = present
+    }
+
     func handleUSBPresenceChanged(_ present: Bool) {
         guard coordinationEnabled && usbAutomationEnabled else { return }
         guard usbPresent != present else { return }

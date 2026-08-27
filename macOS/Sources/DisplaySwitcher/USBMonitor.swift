@@ -24,13 +24,32 @@ struct USBDevice: Codable, Hashable {
     }
 }
 
+struct USBDeviceReference: Equatable {
+    let vendorID: Int
+    let productID: Int
+
+    init?(localReference: String) {
+        let parts = localReference.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, let vendorID = Int(parts[0]), let productID = Int(parts[1]),
+              (0...65_535).contains(vendorID), (0...65_535).contains(productID) else { return nil }
+        self.vendorID = vendorID
+        self.productID = productID
+    }
+
+    func matches(_ device: USBDevice) -> Bool {
+        device.vendorID == vendorID && device.productID == productID
+    }
+}
+
 final class USBMonitor {
     var onPresenceChanged: ((Bool) -> Void)?
+    var onInitialPresenceObserved: ((Bool) -> Void)?
 
     private let queue = DispatchQueue(label: "DisplaySwitcher.usb-monitor")
     private var timer: DispatchSourceTimer?
     private var previousDevices: Set<USBDevice>?
     private var triggerDevice: USBDevice?
+    private var triggerReference: USBDeviceReference?
     private var lastPresence: Bool?
     private var learningHandler: (([USBDevice]) -> Void)?
     private var learningBaseline: Set<USBDevice>?
@@ -40,9 +59,27 @@ final class USBMonitor {
         queue.async { [weak self] in
             guard let self else { return }
             self.triggerDevice = triggerDevice
+            self.triggerReference = nil
             self.lastPresence = nil
             self.previousDevices = nil
 
+            if self.timer == nil {
+                let timer = DispatchSource.makeTimerSource(queue: self.queue)
+                timer.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(50))
+                timer.setEventHandler { [weak self] in self?.poll() }
+                self.timer = timer
+                timer.resume()
+            }
+        }
+    }
+
+    func start(triggerReference: USBDeviceReference) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.triggerDevice = nil
+            self.triggerReference = triggerReference
+            self.lastPresence = nil
+            self.previousDevices = nil
             if self.timer == nil {
                 let timer = DispatchSource.makeTimerSource(queue: self.queue)
                 timer.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(50))
@@ -59,6 +96,7 @@ final class USBMonitor {
             self.timer?.cancel()
             self.timer = nil
             self.triggerDevice = nil
+            self.triggerReference = nil
             self.lastPresence = nil
             self.previousDevices = nil
             self.learningHandler = nil
@@ -99,11 +137,12 @@ final class USBMonitor {
 
     func triggerPresence(completion: @escaping (Bool) -> Void) {
         queue.async { [weak self] in
-            guard let self, let triggerDevice = self.triggerDevice else {
+            guard let self else { return }
+            guard self.triggerDevice != nil || self.triggerReference != nil else {
                 DispatchQueue.main.async { completion(false) }
                 return
             }
-            let isPresent = Self.currentDevices().contains { triggerDevice.matches($0) }
+            let isPresent = Self.currentDevices().contains { self.matchesTrigger($0) }
             DispatchQueue.main.async { completion(isPresent) }
         }
     }
@@ -124,17 +163,27 @@ final class USBMonitor {
             }
         }
 
-        if let triggerDevice {
-            let isPresent = devices.contains { triggerDevice.matches($0) }
+        if triggerDevice != nil || triggerReference != nil {
+            let isPresent = devices.contains { matchesTrigger($0) }
             if let lastPresence, lastPresence != isPresent {
                 DispatchQueue.main.async { [weak self] in
                     self?.onPresenceChanged?(isPresent)
+                }
+            } else if lastPresence == nil {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onInitialPresenceObserved?(isPresent)
                 }
             }
             lastPresence = isPresent
         }
 
         previousDevices = devices
+    }
+
+    private func matchesTrigger(_ device: USBDevice) -> Bool {
+        if let triggerDevice { return triggerDevice.matches(device) }
+        if let triggerReference { return triggerReference.matches(device) }
+        return false
     }
 
     private static func currentDevices() -> Set<USBDevice> {
