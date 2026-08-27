@@ -28,7 +28,7 @@ enum NativeDDCWriteResult {
 }
 
 final class NativeDDCBackend {
-    private let knownDisplays: [NativeDDCKnownDisplay]
+    private var knownDisplays: [NativeDDCKnownDisplay]
     private let cacheLock = NSLock()
     private var displaysByUUID: [String: NativeDDCDisplay] = [:]
 
@@ -36,8 +36,17 @@ final class NativeDDCBackend {
         self.knownDisplays = knownDisplays
     }
 
+    func updateKnownDisplays(_ values: [NativeDDCKnownDisplay]) {
+        cacheLock.lock()
+        knownDisplays = values
+        cacheLock.unlock()
+    }
+
     func discover() -> [NativeDDCDisplay] {
         #if arch(arm64)
+        cacheLock.lock()
+        let knownDisplays = self.knownDisplays
+        cacheLock.unlock()
         let displays = Self.discoverDisplays(knownDisplays: knownDisplays)
         cacheLock.lock()
         displaysByUUID = Dictionary(uniqueKeysWithValues: displays.map { ($0.systemUUID.uppercased(), $0) })

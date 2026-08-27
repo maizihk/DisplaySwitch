@@ -214,6 +214,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var macInputFields: [Int: NSTextField] = [:]
     private var inputFields: [Int: NSTextField] = [:]
     private var readCheckboxes: [Int: NSSwitch] = [:]
+    private let displayStack = NSStackView()
     private var pendingUSBDevice: USBDevice?
     private let tabView = NSTabView()
     private let navigationSeparator = NSBox()
@@ -306,8 +307,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             module(title: "常规", views: [
                 switchRow(
                     button: linkedCheckbox,
-                    title: "联动调节两台显示器",
-                    description: "调节亮度、对比度或音量时同步控制两台显示器。",
+                    title: "联动调节所有显示器",
+                    description: "调节亮度、对比度或音量时同步控制已检测到的显示器。",
                     symbolName: "link"
                 ),
                 separator(),
@@ -382,17 +383,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ])
         ]))
 
-        var displayViews: [NSView] = []
-        for index in 1...2 {
-            displayViews.append(module(title: "显示器 \(index)", views: [displayForm(index: index)]))
-        }
-
-        let hint = NSTextField(wrappingLabelWithString: "关闭“读取当前值”后，App 使用最后一次成功写入的数值，并以 ≈ 标识。适用于能调节但无法通过 DDC 回读的显示器。")
-        hint.textColor = .secondaryLabelColor
-        hint.font = .systemFont(ofSize: 11)
-        hint.maximumNumberOfLines = 2
-        displayViews.append(hint)
-        tabView.addTabViewItem(makePage(label: "显示器", views: displayViews))
+        displayStack.orientation = .vertical
+        displayStack.alignment = .leading
+        displayStack.spacing = 12
+        tabView.addTabViewItem(makeDisplayPage())
 
         let cancelButton = NSButton(title: "取消", target: self, action: #selector(cancel))
         cancelButton.keyEquivalent = "\u{1b}"
@@ -463,6 +457,56 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ])
         item.view = container
         return item
+    }
+
+    private func makeDisplayPage() -> NSTabViewItem {
+        let item = NSTabViewItem(identifier: "显示器")
+        item.label = "显示器"
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+
+        let documentView = NSView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        displayStack.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(displayStack)
+        scrollView.documentView = documentView
+        NSLayoutConstraint.activate([
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            displayStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 18),
+            displayStack.trailingAnchor.constraint(lessThanOrEqualTo: documentView.trailingAnchor, constant: -18),
+            displayStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 18),
+            displayStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -18)
+        ])
+        item.view = scrollView
+        return item
+    }
+
+    private func rebuildDisplayForms(_ configurations: [DisplayConfiguration]) {
+        for view in displayStack.arrangedSubviews {
+            displayStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        nameFields.removeAll()
+        selectorFields.removeAll()
+        macInputFields.removeAll()
+        inputFields.removeAll()
+        readCheckboxes.removeAll()
+
+        for configuration in configurations.sorted(by: { $0.index < $1.index }) {
+            displayStack.addArrangedSubview(module(
+                title: "显示器 \(configuration.index)",
+                views: [displayForm(index: configuration.index)]
+            ))
+        }
+
+        let hint = NSTextField(wrappingLabelWithString: "关闭“读取当前值”后，App 使用最后一次成功写入的数值，并以 ≈ 标识。显示器数量由检测结果动态生成。")
+        hint.textColor = .secondaryLabelColor
+        hint.font = .systemFont(ofSize: 11)
+        hint.maximumNumberOfLines = 2
+        hint.widthAnchor.constraint(equalToConstant: 630).isActive = true
+        displayStack.addArrangedSubview(hint)
     }
 
     private func module(title: String, views: [NSView]) -> NSView {
@@ -644,12 +688,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         pendingUSBDevice = AppPreferences.usbTriggerDevice
         updateUSBDeviceLabel()
 
-        for index in 1...2 {
-            let configuration = DisplayConfiguration.load(index: index)
+        let configurations = AppPreferences.displayConfigurations
+        rebuildDisplayForms(configurations)
+        for configuration in configurations {
+            let index = configuration.index
             nameFields[index]?.stringValue = configuration.name
             selectorFields[index]?.stringValue = configuration.selector
-            macInputFields[index]?.integerValue = configuration.macInput
-            inputFields[index]?.integerValue = configuration.windowsInput
+            macInputFields[index]?.stringValue = configuration.macInput.map(String.init) ?? ""
+            inputFields[index]?.stringValue = configuration.windowsInput.map(String.init) ?? ""
             readCheckboxes[index]?.state = configuration.readEnabled ? .on : .off
         }
 
@@ -666,7 +712,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func save() {
         var configurations: [DisplayConfiguration] = []
 
-        for index in 1...2 {
+        for index in nameFields.keys.sorted() {
             let name = nameFields[index]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let selector = selectorFields[index]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let macInputText = macInputFields[index]?.stringValue ?? ""
@@ -714,7 +760,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             return
         }
 
-        configurations.forEach { $0.save() }
+        AppPreferences.displayConfigurations = configurations
         AppPreferences.linkedDisplays = linkedCheckbox.state == .on
         AppPreferences.usbAutomationEnabled = usbAutomationCheckbox.state == .on
         AppPreferences.usbSwitchDisplaysOnArrival = usbArrivalSwitchCheckbox.state == .on

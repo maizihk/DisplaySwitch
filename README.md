@@ -6,12 +6,13 @@
 
 功能包括：
 
-- 分别调节显示器 1、显示器 2 的亮度、对比度和音量。
-- 默认联动两台显示器；关闭“联动两台显示器”后可分别调节。
+- 分别调节每台已检测显示器的亮度、对比度和音量。
+- 显示器列表根据实际检测结果动态生成，可联动所有已检测显示器，也可分别调节。
+- 首次识别的显示器不会猜测输入源；必须先在设置中填写 Mac/Windows 输入源值，才会执行切屏。
 - 打开菜单时自动读取显示器当前值和最大值。
 - 对显示器错误回报的 `max=0/1` 自动回退到 100，避免滑块被缩成一格。
 - 当一台显示器的三个读取值同时异常为 0 时，不用错误值覆盖界面；显示上次设置值，`≈` 表示该值来自缓存而非硬件回读。
-- 一键把两台显示器切换到 Windows 输入源。
+- 一键把所有已配置显示器切换到 Mac 或 Windows 输入源。
 - 内置 Apple Silicon 原生 DDC/CI 后端，不安装 `m1ddc` 也能检测和控制显示器；已安装 `m1ddc` 时仅作为兼容性回退。
 - 启动时在后台读取显示器名称和 System UUID，并使用 UUID 作为稳定控制目标。当显示输入已切到另一台电脑时，会通过 I/O Registry 保留的 EDID 和已保存名称继续匹配 DDC 通道。
 - 原生设置窗口，可配置 Windows 输入源、DDC 回读和登录启动。
@@ -24,12 +25,12 @@
 
 点击菜单栏图标，选择“设置…”，可以配置：
 
-- 是否联动调节两台显示器。
+- 是否联动调节所有已检测显示器。
 - 是否在登录 macOS 时自动启动；macOS 13 及以上使用系统 `SMAppService` 登录项。
 - 自动检测到的显示器名称和 System UUID（只读）。
 - 每台显示器的 Mac 输入源和 Windows 输入源编号。
 - 切换到 Windows 时使用的输入源编号。
-- 是否读取 DDC 当前值。Dell S2319HS 默认关闭读取，因为当前 HDMI 链路只能可靠写入、不能回读。
+- 是否读取 DDC 当前值。如果某台显示器只能可靠写入、不能回读，可单独关闭。
 
 名称和 UUID 不写死在程序中，由内置原生后端在每次启动时自动读取。检测成功后会缓存结果；检测失败时保留上次成功检测到的名称和 UUID。菜单中的“重新检测显示器”可以手动刷新设备信息。
 
@@ -39,16 +40,16 @@
 2. 点击“学习 USB 设备…”。
 3. 按一次 USB 切换器，让键鼠从当前电脑切到另一台电脑。
 4. 从发生变化的设备中选择一个稳定的设备，优先选择有序列号的 USB Hub 或键盘。
-5. 检查两台显示器的 Mac/Windows 输入源编号，启用“USB 自动切换”并保存。
+5. 检查每台显示器的 Mac/Windows 输入源编号，启用“USB 自动切换”并保存。
 
 自动切换规则：
 
 ```text
 触发设备出现在 Mac   → 可检查显示器活动状态，只切换尚未在 Mac 上活动的显示器
-触发设备从 Mac 消失   → 两台显示器切换到 Windows 输入源
+触发设备从 Mac 消失   → 所有已配置显示器切换到 Windows 输入源
 ```
 
-“键鼠回到 Mac 时检查并按需切换显示器”默认关闭；打开后，App 使用自动检测到的显示器 UUID 与 macOS 当前活动显示器比较。两台都已在 Mac 时不发送命令，只有一台缺失时也只切换该显示器。少数显示器切换输入后仍会向 Mac 保持连接，此时 App 会保守地不操作，避免重复或错误切换。App 每 250 毫秒检查一次 USB 设备；USB 离开使用 150 毫秒防抖，回到 Mac 后的可选显示器检查仍使用 1 秒防抖。启动时只记录当前 USB 状态，不会立即切换显示器。默认输入源为：显示器 1 的 Mac/Windows 为 `15/18`，显示器 2 为 `17/15`，均可在设置中修改。
+“键鼠回到 Mac 时检查并按需切换显示器”默认关闭；打开后，App 使用自动检测到的显示器 UUID 与 macOS 当前活动显示器比较，只切换缺失的显示器。少数显示器切换输入后仍会向 Mac 保持连接，此时 App 会保守地不操作，避免重复或错误切换。App 每 250 毫秒检查一次 USB 设备；USB 离开使用 150 毫秒防抖，回到 Mac 后的可选显示器检查仍使用 1 秒防抖。启动时只记录当前 USB 状态，不会立即切换显示器。全新安装不预设任何硬件的输入源值；从旧版升级时会一次性迁移原有两台显示器配置。
 
 ## Mac / Windows 双端协同
 
@@ -80,18 +81,18 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 生成 framework-dependent 绿色版目录 `Windows\dist\`，根入口为 `DisplaySwitch.exe`，WinUI 程序及依赖集中在 `runtime` 子目录；整个目录构建时强制小于 20 MiB。分发时必须复制整个 `dist` 文件夹。目标电脑需预装 Microsoft Windows App Runtime 2.4 x64，不需要 .NET；首次运行进入托盘，打开“设置…”填写 Mac IP、与 Mac 相同的配对码，并选择原生 DDC/CI 或 ControlMyMonitor。Windows 防火墙提示时只允许“专用网络”。设置窗口可以读取当前 USB 设备并选择触发 Hub。
 
-点击菜单栏的双显示器图标，再点“切换到 Windows”，App 会在后台通过内置 DDC/CI 后端并行控制两台显示器。如果系统中另外安装了 `m1ddc`，原生通道返回失败时会使用等价命令回退，例如：
+点击菜单栏图标，再点“切换到 Windows”，App 会在后台通过内置 DDC/CI 后端并行控制所有已配置显示器。如果系统中另外安装了 `m1ddc`，原生通道返回失败时会使用等价命令回退，例如：
 
 ```text
 /opt/homebrew/bin/m1ddc display 1 set input 18
 /opt/homebrew/bin/m1ddc display 2 set input 15
 ```
 
-两台显示器的操作会并行执行，以缩短切屏时间。失败时会显示错误提示，方便判断 DDC 通道或输入源编号问题。
+各显示器的操作会并行执行，以缩短切屏时间。失败时会显示错误提示，方便判断 DDC 通道或输入源编号问题。
 
 ## 亮度、对比度和音量
 
-点击菜单栏图标，把鼠标移到“显示器 1”或“显示器 2”，即可使用三个滑块。松开滑块时，App 会在后台写入对应的 VCP 指令（亮度 `0x10`、对比度 `0x12`、音量 `0x62`）。
+点击菜单栏图标，把鼠标移到任一已检测显示器，即可使用三个滑块。松开滑块时，App 会在后台写入对应的 VCP 指令（亮度 `0x10`、对比度 `0x12`、音量 `0x62`）。
 
 显示器必须支持对应的 DDC/CI 控制项。没有扬声器或不支持 DDC 音量的显示器无法用音量滑块控制；这是显示器能力限制，不是 App 故障。
 
@@ -125,9 +126,10 @@ open DisplaySwitcher.xcodeproj
 
 ```text
 outputs/DisplaySwitcher.app
+outputs/DisplaySwitcher-macOS-arm64.zip
 ```
 
-`scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到输出目录后做本地临时签名和严格验证。`Package.swift` 仅作为迁移期参考，不再是正式构建入口。
+`scripts/build-app.sh` 使用 `xcodebuild` 构建 Release，自动使用当前 Mac 架构，将产物复制到输出目录后做本地临时签名和严格验证。ZIP 还会在非 File Provider 临时目录中解压并再次验签，是跨机器分发的推荐产物。`Package.swift` 仅作为迁移期参考，不再是正式构建入口。
 
 如果 Xcode Beta 不在系统当前开发者目录，可在单次构建时指定：
 
@@ -135,7 +137,7 @@ outputs/DisplaySwitcher.app
 DEVELOPER_DIR="/path/to/Xcode-beta.app/Contents/Developer" ./scripts/build-app.sh
 ```
 
-将项目放在 NAS 或 File Provider 同步目录时，同步软件可能在构建后重新添加 Finder 扩展属性。脚本会在签名前清理它；若稍后手动严格验证时再次出现 `resource fork, Finder information`，先执行：
+将项目放在 NAS 或 File Provider 同步目录时，同步软件可能在签名后重新添加 Finder 扩展属性。因此请优先分发 ZIP；目录中的 `.app` 主要用于当前机器调试。若稍后手动严格验证 `.app` 时出现 `resource fork, Finder information`，可执行：
 
 ```bash
 xattr -d com.apple.FinderInfo outputs/DisplaySwitcher.app 2>/dev/null || true
@@ -144,10 +146,10 @@ codesign --verify --deep --strict outputs/DisplaySwitcher.app
 
 ## 安装与运行
 
-将 App 复制到“应用程序”目录，然后打开：
+推荐解压经过复验的 ZIP 到“应用程序”目录，然后打开：
 
 ```bash
-cp -R outputs/DisplaySwitcher.app /Applications/
+ditto -x -k outputs/DisplaySwitcher-macOS-arm64.zip /Applications
 open /Applications/DisplaySwitcher.app
 ```
 
@@ -164,4 +166,4 @@ open /Applications/DisplaySwitcher.app
 
 ## 修改显示器参数
 
-直接在“设置…”中修改每台显示器的 Mac/Windows 输入源编号和 DDC 回读开关，无需修改源码。输入源编号由显示器决定；当前默认为显示器 1 使用 `18`、显示器 2 使用 `15` 切到 Windows。
+直接在“设置…”中修改每台显示器的 Mac/Windows 输入源编号和 DDC 回读开关，无需修改源码。输入源编号由显示器型号和接口决定，全新安装时必须由用户填写。

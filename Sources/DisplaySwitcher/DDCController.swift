@@ -22,23 +22,19 @@ struct DDCReading {
 }
 
 final class DDCController {
-    private let knownDisplays: [NativeDDCKnownDisplay]
     private let native: NativeDDCBackend
 
     init() {
-        knownDisplays = (1...2).map {
-            let configuration = DisplayConfiguration.load(index: $0)
-            return NativeDDCKnownDisplay(
-                name: configuration.name,
-                systemUUID: configuration.selector
-            )
-        }
-        native = NativeDDCBackend(knownDisplays: knownDisplays)
+        native = NativeDDCBackend(knownDisplays: Self.knownDisplays(
+            from: AppPreferences.displayConfigurations
+        ))
     }
 
-    func detectDisplays() throws -> [DetectedDisplay] {
+    func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {
+        let knownDisplays = Self.knownDisplays(from: existingConfigurations)
+        native.updateKnownDisplays(knownDisplays)
         let nativeDisplays = native.discover()
-        if nativeDisplays.count >= 2 || !Self.hasM1DDC {
+        if !nativeDisplays.isEmpty || !Self.hasM1DDC {
             guard !nativeDisplays.isEmpty else { throw DDCError.detectionFailed }
             let rank = Dictionary(uniqueKeysWithValues: knownDisplays.enumerated().map {
                 ($0.element.systemUUID.uppercased(), $0.offset)
@@ -58,9 +54,13 @@ final class DDCController {
         }
 
         let output = try Self.runM1DDC(arguments: ["display", "list", "detailed"])
-        let detected = DetectedDisplay.parseList(output).filter { (1...2).contains($0.index) }
+        let detected = DetectedDisplay.parseList(output)
         guard !detected.isEmpty else { throw DDCError.detectionFailed }
         return detected
+    }
+
+    func updateConfigurations(_ configurations: [DisplayConfiguration]) {
+        native.updateKnownDisplays(Self.knownDisplays(from: configurations))
     }
 
     func read(selector: String, command: DDCCommand) -> DDCReading? {
@@ -111,6 +111,14 @@ final class DDCController {
 
     private static var hasM1DDC: Bool { m1ddcPath != nil }
 
+    private static func knownDisplays(
+        from configurations: [DisplayConfiguration]
+    ) -> [NativeDDCKnownDisplay] {
+        configurations.map {
+            NativeDDCKnownDisplay(name: $0.name, systemUUID: $0.selector)
+        }
+    }
+
     private static func readM1DDC(
         selector: String,
         operation: String,
@@ -158,6 +166,7 @@ enum DDCError: LocalizedError {
     case commandFailed(arguments: [String], status: Int32, detail: String?)
     case detectionFailed
     case invalidValue(Int)
+    case inputNotConfigured(displayName: String)
     case m1ddcUnavailable
     case nativeWriteFailed(command: DDCCommand, value: Int)
 
@@ -171,6 +180,8 @@ enum DDCError: LocalizedError {
             return "原生 DDC 和 m1ddc 都没有返回可用的外接显示器。"
         case let .invalidValue(value):
             return "DDC 数值超出有效范围：\(value)"
+        case let .inputNotConfigured(displayName):
+            return "\(displayName) 尚未配置 Mac/Windows 输入源，未执行切屏。"
         case .m1ddcUnavailable:
             return "原生 DDC 不可用，且未安装 m1ddc 回退后端。"
         case let .nativeWriteFailed(command, value):

@@ -197,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     private lazy var linkedItem: NSMenuItem = {
-        let item = NSMenuItem(title: "联动两台显示器", action: #selector(toggleLinkedControls), keyEquivalent: "")
+        let item = NSMenuItem(title: "联动所有显示器", action: #selector(toggleLinkedControls), keyEquivalent: "")
         item.target = self
         item.state = AppPreferences.linkedDisplays ? .on : .off
         return item
@@ -220,9 +220,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ownsPrimaryInstance else { return }
-        for index in 1...2 {
-            configurations[index] = DisplayConfiguration.load(index: index)
-        }
+        configurations = Dictionary(uniqueKeysWithValues: AppPreferences.displayConfigurations.map {
+            ($0.index, $0)
+        })
 
         if let button = statusItem.button {
             button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "显示器控制")
@@ -233,22 +233,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(switchToMacItem)
         menu.addItem(switchItem)
         menu.addItem(.separator())
-
-        for displayID in 1...2 {
-            let controls = DisplayControls(displayID: displayID) { [weak self] id, control, value in
-                self?.setControl(control, value: value, fromDisplay: id)
-            }
-            displayControls[displayID] = controls
-
-            let displayName = configurations[displayID]?.name ?? "显示器 \(displayID)"
-            let displayItem = NSMenuItem(title: displayName, action: nil, keyEquivalent: "")
-            displayItem.image = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
-            displayItem.submenu = controls.menu
-            displayMenuItems[displayID] = displayItem
-            menu.addItem(displayItem)
-        }
-
-        restoreCachedValues()
 
         menu.addItem(linkedItem)
         menu.addItem(.separator())
@@ -266,6 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         statusItem.menu = menu
+        rebuildDisplayMenuItems()
+        restoreCachedValues()
 
         usbMonitor.onPresenceChanged = { [weak self] isPresent in
             self?.handleUSBPresenceChange(isPresent)
@@ -295,10 +281,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func switchInputs(
         toMac: Bool,
-        displayIDs: [Int] = [1, 2],
+        displayIDs: [Int]? = nil,
         completion: ((Bool) -> Void)? = nil
     ) {
-        guard !displayIDs.isEmpty else { return }
+        let targetDisplayIDs = displayIDs ?? configurations.keys.sorted()
+        guard !targetDisplayIDs.isEmpty else {
+            completion?(false)
+            return
+        }
         let activeItem = toMac ? switchToMacItem : switchItem
         activeItem.title = "正在切换…"
         switchToMacItem.isEnabled = false
@@ -309,7 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workerQueue.async { [weak self] in
             let firstError = LockedFirstError()
             let group = DispatchGroup()
-            for displayID in displayIDs {
+            for displayID in targetDisplayIDs {
                 guard let configuration = currentConfigurations[displayID] else { continue }
                 group.enter()
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -318,10 +308,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     var displayError: Error?
                     for attempt in 0..<2 {
                         do {
+                            guard let input = toMac
+                                ? configuration.macInput
+                                : configuration.windowsInput else {
+                                throw DDCError.inputNotConfigured(displayName: configuration.name)
+                            }
                             try ddcController.write(
                                 selector: configuration.selector,
                                 command: .input,
-                                value: toMac ? configuration.macInput : configuration.windowsInput
+                                value: input
                             )
                             succeeded = true
                             break
@@ -365,23 +360,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         detectItem.isEnabled = false
         detectItem.title = "正在检测…"
         let ddcController = ddcController
+        let existing = configurations.values.sorted { $0.index < $1.index }
 
         workerQueue.async { [weak self] in
             do {
-                let detectedDisplays = try ddcController.detectDisplays()
+                let detectedDisplays = try ddcController.detectDisplays(
+                    existingConfigurations: existing
+                )
 
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    for detected in detectedDisplays {
-                        let configuration = DisplayConfiguration.load(
-                            index: detected.index,
-                            detectedName: detected.name,
-                            detectedSelector: detected.systemUUID
-                        )
-                        configuration.save()
-                        self.configurations[detected.index] = configuration
-                        self.displayMenuItems[detected.index]?.title = configuration.name
-                    }
+                    let merged = DisplayConfigurationStore.merge(
+                        detected: detectedDisplays,
+                        existing: existing
+                    )
+                    self.configurations = Dictionary(uniqueKeysWithValues: merged.map {
+                        ($0.index, $0)
+                    })
+                    ddcController.updateConfigurations(merged)
+                    self.rebuildDisplayMenuItems()
+                    self.restoreCachedValues()
                     self.finishDetection()
                     self.refreshValues(force: true)
                 }
@@ -412,7 +410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         workerQueue.async { [weak self] in
             var readings: [Int: [DisplayControl: (current: Int, maximum: Int)]] = [:]
 
-            for displayID in 1...2 {
+            for displayID in currentConfigurations.keys.sorted() {
                 guard
                     let configuration = currentConfigurations[displayID],
                     configuration.readEnabled
@@ -435,7 +433,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
             DispatchQueue.main.async {
                 guard let self else { return }
-                for displayID in 1...2 {
+                for displayID in currentConfigurations.keys.sorted() {
                     let displayReadings = readings[displayID] ?? [:]
                     let readEnabled = currentConfigurations[displayID]?.readEnabled ?? true
                     let hasInvalidAllZeroReply = displayReadings.count == DisplayControl.allCases.count
@@ -462,7 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setControl(_ control: DisplayControl, value: Int, fromDisplay displayID: Int) {
-        let targetDisplays = linkedItem.state == .on ? [1, 2] : [displayID]
+        let targetDisplays = linkedItem.state == .on ? configurations.keys.sorted() : [displayID]
         let currentConfigurations = configurations
         let ddcController = ddcController
 
@@ -499,7 +497,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func cacheKey(displayID: Int, control: DisplayControl) -> String {
-        "LastValue.display\(displayID).\(control.rawValue)"
+        let selector = configurations[displayID]?.selector ?? "display\(displayID)"
+        return "LastValue.device.\(selector).\(control.rawValue)"
     }
 
     private func saveCachedValue(_ value: Int, displayID: Int, control: DisplayControl) {
@@ -508,12 +507,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func cachedValue(displayID: Int, control: DisplayControl) -> Int? {
         let key = cacheKey(displayID: displayID, control: control)
-        guard UserDefaults.standard.object(forKey: key) != nil else { return nil }
-        return UserDefaults.standard.integer(forKey: key)
+        if UserDefaults.standard.object(forKey: key) != nil {
+            return UserDefaults.standard.integer(forKey: key)
+        }
+        let legacyKey = "LastValue.display\(displayID).\(control.rawValue)"
+        guard UserDefaults.standard.object(forKey: legacyKey) != nil else { return nil }
+        return UserDefaults.standard.integer(forKey: legacyKey)
     }
 
     private func restoreCachedValues() {
-        for displayID in 1...2 {
+        for displayID in configurations.keys.sorted() {
             for control in DisplayControl.allCases {
                 if let value = cachedValue(displayID: displayID, control: control) {
                     displayControls[displayID]?.update(control, value: value, estimated: true)
@@ -529,15 +532,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for control in DisplayControl.allCases {
             if let cached = cachedValue(displayID: displayID, control: control) {
                 displayControls[displayID]?.update(control, value: cached, estimated: true)
-            } else if
-                linkedItem.state == .on,
-                displayID == 2,
-                let displayOneReading = readings[1]?[control]
-            {
+            } else if linkedItem.state == .on,
+                      let linkedReading = readings
+                        .filter({ $0.key != displayID })
+                        .sorted(by: { $0.key < $1.key })
+                        .compactMap({ $0.value[control] })
+                        .first {
                 displayControls[displayID]?.update(
                     control,
-                    value: displayOneReading.current,
-                    maximum: displayOneReading.maximum,
+                    value: linkedReading.current,
+                    maximum: linkedReading.maximum,
                     estimated: true
                 )
             }
@@ -827,17 +831,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func reloadSettings() {
-        for index in 1...2 {
-            let configuration = DisplayConfiguration.load(index: index)
-            configurations[index] = configuration
-            displayMenuItems[index]?.title = configuration.name
-        }
+        let values = AppPreferences.displayConfigurations
+        configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
+        ddcController.updateConfigurations(values)
+        rebuildDisplayMenuItems()
         linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
         configureUSBMonitor()
         configurePeerTransport()
         lastRefresh = .distantPast
         restoreCachedValues()
         refreshValues(force: true)
+    }
+
+    private func rebuildDisplayMenuItems() {
+        guard let menu = statusItem.menu else { return }
+
+        for item in displayMenuItems.values {
+            menu.removeItem(item)
+        }
+        displayMenuItems.removeAll()
+        displayControls.removeAll()
+
+        guard var insertionIndex = menu.items.firstIndex(of: linkedItem) else { return }
+        for configuration in configurations.values.sorted(by: { $0.index < $1.index }) {
+            let displayID = configuration.index
+            let controls = DisplayControls(displayID: displayID) { [weak self] id, control, value in
+                self?.setControl(control, value: value, fromDisplay: id)
+            }
+            let displayItem = NSMenuItem(title: configuration.name, action: nil, keyEquivalent: "")
+            displayItem.image = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
+            displayItem.submenu = controls.menu
+            displayControls[displayID] = controls
+            displayMenuItems[displayID] = displayItem
+            menu.insertItem(displayItem, at: insertionIndex)
+            insertionIndex += 1
+        }
+        linkedItem.isEnabled = configurations.count > 1
     }
 
     @objc private func quit() {
