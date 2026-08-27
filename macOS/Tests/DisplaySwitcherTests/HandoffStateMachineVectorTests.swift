@@ -7,6 +7,7 @@ import XCTest
 private struct VectorFile: Decodable {
     let vectors: [StateMachineVector]
     let configuredPairingCode: String
+    let referenceTime: TimeInterval
 }
 
 private struct VectorHardwareCalls: Decodable, Equatable {
@@ -160,16 +161,33 @@ private final class VectorStateMachineRecorder {
 
     func recordAction(_ action: HandoffAction) {
         actions.append(
-            actionToTimedAction(action, atMs: Int(clock.currentTimeMs()))
+            actionToTimedAction(action, atMs: Int(clock.currentRelativeTimeMs()))
         )
     }
 }
 
 private final class VirtualClock: HandoffClock {
+    private let referenceTimeMs: Int64
     private(set) var nowMs: Int64 = 0
 
+    init(referenceTime: TimeInterval) {
+        referenceTimeMs = Int64((referenceTime * 1_000).rounded())
+    }
+
     func currentTimeMs() -> Int64 {
+        referenceTimeMs + nowMs
+    }
+
+    func currentRelativeTimeMs() -> Int64 {
         nowMs
+    }
+
+    func absoluteTimeMs(forRelativeTimeMs value: Int64) -> Int64 {
+        referenceTimeMs + value
+    }
+
+    func relativeTimeMs(forAbsoluteTimeMs value: Int64) -> Int64 {
+        value - referenceTimeMs
     }
 
     func advance(to ms: Int64) {
@@ -211,7 +229,7 @@ private final class VirtualScheduler: HandoffScheduler {
     }
 
     func schedule(_ key: String, after delayMs: Int64, _ action: @escaping () -> Void) {
-        let dueMs = max(0, clock.currentTimeMs() + max(0, delayMs))
+        let dueMs = max(0, clock.currentRelativeTimeMs() + max(0, delayMs))
         orderCounter += 1
         tasks[key] = VirtualTask(
             key: key,
@@ -253,8 +271,8 @@ private final class VectorStateMachineHarness {
     var actions: [TimedAction] { recorder.actions }
     var hardware: VectorHardwareCounter { recorder.hardware }
 
-    init(initialState: InitialState, configuredPairingCode: String) {
-        clock = VirtualClock()
+    init(initialState: InitialState, configuredPairingCode: String, referenceTime: TimeInterval) {
+        clock = VirtualClock(referenceTime: referenceTime)
         scheduler = VirtualScheduler(clock: clock)
         eventIDSource = VirtualEventIDSource(queue: initialState.nextEventIDs)
         recorder = VectorStateMachineRecorder(clock: clock)
@@ -279,12 +297,18 @@ private final class VectorStateMachineHarness {
             usbAutomationEnabled: initialState.usbAutomationEnabled,
             usbPresent: initialState.usbPresent,
             peerReachable: initialState.peerReachable,
-            peerLastSeenAtMs: initialState.peerLastSeenAtMs.map(Int64.init),
+            peerLastSeenAtMs: initialState.peerLastSeenAtMs.map {
+                clock.absoluteTimeMs(forRelativeTimeMs: Int64($0))
+            },
             incomingEventID: initialState.incomingEventID,
             outgoingEventID: initialState.outgoingEventID,
             newestIncomingRequestTimestamp: initialState.newestIncomingRequestTimestamp,
             seenMessages: initialState.seenMessages.map { seen in
-                (type: seen.type, eventID: seen.eventID, seenAtMs: Int64(seen.seenAtMs))
+                (
+                    type: seen.type,
+                    eventID: seen.eventID,
+                    seenAtMs: clock.absoluteTimeMs(forRelativeTimeMs: Int64(seen.seenAtMs))
+                )
             },
             pairingCode: configuredPairingCode
         )
@@ -307,7 +331,7 @@ private final class VectorStateMachineHarness {
             case .coordinationChanged(let enabled):
                 stateMachine.setCoordinationEnabled(enabled)
             case .advanceTime:
-                stateMachine.handleAdvanceTime(to: Int64(step.atMs))
+                stateMachine.handleAdvanceTime(to: clock.currentTimeMs())
             }
 
             scheduler.runPending(until: Int64(step.atMs), includeEqual: true)
@@ -315,7 +339,19 @@ private final class VectorStateMachineHarness {
     }
 
     func snapshot() -> HandoffStateSnapshot {
-        stateMachine.snapshot()
+        let snapshot = stateMachine.snapshot()
+        return HandoffStateSnapshot(
+            localPlatform: snapshot.localPlatform,
+            coordinationEnabled: snapshot.coordinationEnabled,
+            usbAutomationEnabled: snapshot.usbAutomationEnabled,
+            usbPresent: snapshot.usbPresent,
+            peerReachable: snapshot.peerReachable,
+            peerLastSeenAtMs: snapshot.peerLastSeenAtMs.map(clock.relativeTimeMs(forAbsoluteTimeMs:)),
+            incomingEventID: snapshot.incomingEventID,
+            outgoingEventID: snapshot.outgoingEventID,
+            newestIncomingRequestTimestamp: snapshot.newestIncomingRequestTimestamp,
+            seenMessageCount: snapshot.seenMessageCount
+        )
     }
 
     func expectedTimedActions(_ vector: StateMachineVector) -> [TimedAction] {
@@ -427,7 +463,8 @@ final class HandoffStateMachineVectorTests: XCTestCase {
         for vector in vectors.vectors {
             let harness = VectorStateMachineHarness(
                 initialState: vector.initialState,
-                configuredPairingCode: vectors.configuredPairingCode
+                configuredPairingCode: vectors.configuredPairingCode,
+                referenceTime: vectors.referenceTime
             )
             harness.run(vector)
 

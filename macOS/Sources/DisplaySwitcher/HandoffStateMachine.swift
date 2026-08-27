@@ -330,11 +330,9 @@ final class HandoffStateMachine {
             return
         }
 
-        markPeerReachable(nowMs: nowMs)
-        log(.acceptMessage(type: message.type, eventID: message.eventID))
-
         let disposition = replayGuard.classify(message, nowMs: nowMs)
         if disposition.isDuplicate {
+            markPeerReachable(nowMs: nowMs)
             log(.rejectMessage(type: message.type, eventID: message.eventID, reason: "duplicate"))
             if message.type == .handoverRequest,
                let incomingEventID,
@@ -347,6 +345,9 @@ final class HandoffStateMachine {
             }
             return
         }
+
+        log(.acceptMessage(type: message.type, eventID: message.eventID))
+        markPeerReachable(nowMs: nowMs)
 
         if disposition.isOutOfOrder {
             log(.rejectMessage(type: message.type, eventID: message.eventID, reason: "out_of_order"))
