@@ -23,6 +23,9 @@ namespace DisplaySwitcher::Native
         AppConfig Config() const;
         void ApplyConfiguration(bool applyAutoStart = true);
         void EnterSafeStateAfterSaveFailure();
+        void BeginUsbLearning();
+        void EndUsbLearning();
+        bool AllowsSideEffects(uint64_t generation) const noexcept;
         void OnUsbPresenceChanged(bool present);
         void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
         void AdvanceStateMachine();
@@ -54,6 +57,8 @@ namespace DisplaySwitcher::Native
         bool peerConnected_{};
         std::atomic<bool> disposed_{};
         RuntimeSafetyGate sideEffectGate_;
+        std::atomic<uint64_t> sideEffectGeneration_{ 1 };
+        std::atomic<bool> usbLearningActive_{};
         std::jthread peerHealthThread_;
     };
 }

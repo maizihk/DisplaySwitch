@@ -1,7 +1,9 @@
 #include "../DisplaySwitcher.Native/pch.h"
 #include "../DisplaySwitcher.Native/AppConfig.h"
+#include "../DisplaySwitcher.Native/AboutInfo.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
+#include "../DisplaySwitcher.Native/UsbLearning.h"
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -535,6 +537,97 @@ namespace
         gated.Read(config, {}, cancellation.Begin()); gated.Write(config, firstId, DdcVcpCode::Brightness, 12, true, cancellation.Begin());
         Check(native.reads.empty() && native.writes.empty(), L"运行时安全门关闭时所有 DDC 调用计数必须为零");
     }
+
+    void TestUsbLearningAndAbout()
+    {
+        auto device = [](wchar_t const* reference, wchar_t const* name, int vendor, int product)
+        {
+            return UsbLearningDevice{ reference, name, vendor, product };
+        };
+        auto baseline = device(L"usb:pnp:baseline", L"基线设备", 0x1000, 0x2000);
+        auto first = device(L"usb:pnp:candidate-a", L"候选设备 A", 0x1001, 0x2001);
+        auto second = device(L"usb:pnp:candidate-b", L"候选设备 B", 0x1002, 0x2002);
+        UsbLearningSession learning;
+        std::wstring originalBinding = L"usb:pnp:original";
+
+        auto generation = learning.Start(L"profile-stable-id", { baseline }, 1000);
+        Check(learning.Active() && learning.BlocksSideEffects() && learning.ProfileId() == L"profile-stable-id",
+            L"C-021: USB 学习必须绑定稳定配置 ID，并在开始后阻断副作用");
+        learning.Observe(generation, { baseline, first, second }, 1250, true);
+        Check(learning.Candidates().size() == 2 && originalBinding == L"usb:pnp:original",
+            L"C-021: 多个新增候选必须全部等待用户选择且确认前保留原绑定");
+
+        int udpCalls{}, usbCalls{}, ddcCalls{}, wakeCalls{};
+        RuntimeSafetyGate runtimeGate;
+        runtimeGate.Block();
+        auto attemptSideEffects = [&]
+        {
+            if (!learning.BlocksSideEffects() && runtimeGate.AllowsSideEffects())
+                { ++udpCalls; ++usbCalls; ++ddcCalls; ++wakeCalls; }
+        };
+        attemptSideEffects();
+        Check(udpCalls == 0 && usbCalls == 0 && ddcCalls == 0 && wakeCalls == 0,
+            L"C-021: 学习和候选确认前必须保持 UDP、USB、DDC 与唤醒调用为零");
+        auto selected = learning.Confirm(generation, second.localReference, 1500, true);
+        if (selected) originalBinding = selected->localReference;
+        runtimeGate.Allow();
+        Check(selected && originalBinding == second.localReference && !learning.Active(),
+            L"C-021: 只有用户明确选择的候选才能替换目标配置原绑定");
+
+        originalBinding = L"usb:pnp:original";
+        generation = learning.Start(L"profile-stable-id", { baseline }, 2000);
+        learning.Observe(generation, { baseline, first }, 2200, true);
+        learning.Cancel(generation);
+        learning.Observe(generation, { baseline, second }, 2300, true);
+        Check(!learning.Active() && originalBinding == L"usb:pnp:original" && learning.Candidates().empty(),
+            L"C-022: 取消必须保留原绑定并丢弃迟到枚举结果");
+
+        generation = learning.Start(L"profile-stable-id", { baseline }, 3000);
+        learning.Observe(generation, { baseline, first }, 32999, true);
+        Check(learning.Active(), L"C-022: 30 秒窗口到期前学习必须仍有效");
+        learning.Observe(generation, { baseline, first }, 33000, true);
+        Check(!learning.Active() && !learning.Confirm(generation, first.localReference, 33000, true)
+            && originalBinding == L"usb:pnp:original",
+            L"C-022: 30 秒超时必须保留原绑定并拒绝迟到确认");
+
+        generation = learning.Start(L"profile-stable-id", { baseline }, 4000);
+        learning.Observe(generation, { baseline, first }, 4100, false);
+        Check(!learning.Active() && originalBinding == L"usb:pnp:original",
+            L"C-022: 学习目标配置删除时必须保留原绑定");
+
+        auto oldGeneration = learning.Start(L"profile-stable-id", { baseline }, 5000);
+        learning.Cancel(oldGeneration);
+        auto newGeneration = learning.Start(L"profile-stable-id", { baseline }, 6000);
+        learning.Observe(oldGeneration, { baseline, first }, 6100, true);
+        Check(learning.Active() && learning.Generation() == newGeneration && learning.Candidates().empty(),
+            L"C-022: 旧学习代际的迟到回调不得污染新会话");
+        learning.Cancel(newGeneration);
+
+        std::wstring modulePath(32768, L'\0');
+        auto moduleLength = GetModuleFileNameW(nullptr, modulePath.data(), static_cast<DWORD>(modulePath.size()));
+        Check(moduleLength > 0 && moduleLength < modulePath.size(), L"C-023: 测试程序路径必须可用");
+        modulePath.resize(moduleLength);
+        auto applicationExecutable = std::filesystem::path(modulePath).parent_path().parent_path().parent_path().parent_path().parent_path()
+            / L"DisplaySwitcher.Native" / L"bin" / L"x64" / L"Release" / L"DisplaySwitcher.Windows.exe";
+        auto about = PublicAboutInfo(applicationExecutable);
+        auto missingMetadata = PublicAboutInfo(applicationExecutable.parent_path() / L"missing.exe");
+        auto combined = about.applicationName + L" " + about.publicVersion + L" " + about.architecture + L" "
+            + about.protocol + L" " + about.projectUrl + L" " + about.licenseUrl + L" "
+            + about.thirdPartyNoticesUrl + L" " + about.buildNotice;
+        Check(about.applicationName == L"DisplaySwitch" && about.versionFromApplicationMetadata
+            && !about.publicVersion.empty() && about.publicVersion != L"未知"
+            && !missingMetadata.versionFromApplicationMetadata && missingMetadata.publicVersion == L"未知"
+            && about.architecture.find(L"Windows") != std::wstring::npos && about.protocol == L"UDP 协议 v1"
+            && about.projectUrl == L"https://github.com/maizihk/DisplaySwitch"
+            && about.licenseUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/LICENSE"
+            && about.thirdPartyNoticesUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/THIRD_PARTY_NOTICES.md",
+            L"C-023: 关于页面必须从应用元数据读取版本并提供三个公开链接");
+        Check(combined.find(L"pairing") == std::wstring::npos && combined.find(L"VID_") == std::wstring::npos
+            && combined.find(L"PID_") == std::wstring::npos && combined.find(L"C:\\") == std::wstring::npos,
+            L"C-023: 关于页面数据源不得包含配对码、硬件标识或本机路径");
+        Check(udpCalls == 0 && usbCalls == 0 && ddcCalls == 0 && wakeCalls == 0,
+            L"C-023: 打开关于页面不得触发网络或硬件动作");
+    }
 }
 
 int wmain()
@@ -554,8 +647,10 @@ int wmain()
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
         TestDdcControls();
+        TestUsbLearningAndAbout();
         if (!failures) std::wcout << L"DS-004 passed C-001 through C-015 local-model scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
+        if (!failures) std::wcout << L"DS-004 passed C-021 through C-023 USB-learning and about scenarios\n";
         failures += RunStateMachineVectorTests();
     }
     catch (winrt::hresult_error const& error)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SettingsWindow.g.h"
+#include "AboutInfo.h"
 #include "AppConfig.h"
 #include "DdcControl.h"
 #include "SystemActions.h"
@@ -19,6 +20,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
                 ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
             std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+            std::function<void()> beginUsbLearning,
+            std::function<void()> endUsbLearning,
             std::function<void()> closed);
         void SetConnectionStatus(std::wstring const& status, bool connected);
         void ShowWindow();
@@ -39,6 +42,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void ApplyTitleBarTheme();
         void LoadValues(::DisplaySwitcher::Native::AppConfig const& config);
         void LoadUsbDevices();
+        void StartUsbLearning(std::wstring const& profileId);
+        void PollUsbLearning();
+        void ShowUsbLearningCandidates();
+        void EndUsbLearning(std::wstring const& message = {});
+        void ShowAbout();
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
@@ -64,8 +72,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc_;
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
+        std::function<void()> beginUsbLearning_;
+        std::function<void()> endUsbLearning_;
         std::function<void()> closed_;
         ::DisplaySwitcher::Native::DdcCancellationSource ddcCancellation_;
+        ::DisplaySwitcher::Native::UsbLearningSession usbLearning_;
+        Microsoft::UI::Dispatching::DispatcherQueueTimer usbLearningTimer_{ nullptr };
+        uint64_t usbLearningGeneration_{};
+        bool usbLearningDialogOpen_{};
+        bool usbLearningRuntimePaused_{};
+        std::optional<std::wstring> learnedUsbName_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;

@@ -33,6 +33,11 @@ namespace DisplaySwitcher::Native
         return name + L" (" + ids + L")";
     }
 
+    UsbLearningDevice UsbDeviceInfo::LearningDevice() const
+    {
+        return { L"usb:pnp:" + pnpDeviceId, DisplayName(), vendorId, productId };
+    }
+
     UsbWatcher::UsbWatcher(int vendorId, int productId, PresenceCallback callback) :
         vendorId_(vendorId), productId_(productId), callback_(std::move(callback))
     {

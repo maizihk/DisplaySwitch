@@ -1,4 +1,5 @@
 #pragma once
+#include "UsbLearning.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -10,6 +11,7 @@ namespace DisplaySwitcher::Native
         std::wstring pnpDeviceId;
 
         std::wstring DisplayName() const;
+        UsbLearningDevice LearningDevice() const;
     };
 
     class UsbWatcher
