@@ -66,6 +66,10 @@ private final class AppearanceBackgroundView: NSView {
     }
 }
 
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 private final class SettingsTabButton: NSControl {
     private let selectionShadowView = NSView()
     private let selectedBackground: NSView
@@ -469,7 +473,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        let documentView = NSView()
+        let documentView = FlippedDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
         displayStack.translatesAutoresizingMaskIntoConstraints = false
         documentView.addSubview(displayStack)
@@ -697,43 +701,60 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         readCheckbox.controlSize = .small
         readCheckbox.setContentHuggingPriority(.required, for: .horizontal)
 
-        func compactLabel(_ title: String) -> NSTextField {
+        func compactLabel(_ title: String, width: CGFloat) -> NSTextField {
             let label = NSTextField(labelWithString: title)
             label.font = .systemFont(ofSize: 12)
             label.textColor = .secondaryLabelColor
+            label.alignment = .right
             label.setContentHuggingPriority(.required, for: .horizontal)
+            label.widthAnchor.constraint(equalToConstant: width).isActive = true
             return label
         }
 
-        nameField.widthAnchor.constraint(equalToConstant: 145).isActive = true
-        selectorField.widthAnchor.constraint(equalToConstant: 305).isActive = true
-        macInputField.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        nameField.widthAnchor.constraint(equalToConstant: 132).isActive = true
+        selectorField.widthAnchor.constraint(equalToConstant: 258).isActive = true
+        macInputField.widthAnchor.constraint(equalToConstant: 132).isActive = true
         inputField.widthAnchor.constraint(equalToConstant: 72).isActive = true
 
-        let identityRow = NSStackView(views: [
-            compactLabel("名称"),
-            nameField,
-            compactLabel("System UUID"),
-            selectorField
-        ])
+        func fieldGroup(label: String, labelWidth: CGFloat, field: NSTextField) -> NSStackView {
+            let group = NSStackView(views: [compactLabel(label, width: labelWidth), field])
+            group.orientation = .horizontal
+            group.alignment = .centerY
+            group.spacing = 8
+            return group
+        }
+
+        let nameGroup = fieldGroup(label: "名称", labelWidth: 80, field: nameField)
+        nameGroup.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        let selectorGroup = fieldGroup(label: "System UUID", labelWidth: 92, field: selectorField)
+        selectorGroup.widthAnchor.constraint(equalToConstant: 358).isActive = true
+
+        let identityRow = NSStackView(views: [nameGroup, selectorGroup])
         identityRow.orientation = .horizontal
         identityRow.alignment = .centerY
-        identityRow.spacing = 8
+        identityRow.spacing = 12
         identityRow.widthAnchor.constraint(equalToConstant: 590).isActive = true
 
-        let spacer = NSView()
-        let inputRow = NSStackView(views: [
-            compactLabel("Mac 输入源"),
-            macInputField,
-            compactLabel("Windows 输入源"),
+        let macInputGroup = fieldGroup(label: "Mac 输入源", labelWidth: 80, field: macInputField)
+        macInputGroup.widthAnchor.constraint(equalToConstant: 220).isActive = true
+
+        let inputSpacer = NSView()
+        let windowsAndDDCGroup = NSStackView(views: [
+            compactLabel("Windows 输入源", width: 92),
             inputField,
-            spacer,
-            compactLabel("读取 DDC"),
+            inputSpacer,
+            compactLabel("读取 DDC", width: 60),
             readCheckbox
         ])
+        windowsAndDDCGroup.orientation = .horizontal
+        windowsAndDDCGroup.alignment = .centerY
+        windowsAndDDCGroup.spacing = 8
+        windowsAndDDCGroup.widthAnchor.constraint(equalToConstant: 358).isActive = true
+
+        let inputRow = NSStackView(views: [macInputGroup, windowsAndDDCGroup])
         inputRow.orientation = .horizontal
         inputRow.alignment = .centerY
-        inputRow.spacing = 8
+        inputRow.spacing = 12
         inputRow.widthAnchor.constraint(equalToConstant: 590).isActive = true
 
         let hint = NSTextField(labelWithString: "关闭 DDC 回读后使用最后一次成功写入的缓存值，并以 ≈ 标识。")
