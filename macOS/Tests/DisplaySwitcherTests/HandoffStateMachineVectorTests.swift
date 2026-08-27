@@ -138,6 +138,33 @@ private struct VectorHardwareCounter {
     var usbActions = 0
 }
 
+private final class VectorStateMachineRecorder {
+    let clock: VirtualClock
+    var actions: [TimedAction] = []
+    var hardware = VectorHardwareCounter()
+
+    init(clock: VirtualClock) {
+        self.clock = clock
+    }
+
+    func recordHardware(_ kind: HandoffStateMachineTestSink.RecordedEvent) {
+        switch kind {
+        case .requestWake:
+            hardware.wake += 1
+        case .requestSwitch:
+            hardware.switchDisplay += 1
+        default:
+            break
+        }
+    }
+
+    func recordAction(_ action: HandoffAction) {
+        actions.append(
+            actionToTimedAction(action, atMs: Int(clock.currentTimeMs()))
+        )
+    }
+}
+
 private final class VirtualClock: HandoffClock {
     private(set) var nowMs: Int64 = 0
 
@@ -221,33 +248,19 @@ private final class VectorStateMachineHarness {
     private let clock: VirtualClock
     private let scheduler: VirtualScheduler
     private let eventIDSource: VirtualEventIDSource
+    private let recorder: VectorStateMachineRecorder
     private let stateMachine: HandoffStateMachine
-    private(set) var actions: [TimedAction] = []
-    private(set) var hardware = VectorHardwareCounter()
+    var actions: [TimedAction] { recorder.actions }
+    var hardware: VectorHardwareCounter { recorder.hardware }
 
     init(initialState: InitialState, configuredPairingCode: String) {
         clock = VirtualClock()
         scheduler = VirtualScheduler(clock: clock)
         eventIDSource = VirtualEventIDSource(queue: initialState.nextEventIDs)
+        recorder = VectorStateMachineRecorder(clock: clock)
 
-        let sink = HandoffStateMachineTestSink { [weak self] kind, type, eventID, wakeSucceeded, count in
-            guard let self else { return }
-            switch kind {
-            case .sendMessage:
-                if type == .usbPresent || type == .usbReady {
-                    hardware.usbActions += 1
-                }
-            case .sendBurst(let burstCount):
-                if type == .usbPresent || type == .usbReady {
-                    hardware.usbActions += burstCount
-                }
-            case .requestWake:
-                hardware.wake += 1
-            case .requestSwitch:
-                hardware.switchDisplay += 1
-            default:
-                break
-            }
+        let sink = HandoffStateMachineTestSink { [recorder] kind, _, _, _, _ in
+            recorder.recordHardware(kind)
         }
 
         stateMachine = HandoffStateMachine(
@@ -256,12 +269,8 @@ private final class VectorStateMachineHarness {
             clock: clock,
             scheduler: scheduler,
             eventIDSource: eventIDSource,
-            actionLog: { [weak self] action in
-                guard let self else { return }
-                let atMs = Int(self.clock.currentTimeMs())
-                self.actions.append(
-                    actionToTimedAction(action, atMs: atMs)
-                )
+            actionLog: { [recorder] action in
+                recorder.recordAction(action)
             }
         )
 
