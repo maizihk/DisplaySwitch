@@ -1,19 +1,8 @@
 #pragma once
+#include "ProtocolTypes.h"
 
 namespace DisplaySwitcher::Native
 {
-    struct PeerMessage
-    {
-        int version{};
-        std::wstring type;
-        std::wstring eventId;
-        std::wstring source;
-        std::wstring target;
-        double timestamp{};
-        std::wstring pairingCode;
-        std::optional<bool> wakeSucceeded;
-    };
-
     class UdpPeer
     {
     public:

@@ -74,6 +74,9 @@
     <ClInclude Include="AutoStart.h" />
     <ClInclude Include="Controller.h" />
     <ClInclude Include="DisplayModel.h" />
+    <ClInclude Include="HandoverStateMachine.h" />
+    <ClInclude Include="ProtocolMessage.h" />
+    <ClInclude Include="ProtocolTypes.h" />
     <ClInclude Include="SystemActions.h" />
     <ClInclude Include="TrayIcon.h" />
     <ClInclude Include="UdpPeer.h" />
@@ -89,6 +92,8 @@
     <ClCompile Include="Controller.cpp" />
     <ClCompile Include="Diagnostics.cpp" />
     <ClCompile Include="DisplayModel.cpp" />
+    <ClCompile Include="HandoverStateMachine.cpp" />
+    <ClCompile Include="ProtocolMessage.cpp" />
     <ClCompile Include="SystemActions.cpp" />
     <ClCompile Include="TrayIcon.cpp" />
     <ClCompile Include="UdpPeer.cpp" />
