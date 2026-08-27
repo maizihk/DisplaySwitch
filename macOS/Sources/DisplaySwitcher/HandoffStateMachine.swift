@@ -322,7 +322,7 @@ final class HandoffStateMachine {
 
         let disposition = replayGuard.classify(message, nowMs: nowMs)
         if disposition.isDuplicate {
-            markPeerReachable(nowMs: nowMs)
+            markPeerReachable(nowMs: nowMs, emitAction: false)
             log(.rejectMessage(type: message.type, eventID: message.eventID, reason: "duplicate"))
             if message.type == .handoverRequest,
                let incomingEventID,
@@ -512,11 +512,10 @@ final class HandoffStateMachine {
         outgoingTimers.removeAll()
     }
 
-    private func markPeerReachable(nowMs: Int64) {
-        let wasReachable = peerReachable
+    private func markPeerReachable(nowMs: Int64, emitAction: Bool = true) {
         peerReachable = true
         peerLastSeenAtMs = nowMs
-        if !wasReachable {
+        if emitAction {
             log(.setPeerReachable(true))
             sink.updatePeerReachable(true)
         }
