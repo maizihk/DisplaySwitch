@@ -8,7 +8,7 @@
 - 任务起始基线：`8466c120c15607e7f39645c494b2786eac1f12ac`
 - push 前同步 main：`6052327de368684b3fa87e6a45e121ba3a4da612`（仅包含后续合并的 macOS CI 路径过滤，与 Windows 实现无冲突）
 - 实现提交：`a6c9a7bd35bded48252b8da992c86e993692c00e`
-- PR：待创建
+- PR：[#21](https://github.com/maizihk/DisplaySwitch/pull/21)，保持未合并
 
 ## 完成内容
 
