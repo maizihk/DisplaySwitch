@@ -187,6 +187,93 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertTrue(afterCancelledLateResult[1].triggerDevices.isEmpty)
     }
 
+    func testC021MultipleUSBCandidatesWaitForExplicitSelectionWithZeroAutomaticSideEffects() {
+        var target = profile(name: "目标配置")
+        let original = CollaborationTriggerDevice(
+            kind: "usb", localReference: "1:2", displayName: "原绑定"
+        )
+        target.triggerDevices = [original]
+        let first = CollaborationTriggerDevice(
+            kind: "usb", localReference: "3:4", displayName: "候选一"
+        )
+        let second = CollaborationTriggerDevice(
+            kind: "usb", localReference: "5:6", displayName: "候选二"
+        )
+        var session = USBProfileLearningSession()
+        let safetyGate = USBLearningSafetyGate()
+        session.begin(profileID: target.id)
+        safetyGate.begin()
+
+        let result = session.receiveCandidates(
+            [first, second],
+            availableProfileIDs: [target.id]
+        )
+
+        XCTAssertEqual(result, .awaitingSelection(count: 2))
+        XCTAssertEqual(target.triggerDevices, [original])
+        XCTAssertEqual(session.candidates, [first, second])
+        XCTAssertEqual(session.pendingProfileID, target.id)
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
+
+        let selected = session.applyCandidate(at: 1, to: [target])
+
+        XCTAssertEqual(selected[0].triggerDevices, [second])
+        XCTAssertNil(session.pendingProfileID)
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
+        XCTAssertTrue(safetyGate.end())
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy(safetyGate.allows))
+    }
+
+    func testC022CancelTimeoutDeletionAndLateResultsPreserveBindingsWithZeroSideEffects() {
+        var target = profile(name: "目标配置")
+        let original = CollaborationTriggerDevice(
+            kind: "usb", localReference: "1:2", displayName: "原绑定"
+        )
+        let late = CollaborationTriggerDevice(
+            kind: "usb", localReference: "7:8", displayName: "迟到候选"
+        )
+        target.triggerDevices = [original]
+        let other = profile(name: "其他配置")
+        let safetyGate = USBLearningSafetyGate()
+        var session = USBProfileLearningSession()
+
+        session.begin(profileID: target.id)
+        safetyGate.begin()
+        session.cancel()
+        XCTAssertEqual(
+            session.receiveCandidates([late], availableProfileIDs: [target.id]),
+            .ignored
+        )
+        XCTAssertEqual(session.applyCandidate(at: 0, to: [target, other])[0].triggerDevices, [original])
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
+        XCTAssertTrue(safetyGate.end())
+
+        session.begin(profileID: target.id)
+        safetyGate.begin()
+        XCTAssertEqual(
+            session.receiveCandidates([], availableProfileIDs: [target.id]),
+            .timedOut
+        )
+        XCTAssertEqual(USBProfileLearningSession.timeoutSeconds, 30)
+        XCTAssertEqual(
+            session.receiveCandidates([late], availableProfileIDs: [target.id]),
+            .ignored
+        )
+        XCTAssertEqual(session.applyCandidate(at: 0, to: [target, other])[0].triggerDevices, [original])
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
+        XCTAssertTrue(safetyGate.end())
+
+        session.begin(profileID: target.id)
+        safetyGate.begin()
+        XCTAssertEqual(
+            session.receiveCandidates([late], availableProfileIDs: [other.id]),
+            .ignored
+        )
+        XCTAssertEqual(session.applyCandidate(at: 0, to: [other]), [other])
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
+        XCTAssertTrue(safetyGate.end())
+    }
+
     func testMultipleEnabledProfilesBlockLegacyV1AutomaticSideEffects() {
         var document = populatedDocument()
         document.collaborationProfiles[0].coordinationEnabled = true

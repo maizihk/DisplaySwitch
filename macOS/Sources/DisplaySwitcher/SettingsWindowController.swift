@@ -355,7 +355,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         usbRow.orientation = .horizontal
         usbRow.alignment = .centerY
         usbRow.spacing = 10
-        let usbHint = NSTextField(wrappingLabelWithString: "触发设备消失时切换到 Windows；回到 Mac 时只切换未在 Mac 上活动的显示器。学习时请按一次 USB 切换器。")
+        let usbHint = NSTextField(wrappingLabelWithString: "触发设备消失时按已启用协同配置执行自动交接；回到本机时只切换未在本机活动的显示器。学习时请按一次 USB 切换器。")
         usbHint.textColor = .secondaryLabelColor
         usbHint.font = .systemFont(ofSize: 11)
         profilePopup.target = self
@@ -398,8 +398,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 separator(),
                 switchRow(
                     button: usbArrivalSwitchCheckbox,
-                    title: "回到 Mac 时按需切屏",
-                    description: "仅切换没有在 Mac 上活动的显示器；双端协同时由握手流程接管。",
+                    title: "回到本机时按需切屏",
+                    description: "仅切换没有在本机上活动的显示器；双端协同时由握手流程接管。",
                     symbolName: "display.2"
                 ),
                 separator(),
@@ -529,37 +529,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private func makeAboutPage() -> NSTabViewItem {
         let item = NSTabViewItem(identifier: "关于")
         item.label = "关于"
+        let content = AboutPageContent.make(metadata: Bundle.main)
 
         let container = NSView()
         let iconView = NSImageView(image: NSApplication.shared.applicationIconImage)
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
 
-        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
-            ?? "DisplaySwitcher"
-        let nameLabel = NSTextField(labelWithString: appName)
+        let nameLabel = NSTextField(labelWithString: content.productName)
         nameLabel.font = .systemFont(ofSize: 24, weight: .semibold)
         nameLabel.alignment = .center
 
-        let introduction = NSTextField(
-            wrappingLabelWithString: "一款在 macOS 与 Windows 之间协同切换显示器和 USB 设备的原生菜单栏工具。"
-        )
+        let introduction = NSTextField(wrappingLabelWithString: content.summary)
         introduction.font = .systemFont(ofSize: 13)
         introduction.textColor = .secondaryLabelColor
         introduction.alignment = .center
         introduction.maximumNumberOfLines = 2
         introduction.preferredMaxLayoutWidth = 520
 
-        let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-            as? String ?? "未知"
-        let buildVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion")
-            as? String ?? "未知"
-        let versionLabel = NSTextField(
-            labelWithString: "版本 \(shortVersion) (\(buildVersion))"
-        )
+        let versionLabel = NSTextField(labelWithString: content.versionText)
         versionLabel.font = .systemFont(ofSize: 12)
         versionLabel.textColor = .tertiaryLabelColor
         versionLabel.alignment = .center
+
+        let platformLabel = NSTextField(labelWithString: content.platformText)
+        platformLabel.font = .systemFont(ofSize: 12)
+        platformLabel.textColor = .tertiaryLabelColor
+        platformLabel.alignment = .center
 
         let githubButton = NSButton(
             title: "GitHub · maizihk/DisplaySwitch",
@@ -576,19 +572,49 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         githubButton.imagePosition = .imageTrailing
         githubButton.toolTip = "https://github.com/maizihk/DisplaySwitch"
 
+        let licenseButton = NSButton(
+            title: "MIT 许可证",
+            target: self,
+            action: #selector(openLicense)
+        )
+        let thirdPartyButton = NSButton(
+            title: "第三方说明",
+            target: self,
+            action: #selector(openThirdPartyNotices)
+        )
+        for button in [licenseButton, thirdPartyButton] {
+            button.isBordered = false
+            button.font = .systemFont(ofSize: 12, weight: .medium)
+            button.contentTintColor = .linkColor
+        }
+        let links = NSStackView(views: [githubButton, licenseButton, thirdPartyButton])
+        links.orientation = .horizontal
+        links.alignment = .centerY
+        links.spacing = 18
+
+        let buildNotice = NSTextField(wrappingLabelWithString: content.buildNotice)
+        buildNotice.font = .systemFont(ofSize: 11)
+        buildNotice.textColor = .secondaryLabelColor
+        buildNotice.alignment = .center
+        buildNotice.maximumNumberOfLines = 2
+        buildNotice.preferredMaxLayoutWidth = 520
+
         let stack = NSStackView(views: [
             iconView,
             nameLabel,
             introduction,
             versionLabel,
-            githubButton
+            platformLabel,
+            links,
+            buildNotice
         ])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 12
         stack.setCustomSpacing(18, after: iconView)
         stack.setCustomSpacing(6, after: nameLabel)
-        stack.setCustomSpacing(20, after: versionLabel)
+        stack.setCustomSpacing(16, after: platformLabel)
+        stack.setCustomSpacing(14, after: links)
         stack.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(stack)
 
@@ -596,8 +622,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             iconView.widthAnchor.constraint(equalToConstant: 112),
             iconView.heightAnchor.constraint(equalToConstant: 112),
             introduction.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+            buildNotice.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
             stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 64)
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 42)
         ])
 
         item.view = container
@@ -772,12 +799,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         identityRow.spacing = 12
         identityRow.widthAnchor.constraint(equalToConstant: 590).isActive = true
 
-        let macInputGroup = fieldGroup(label: "Mac 输入源", labelWidth: 80, field: macInputField)
+        let macInputGroup = fieldGroup(label: "本机输入源", labelWidth: 80, field: macInputField)
         macInputGroup.widthAnchor.constraint(equalToConstant: 220).isActive = true
 
         let inputSpacer = NSView()
         let windowsAndDDCGroup = NSStackView(views: [
-            compactLabel("Windows 输入源", width: 92),
+            compactLabel("对端输入源", width: 92),
             inputField,
             inputSpacer,
             compactLabel("读取 DDC", width: 60),
@@ -840,8 +867,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func openGitHub() {
-        guard let url = URL(string: "https://github.com/maizihk/DisplaySwitch") else { return }
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.open(AboutPageContent.repositoryURL)
+    }
+
+    @objc private func openLicense() {
+        NSWorkspace.shared.open(AboutPageContent.licenseURL)
+    }
+
+    @objc private func openThirdPartyNotices() {
+        NSWorkspace.shared.open(AboutPageContent.thirdPartyURL)
     }
 
     private func reloadLaunchAtLoginState() {
@@ -874,8 +908,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         usbAutomationCheckbox.state = AppPreferences.usbAutomationEnabled ? .on : .off
         usbArrivalSwitchCheckbox.state = AppPreferences.usbSwitchDisplaysOnArrival ? .on : .off
         switch DisplayConfigurationStore.legacyV1RuntimeSelection(in: loaded.document) {
-        case .compatible:
-            updatePeerConnectionStatus("等待 Windows 心跳…", connected: false)
+        case .compatible(let profile):
+            updatePeerConnectionStatus("等待 \(profile.name) 心跳…", connected: false)
         case .requiresProtocolV2:
             updatePeerConnectionStatus("多个协同配置等待协议 v2，自动协同已暂停", connected: false)
         case .requiresCompleteConfiguration:
@@ -1163,19 +1197,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             updateUSBDeviceLabel()
             return false
         }
-        guard editingProfiles.contains(where: { $0.id == learningProfileID }) else {
-            usbLearningSession.cancel()
-            learnUSBButton.isEnabled = true
-            updateUSBDeviceLabel()
-            onUSBLearningFinished?()
-            return true
+        let candidates = devices.map {
+            CollaborationTriggerDevice(
+                kind: "usb",
+                localReference: "\($0.vendorID):\($0.productID)",
+                displayName: $0.displayName
+            )
         }
-        guard !devices.isEmpty else {
-            usbLearningSession.cancel()
+        switch usbLearningSession.receiveCandidates(
+            candidates,
+            availableProfileIDs: Set(editingProfiles.map(\.id))
+        ) {
+        case .ignored, .timedOut:
             learnUSBButton.isEnabled = true
             updateUSBDeviceLabel()
             onUSBLearningFinished?()
             return true
+        case .awaitingSelection:
+            break
         }
 
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 430, height: 26))
@@ -1200,9 +1239,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 let device = devices[popup.indexOfSelectedItem]
                 guard self.editingProfiles.contains(where: { $0.id == learningProfileID }) else { return }
                 self.learnedUSBDevicesByProfileID[learningProfileID] = device
-                self.editingProfiles = self.usbLearningSession.apply(
-                    CollaborationTriggerDevice(kind: "usb", localReference: "\(device.vendorID):\(device.productID)",
-                                               displayName: device.displayName),
+                self.editingProfiles = self.usbLearningSession.applyCandidate(
+                    at: popup.indexOfSelectedItem,
                     to: self.editingProfiles
                 )
                 self.usbAutomationCheckbox.state = .on
