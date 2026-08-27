@@ -3,49 +3,44 @@
 ## 当前任务
 
 - 日期：2026-08-28
-- 功能：DS-004 / Windows W-201——DDC 后端接口化与亮度、对比度、音量控制
-- 分支：`codex/windows-ds-004-ddc-controls`
-- 任务起始基线：`7c78c537e0ba47c4613063ba5f71560e336115e9`
-- push 前同步 main：`00bceff9e49f27f23c654d04a067b3168af6bbee`（仅包含已合并的 macOS M-005；以普通 merge 纳入，Windows 树无冲突）
-- 实现提交：`9e078a4926ef7d48f2629c63410bf4fc75f9e82b`
-- 首轮 CI 验证 head：`d76762cbb1b0ad59ca800b5c2a10110f92fda6fb`
-- PR：[#24](https://github.com/maizihk/DisplaySwitch/pull/24)，保持未合并
-- Windows CI：run [#13](https://github.com/maizihk/DisplaySwitch/actions/runs/33094329374)（run ID `33094329374`）全部通过
+- 功能：DS-006 / Windows 公开文档清理
+- 分支：`codex/windows-ds-006-public-docs`
+- 任务起始基线：`04b7a9397d84735d28de709a142950b3670f4cb1`（已合并 DS-006 协调 PR 的 `main`）
+- 公开文档提交：`69c867c281421e9c929283ac28372296075a46fa`
+- CI 验证 head：`029a6954a6229de62b64e06da4bd21422e3f25d7`
+- PR：[#27](https://github.com/maizihk/DisplaySwitch/pull/27)，保持开放、未合并
+- Windows CI：run [#16](https://github.com/maizihk/DisplaySwitch/actions/runs/33099549484)（run ID `33099549484`）全部通过
 
 ## 完成内容
 
-- 新增统一的硬件 DDC 接口，覆盖稳定显示器枚举、后端能力和可用性、VCP 读取/写入、结构化错误及代际取消。
-- Windows Dxva2 与 ControlMyMonitor 已拆成独立后端。原有输入源 `0x60`、并行显示器执行和一次 150 ms 重试语义保持不变；没有修改协议或 macOS。
-- 每台显示器在现有 schema v3 内保存独立后端，旧 v3 配置缺少该字段时继承原全局后端，v2/更旧迁移仍保持原行为。后端和物理显示器按稳定逻辑 ID 关联，不依赖枚举顺序。
-- 支持亮度 `0x10`、对比度 `0x12` 和音量 `0x62`。每项有独立开关；关闭后服务层零读取、零写入，界面滑块和提交按钮同时停用。
-- 设置页为每台显示器提供后端选择、显式“三项读取”和逐项“应用”。滑块变化本身不写 DDC；“联动所有显示器”需用户显式开启且默认关闭。
-- 报告最大值小于 10 或小于当前值时使用 `max(100, current)`。单项零值合法；同一显示器三项均成功返回零时不信任结果、不覆盖缓存。
-- 缓存按稳定显示器 ID 与 VCP code 保存。读取失败可继续显示估计值，只有可信读取或成功写入才提交；单项、单显示器和联动部分失败互不污染。
-- 后端不可用时明确区分不支持和暂时失败，ControlMyMonitor 始终描述为外部硬件 DDC/CI 后端，不描述为软件调光。
-- 配置安全状态、运行时安全门和取消均在调用及缓存提交边界检查；窗口关闭、取消、保存或新操作会使旧异步结果失效。缓存持久化失败沿用既有安全标记和当前实例零副作用流程。
+- 从 Windows 开发清单中移除具体旧 USB VID/PID，改为不含个人硬件标识的通用约束。
+- 更新 Windows README，使配置说明与 schema v3 一致：显示器目录和多个协同配置分离，配置支持角色中性的自定义名称、启用状态、排序、对端信息、显示器输入映射和本机触发设备引用。
+- 明确旧 C# 配置和固定双显示器字段仍是迁移兼容输入；未删除兼容字段或修改迁移代码。迁移不能安全完成时仍进入不执行硬件或网络副作用的安全状态。
+- 补充 W-201 当前能力和边界：Dxva2/ControlMyMonitor 独立后端、输入源及亮度/对比度/音量 VCP、逐显示器开关、提交式写入、显式联动、缓存与故障隔离。
+- 补充 Windows 10/11、x64 framework-dependent、Windows App Runtime 2.4、未签名构建、DDC/CI 环境限制、协议 v1 配对边界及隐私注意事项。
+- 本任务仅修改公开文档和本交接记录；没有修改 Windows 运行时代码、测试、协议、共享规范、macOS、Actions、版本号、tag 或 Release。
 
 ## 自动验证
 
+- Windows Markdown 本地链接检查通过；文档引用的仓库内路径均存在。
+- Windows 公开文档扫描未发现旧 USB VID/PID、私网 IP、真实配对码、个人用户路径、私钥或 GitHub token 模式。
 - `Windows/build-windows.ps1` x64 Release 完整通过。
 - 自动测试输出：`DS-004 passed C-001 through C-015 local-model scenarios`。
-- 新增模拟后端输出：`DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios`。
+- W-201 模拟后端输出：`DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios`。
 - v1 公共回归输出：`DS-001 passed 17 message vectors and 16 state-machine vectors`。
-- 模拟覆盖三项正常回读、全零不可信、单项合法零、单台/单项失败隔离、单项关闭零调用、后端不可用、每显示器回退、取消和迟到结果、枚举重排稳定关联、显式联动部分失败及配置/运行时安全门零调用。
-- 测试只使用临时配置和纯模拟后端；未访问真实 DDC、显示器、UDP、USB、Bluetooth、唤醒或防火墙。
-- `Windows/dist/` 已验证入口 `DisplaySwitch.exe`、`runtime/` 和全部必需文件；framework-dependent 绿色版总大小 1.44 MiB，小于 20 MiB。构建产物未进入 Git。
-- GitHub 托管 CI 在 `windows-2025-vs2026` 上完成相同的 x64 Release 构建、显式测试与产物检查；CI 中 dist 为 1.45 MiB。
-- CI artifact：`DisplaySwitcher-Windows-x64-unsigned-framework-dependent`，artifact ID `9655925666`，压缩包 705629 字节；上传步骤通过，保留完整 `Windows/dist/` 结构。
+- `Windows/dist/` 入口、`runtime/` 和必需文件检查通过；framework-dependent 绿色版总大小 1.44 MiB，小于 20 MiB。构建产物未进入 Git。
+- 本机构建的 NuGet 漏洞元数据查询出现 `NU1900` 网络警告，但依赖恢复、编译、测试和产物检查均成功；该警告不通过删除或降低检查规避。
+- GitHub 托管 CI 在 `windows-2025-vs2026` 上完成相同的 x64 Release 构建、显式自动测试和产物检查；日志明确显示 C-001..C-015、C-016..C-020/C-024、17 条消息向量和 16 条状态机向量全部通过，dist 为 1.45 MiB。
+- CI artifact：`DisplaySwitcher-Windows-x64-unsigned-framework-dependent`，artifact ID `9658014613`，压缩包 705630 字节；上传步骤通过并保留完整 `Windows/dist/` 结构。
 
 ## 尚需实机验证
 
-- WinUI 3 每显示器后端选择、三项功能开关、读取/状态提示、提交式滑块、显式联动、取消及高 DPI/滚动布局。
-- Dxva2 对真实显示器的三项能力、当前值/最大值准确性、零值行为和失败提示。
-- ControlMyMonitor `/GetValue`、`/SetValue` 在真实目标上的退出码、显示器字符串和兼容性。
-- 任一真实 DDC 测试（包括输入源、亮度、对比度或音量写入）都可能改变硬件状态，必须另行取得用户确认后执行。
-- 本任务未验证真实 USB/蓝牙、UDP、唤醒或防火墙行为。
+- 本任务不改变运行时能力，因此不新增实机功能结论。
+- W-201 留存的真实 Dxva2、ControlMyMonitor、不同连接链路和高 DPI 设置页验证仍待另行授权执行。
+- 本任务未访问真实 DDC、显示器、UDP、USB、蓝牙、唤醒、防火墙或系统设置。
 
 ## 范围与后续
 
-- 只修改 `Windows/` 和本文件；未修改 macOS、协议、contracts、specs、coordination、GitHub Actions、根文档、版本号、tag 或 Release。
-- 未实现 DS-005、协议 v2、HMAC、USB 学习或关于页面。
+- 允许范围内仅修改 `Windows/DEVELOPMENT_CHECKLIST.md`、`Windows/README.md` 和本文件。
 - framework-dependent 绿色版仍要求目标电脑安装 Windows App Runtime 2.4 x64。
+- PR #27 等待评审，不自动合并，不创建 tag 或 Release。
