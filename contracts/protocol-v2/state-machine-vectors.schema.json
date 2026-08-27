@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://displayswitch.example/contracts/protocol-v2/state-machine-vectors.schema.json",
+  "title": "DisplaySwitch protocol v2 state machine vectors",
+  "type": "object",
+  "required": ["schemaVersion", "protocolVersion", "vectors"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "protocolVersion": { "type": "integer", "const": 2 },
+    "vectors": {
+      "type": "array",
+      "minItems": 20,
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/vector" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "uuid": { "$ref": "message.schema.json#/$defs/uuid" },
+    "nullableUuid": { "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }] },
+    "state": {
+      "type": "string",
+      "enum": ["idle", "debouncing", "discovering", "awaiting_input", "awaiting_ready", "awaiting_commit", "switching", "completed", "cancelled"]
+    },
+    "target": {
+      "type": "object",
+      "required": ["endpointID", "capability", "reachable"],
+      "properties": {
+        "endpointID": { "$ref": "#/$defs/uuid" },
+        "capability": { "type": "string", "enum": ["v1", "v2"] },
+        "reachable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "initialState": {
+      "type": "object",
+      "required": [
+        "localEndpointID", "coordinationEnabled", "sourceInputPresent", "targetInputPresent",
+        "state", "activeEventID", "lockedTargetEndpointID", "enabledTargets"
+      ],
+      "properties": {
+        "localEndpointID": { "$ref": "#/$defs/uuid" },
+        "coordinationEnabled": { "type": "boolean" },
+        "sourceInputPresent": { "type": "boolean" },
+        "targetInputPresent": { "type": "boolean" },
+        "state": { "$ref": "#/$defs/state" },
+        "activeEventID": { "$ref": "#/$defs/nullableUuid" },
+        "lockedTargetEndpointID": { "$ref": "#/$defs/nullableUuid" },
+        "enabledTargets": { "type": "array", "items": { "$ref": "#/$defs/target" } }
+      },
+      "additionalProperties": false
+    },
+    "input": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "statusProbe", "manualSelect", "sourceInputPresenceChanged", "targetInputPresenceChanged",
+            "peerInputPresent", "receiveHandoverRequest", "receiveTargetReady", "receiveCommitted",
+            "wakeCompleted", "switchCompleted", "configurationChanged", "receiveV1Message", "advanceTime"
+          ]
+        },
+        "endpointID": { "$ref": "#/$defs/uuid" },
+        "eventID": { "$ref": "#/$defs/uuid" },
+        "present": { "type": "boolean" },
+        "authenticated": { "type": "boolean" },
+        "intent": { "type": "string", "enum": ["manual", "input_handover"] },
+        "success": { "type": "boolean" },
+        "wakeSucceeded": { "type": "boolean" },
+        "switchSucceeded": { "type": "boolean" },
+        "version": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "required": ["atMs", "input"],
+      "properties": {
+        "atMs": { "type": "integer", "minimum": 0 },
+        "input": { "$ref": "#/$defs/input" }
+      },
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "required": ["atMs", "kind"],
+      "properties": {
+        "atMs": { "type": "integer", "minimum": 0 },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "sendMessage", "requestWake", "requestSwitch", "lockTarget", "startDiscovery",
+            "promptManualSelection", "ignoreMessage", "clearEvent", "routeToV1", "setPeerReachable"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": ["status_response", "input_present", "handover_request", "target_ready", "committed", "cancelled"]
+        },
+        "eventID": { "$ref": "#/$defs/uuid" },
+        "endpointID": { "$ref": "#/$defs/uuid" },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "late_target", "duplicate", "authentication_failed", "endpoint_changed", "no_pending_event",
+            "v1_not_eligible", "source_input_returned", "configuration_changed", "discovery_timeout"
+          ]
+        },
+        "value": { "type": "boolean" },
+        "intent": { "type": "string", "enum": ["manual", "input_handover"] },
+        "wakeSucceeded": { "type": "boolean" },
+        "switchSucceeded": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "hardwareCalls": {
+      "type": "object",
+      "required": ["wake", "switchDisplay", "inputActions"],
+      "properties": {
+        "wake": { "type": "integer", "minimum": 0 },
+        "switchDisplay": { "type": "integer", "minimum": 0 },
+        "inputActions": { "type": "integer", "const": 0 }
+      },
+      "additionalProperties": false
+    },
+    "finalState": {
+      "type": "object",
+      "required": ["state", "activeEventID", "lockedTargetEndpointID"],
+      "properties": {
+        "state": { "$ref": "#/$defs/state" },
+        "activeEventID": { "$ref": "#/$defs/nullableUuid" },
+        "lockedTargetEndpointID": { "$ref": "#/$defs/nullableUuid" }
+      },
+      "additionalProperties": false
+    },
+    "vector": {
+      "type": "object",
+      "required": ["id", "description", "initialState", "steps", "expectedActions", "expectedHardwareCalls", "finalState"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^P-[0-9]{3}$" },
+        "description": { "type": "string", "minLength": 1 },
+        "initialState": { "$ref": "#/$defs/initialState" },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+        "expectedActions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+        "expectedHardwareCalls": { "$ref": "#/$defs/hardwareCalls" },
+        "finalState": { "$ref": "#/$defs/finalState" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

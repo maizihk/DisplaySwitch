@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://displayswitch.example/contracts/protocol-v2/auth-vectors.schema.json",
+  "title": "DisplaySwitch protocol v2 authentication vectors",
+  "type": "object",
+  "required": ["schemaVersion", "protocolVersion", "kdf", "normalizationVectors", "syntheticInputSecretHex", "vectors"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "protocolVersion": { "type": "integer", "const": 2 },
+    "kdf": {
+      "type": "object",
+      "required": ["name", "prf", "iterations", "derivedKeyBytes", "saltPrefixAscii"],
+      "properties": {
+        "name": { "const": "PBKDF2" },
+        "prf": { "const": "HMAC-SHA256" },
+        "iterations": { "type": "integer", "const": 200000 },
+        "derivedKeyBytes": { "type": "integer", "const": 32 },
+        "saltPrefixAscii": { "const": "DisplaySwitch-v2-auth|" }
+      },
+      "additionalProperties": false
+    },
+    "syntheticInputSecretHex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]+$",
+      "minLength": 16
+    },
+    "normalizationVectors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "inputUtf8Hex", "expectedNfcUtf8Hex"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^NFC-[0-9]{3}$" },
+          "description": { "type": "string", "minLength": 1 },
+          "inputUtf8Hex": { "type": "string", "pattern": "^[0-9a-f]+$" },
+          "expectedNfcUtf8Hex": { "type": "string", "pattern": "^[0-9a-f]+$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "vectors": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": ["id", "description", "sourceEndpointID", "expectedDerivedKeyBase64Url"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^AUTH-[0-9]{3}$" },
+          "description": { "type": "string", "minLength": 1 },
+          "sourceEndpointID": { "$ref": "message.schema.json#/$defs/uuid" },
+          "expectedDerivedKeyBase64Url": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+          "messageWithoutAuthTag": { "type": "object" },
+          "expectedCanonicalUtf8Hex": { "type": "string", "pattern": "^[0-9a-f]+$" },
+          "expectedAuthTag": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+        },
+        "dependentRequired": {
+          "messageWithoutAuthTag": ["expectedCanonicalUtf8Hex", "expectedAuthTag"],
+          "expectedCanonicalUtf8Hex": ["messageWithoutAuthTag", "expectedAuthTag"],
+          "expectedAuthTag": ["messageWithoutAuthTag", "expectedCanonicalUtf8Hex"]
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

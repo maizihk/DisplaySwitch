@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 2,
+  "referenceTime": 1788000000,
+  "localEndpointID": "22222222-2222-4222-8222-222222222222",
+  "knownSourceEndpointID": "11111111-1111-4111-8111-111111111111",
+  "authKeyBase64Url": "cXGnxbBzb7LYrfoNBNo6BU8LtqsqghRGggRvgSzYhMo",
+  "vectors": [
+    {
+      "id": "MSG2-001",
+      "description": "Accept an authenticated undirected status probe and reply with the same event ID without hardware actions",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_probe", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": null,
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AQIDBAUGBwgJCgsMDQ4PEA",
+        "authTag": "o5eBzK3AZlicw3kjZ5Z1aoT8pkUV0BLfR7HU0v1OEqw"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": ["status_response"], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-002",
+      "description": "Accept an authenticated status response",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-003",
+      "description": "Accept an authenticated logical input-present declaration",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "input_present", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AwQFBgcICQoLDA0ODxAREg",
+        "authTag": "4WAfsOHRfO-VzlQFjzkad40ZrhJpZwN3gCtK-0oxBb4"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-004",
+      "description": "Accept a manual handover request without performing hardware during message validation",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "handover_request", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "BAUGBwgJCgsMDQ4PEBESEw", "intent": "manual",
+        "authTag": "-f7F4XeQtSQksnl7Pn8lWDLH6RmCAO44-CHCIcKBP3c"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-005",
+      "description": "Accept an authenticated target-ready response",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "target_ready", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "BQYHCAkKCwwNDg8QERITFA", "wakeSucceeded": true,
+        "authTag": "jqDnhKY5DDvkHLummvOlqQlEGTrOkG3WdM3HFwQjscc"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-006",
+      "description": "Accept an authenticated committed result",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "committed", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "BgcICQoLDA0ODxAREhMUFQ", "switchSucceeded": true,
+        "authTag": "IwyJsrKmUowyBKLIem-a6OfDj0BE3GCt6cNsv1z49ag"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-007",
+      "description": "Accept an authenticated cancellation",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "cancelled", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa7",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "BwgJCgsMDQ4PEBESExQVFg", "reason": "user_cancelled",
+        "authTag": "i41mZx1J70WCmogy6-JZMDmbZHjUTRaGHW-Z_3E5Dc0"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-008",
+      "description": "Ignore an unknown extension field without changing the authenticated semantics",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA", "futureIgnoredField": "ignored"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-009",
+      "description": "Reject an unsupported protocol version before authentication",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 3, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": false, "reason": "unsupported_version", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-010",
+      "description": "Reject a directed message for another endpoint",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "33333333-3333-4333-8333-333333333333",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": false, "reason": "wrong_target", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-011",
+      "description": "Accept a timestamp exactly ten seconds old",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "bbbbbbbb-bbbb-4bbb-8bbb-000000000011",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1787999990, "nonce": "CwwNDg8QERITFBUWFxgZGg",
+        "authTag": "AMaUGt7GMI9gpev3w_1S3ikZR67mXB2fmsT-6enS9Rs"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-012",
+      "description": "Reject a timestamp more than ten seconds old",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "bbbbbbbb-bbbb-4bbb-8bbb-000000000012",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1787999989, "nonce": "DA0ODxAREhMUFRYXGBkaGw",
+        "authTag": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      } },
+      "expected": { "accepted": false, "reason": "timestamp_out_of_window", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-013",
+      "description": "Reject a structurally valid but incorrect authentication tag",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      } },
+      "expected": { "accepted": false, "reason": "authentication_failed", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-014",
+      "description": "Reject a message missing nonce",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000,
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": false, "reason": "missing_field", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-015",
+      "description": "Reject a padded or incorrectly sized nonce",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ==",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": false, "reason": "invalid_nonce", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-016",
+      "description": "Reject a handover request missing its intent",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "handover_request", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "BAUGBwgJCgsMDQ4PEBESEw",
+        "authTag": "-f7F4XeQtSQksnl7Pn8lWDLH6RmCAO44-CHCIcKBP3c"
+      } },
+      "expected": { "accepted": false, "reason": "invalid_type_fields", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-017",
+      "description": "Reject malformed UTF-8 JSON text",
+      "input": { "encoding": "rawUtf8", "value": "{not-json" },
+      "expected": { "accepted": false, "reason": "parse_error", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-018",
+      "description": "Reject a validly shaped message from an unmapped source endpoint",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        "sourceEndpointID": "33333333-3333-4333-8333-333333333333", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": false, "reason": "unknown_source", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-019",
+      "description": "Reject a malformed event ID",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "not-a-uuid",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AgMEBQYHCAkKCwwNDg8QEQ",
+        "authTag": "3XJ-FR024o-E40l0Q2KK1g58-j4XArArvPIy-iQwReA"
+      } },
+      "expected": { "accepted": false, "reason": "invalid_event_id", "refreshPeer": false, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    },
+    {
+      "id": "MSG2-020",
+      "description": "Accept a timestamp exactly ten seconds in the future",
+      "input": { "encoding": "jsonObject", "value": {
+        "version": 2, "type": "status_response", "eventID": "bbbbbbbb-bbbb-4bbb-8bbb-000000000020",
+        "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
+        "sourcePlatform": "macos", "timestamp": 1788000010, "nonce": "FBUWFxgZGhscHR4fICEiIw",
+        "authTag": "YVP3jw4siegn07tGM4_YJqS7hjmEctz_Cs0RIL97s_w"
+      } },
+      "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
+    }
+  ]
+}
