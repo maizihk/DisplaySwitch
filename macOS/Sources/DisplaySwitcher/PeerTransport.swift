@@ -51,7 +51,7 @@ enum PeerMessageType: RawRepresentable, Codable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let rawValue = try container.decode(String.self)
-        self.init(rawValue: rawValue) ?? .unknown(rawValue)
+        self = Self(rawValue: rawValue) ?? .unknown(rawValue)
     }
 
     func encode(to encoder: Encoder) throws {
