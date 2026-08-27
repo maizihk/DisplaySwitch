@@ -581,12 +581,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ))
         }
 
-        let hint = NSTextField(wrappingLabelWithString: "关闭“读取当前值”后，App 使用最后一次成功写入的数值，并以 ≈ 标识。显示器数量由检测结果动态生成。")
-        hint.textColor = .secondaryLabelColor
-        hint.font = .systemFont(ofSize: 11)
-        hint.maximumNumberOfLines = 2
-        hint.widthAnchor.constraint(equalToConstant: 630).isActive = true
-        displayStack.addArrangedSubview(hint)
+        if configurations.isEmpty {
+            let emptyState = NSTextField(
+                wrappingLabelWithString: "尚未检测到显示器，请返回菜单栏选择“重新检测显示器”。"
+            )
+            emptyState.textColor = .secondaryLabelColor
+            emptyState.font = .systemFont(ofSize: 12)
+            emptyState.widthAnchor.constraint(equalToConstant: 630).isActive = true
+            displayStack.addArrangedSubview(emptyState)
+        }
     }
 
     private func module(title: String, views: [NSView]) -> NSView {
@@ -669,9 +672,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let nameField = NSTextField()
         let selectorField = NSTextField()
         let macInputField = NSTextField()
-        macInputField.placeholderString = "例如 15、17 或 27"
+        macInputField.placeholderString = "例如 15"
         let inputField = NSTextField()
-        inputField.placeholderString = "例如 15 或 18"
+        inputField.placeholderString = "例如 18"
         let readCheckbox = NSSwitch()
 
         nameFields[index] = nameField
@@ -687,28 +690,60 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             detectedField.toolTip = "由 App 启动时自动检测"
         }
 
-        let grid = NSGridView(views: [
-            [NSTextField(labelWithString: "名称"), nameField],
-            [NSTextField(labelWithString: "System UUID"), selectorField],
-            [NSTextField(labelWithString: "Mac 输入源"), macInputField],
-            [NSTextField(labelWithString: "Windows 输入源"), inputField]
+        for field in [nameField, selectorField, macInputField, inputField] {
+            field.controlSize = .small
+            field.font = .systemFont(ofSize: 12)
+        }
+        readCheckbox.controlSize = .small
+        readCheckbox.setContentHuggingPriority(.required, for: .horizontal)
+
+        func compactLabel(_ title: String) -> NSTextField {
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: 12)
+            label.textColor = .secondaryLabelColor
+            label.setContentHuggingPriority(.required, for: .horizontal)
+            return label
+        }
+
+        nameField.widthAnchor.constraint(equalToConstant: 145).isActive = true
+        selectorField.widthAnchor.constraint(equalToConstant: 305).isActive = true
+        macInputField.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        inputField.widthAnchor.constraint(equalToConstant: 72).isActive = true
+
+        let identityRow = NSStackView(views: [
+            compactLabel("名称"),
+            nameField,
+            compactLabel("System UUID"),
+            selectorField
         ])
-        grid.rowSpacing = 8
-        grid.columnSpacing = 12
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 1).width = 460
-        let form = NSStackView(views: [
-            grid,
-            switchRow(
-                button: readCheckbox,
-                title: "读取 DDC 当前值",
-                description: "关闭后使用最后一次成功写入的缓存值，并以 ≈ 标识。",
-                symbolName: "arrow.clockwise"
-            )
+        identityRow.orientation = .horizontal
+        identityRow.alignment = .centerY
+        identityRow.spacing = 8
+        identityRow.widthAnchor.constraint(equalToConstant: 590).isActive = true
+
+        let spacer = NSView()
+        let inputRow = NSStackView(views: [
+            compactLabel("Mac 输入源"),
+            macInputField,
+            compactLabel("Windows 输入源"),
+            inputField,
+            spacer,
+            compactLabel("读取 DDC"),
+            readCheckbox
         ])
+        inputRow.orientation = .horizontal
+        inputRow.alignment = .centerY
+        inputRow.spacing = 8
+        inputRow.widthAnchor.constraint(equalToConstant: 590).isActive = true
+
+        let hint = NSTextField(labelWithString: "关闭 DDC 回读后使用最后一次成功写入的缓存值，并以 ≈ 标识。")
+        hint.font = .systemFont(ofSize: 10.5)
+        hint.textColor = .tertiaryLabelColor
+
+        let form = NSStackView(views: [identityRow, inputRow, hint])
         form.orientation = .vertical
         form.alignment = .leading
-        form.spacing = 8
+        form.spacing = 6
         return form
     }
 
