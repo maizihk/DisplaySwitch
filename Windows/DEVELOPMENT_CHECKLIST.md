@@ -39,12 +39,12 @@
 
 ### W-003 交接状态机可测试化
 
-- [ ] 从 `Controller` 中分离纯状态机；网络、USB、时钟、唤醒和 DDC 通过可替换接口注入。
-- [ ] 使用虚拟时钟测试 150 ms 防抖、150 ms 重发、最多 4 次、600 ms 兜底和 6 秒在线窗口。
-- [ ] 覆盖 USB 在等待时返回、请求与 USB 到达顺序互换、确认丢包、对端离线和 `committed` 收尾。
-- [ ] 覆盖重复、过期、乱序、错误 source/target、错误配对码和错误 version。
-- [ ] `status_probe` / `status_response` 使用相同 `eventID`，且状态探测绝不触发唤醒、USB 或 DDC。
-- [ ] 自动测试中禁止调用真实 DDC、真实 USB 切换和系统睡眠/唤醒。
+- [x] 从 `Controller` 中分离纯状态机；网络、USB、时钟、唤醒和 DDC 由 Controller 适配器输入或执行状态机动作，可在测试中替换。
+- [x] 使用虚拟时钟测试 150 ms 防抖、150 ms 重发、最多 4 次、600 ms 兜底和 6 秒在线窗口。
+- [x] 覆盖 USB 在等待时返回、请求与 USB 到达顺序互换、确认丢包、对端离线和 `committed` 收尾。
+- [x] 覆盖重复、过期、乱序、错误 source/target、错误配对码和错误 version。
+- [x] `status_probe` / `status_response` 使用相同 `eventID`，且状态探测绝不触发唤醒、USB 或 DDC。
+- [x] 自动测试只消费 `contracts/protocol-v1/` 的 17 组消息验证向量和 15 组状态机向量，不调用真实 DDC、USB 切换或系统睡眠/唤醒。
 
 验收：测试不依赖局域网和真实硬件，可重复运行且结果稳定。
 

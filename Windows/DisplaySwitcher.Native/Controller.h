@@ -1,5 +1,6 @@
 #pragma once
 #include "AppConfig.h"
+#include "HandoverStateMachine.h"
 #include "UdpPeer.h"
 
 namespace DisplaySwitcher::Native
@@ -22,9 +23,8 @@ namespace DisplaySwitcher::Native
         AppConfig Config() const;
         void ApplyConfiguration();
         void OnUsbPresenceChanged(bool present);
-        void BeginOutgoingHandover();
-        void CompleteOutgoing(std::wstring const& eventId);
-        void CancelOutgoing();
+        void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
+        void AdvanceStateMachine();
         void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
@@ -45,15 +45,11 @@ namespace DisplaySwitcher::Native
         std::unique_ptr<TrayIcon> trayIcon_;
         std::unique_ptr<UdpPeer> peer_;
         std::unique_ptr<UsbWatcher> usbWatcher_;
+        std::unique_ptr<HandoverStateMachine> stateMachine_;
         winrt::Microsoft::UI::Xaml::Window settingsWindow_{ nullptr };
         std::mutex stateMutex_;
-        std::wstring outgoingEventId_;
-        std::wstring incomingEventId_;
         std::wstring peerConnectionStatus_{ L"协同未启用" };
         bool peerConnected_{};
-        double lastIncomingRequestTimestamp_{};
-        std::atomic<int64_t> lastPeerSeenMilliseconds_{};
-        std::atomic<uint64_t> outgoingGeneration_{};
         std::atomic<bool> disposed_{};
         std::jthread peerHealthThread_;
     };

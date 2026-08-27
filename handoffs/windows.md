@@ -3,37 +3,40 @@
 ## 当前任务
 
 - 日期：2026-08-27
-- 分支：`codex/windows-w002`
-- 清单：W-002 动态多显示器模型
-- 实现提交：`2e30894`
-- PR：[#2](https://github.com/maizihk/DisplaySwitch/pull/2)
+- 分支：`codex/windows-ds-001-state-machine`
+- 共享基线：`8a72c2dede6d6520d8dcfc259278d6bf95e5cb05`
+- 清单：W-003 交接状态机可测试化 / DS-001 Windows
+- 初始实现提交：`beac261e85a731a21e4722351dd15b04172c2cad`
+- 最新实现提交：`323e3f6707f3f4a6612391aa7fda992b3bb337eb`
+- 最终验证提交：`c4acaf8d78a31f2e61d5be267a9dd39119cae1a8`
+- PR：[#5](https://github.com/maizihk/DisplaySwitch/pull/5)
 
 ## 完成内容
 
-- 用带独立 UUID 的显示器配置集合替代固定双显示器字段，支持任意数量和用户排序。
-- 原生 DDC/CI 与 ControlMyMonitor 共用动态配置和隔离执行器；单台失败不会阻止其他已配置显示器执行。
-- 设置页支持添加、移除、上移、下移和重新选择显示器，断开时保留稳定硬件标识。
-- 本机配置使用 `schemaVersion: 2`，旧双显示器 JSON 会原子迁移；解析或写回失败时保留原文件并停用自动硬件操作。
-- 未修改 `PROTOCOL.md`、旧 C# 工程或 macOS 源码。
+- 从 `Controller` 提取无 WinUI、Winsock、USB 或 DDC 依赖的 `HandoverStateMachine`；Controller 只负责传入时钟/USB/网络事件并执行发送、唤醒和切屏动作。
+- 状态机实现 150 ms USB 防抖、在线对端 4 次请求、600 ms 兜底、离线快速路径、USB 返回取消、6 秒在线窗口，以及重复、乱序和陈旧事件保护。
+- UDP 接收增加严格 JSON 必填字段和类型解析；协议校验覆盖 version、UUID、方向、配对码精确匹配、封闭消息类型和 10 秒时间边界。
+- 重复合法 `status_probe` 在十秒重复窗口内仍以相同 `eventID` 回复 `status_response`，刷新并恢复在线状态，且不产生硬件动作。
+- 保留 W-001 安全默认值、W-002 动态多显示器、无协同时的本机 USB 自动切换，以及现有 WinUI 3、UDP、USB、唤醒和 DDC 适配器。
+- 未修改 `PROTOCOL.md`、`contracts/`、`specs/`、`coordination/`、GitHub Actions 或 macOS 源码。
 
 ## 自动验证
 
-- 无硬件测试覆盖 0、1、2、3、4 台显示器、UUID 稳定匹配、枚举顺序变化、旧配置迁移、迁移写回失败、新显示器安全默认值、移除重连和单台失败隔离。
-- `Windows/build-windows.ps1` x64 Release 构建和测试通过。
-- `Windows/dist/` 绿色版目录为 1.26 MiB，未进入 Git。
+- 原生测试直接读取批准的 `contracts/protocol-v1/message-validation-vectors.json`（17 组）与 `state-machine-vectors.json`（16 组），全部通过；构建日志明确输出两类向量数量。
+- 虚拟时间覆盖 150 ms 防抖/重发、4 次上限、600 ms 兜底和 6 秒在线边界；假动作计数确保状态探测及非法消息没有硬件副作用。
+- 回归测试覆盖首次 probe、6 秒在线窗口过期及十秒重复窗口内再次接收；第二次回复并恢复在线，wake/switch/USB 调用均为 0。
+- `Windows/build-windows.ps1` x64 Release 构建和全部自动测试通过。
+- `Windows/dist/` framework-dependent 绿色版目录为 1.28 MiB，构建产物未进入 Git。
 
 ## 尚需验证
 
-- 在实际 WinUI 3 设置页验证添加、删除、重排、后端切换以及高 DPI 布局。
-- 在用户确认后验证真实显示器断开/重连匹配，以及原生 DDC/CI 和 ControlMyMonitor 的多显示器切换。
-- 本任务未启动新版，未执行真实 DDC、USB 交接、睡眠唤醒或防火墙修改。
+- 未启动新版，未执行真实 DDC、USB 交接、显示器睡眠/唤醒或防火墙修改。
+- GitHub 当前只有 macOS check；Windows x64 Release 构建属于本机验证。合并后可在用户另行确认时进行 Windows/macOS 双机状态探测与交接冒烟测试。
 
 ## 对 macOS 端的影响
 
-- 无。协议和 macOS 源码均未修改。
+- 无。Windows 消费已批准的 DS-001 公共向量，协议和 macOS 源码均未修改。
 
-## 后续边界
+## 回滚
 
-- 当前分支只继续收敛 W-002，不启动 W-003，不在本分支实现跨端交接状态机。
-- 等待 DS-001 提案及公共测试向量正式批准；批准后从批准基线新建 `codex/windows-ds-001-state-machine`。
-- DS-001 开始前不得修改 `macOS/`、`PROTOCOL.md`、`coordination/`、`specs/` 或 `contracts/`。
+- 回退本分支 W-003 实现提交即可恢复旧 Controller 流程；本机配置格式与公共协议均未变化。

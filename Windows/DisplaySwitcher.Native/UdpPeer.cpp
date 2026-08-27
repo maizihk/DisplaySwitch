@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Diagnostics.h"
+#include "ProtocolMessage.h"
 #include "UdpPeer.h"
 
 using namespace winrt;
@@ -96,27 +97,14 @@ namespace DisplaySwitcher::Native
                 if (!token.stop_requested()) Report(L"接收失败：" + SocketError(WSAGetLastError()));
                 break;
             }
-            try
+            PeerMessage message;
+            auto parsed = ParsePeerMessage(std::string_view(buffer, static_cast<size_t>(received)), message);
+            if (parsed.accepted)
             {
-                auto object = JsonObject::Parse(to_hstring(std::string(buffer, received)));
-                PeerMessage message;
-                message.version = static_cast<int>(object.GetNamedNumber(L"version", 0));
-                message.type = object.GetNamedString(L"type", L"").c_str();
-                message.eventId = object.GetNamedString(L"eventID", L"").c_str();
-                message.source = object.GetNamedString(L"source", L"").c_str();
-                message.target = object.GetNamedString(L"target", L"").c_str();
-                message.timestamp = object.GetNamedNumber(L"timestamp", 0);
-                message.pairingCode = object.GetNamedString(L"pairingCode", L"").c_str();
-                if (object.HasKey(L"wakeSucceeded"))
-                {
-                    auto value = object.GetNamedValue(L"wakeSucceeded");
-                    if (value.ValueType() == JsonValueType::Boolean) message.wakeSucceeded = value.GetBoolean();
-                }
                 if (messageCallback_) messageCallback_(message);
                 if (message.type != L"status_probe" && message.type != L"status_response")
                     WriteDiagnostic("udp.receive parsed=1");
             }
-            catch (...) {}
         }
     }
 

@@ -5,6 +5,8 @@
 
 using namespace DisplaySwitcher::Native;
 
+int RunStateMachineVectorTests();
+
 namespace
 {
     int failures{};
@@ -167,6 +169,7 @@ int wmain()
         TestFailureIsolation();
         TestMalformedConfigurationIsSafe(root);
         TestMigrationWriteFailureIsSafe(root);
+        failures += RunStateMachineVectorTests();
     }
     catch (std::exception const& error)
     {
@@ -180,6 +183,6 @@ int wmain()
         std::wcerr << failures << L" test(s) failed\n";
         return 1;
     }
-    std::wcout << L"W-002 tests passed\n";
+    std::wcout << L"Windows automatic tests passed\n";
     return 0;
 }
