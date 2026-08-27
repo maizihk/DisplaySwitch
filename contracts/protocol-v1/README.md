@@ -8,7 +8,7 @@
 - `message-validation-vectors.schema.json`：消息验证向量文件的结构约束。
 - `message-validation-vectors.json`：合法、错误、未知和时间边界输入。
 - `state-machine-vectors.schema.json`：状态机序列向量文件的结构约束。
-- `state-machine-vectors.json`：防抖、重发、兜底、取消、重复和乱序场景。
+- `state-machine-vectors.json`：16 条防抖、重发、兜底、取消、重复、乱序和在线恢复场景。
 - `validate.py`：协调侧结构和公共不变量验证脚本。
 
 ## 版本边界
