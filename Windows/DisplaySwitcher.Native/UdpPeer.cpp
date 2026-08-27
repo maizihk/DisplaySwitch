@@ -75,6 +75,12 @@ namespace DisplaySwitcher::Native
         if (receiveThread_.joinable()) receiveThread_.join();
     }
 
+    bool UdpPeer::IsRunning() const
+    {
+        std::scoped_lock lock(mutex_);
+        return socket_ != INVALID_SOCKET;
+    }
+
     void UdpPeer::Receive(std::stop_token token, SOCKET socket)
     {
         while (!token.stop_requested())

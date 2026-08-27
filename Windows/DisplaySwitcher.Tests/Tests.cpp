@@ -3,6 +3,7 @@
 #include "../DisplaySwitcher.Native/AboutInfo.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
+#include "../DisplaySwitcher.Native/ProfileDetection.h"
 #include "../DisplaySwitcher.Native/UsbLearning.h"
 #include <iostream>
 
@@ -629,6 +630,126 @@ namespace
         Check(udpCalls == 0 && usbCalls == 0 && ddcCalls == 0 && wakeCalls == 0,
             L"C-023: 打开关于页面不得触发网络或硬件动作");
     }
+
+    void TestProfileNetworkDetection()
+    {
+        struct Harness
+        {
+            ProfileDetectionSession session;
+            int v2Sends{};
+            int v1Sends{};
+            int usbCalls{};
+            int bluetoothCalls{};
+            int wakeCalls{};
+            int ddcCalls{};
+            std::optional<ProfileDetectionResult> result;
+
+            void Apply(ProfileDetectionAction action)
+            {
+                if (action.kind == ProfileDetectionAction::Kind::SendV2Probe) ++v2Sends;
+                else if (action.kind == ProfileDetectionAction::Kind::SendV1Probe) ++v1Sends;
+                else if (action.kind == ProfileDetectionAction::Kind::Complete) result = action.result;
+            }
+        };
+
+        auto endpointA = GenerateIdentifier();
+        auto endpointB = GenerateIdentifier();
+        auto v2Event = GenerateIdentifier();
+        auto v1Event = GenerateIdentifier();
+
+        PendingStatusProbe health;
+        health.Begin(v2Event, 2000);
+        Check(!health.MatchesAndConsume(GenerateIdentifier(), 1100) && health.Active(),
+            L"在线状态：非待处理 status_response eventID 不得消费心跳");
+        Check(health.MatchesAndConsume(v2Event, 1200) && !health.Active(),
+            L"在线状态：合法 status_response 必须匹配并消费待处理 eventID");
+        Check(!health.MatchesAndConsume(v2Event, 1300),
+            L"在线状态：重复 status_response 不得再次刷新在线状态");
+        health.Begin(v2Event, 2000);
+        Check(!health.MatchesAndConsume(v2Event, 2001) && health.Expired(2001),
+            L"在线状态：过期 status_response 不得刷新在线状态");
+
+        Harness first;
+        auto started = first.session.Start(1000, true, {}, v2Event); first.Apply(started);
+        Check(started.eventId == v2Event && first.v2Sends == 1 && first.v1Sends == 0,
+            L"网络检测：v2 status_probe 必须使用待处理 eventID");
+        first.Apply(first.session.OnV2StatusResponse(1100, GenerateIdentifier(), endpointA, true));
+        Check(!first.result && first.session.Active(), L"网络检测：非待处理 eventID 不得完成检测或更新在线状态");
+        first.Apply(first.session.OnV2StatusResponse(1200, v2Event, endpointA, true));
+        Check(first.result && first.result->outcome == ProfileDetectionOutcome::V2Available &&
+            first.result->observedEndpointId == endpointA && first.result->endpointConfirmationRequired &&
+            !first.result->endpointChanged,
+            L"网络检测：首次 endpoint 必须匹配 eventID 并要求用户确认");
+        first.Apply(first.session.OnV2StatusResponse(1300, v2Event, endpointA, true));
+        Check(first.v2Sends == 1 && first.v1Sends == 0,
+            L"网络检测：已完成会话的重复响应不得产生新发送或新完成结果");
+
+        Harness changed;
+        changed.Apply(changed.session.Start(2000, true, endpointA, v2Event));
+        changed.Apply(changed.session.OnV2StatusResponse(2100, v2Event, endpointB, true));
+        Check(changed.result && changed.result->endpointConfirmationRequired && changed.result->endpointChanged &&
+            changed.result->observedEndpointId == endpointB,
+            L"网络检测：已保存 endpoint 变化必须等待确认且不得自动替换");
+        auto changedProfile = Profile(L"待确认对端"); changedProfile.peerEndpointId = endpointA;
+        Check(!ApplyProfileDetectionResult(changedProfile, *changed.result, false) && changedProfile.peerEndpointId == endpointA,
+            L"网络检测：拒绝确认时必须保留已保存 endpoint");
+        Check(ApplyProfileDetectionResult(changedProfile, *changed.result, true) && changedProfile.peerEndpointId == endpointB &&
+            changedProfile.peerProtocolVersion == 2,
+            L"网络检测：endpoint 变化只有用户确认后才能进入待保存配置");
+
+        Harness known;
+        known.Apply(known.session.Start(3000, true, endpointA, v2Event));
+        known.Apply(known.session.OnV2StatusResponse(3100, v2Event, endpointA, true));
+        Check(known.result && known.result->outcome == ProfileDetectionOutcome::V2Available &&
+            !known.result->endpointConfirmationRequired,
+            L"网络检测：已确认 endpoint 的匹配响应应报告 v2 可用");
+
+        auto firstProfile = Profile(L"首次对端");
+        Check(!ApplyProfileDetectionResult(firstProfile, *first.result, false) && firstProfile.peerEndpointId.empty(),
+            L"网络检测：首次 endpoint 未确认时不得写入待保存配置");
+        Check(ApplyProfileDetectionResult(firstProfile, *first.result, true) && firstProfile.peerEndpointId == endpointA,
+            L"网络检测：首次 endpoint 必须由用户确认后才能进入待保存配置");
+
+        Harness authentication;
+        authentication.Apply(authentication.session.Start(4000, true, endpointA, v2Event));
+        authentication.Apply(authentication.session.OnV2StatusResponse(4100, v2Event, endpointA, false));
+        Check(authentication.result && authentication.result->outcome == ProfileDetectionOutcome::AuthenticationFailed,
+            L"网络检测：匹配探测的 v2 HMAC 失败必须报告认证失败");
+
+        Harness fallback;
+        fallback.Apply(fallback.session.Start(5000, true, endpointA, v2Event));
+        fallback.Apply(fallback.session.OnV2StatusResponse(7001, v2Event, endpointA, true));
+        Check(!fallback.result, L"网络检测：过期 v2 响应必须忽略");
+        auto v1Probe = fallback.session.Advance(7001, v1Event); fallback.Apply(v1Probe);
+        fallback.Apply(fallback.session.Advance(7100, GenerateIdentifier()));
+        Check(v1Probe.eventId == v1Event && fallback.v1Sends == 1,
+            L"网络检测：v2 超时后最多发送一次 v1 status_probe");
+        fallback.Apply(fallback.session.OnV1StatusResponse(7200, GenerateIdentifier(), true));
+        Check(!fallback.result, L"网络检测：错误 v1 eventID 不得完成检测");
+        fallback.Apply(fallback.session.OnV1StatusResponse(7300, v1Event, true));
+        Check(fallback.result && fallback.result->outcome == ProfileDetectionOutcome::V1Only,
+            L"网络检测：匹配且合法的 v1 status_response 应报告仅 v1 可用");
+
+        Harness timeout;
+        timeout.Apply(timeout.session.Start(8000, true, endpointA, v2Event));
+        timeout.Apply(timeout.session.Advance(10000, v1Event));
+        timeout.Apply(timeout.session.Advance(12000));
+        Check(timeout.result && timeout.result->outcome == ProfileDetectionOutcome::NoResponse &&
+            timeout.v2Sends == 1 && timeout.v1Sends == 1,
+            L"网络检测：两阶段超时必须报告无响应且 v1 只发送一次");
+
+        Harness incomplete;
+        incomplete.Apply(incomplete.session.Start(13000, false, {}, v2Event));
+        Check(incomplete.result && incomplete.result->outcome == ProfileDetectionOutcome::LocalConfigurationIncomplete &&
+            incomplete.v2Sends == 0 && incomplete.v1Sends == 0,
+            L"网络检测：本机配置不完整必须零网络发送");
+
+        auto noHardware = [&](Harness const& value)
+        { return value.usbCalls == 0 && value.bluetoothCalls == 0 && value.wakeCalls == 0 && value.ddcCalls == 0; };
+        Check(noHardware(first) && noHardware(changed) && noHardware(known) && noHardware(authentication) &&
+            noHardware(fallback) && noHardware(timeout) && noHardware(incomplete),
+            L"网络检测：模拟全流程必须保持 USB、蓝牙、唤醒和 DDC 调用为零");
+    }
 }
 
 int wmain()
@@ -649,9 +770,11 @@ int wmain()
         TestRenameAndFailureIsolation(root);
         TestDdcControls();
         TestUsbLearningAndAbout();
+        TestProfileNetworkDetection();
         if (!failures) std::wcout << L"DS-004 passed C-001 through C-015 local-model scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-021 through C-023 USB-learning and about scenarios\n";
+        if (!failures) std::wcout << L"DS-005 network detection pending-event and zero-hardware scenarios passed\n";
         failures += RunStateMachineVectorTests();
         failures += RunV2ProtocolVectorTests();
     }
