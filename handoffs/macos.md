@@ -54,5 +54,5 @@
 
 ## 对 Windows 端的影响
 
-- 本次只改 `macOS/` 与本文件，未改 `Windows/`、`specs/`、`contracts/`、`coordination/` 和公共协议。
+- 本次 DS-001 工作提交仅改 `macOS/` 与本文件；`origin/main` 合并会同步其包含的 Windows 变更（本次为常规同步，不是本任务直接改写）。
 - Windows 端在完成其对应分支验证后，将由协调层按 DS-001 向量进行交叉比对。
