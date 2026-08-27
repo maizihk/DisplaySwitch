@@ -33,6 +33,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void LoadValues(::DisplaySwitcher::Native::AppConfig const& config);
         void LoadUsbDevices();
         void LoadDdcMonitors();
+        void CaptureDisplayEditors();
+        void RebuildDisplayEditors();
         void UpdateDisplayBackendVisibility();
         void Save();
         void ShowValidationError(std::wstring const& message);
@@ -42,6 +44,19 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<void()> closed_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
+        std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
+        struct DisplayEditorControls
+        {
+            std::wstring id;
+            Microsoft::UI::Xaml::Controls::TextBox name{ nullptr };
+            Microsoft::UI::Xaml::Controls::ComboBox nativeMonitor{ nullptr };
+            std::vector<std::wstring> nativeMonitorIds;
+            Microsoft::UI::Xaml::Controls::TextBox controlMonitorPath{ nullptr };
+            Microsoft::UI::Xaml::Controls::TextBox macInput{ nullptr };
+            Microsoft::UI::Xaml::FrameworkElement nativeFields{ nullptr };
+            Microsoft::UI::Xaml::FrameworkElement controlMyMonitorFields{ nullptr };
+        };
+        std::vector<DisplayEditorControls> displayEditors_;
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
@@ -56,15 +71,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::TextBox vendorId_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox productId_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox displayBackend_{ nullptr };
-        Microsoft::UI::Xaml::Controls::ComboBox redmiNativeMonitor_{ nullptr };
-        Microsoft::UI::Xaml::Controls::ComboBox dellNativeMonitor_{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel nativeDdcPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel controlMyMonitorPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox controlMyMonitor_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox redmiPath_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox redmiInput_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox dellPath_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox dellInput_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
     };
