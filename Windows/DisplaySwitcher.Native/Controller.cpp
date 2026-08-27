@@ -54,7 +54,7 @@ namespace DisplaySwitcher::Native
         });
         trayIcon_ = std::make_unique<TrayIcon>(
             [weak] { if (auto self = weak.lock()) self->ShowSettings(); },
-            [weak] { if (auto self = weak.lock()) self->ManualSwitch(); },
+            [weak](std::wstring const& profileId) { if (auto self = weak.lock()) self->ManualSwitch(profileId); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
     }
@@ -70,6 +70,9 @@ namespace DisplaySwitcher::Native
     void Controller::ApplyConfiguration()
     {
         auto config = Config();
+        std::vector<std::pair<std::wstring, std::wstring>> menuProfiles;
+        for (auto const& profile : config.EnabledCompleteProfiles()) menuProfiles.emplace_back(profile.id, profile.name);
+        trayIcon_->SetProfiles(std::move(menuProfiles));
         StopPeerHealthCheck();
         peer_->Stop();
         auto usbConfigured = config.HasUsbDeviceConfiguration();
@@ -264,9 +267,45 @@ namespace DisplaySwitcher::Native
         }).detach();
     }
 
-    void Controller::ManualSwitch()
+    void Controller::SwitchToProfile(std::wstring const& profileId)
     {
-        SwitchToMac(std::nullopt, true);
+        auto config = Config();
+        auto profile = config.FindCollaborationProfile(profileId);
+        if (!profile || !profile->coordinationEnabled)
+        {
+            SetStatus(L"协同配置不可用"); return;
+        }
+        auto selection = config.SelectProfileDisplays(profileId);
+        if (selection.mappedDisplays.empty())
+        {
+            SetStatus(L"该配置没有可用的显示器映射"); return;
+        }
+        auto actionConfig = config; actionConfig.displays = selection.mappedDisplays;
+        auto name = profile->name; auto missing = selection.missingDisplayIds.size();
+        SetStatus(L"正在切换到 " + name + L"…");
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, actionConfig, name, missing]
+        {
+            auto result = SwitchDisplaysToMac(actionConfig);
+            if (auto self = weak.lock(); self && !self->disposed_)
+                self->Enqueue([weak, result, name, missing]
+                {
+                    if (auto value = weak.lock())
+                    {
+                        auto text = result.success ? L"已切换到 " + name : L"切换到 " + name + L" 失败：" + result.error;
+                        if (missing) text += L"；有 " + std::to_wstring(missing) + L" 台显示器缺少映射";
+                        value->SetStatus(text);
+                        if (!result.success) value->ShowError(L"显示器切换失败", result.error.empty() ? L"未知错误" : result.error);
+                    }
+                });
+        }).detach();
+    }
+
+    void Controller::ManualSwitch(std::wstring const& profileId)
+    {
+        // DS-004 only selects the requested local profile mapping. It does not send a
+        // v1 handover_request to emulate the DS-005 manual coordination intent.
+        SwitchToProfile(profileId);
     }
 
     void Controller::ShowSettings()

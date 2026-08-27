@@ -26,12 +26,13 @@ namespace DisplaySwitcher::Native
         void ApplyStateMachineActions(std::vector<StateMachineAction> actions);
         void AdvanceStateMachine();
         void SwitchToMac(std::optional<std::wstring> eventId, bool manual);
+        void SwitchToProfile(std::wstring const& profileId);
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
         void HandlePeerMessage(PeerMessage const& message);
         void Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
         void SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded);
-        void ManualSwitch();
+        void ManualSwitch(std::wstring const& profileId);
         void ShowSettings();
         void SetStatus(std::wstring const& text);
         void SetPeerConnectionStatus(std::wstring const& text, bool connected);

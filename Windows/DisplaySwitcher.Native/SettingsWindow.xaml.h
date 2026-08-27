@@ -35,6 +35,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
+        void CaptureProfileEditors();
+        void RebuildProfileEditors();
+        void RemoveProfile(std::wstring const& id);
+        void DetectProfile(std::wstring const& id);
         void UpdateDisplayBackendVisibility();
         void Save();
         void ShowValidationError(std::wstring const& message);
@@ -45,6 +49,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
+        std::vector<::DisplaySwitcher::Native::CollaborationProfile> workingProfiles_;
         struct DisplayEditorControls
         {
             std::wstring id;
@@ -57,16 +62,29 @@ namespace winrt::DisplaySwitcher::Native::implementation
             Microsoft::UI::Xaml::FrameworkElement controlMyMonitorFields{ nullptr };
         };
         std::vector<DisplayEditorControls> displayEditors_;
+        struct ProfileMappingControls
+        {
+            std::wstring displayId;
+            Microsoft::UI::Xaml::Controls::TextBox peerInput{ nullptr };
+        };
+        struct ProfileEditorControls
+        {
+            std::wstring id;
+            Microsoft::UI::Xaml::Controls::TextBox name{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch enabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::TextBox peerHost{ nullptr };
+            Microsoft::UI::Xaml::Controls::TextBox peerPort{ nullptr };
+            Microsoft::UI::Xaml::Controls::PasswordBox pairingCode{ nullptr };
+            std::vector<ProfileMappingControls> mappings;
+        };
+        std::vector<ProfileEditorControls> profileEditors_;
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionDot_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbAutomation_{ nullptr };
-        Microsoft::UI::Xaml::Controls::ToggleSwitch coordination_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox peerHost_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox port_{ nullptr };
-        Microsoft::UI::Xaml::Controls::PasswordBox pairingCode_{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel profileEditorsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbDevices_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox vendorId_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox productId_{ nullptr };

@@ -11,17 +11,24 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
-    DisplayConfig CreateDisplayConfig(std::wstring const& name)
+    std::wstring GenerateIdentifier()
     {
         GUID guid{};
         winrt::check_hresult(CoCreateGuid(&guid));
         wchar_t buffer[39]{};
         auto length = StringFromGUID2(guid, buffer, static_cast<int>(std::size(buffer)));
-        if (length <= 2) throw std::runtime_error("cannot create display id");
+        if (length <= 2) throw std::runtime_error("cannot create identifier");
 
+        std::wstring identifier;
+        identifier.assign(buffer + 1, static_cast<size_t>(length - 3));
+        std::transform(identifier.begin(), identifier.end(), identifier.begin(), towlower);
+        return identifier;
+    }
+
+    DisplayConfig CreateDisplayConfig(std::wstring const& name)
+    {
         DisplayConfig display;
-        display.id.assign(buffer + 1, static_cast<size_t>(length - 3));
-        std::transform(display.id.begin(), display.id.end(), display.id.begin(), towlower);
+        display.id = GenerateIdentifier();
         display.name = name;
         return display;
     }
