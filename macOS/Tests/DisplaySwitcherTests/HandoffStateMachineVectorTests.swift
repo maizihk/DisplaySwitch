@@ -573,16 +573,26 @@ final class HandoffStateMachineVectorTests: XCTestCase {
         )
 
         harness.receive(probe)
-        harness.advance(to: 100)
+        harness.resetRecordedObservations()
+        harness.advance(to: 6_001)
+
+        XCTAssertEqual(harness.actions.map(\.kind), ["setPeerReachable"])
+        XCTAssertEqual(harness.actions.first?.value, false)
+        XCTAssertEqual(harness.peerReachabilityUpdates, [false])
+        XCTAssertEqual(harness.networkSends, 0)
+        XCTAssertEqual(harness.hardware.wake, 0)
+        XCTAssertEqual(harness.hardware.switchDisplay, 0)
+        XCTAssertEqual(harness.hardware.usbActions, 0)
+        XCTAssertFalse(harness.snapshot().peerReachable)
+
         harness.resetRecordedObservations()
         harness.receive(probe)
 
         XCTAssertEqual(harness.actions.map(\.kind), [
-            "rejectMessage",
             "setPeerReachable",
             "sendMessage"
         ])
-        XCTAssertEqual(harness.actions.first?.reason, "duplicate")
+        XCTAssertEqual(harness.actions.first?.value, true)
 
         let response = harness.actions.last
         XCTAssertEqual(response?.type, PeerMessageType.statusResponse.rawValue)
@@ -595,7 +605,7 @@ final class HandoffStateMachineVectorTests: XCTestCase {
 
         let snapshot = harness.snapshot()
         XCTAssertTrue(snapshot.peerReachable)
-        XCTAssertEqual(snapshot.peerLastSeenAtMs, 100)
+        XCTAssertEqual(snapshot.peerLastSeenAtMs, 6_001)
         XCTAssertEqual(snapshot.seenMessageCount, 1)
     }
 

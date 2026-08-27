@@ -327,7 +327,6 @@ final class HandoffStateMachine {
         let disposition = replayGuard.classify(message, nowMs: nowMs)
         if disposition.isDuplicate {
             if message.type == .statusProbe {
-                log(.rejectMessage(type: message.type, eventID: message.eventID, reason: "duplicate"))
                 markPeerReachable(nowMs: nowMs)
                 sendStatusResponse(for: message.eventID)
                 return
