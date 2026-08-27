@@ -201,18 +201,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         return controller
     }()
 
-    private lazy var switchItem: NSMenuItem = {
-        let item = NSMenuItem(title: "切换到 Windows", action: #selector(switchToWindows), keyEquivalent: "")
-        item.target = self
-        return item
-    }()
-
-    private lazy var switchToMacItem: NSMenuItem = {
-        let item = NSMenuItem(title: "切换到 Mac", action: #selector(switchToMac), keyEquivalent: "")
-        item.target = self
-        return item
-    }()
-
     private lazy var linkedItem: NSMenuItem = {
         let item = NSMenuItem(title: "联动所有显示器", action: #selector(toggleLinkedControls), keyEquivalent: "")
         item.target = self
@@ -292,10 +280,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         refreshValues(force: false)
     }
 
-    @objc private func switchToWindows() {
-        switchInputs(toMac: false)
-    }
-
     @objc private func switchToProfile(_ sender: NSMenuItem) {
         guard let profileID = sender.representedObject as? String else { return }
         let document = AppPreferences.localConfiguration
@@ -307,10 +291,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return (index, value)
         })
         switchInputs(toMac: false, overrideConfigurations: selected, activeMenuItem: sender)
-    }
-
-    @objc private func switchToMac() {
-        switchInputs(toMac: true)
     }
 
     private func switchInputs(
@@ -329,10 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             completion?(false)
             return
         }
-        let activeItem = activeMenuItem ?? (toMac ? switchToMacItem : switchItem)
-        activeItem.title = "正在切换…"
-        switchToMacItem.isEnabled = false
-        switchItem.isEnabled = false
+        activeMenuItem?.title = "正在切换…"
         profileSwitchItems.forEach { $0.isEnabled = false }
         let currentConfigurations = overrideConfigurations ?? configurations
         let ddcController = ddcController
@@ -380,11 +357,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             group.wait()
 
             if let firstError = firstError.value {
-                self?.finishSwitch(message: "部分切换失败", toMac: toMac, activeMenuItem: activeMenuItem)
+                self?.finishSwitch(message: "部分切换失败", activeMenuItem: activeMenuItem)
                 self?.showError(title: "显示器切换失败", error: firstError)
                 DispatchQueue.main.async { completion?(false) }
             } else {
-                self?.finishSwitch(message: toMac ? "已切换到本机" : "切换完成", toMac: toMac, activeMenuItem: activeMenuItem)
+                self?.finishSwitch(message: "切换完成", activeMenuItem: activeMenuItem)
                 DispatchQueue.main.async { completion?(true) }
             }
         }
@@ -628,16 +605,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    private func finishSwitch(message: String, toMac: Bool, activeMenuItem: NSMenuItem? = nil) {
+    private func finishSwitch(message: String, activeMenuItem: NSMenuItem? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let activeItem = activeMenuItem ?? (toMac ? self.switchToMacItem : self.switchItem)
-            activeItem.title = message
+            activeMenuItem?.title = message
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                self.switchToMacItem.title = "切换到 Mac"
-                self.switchItem.title = "切换到 Windows"
-                self.switchToMacItem.isEnabled = true
-                self.switchItem.isEnabled = true
                 if let menu = self.statusItem.menu { self.rebuildProfileSwitchItems(in: menu) }
             }
         }
@@ -901,11 +873,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func rebuildProfileSwitchItems(in menu: NSMenu) {
         for item in profileSwitchItems { menu.removeItem(item) }
         profileSwitchItems.removeAll()
-        let profiles = DisplayConfigurationStore.menuEligibleProfiles(in: AppPreferences.localConfiguration)
-        for (offset, profile) in profiles.enumerated() {
-            let item = NSMenuItem(title: "切换到 \(profile.name)", action: #selector(switchToProfile(_:)), keyEquivalent: "")
+        let entries = ManualSwitchMenuEntry.entries(in: AppPreferences.localConfiguration)
+        for (offset, entry) in entries.enumerated() {
+            let item = NSMenuItem(title: entry.title, action: #selector(switchToProfile(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = profile.id
+            item.representedObject = entry.profileID
             item.image = NSImage(systemSymbolName: "arrow.right.to.line", accessibilityDescription: nil)
             item.isEnabled = configurationSafetyGate.state == .ready
             menu.insertItem(item, at: offset)
@@ -991,8 +963,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func legacyV1StatusText(connected: Bool) -> String {
         switch DisplayConfigurationStore.legacyV1RuntimeSelection(in: AppPreferences.localConfiguration) {
-        case .compatible:
-            return connected ? "已连接到 Windows" : "等待 Windows 心跳…"
+        case .compatible(let profile):
+            return connected ? "已连接到 \(profile.name)" : "等待 \(profile.name) 心跳…"
         case .requiresProtocolV2:
             return "多个协同配置等待协议 v2，自动协同已暂停"
         case .requiresCompleteConfiguration:
@@ -1037,8 +1009,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func updateConfigurationSafetyUI() {
         let enabled = configurationSafetyGate.state == .ready
-        switchToMacItem.isEnabled = enabled
-        switchItem.isEnabled = enabled
         profileSwitchItems.forEach { $0.isEnabled = enabled }
         detectItem.isEnabled = enabled
     }

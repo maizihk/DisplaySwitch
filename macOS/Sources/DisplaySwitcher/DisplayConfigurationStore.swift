@@ -197,23 +197,59 @@ enum LegacyV1RuntimeSelection: Equatable {
 }
 
 struct USBProfileLearningSession {
+    enum CandidateResult: Equatable {
+        case ignored
+        case timedOut
+        case awaitingSelection(count: Int)
+    }
+
     static let timeoutSeconds: TimeInterval = 30
     private(set) var pendingProfileID: String?
+    private(set) var candidates: [CollaborationTriggerDevice] = []
 
     var blocksAutomaticSideEffects: Bool { pendingProfileID != nil }
 
     mutating func begin(profileID: String) {
         pendingProfileID = profileID
+        candidates = []
     }
 
     mutating func cancel() {
         pendingProfileID = nil
+        candidates = []
+    }
+
+    mutating func receiveCandidates(
+        _ received: [CollaborationTriggerDevice],
+        availableProfileIDs: Set<String>
+    ) -> CandidateResult {
+        guard let profileID = pendingProfileID else { return .ignored }
+        guard availableProfileIDs.contains(profileID) else {
+            cancel()
+            return .ignored
+        }
+        guard !received.isEmpty else {
+            cancel()
+            return .timedOut
+        }
+        candidates = received
+        return .awaitingSelection(count: received.count)
+    }
+
+    mutating func applyCandidate(
+        at index: Int,
+        to profiles: [CollaborationProfile]
+    ) -> [CollaborationProfile] {
+        guard candidates.indices.contains(index) else { return profiles }
+        let candidate = candidates[index]
+        return apply(candidate, to: profiles)
     }
 
     mutating func apply(_ trigger: CollaborationTriggerDevice,
                         to profiles: [CollaborationProfile]) -> [CollaborationProfile] {
         guard let profileID = pendingProfileID else { return profiles }
         pendingProfileID = nil
+        candidates = []
         guard profiles.contains(where: { $0.id == profileID }) else { return profiles }
         return DisplayConfigurationStore.replacingUSBTrigger(trigger, profileID: profileID, in: profiles)
     }
