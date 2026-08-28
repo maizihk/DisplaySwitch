@@ -6,11 +6,8 @@ final class HandoffV2StateMachineVectorTests: XCTestCase {
         let url = try XCTUnwrap(Bundle(for: HandoffV2StateMachineVectorTests.self).resourceURL)
             .appendingPathComponent("contracts/protocol-v2/state-machine-vectors.json")
         let file = try JSONDecoder().decode(V2VectorFile.self, from: Data(contentsOf: url))
-        XCTAssertEqual(file.vectors.count, 20)
-
-        let v2OnlyVectors = file.vectors.filter { !["P-014", "P-015"].contains($0.id) }
-        XCTAssertEqual(v2OnlyVectors.count, 18)
-        for vector in v2OnlyVectors {
+        XCTAssertEqual(file.vectors.count, 18)
+        for vector in file.vectors {
             let clock = V2VectorClock()
             let scheduler = V2VectorScheduler(clock: clock)
             let sink = V2VectorSink()
