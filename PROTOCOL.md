@@ -6,7 +6,7 @@
 
 ## 版本边界
 
-- `version = 2` 用于逻辑 endpoint、多协同配置、手动定向协同、USB/蓝牙输入到达声明和强认证。
+- `version = 2` 用于逻辑 endpoint、多协同配置、手动定向协同、可选远程显示器唤醒和强认证。
 - 网络消息版本字段统一为 `version`。
 - 本机配置和公共测试合同使用 `schemaVersion`；它们不得写入网络消息或与 `version` 混用。
 - `version = 1` 及其他版本均按未知版本处理：不回复、不刷新在线状态，也不产生 USB、蓝牙、唤醒、DDC 或输入源切换副作用。
@@ -33,15 +33,15 @@
 | --- | --- | --- |
 | `status_probe` | 无 | 探测 v2 能力；允许 `targetEndpointID = null` |
 | `status_response` | 无 | 使用请求的同一 `eventID`，定向回复来源 endpoint |
-| `input_present` | 无 | 只声明本机已绑定的逻辑输入设备到达 |
-| `handover_request` | `intent` | `manual` 或 `input_handover` |
+| `wake_display` | 无 | 只请求目标端唤醒本机显示器，不参与切换决策 |
+| `handover_request` | `intent` | 固定为 `manual` |
 | `target_ready` | `wakeSucceeded` | 目标端唤醒调用结果，boolean |
 | `committed` | `switchSucceeded` | 源端 DDC 结果，boolean |
 | `cancelled` | `reason` | 固定枚举的取消原因 |
 
-`reason` 只能是：`source_input_returned`、`configuration_changed`、`user_cancelled` 或 `peer_unavailable`。禁止用自由文本传输本机信息。
+`reason` 只能是：`configuration_changed`、`user_cancelled` 或 `peer_unavailable`。禁止用自由文本传输本机信息。
 
-除 `status_probe` 外的消息都必须携带非空 `targetEndpointID`，并与接收端本机 endpoint 完全匹配。`input_present` 不得包含 USB/Bluetooth 类型、名称、VID/PID、地址、序列号或路径。
+除 `status_probe` 外的消息都必须携带非空 `targetEndpointID`，并与接收端本机 endpoint 完全匹配。`wake_display` 不得包含 USB 类型、名称、VID/PID、地址、序列号或路径。
 
 未知 JSON 字段可以忽略，但不得影响状态或硬件行为，也不进入认证输入。缺少字段、类型错误、未知类型、非法枚举或类型专用字段组合错误必须安全拒绝。
 
@@ -123,33 +123,25 @@ reason:{reason-or-null}
 5. 目标最近在线但 600 ms 内未确认时，只允许对这个明确目标降级切换；不得广播或选择其他配置。
 6. 源端发送一次逻辑 `committed`，记录 DDC 是否成功。
 
-### 自动协同且只有一个已开启配置
+### USB 本机切换与可选联动唤醒
 
-1. 本机已绑定输入设备离开后防抖 150 ms，源端向唯一目标发送 `handover_request(intent = input_handover)`。
-2. 目标端立即请求唤醒，并等待本机已绑定 USB 或蓝牙设备到达。
-3. 输入到达且唤醒调用完成后，目标端发送 `target_ready`。
-4. 源端收到确认后执行 DDC；在线目标 600 ms 未确认时按明确配置降级，离线时发送一次后直接切换。
-5. 输入设备在等待期间回到源端时，取消事件并发送 `cancelled(reason = source_input_returned)`。
-
-### 自动协同且有多个已开启配置
-
-1. 源端检测到已绑定输入设备离开后进入目标发现状态，不立即执行 DDC。
-2. 各对端检测到其本机绑定的 USB 或蓝牙设备到达后，向对应来源发送 `input_present`。
-3. 源端只接受来自已开启、配置完整、endpoint 匹配且认证通过的配置的声明。
-4. 接收顺序中的首个合法声明立即且原子地锁定目标，不设置额外仲裁窗口。
-5. 目标锁定后，其他 endpoint 的声明全部作为迟到消息忽略，不得覆盖目标、重启流程或触发第二次硬件动作。
-6. 发现窗口固定为 3 秒。超时仍无合法目标时，不猜测、不执行 DDC，并提示用户手动选择。
-7. 锁定目标后发送 `handover_request(intent = input_handover)`，继续目标唤醒、确认、DDC 和 `committed` 流程。
+1. USB 切换以本机选定设备的状态变化为唯一切换依据，不通过网络发现或确认目标。
+2. 选定 USB 从接入变为离开时，源端立即按本机 USB 显示器映射执行 DDC，不等待网络、心跳、回复或协议计时器。
+3. 选定 USB 从离开变为接入时，本机只请求显示器唤醒，不执行 DDC。
+4. USB 联动关闭时，USB 路径不得读取协同网络配置或发送消息。
+5. USB 联动开启时，源端在立即执行 DDC 的同时，可以向用户明确选择的一个完整协同配置发送一次 `wake_display`；发送失败不得阻断或回滚 DDC。
+6. 目标端只在 endpoint、时间窗、HMAC 和重放校验全部通过后执行本机显示器唤醒；不回复、不执行 DDC，也不进入手动协同状态机。
+7. 网络 `wake_display` 与随后本机 USB 接入产生的唤醒共用合并器，2 秒内最多实际调用一次唤醒接口。
+8. 初始 USB 状态、重复状态通知、USB 学习、配置安全状态和 USB 功能关闭均不得触发切换或唤醒。
 
 ## 共同时间与幂等规则
 
 - 消息有效期为 10 秒，包含恰好 10 秒的边界。
 - 定向请求每 150 ms 重发，最多发送 4 次。
 - 在线目标确认兜底为 600 ms；最近合法消息在线窗口为 6 秒。
-- 多目标发现窗口为 3 秒，没有仲裁等待。
 - 同一 `type + eventID + sourceEndpointID` 在有效期内视为重复。
 - 每个事件最多绑定一个目标、执行一次 DDC 并发送一次逻辑提交。
-- 取消、配置重载、协同关闭或输入返回源端时，必须清理相关计时器和待处理事件。
+- 取消、配置重载或协同关闭时，必须清理相关计时器和待处理事件。
 - 不得退化选择配置列表第一项、最近使用项或根据平台名称猜测目标。
 
 ## 版本拒绝与安全降级
@@ -158,11 +150,11 @@ reason:{reason-or-null}
 - `version = 1`、缺少版本、类型错误和未知版本均安全拒绝，不发送兼容探测或响应。
 - 版本、认证、endpoint 或目标选择失败时，保持当前显示器状态并提示用户，不猜测协议或目标。
 - 协同可以按配置关闭而不影响本机显示器控制。
-- 本机 `schemaVersion = 4` 配置不迁移 v3 或更早字段；旧文件只作为本机备份保留，不参与运行时。
+- 本机 `schemaVersion = 5` 从 v4 保留非 USB 设置；独立 USB 配置默认关闭且不得从旧协同配置猜测设备或输入映射。旧文件作为本机备份保留。
 
 ## 隐私与测试要求
 
-- 原始显示器 UUID、USB/Bluetooth 标识、IP、配对码、本机路径和个人硬件信息只保存在本机，不得进入网络同步数据、公共 contracts、公共样例、日志或 Git。
+- 原始显示器 UUID、USB 标识、IP、配对码、本机路径和个人硬件信息只保存在本机，不得进入网络同步数据、公共 contracts、公共样例、日志或 Git。
 - endpointID 是随机逻辑身份，可以进入 v2 网络消息；不得由个人或硬件信息派生。
 - 自动测试必须使用模拟网络、时钟、输入设备、唤醒和 DDC，不得访问真实局域网或硬件。
 - 公共验收只以 `contracts/protocol-v2/` 为准，包括 NFC、PBKDF2/HMAC、消息验证和状态机向量。

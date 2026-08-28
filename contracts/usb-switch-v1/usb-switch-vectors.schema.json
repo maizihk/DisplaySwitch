@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://displayswitch.invalid/contracts/usb-switch-v1/usb-switch-vectors.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "configSchemaVersion", "wakeCoalescingWindowMs", "vectors"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "configSchemaVersion": { "type": "integer", "const": 5 },
+    "wakeCoalescingWindowMs": { "type": "integer", "const": 2000 },
+    "vectors": { "type": "array", "minItems": 16, "maxItems": 16, "items": { "$ref": "#/$defs/vector" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "mapping": {
+      "type": "object",
+      "required": ["displayID", "targetInput", "available", "switchSucceeds"],
+      "properties": {
+        "displayID": { "type": "string", "pattern": "^display-[a-z]$" },
+        "targetInput": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
+        "available": { "type": "boolean" },
+        "switchSucceeds": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "initialState": {
+      "type": "object",
+      "required": ["enabled", "learning", "safeState", "baselinePresence", "collaborationWakeEnabled", "collaborationProfileValid", "displayMappings"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "learning": { "type": "boolean" },
+        "safeState": { "type": "boolean" },
+        "baselinePresence": { "type": ["boolean", "null"] },
+        "collaborationWakeEnabled": { "type": "boolean" },
+        "collaborationProfileValid": { "type": "boolean" },
+        "displayMappings": { "type": "array", "items": { "$ref": "#/$defs/mapping" } }
+      },
+      "additionalProperties": false
+    },
+    "input": {
+      "type": "object",
+      "required": ["atMs", "kind"],
+      "properties": {
+        "atMs": { "type": "integer", "minimum": 0 },
+        "kind": { "type": "string", "enum": ["observeUSB", "configurationChanged", "receiveWakeDisplay"] },
+        "present": { "type": "boolean" }
+      },
+      "allOf": [{
+        "if": { "properties": { "kind": { "const": "observeUSB" } }, "required": ["kind"] },
+        "then": { "required": ["present"] },
+        "else": { "not": { "required": ["present"] } }
+      }],
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "required": ["atMs", "kind"],
+      "properties": {
+        "atMs": { "type": "integer", "minimum": 0 },
+        "kind": { "type": "string", "enum": ["establishBaseline", "switchDisplay", "wakeDisplay", "sendWakeDisplay", "report"] },
+        "displayID": { "type": "string", "pattern": "^display-[a-z]$" },
+        "targetInput": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "succeeded": { "type": "boolean" },
+        "reason": { "type": "string", "enum": ["missing_mapping", "display_unavailable", "ddc_failed", "wake_not_sent"] }
+      },
+      "additionalProperties": false
+    },
+    "vector": {
+      "type": "object",
+      "required": ["id", "description", "initialState", "inputs", "expectedActions"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^USB-[0-9]{3}$" },
+        "description": { "type": "string", "minLength": 1 },
+        "initialState": { "$ref": "#/$defs/initialState" },
+        "inputs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/input" } },
+        "expectedActions": { "type": "array", "items": { "$ref": "#/$defs/action" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}

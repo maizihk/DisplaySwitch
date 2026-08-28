@@ -2,13 +2,13 @@
 
 - 功能编号：DS-008
 - 任务类型：cross-platform
-- 状态：PROTOCOL_REVIEW
+- 状态：READY_FOR_PLATFORM
 - 基线：`main@c6452412b9fb6543501a83181103eadc6e6d9666`
 - 关联协调记录：`coordination/DS-008.md`
 
 ## 目标
 
-USB 切换与网络协同完全解耦。每台电脑只根据本机选定 USB 设备的接入状态执行本机动作：USB 离开时立即把已配置显示器切到唯一另一端的输入源；USB 接入时只请求唤醒本机显示器。USB 路径不读取或发送 IP、端口、配对码、endpoint、心跳或任何 v2 网络消息。
+USB 切换以本机状态为唯一切换依据。每台电脑根据本机选定 USB 设备的接入状态执行本机动作：USB 离开时立即把已配置显示器切到唯一另一端的输入源；USB 接入时请求唤醒本机显示器。可选的“联动协同”只在 USB 离开时向一个明确配置发送认证唤醒请求，不能等待回复或改变本机切换结果。
 
 本任务只修复 USB 切换。手动协同、网络传输、普通 DDC 调节、首次运行向导及其他已知问题不在范围内。
 
@@ -21,15 +21,17 @@ USB 切换页独立保存：
 - `USB 切换`开关；
 - 一个本机 USB 触发设备；
 - 每台显示器“USB 离开后切到的输入源”。
+- `联动协同`开关，默认关闭；
+- 联动开启时选择的一个协同配置。
 
-USB 切换不选择协同配置，不要求协同开启，也不要求网络配置完整。未选择 USB 设备或没有任何合法显示器输入映射时拒绝开启，并指出缺少项。
+联动关闭时，USB 切换不读取协同配置，不要求网络配置完整。联动开启时必须选择一个已开启、完整并已确认 endpoint 的协同配置；联动配置无效或网络发送失败只报告唤醒未发送，不能阻断或回滚 DDC。未选择 USB 设备或没有任何合法显示器输入映射时拒绝开启，并指出缺少项。
 
 “监听 USB”只表示监听用户明确选择的一个设备，不能把任意 USB 设备的增删当作切换信号。
 
 ### 状态转换
 
 1. 程序启动、配置重载或重新选择 USB 设备后的第一次状态只建立基线，不执行 DDC 或唤醒。
-2. 选定设备从“接入”变为“离开”时，不增加应用层等待、不检查网络或对端状态，立即异步执行一次本机 DDC 输入源切换。
+2. 选定设备从“接入”变为“离开”时，不增加应用层等待、不检查网络或对端状态，立即异步执行一次本机 DDC 输入源切换；联动开启时并行发送一次认证 `wake_display`。
 3. 选定设备从“离开”变为“接入”时，只异步请求一次本机显示器唤醒，不执行 DDC。
 4. 重复的“已离开”或“已接入”通知不产生第二次动作。
 5. USB 学习、配置安全状态或 USB 切换关闭期间，DDC 和唤醒调用均为零。
@@ -46,13 +48,17 @@ USB 切换不选择协同配置，不要求协同开启，也不要求网络配�
 
 ## 与协同的边界
 
-USB 路径不得：
+联动关闭时，USB 路径不得：
 
 - 构造或发送 v2 消息；
 - 读取协同配置的 host、port、pairingCode、peerEndpointID 或在线状态；
 - 进入手动/自动协同状态机；
 - 根据配置列表、平台名称、最近在线设备或网络回复选择目标；
 - 在 USB 接入时通过网络通知其他设备。
+
+联动开启时只允许额外读取所选协同配置的网络路由和认证材料并发送一次 `wake_display`。不得发送 `handover_request`、等待 `target_ready`、进入协同切换状态机或根据网络结果决定 DDC。
+
+目标端收到合法 `wake_display` 后只调用本机显示器唤醒。网络唤醒与随后 USB 接入产生的本机唤醒使用同一合并器，2 秒内最多实际调用一次；重复、重放、错误 endpoint 或认证失败均不得唤醒。
 
 协同功能继续负责手动选择配置、网络检测、认证和手动定向协同。本任务不修正现有协同实现的其他问题。
 
@@ -65,6 +71,8 @@ schemaVersion: 5
 usbSwitch:
   enabled: boolean
   triggerDevice: local USB reference or null
+  collaborationWakeEnabled: boolean
+  collaborationProfileID: stable local profile ID or null
   displayInputs[]:
     displayID: stable local logical display ID
     targetInput: integer 0...65535
@@ -77,20 +85,21 @@ usbSwitch:
 - 保留常规设置、显示器目录、DDC 开关、托盘开关和协同配置。
 - 不从旧协同配置的 `triggerDevices` 或 `displayInputs` 猜测新的 USB 目标。
 - 新 `usbSwitch.enabled = false`，设备和映射为空，由用户重新配置。
+- 新 `collaborationWakeEnabled = false`，`collaborationProfileID = null`。
 - 迁移先备份 v4，再原子写入并回读 v5；失败时保留 v4 和最后有效数据，进入零 USB/DDC/唤醒副作用的安全状态。
 - 未知版本继续安全拒绝，不猜测修复。
 
 ## 网络协议变化
 
-USB 不再属于网络协议。批准后应在独立协调提交中更新 `PROTOCOL.md` 和 `contracts/protocol-v2/`：
+USB 切换决策不再属于网络协议。已在独立协调提交中更新 `PROTOCOL.md`、`contracts/protocol-v2/` 和 `contracts/usb-switch-v1/`：
 
-- 删除 `input_present`；
+- 删除 `input_present`，新增无专用字段的定向 `wake_display`；
 - 删除 `handover_request` 的 `input_handover` intent，只保留手动协同语义；
 - 删除单目标/多目标 USB 自动协同、150 ms USB 防抖、3 秒目标发现和输入返回取消语义；
 - 删除只服务于上述 USB 网络流程的公共状态机向量；
 - 保持 `version = 2`，因为软件尚未公开发布且不保留旧 USB 网络语义兼容路径。
 
-协议检测、HMAC、endpoint、手动协同和零硬件副作用的状态探测继续保留。本提案获批前不得直接修改 `PROTOCOL.md`、contracts 或平台运行时。
+协议检测、HMAC、endpoint、手动协同和零硬件副作用的状态探测继续保留。平台实现以已批准的共享规范和公共向量为准，不得自行改变这些语义。
 
 ## 自动测试
 
@@ -110,6 +119,10 @@ USB 不再属于网络协议。批准后应在独立协调提交中更新 `PROTO
 | USB-010 | 部分显示器缺少映射 | 只切合法映射并报告跳过项 |
 | USB-011 | DDC 单台失败 | 其他显示器继续；不触发网络或唤醒补偿 |
 | USB-012 | 协同关闭或配置为空 | USB 离开/接入仍按本机 USB 配置工作 |
+| USB-013 | 联动关闭后 USB 离开 | 立即 DDC，网络调用为零 |
+| USB-014 | 联动开启后 USB 离开 | 立即 DDC 并并行发送一次 `wake_display`，不等待回复 |
+| USB-015 | 联动配置无效或发送失败 | DDC 结果不受影响，只报告唤醒未发送 |
+| USB-016 | 网络唤醒后 2 秒内 USB 接入 | 两条触发路径合计只调用一次本机唤醒 |
 
 自动测试不得访问真实 USB、显示器、DDC、唤醒、局域网或系统设置。
 
@@ -119,14 +132,14 @@ USB 不再属于网络协议。批准后应在独立协调提交中更新 `PROTO
 
 - 从 `V2StateMachine` 移除 USB presence 驱动；`Controller::OnUsbPresenceChanged` 改为独立本机状态转换。
 - USB 离开直接使用独立 USB 显示器映射调用现有输入源执行器；USB 接入调用本机唤醒。
-- USB 设置页移除协同配置选择和“回到本机时按需切屏”，改为一个设备和每显示器目标输入源。
+- USB 设置页移除“回到本机时按需切屏”，改为一个设备、每显示器目标输入源、默认关闭的“联动协同”和联动目标配置。
 - 实施 v5 原子迁移、模拟测试和 x64 Release 本地构建。
 
 ### macOS
 
 - USBMonitor 只消费独立 USB 配置，不再从 `V2EndpointRoutingTable` 或协同 profile 收集设备。
 - `handleUSBPresenceChange` 不再进入 `HandoffV2StateMachine`；离开直接调用本机 DDC，接入调用 `wakeMacDisplay()`。
-- USB 设置页移除协同配置选择和“回到本机时按需切屏”，改为一个设备和每显示器目标输入源。
+- USB 设置页移除“回到本机时按需切屏”，改为一个设备、每显示器目标输入源、默认关闭的“联动协同”和联动目标配置。
 - 实施 v5 原子迁移、模拟 XCTest、Debug/Release、打包和严格签名验证。
 
 ## 实机验证与回滚

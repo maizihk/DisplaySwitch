@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent
 MESSAGE_TYPES = {
     "status_probe",
     "status_response",
-    "input_present",
+    "wake_display",
     "handover_request",
     "target_ready",
     "committed",
@@ -266,12 +266,10 @@ def main() -> None:
             raise AssertionError(f"{vector['id']}: only status_probe may reply during validation")
 
     state_ids = [vector["id"] for vector in state_vectors["vectors"]]
-    expected_ids = [f"P-{index:03d}" for index in range(1, 14)] + [
-        f"P-{index:03d}" for index in range(16, 21)
-    ]
+    expected_ids = ["P-001", "P-002", "P-009", "P-010", "P-019", "P-021"]
     if state_ids != expected_ids:
         raise AssertionError(
-            "state vector IDs must be P-001 through P-013 and P-016 through P-020: "
+            "state vector IDs must match the approved manual and wake-only contract set: "
             f"{state_ids}"
         )
     for vector in state_vectors["vectors"]:
@@ -298,16 +296,6 @@ def main() -> None:
                 raise AssertionError(f"{vector['id']}: committed must carry switchSucceeded")
 
     by_id = {vector["id"]: vector for vector in state_vectors["vectors"]}
-    if [action["atMs"] for action in by_id["P-006"]["expectedActions"]] != [150, 3150, 3150]:
-        raise AssertionError("P-006 must start discovery after debounce and time out three seconds later")
-    p5_locks = [
-        action["endpointID"]
-        for action in by_id["P-005"]["expectedActions"]
-        if action["kind"] == "lockTarget"
-    ]
-    first_claim = by_id["P-005"]["steps"][0]["input"]["endpointID"]
-    if p5_locks != [first_claim]:
-        raise AssertionError("P-005 must lock exactly the first valid declaration")
     p19_sends = [
         action["atMs"]
         for action in by_id["P-019"]["expectedActions"]
@@ -320,9 +308,12 @@ def main() -> None:
     ]
     if p19_sends != [0, 150, 300, 450] or p19_switches != [600]:
         raise AssertionError("P-019 must preserve four retries and the 600 ms manual fallback")
-    for vector_id in ("P-001", "P-006", "P-008", "P-010", "P-013", "P-016", "P-020"):
+    for vector_id in ("P-001", "P-010"):
         if any(by_id[vector_id]["expectedHardwareCalls"].values()):
             raise AssertionError(f"{vector_id} must have zero hardware effects")
+    p21_wakes = [action for action in by_id["P-021"]["expectedActions"] if action["kind"] == "requestWake"]
+    if len(p21_wakes) != 1 or by_id["P-021"]["expectedHardwareCalls"]["switchDisplay"] != 0:
+        raise AssertionError("P-021 must wake exactly once and never switch displays")
 
     print(
         f"Validated {len(schemas)} schemas, {len(auth_vectors['normalizationVectors'])} normalization vector, "

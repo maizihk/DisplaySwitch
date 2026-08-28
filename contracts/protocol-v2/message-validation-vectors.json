@@ -30,12 +30,12 @@
     },
     {
       "id": "MSG2-003",
-      "description": "Accept an authenticated logical input-present declaration",
+      "description": "Accept an authenticated wake-only request without invoking hardware during validation",
       "input": { "encoding": "jsonObject", "value": {
-        "version": 2, "type": "input_present", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+        "version": 2, "type": "wake_display", "eventID": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
         "sourceEndpointID": "11111111-1111-4111-8111-111111111111", "targetEndpointID": "22222222-2222-4222-8222-222222222222",
         "sourcePlatform": "macos", "timestamp": 1788000000, "nonce": "AwQFBgcICQoLDA0ODxAREg",
-        "authTag": "4WAfsOHRfO-VzlQFjzkad40ZrhJpZwN3gCtK-0oxBb4"
+        "authTag": "NgBi8X_NrVO37nVoh9fuShIuF1eES3GOEBt1yw6WuV4"
       } },
       "expected": { "accepted": true, "reason": "accepted", "refreshPeer": true, "replyTypes": [], "hardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 } }
     },

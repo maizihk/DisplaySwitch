@@ -81,7 +81,7 @@
             "enum": [
               "status_probe",
               "status_response",
-              "input_present",
+              "wake_display",
               "handover_request",
               "target_ready",
               "committed",
