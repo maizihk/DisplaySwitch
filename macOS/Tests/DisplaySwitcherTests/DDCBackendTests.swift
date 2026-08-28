@@ -107,8 +107,8 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(cache.writeCount, 0)
     }
 
-    func testNativeAvailableUnavailableAndFailureUseFallback() throws {
-        let native = MockDDCBackend(identifier: "native")
+    func testNativeSuccessAndEveryNativeFailureNeverUseM1DDC() throws {
+        let native = MockDDCBackend(identifier: "apple-silicon-native")
         let fallback = MockDDCBackend(identifier: "m1ddc")
         native.readings = ["display-a": [.luminance: DDCReading(current: 30, maximum: 100)]]
         fallback.readings = ["display-a": [.luminance: DDCReading(current: 70, maximum: 100)]]
@@ -121,33 +121,32 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(fallback.readCalls.count, 0)
 
         native.readFailures = ["display-a": [.luminance]]
-        let failedRead = try router.read(
-            stableID: "display-a", selector: "selector-a", command: .luminance, token: token)
-        XCTAssertEqual(failedRead.current, 70)
+        XCTAssertThrowsError(try router.read(
+            stableID: "display-a", selector: "selector-a", command: .luminance, token: token))
 
         native.availabilityValue = .unavailable("unsupported architecture")
-        let unavailableRead = try router.read(
-            stableID: "display-a", selector: "selector-a", command: .luminance, token: token)
-        XCTAssertEqual(unavailableRead.current, 70)
+        XCTAssertThrowsError(try router.read(
+            stableID: "display-a", selector: "selector-a", command: .luminance, token: token))
         XCTAssertEqual(native.readCalls.count, 2)
-        XCTAssertEqual(fallback.readCalls.count, 2)
+        XCTAssertEqual(fallback.readCalls.count, 0)
 
         native.availabilityValue = .available
         native.writeFailures = ["display-a": [.contrast]]
-        try router.write(stableID: "display-a", selector: "selector-a", command: .contrast,
-                         value: 55, token: token)
-        XCTAssertEqual(fallback.writeCalls.count, 1)
+        XCTAssertThrowsError(try router.write(stableID: "display-a", selector: "selector-a",
+                                              command: .contrast, value: 55, token: token))
+        XCTAssertEqual(fallback.writeCalls.count, 0)
         native.writeFailures = [:]
         try router.write(stableID: "display-a", selector: "selector-a", command: .volume,
                          value: 8, token: token)
-        XCTAssertEqual(fallback.writeCalls.count, 1)
+        XCTAssertEqual(fallback.writeCalls.count, 0)
 
         fallback.displays = [DDCBackendDisplay(stableID: "display-a", name: "A", selector: "selector-a")]
         native.availabilityValue = .unavailable("unsupported architecture")
-        XCTAssertEqual(try router.enumerateDisplays(token: token), fallback.displays)
+        XCTAssertThrowsError(try router.enumerateDisplays(token: token))
+        XCTAssertEqual(fallback.enumerateCount, 0)
     }
 
-    func testControlChannelRestrictsBackendSelectionWithoutChangingFallbackPolicy() throws {
+    func testPersistedControlChannelCannotReenableM1DDC() throws {
         let native = MockDDCBackend(identifier: "apple-silicon-native")
         let fallback = MockDDCBackend(identifier: "m1ddc")
         native.readings = ["display-a": [.luminance: DDCReading(current: 31, maximum: 100)]]
@@ -160,10 +159,111 @@ final class DDCBackendTests: XCTestCase {
                                        command: .luminance, token: token).current, 31)
         XCTAssertEqual(fallback.readCalls.count, 0)
 
-        router.setControlChannel(.fallback)
-        XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
-                                       command: .luminance, token: token).current, 72)
-        XCTAssertEqual(native.readCalls.count, 1)
+        for channel in DDCControlChannel.allCases {
+            router.setControlChannel(channel)
+            XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
+                                           command: .luminance, token: token).current, 31)
+        }
+        XCTAssertEqual(fallback.readCalls.count, 0)
+    }
+
+    func testProductNamesAndSameModelStableLocalOrdinalsSurviveEnumerationReorder() {
+        let known = [
+            DDCKnownDisplay(stableID: "stable-b", name: "显示器 1", selector: "selector-b"),
+            DDCKnownDisplay(stableID: "stable-a", name: "Studio Panel", selector: "selector-a"),
+            DDCKnownDisplay(stableID: "stable-c", name: "显示器 3", selector: "selector-c")
+        ]
+        let displays = [
+            DDCBackendDisplay(stableID: "stable-a", name: "Generic Panel", selector: "selector-a"),
+            DDCBackendDisplay(stableID: "stable-c", name: "Generic Panel", selector: "selector-c"),
+            DDCBackendDisplay(stableID: "stable-b", name: "Generic Panel", selector: "selector-b")
+        ]
+
+        let first = DisplayPresentationNameResolver.names(for: displays, knownDisplays: known)
+        let reordered = DisplayPresentationNameResolver.names(
+            for: [displays[2], displays[0], displays[1]], knownDisplays: known
+        )
+
+        XCTAssertEqual(first["stable-a"], "Studio Panel")
+        XCTAssertEqual(first["stable-b"], "Generic Panel（1）")
+        XCTAssertEqual(first["stable-c"], "Generic Panel（2）")
+        XCTAssertEqual(first, reordered)
+        XCTAssertFalse(first.values.contains { $0.contains("selector") || $0.contains("stable-") })
+    }
+
+    func testTwoDifferentModelsKeepSystemProductNames() {
+        let displays = [
+            DDCBackendDisplay(stableID: "a", name: "Office Panel", selector: "one"),
+            DDCBackendDisplay(stableID: "b", name: "Creator Panel", selector: "two")
+        ]
+        let names = DisplayPresentationNameResolver.names(for: displays, knownDisplays: [])
+        XCTAssertEqual(names["a"], "Office Panel")
+        XCTAssertEqual(names["b"], "Creator Panel")
+    }
+
+    func testNativeServiceMatchingUsesLocationAndNeverReusesAService() {
+        let identities = [
+            NativeDisplayIdentity(stableID: "display-a", ioDisplayLocation: "location-a",
+                                  productName: "Same Model", serialNumber: 101, edidSearchKeys: []),
+            NativeDisplayIdentity(stableID: "display-b", ioDisplayLocation: "location-b",
+                                  productName: "Same Model", serialNumber: 202, edidSearchKeys: []),
+            NativeDisplayIdentity(stableID: "display-unbound", ioDisplayLocation: "location-c",
+                                  productName: "Unknown", serialNumber: 0, edidSearchKeys: [])
+        ]
+        let candidates = [
+            NativeTransportCandidate(serviceLocation: 2, ioDisplayLocation: "location-b",
+                                     productName: "Same Model", serialNumber: 202, edidUUID: ""),
+            NativeTransportCandidate(serviceLocation: 1, ioDisplayLocation: "location-a",
+                                     productName: "Same Model", serialNumber: 101, edidUUID: "")
+        ]
+
+        let matches = NativeDisplayMatcher.matches(identities: identities, candidates: candidates)
+
+        XCTAssertEqual(matches["display-a"], 1)
+        XCTAssertEqual(matches["display-b"], 2)
+        XCTAssertNil(matches["display-unbound"])
+        XCTAssertEqual(Set(matches.values).count, matches.count)
+    }
+
+    func testNativeGetVCPReplyValidationRejectsWrongOrLateFrames() throws {
+        var reply: [UInt8] = [0x6E, 0x88, 0x02, 0x00, DDCCommand.luminance.rawValue,
+                              0x00, 0x00, 0x64, 0x00, 0x2A, 0x00]
+        reply[10] = reply.dropLast().reduce(UInt8(0x50), ^)
+        XCTAssertEqual(
+            try NativeDDCReplyValidator.reading(from: reply, command: .luminance).get(),
+            DDCReading(current: 42, maximum: 100)
+        )
+
+        var wrongCommand = reply
+        wrongCommand[4] = DDCCommand.contrast.rawValue
+        wrongCommand[10] = wrongCommand.dropLast().reduce(UInt8(0x50), ^)
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: wrongCommand, command: .luminance),
+            .failure(.wrongCommand)
+        )
+
+        var rejected = reply
+        rejected[3] = 1
+        rejected[10] = rejected.dropLast().reduce(UInt8(0x50), ^)
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: rejected, command: .luminance),
+            .failure(.monitorRejected)
+        )
+
+        var badChecksum = reply
+        badChecksum[10] ^= 0xFF
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: badChecksum, command: .luminance),
+            .failure(.badChecksum)
+        )
+    }
+
+    func testNativeReadTransportParametersAreExplicitAndTestable() {
+        let parameters = NativeDDCTransportParameters.appleSiliconDDCCompatible
+        XCTAssertEqual(parameters.writeDataAddress, 0x51)
+        XCTAssertEqual(parameters.readDataAddress, 0x51)
+        XCTAssertEqual(parameters.readAttempts, 5)
+        XCTAssertEqual(parameters.writeCycles, 2)
     }
 
     func testCancellationAndLateReadCannotCommitCacheOrResult() {
@@ -268,13 +368,15 @@ private final class MockDDCBackend: DDCBackend {
     private(set) var readCalls: [(String, DDCCommand)] = []
     private(set) var writeCalls: [(String, DDCCommand, Int)] = []
     private(set) var cancelCount = 0
+    private(set) var enumerateCount = 0
 
-    init(identifier: String = "mock") {
+    init(identifier: String = "apple-silicon-native") {
         self.identifier = identifier
     }
 
     func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
         try token.throwIfCancelled()
+        enumerateCount += 1
         return displays
     }
 

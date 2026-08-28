@@ -263,6 +263,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.onRefreshDisplays = { [weak self] in
             self?.detectDisplays(showFailure: true)
         }
+        controller.onWindowClosed = { [weak self] in
+            self?.ddcWriteCoordinator.cancelAll()
+            self?.ddcController.cancelAll()
+            self?.refreshDDCOperationAccess()
+        }
         return controller
     }()
 
@@ -648,6 +653,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             guard let self else { return }
             let result = self.ddcController.read(targets: [target])[target.stableID] ?? [:]
             DispatchQueue.main.async {
+                guard self.settingsWindowController.isSettingsVisible else { return }
                 self.settingsWindowController.updateDDCValues(stableID: target.stableID, values: result)
             }
         }

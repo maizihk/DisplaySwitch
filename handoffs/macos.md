@@ -3,61 +3,67 @@
 ## 当前任务
 
 - 日期：2026-08-29
-- 功能：DS-008 / macOS 发布前 UDP 固定源端口修复
-- 共享基线：`codex/coord-ds-008-usb-local-switch@aad145d0e3962c16d05442d34e6b07a8553b21cf`
-- 基线确认：开始前已 fetch；基线包含 PR #41 (`4da002d`) 和 PR #42 (`aad145d`)
-- 分支：`codex/macos-ds-008-fixed-source-port`
-- 实现提交：`bc37d2e214eff1cd514d82878c78e48b8d939966`
-- PR：[#43 DS-008 macOS: bind UDP sends to listen port](https://github.com/maizihk/DisplaySwitch/pull/43)，base 为 `codex/coord-ds-008-usb-local-switch`
+- 功能：DS-009 / macOS M-009 Apple Silicon 原生显示控制
+- 协调基线：`codex/coord-ds-009-native-display-control@53c2397011323cd941afe315e3a6881fe772299e`
+- 基线确认：协调基线包含 `main@0bbfa9e0fad8350462b3b68083aace4ca9063dce`
+- 分支：`codex/macos-ds-009-native-display-control`
+- 实现提交：本文件所在任务提交
+- PR：提交并推送后补充；base 为 `codex/coord-ds-009-native-display-control`
 
 ## 根因
 
-- Windows `UdpPeer::Start` 把 UDP socket 绑定到本机 `listenPort`，`SendRaw` 复用这个 socket，因此主动数据报的源端口稳定为本机监听端口。
-- Windows 首次未绑定 `status_probe` 只接受 `SourceMatches` 同时匹配配置 host 和 `profile.peerPort` 的来源；其自动测试也按来源地址和来源端口匹配首次探测。
-- macOS 原 `PeerTransport.send` 每次创建未指定本地 endpoint 的 `NWConnection`，系统会分配临时源端口。目标端口虽正确使用 `peerPort`，Windows 仍会在首次 endpoint 绑定前因来源端口不匹配拒绝探测，界面最终表现为等待心跳或无响应。
+- 原生 `communicate` 在一次尝试中固定调用两次 `IOAVServiceWriteI2C`，即使第一次成功也继续重复写；写操作又配置五次内部尝试，再叠加后端级一次恢复重试，单次滑杆写入最多可能产生二十次 I²C 请求。连续调节会放大重复请求，导致 service/传输通道进入失败状态。
+- 原生访问使用单个全局锁，所有显示器互相阻塞；读取失败不使缓存 service 失效，也不重新发现。结果是一个失效句柄可持续失败，并拖累其他显示器。
+- 枚举回退名称和设置页多处直接使用“显示器 N”；离线去重还按产品名排除，导致同型号显示器被折叠或无法区分。
+- DDC 路由仍保留自动/手动 `m1ddc` 选择，原生失败可能被回退结果遮蔽，无法判断本次原生调用是否真实成功。
+- 对照 AppleSiliconDDC 后确认，原实现把上游默认五次读取尝试缩减成一次；service 绑定也从 IODisplayLocation 高权重的一对一评分简化为 registryEntryID 与遍历顺序，且只识别 `IOMobileFramebuffer` conformance。这些差异会放大偶发读取失败，并可能造成新系统上的漏配或错配。
+- 原实现只校验回复 XOR checksum，未校验 Get VCP 回复长度、来源、opcode、结果码和 command echo；迟到或错误 VCP 回复可能被当作当前读取结果。
 
 ## 完成内容
 
-- `PeerTransport` 的监听和主动 UDP 连接都启用本地 endpoint 复用；主动连接使用 `requiredLocalEndpoint` 绑定当前 `listenPort`，目标仍使用所选配置的 `peerPort`。
-- 所有主动 `send` 共用同一路径，因此覆盖 `status_probe`、`wake_display`、`handover_request`、状态机重发及其他主动消息；没有新增第二个用户可配置端口。
-- 主动连接按 host/目标端口复用，连接 ready 前的数据报排队；同一主动连接持续接收对端响应，避免固定源端口后回包落到无人接收的 socket。
-- `start` 同端口重复调用不创建第二个监听；端口重配、`stop`、监听失败、连接失败和发送失败会释放相应监听/连接资源，退出时显式停止网络传输。
-- 收到数据报后的回复仍使用该数据报所属连接，没有修改 eventID、HMAC、endpoint 路由、消息缓存或重放保护。
-- 通过可注入 listener/connection factory 新增 5 项纯传输测试，覆盖三类主动请求的源/目标端口、同端口重复 start、端口重配、stop、发送失败重建和原连接回复。
+- 运行时 DDC 路由固定选择 Apple Silicon 原生后端；保留 `m1ddc` 源码作为历史实现，但任何控制通道设置都不能启动它。Intel Mac 明确报告当前原生后端不支持。
+- 原生请求首次写成功即停止，不再重复成功写；失败后清除对应 service、重新发现并只重试一次。读取使用相同的单次恢复策略。
+- 读取恢复为同一 service 最多五次有效回复尝试；写/读 offset、等待和尝试次数集中为可测试参数。当前读取 offset 保持 AppleSiliconDDC 使用的 `0x51`，没有在真实硬件上试探另一实现使用的 offset `0`。
+- 完整枚举当前 `AppleCLCD2`、`IOMobileFramebufferShim` 及兼容 framebuffer 和外部 `DCPAVServiceProxy`，按 IODisplayLocation、产品名和序列信息评分，并保证一个显示器和一个 serviceLocation 只绑定一次。
+- 在线显示器身份与可通信 service 分离：未匹配到 service 时仍可显示产品身份，但读取/写入明确失败。Get VCP 回复新增长度、checksum、来源、载荷、opcode、结果码及 command echo 校验。
+- 原生传输锁改为按显示器 selector 隔离：同一显示器串行，不同显示器可独立执行。取消会清空 service 缓存；配置刷新、检测和窗口关闭会取消待写，迟到完成不会更新 UI 或缓存。
+- 显示名称优先使用已保存的非默认名称，否则使用系统产品名称；同名显示器按已有稳定逻辑 ID 顺序添加本机序号，枚举重排不改变对应关系。
+- 设置页显示器卡片、USB 输入映射、协同输入映射、菜单和辅助功能标签统一使用解析后的显示器名称。
+- 原生读取失败显示脱敏错误；历史缓存只标记为“上次可信值”，不伪装成本次原生读取成功。
 
-## 本机验证
+## 自动验证
 
-- 生产 `PeerTransport.swift` 使用本机 macOS 26.5 SDK完成 Swift 类型检查；新增测试文件通过 Swift 语法解析。
-- 仅使用 `127.0.0.1` 的 UDP 运行验证通过：接收端观测到主动请求源端口等于配置 `listenPort`、目标端口等于 loopback 接收端口，且响应由主动连接收到。
-- `contracts/protocol-v2/validate.py`：4 个 schema、1 条 NFC、4 条认证、20 条消息和 6 条状态机向量通过。
-- `contracts/usb-switch-v1/validate.py`：USB-001 至 USB-016 全部通过，配置 schemaVersion 5。
-- `plutil -lint macOS/DisplaySwitcher.xcodeproj/project.pbxproj`、`git diff --check` 和提交内容审查通过。
-- 本机只有 Command Line Tools，没有完整 Xcode；未运行 XCTest、Debug/Release Xcode 构建、`build-app.sh` 或 codesign。按协调策略，不单独触发 workflow_dispatch 或中间云端 CI；这些项目由协调端最终 main PR 的 macOS CI 一次完成。
-
-## 发布产物
-
-- 本机未生成新的忽略发布产物，因为没有完整 Xcode。
-- 协调端可从本分支重建：`./macOS/scripts/build-app.sh`。
-- 预期忽略产物路径：`macOS/outputs/DisplaySwitcher.app` 和 `macOS/outputs/DisplaySwitcher-macOS-$(uname -m).zip`。
-- 最终 main PR 的 macOS CI 应上传 `DisplaySwitcher-macOS-${runner.arch}-unsigned` artifact。
+- 完整 XCTest：61 项通过。
+- 名称测试覆盖两台不同型号、两台同型号、已保存名称、稳定本机序号和枚举重排；断言用户可见名称不含 selector/稳定 ID。
+- 后端测试覆盖原生成功、不可用、枚举失败、读取失败和写入失败均零 `m1ddc` 调用；持久化的旧控制通道设置不能重新启用回退。
+- 写入协调测试覆盖 100 次快速滑杆写入合并为首值与最终值、同显示器跨 DDC 项串行、不同显示器故障隔离、取消/刷新/窗口关闭后丢弃迟到完成。
+- 原生纯测试覆盖一对一 service 匹配、同型号位置区分、未绑定身份拒绝、Get VCP 正确回复及 checksum/结果码/command echo 错误、显式读取 offset 与五次尝试参数。
+- 使用本机选定的 Xcode 27 Beta 6：Debug、Release、`./macOS/scripts/build-app.sh` 和 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 均通过。输出目录所在 File Provider 在脚本结束后重新附加 Finder 元数据，清除该非签名元数据后独立严格验签通过。
+- `git diff --check`、构建产物忽略和敏感信息检查通过。
+- 自动测试全部使用模拟后端和模拟副作用，没有访问真实 DDC、USB、UDP、网络、唤醒或输入源切换。
 
 ## 尚未执行
 
-- 新增 5 项 `PeerTransportTests` 及现有完整 XCTest 尚待最终 main PR 的 macOS CI 执行。
-- Debug、Release、正式打包与严格 codesign 尚待最终 main PR 的 macOS CI 执行。
-- 未做真实 macOS/Windows 双机首次探测、心跳、`wake_display`、手动交接和重发验证。
-- 未做真实 USB、DDC、显示器唤醒、输入源切换或 GUI 验证。
+- 未启动 App 验证设置页、菜单和显示器卡片的真实 GUI 名称与布局。
+- 未验证真实 Apple Silicon CoreDisplay/IOAVService 枚举、同型号显示器本机序号对应、DDC 回读/写入、连续滑杆恢复或显示器断开重连。
+- 未执行真实 USB、UDP、网络、显示器唤醒或输入源切换。
+- Intel Mac 不在本机自动验证范围，当前设计为明确不支持原生 DDC。
+- MonitorControl 当前读取 offset 为 `0`，AppleSiliconDDC 为 `0x51`；本任务没有向真实设备发送试探请求，需在授权只读实机验证中基于返回码确定适用值。
+
+## 上游审计依据
+
+- [AppleSiliconDDC 原生实现](https://github.com/waydabber/AppleSiliconDDC/blob/main/Sources/AppleSiliconDDC/AppleSiliconDDC.swift)：读取默认五次尝试、framebuffer/proxy 枚举、一对一评分绑定和 `0x51` 读取 offset。
+- [MonitorControl Arm64DDC](https://github.com/MonitorControl/MonitorControl/blob/main/MonitorControl/Support/Arm64DDC.swift)：当前读取 offset 为 `0`；与 AppleSiliconDDC 的差异只参数化记录，不在无授权时向真实硬件试探。
 
 ## 安全与边界
 
-- 仅修改 `macOS/` 和 `handoffs/macos.md`。
-- 未修改 Windows、`PROTOCOL.md`、contracts、coordination、specs、根 README、`AGENTS.md`、GitHub Actions、版本号、tag 或 Release。
-- 未启动 App，未访问局域网，未执行真实 USB、DDC、显示器唤醒或输入源切换。
-- 未记录配对码、凭据、真实 IP、真实 endpoint、USB/显示器标识或个人路径。
-- `macOS/.build/` 和 `macOS/outputs/` 保持 Git 忽略。
+- 只修改 `macOS/` 和 `handoffs/macos.md`。
+- 未修改 Windows、协议、contracts、specs、coordination、根 README、GitHub Actions、版本号、tag 或 Release。
+- 未记录配对码、凭据、真实 IP、真实显示器/USB 标识、IORegistry 路径或个人路径。
+- `macOS/.build/` 和 `macOS/outputs/` 为忽略的本机构建产物，不进入 Git。
 
 ## 协调端下一步
 
-1. 审查并合并本 PR 到 `codex/coord-ds-008-usb-local-switch`。
-2. 从协调分支创建最终 main PR，让 macOS CI 一次运行完整 XCTest、Debug、Release、打包、严格验签和 artifact 上传。
-3. CI 通过后再做授权的 macOS/Windows 双机首次探测，确认 Windows 看到的来源端口等于 Mac `listenPort`，并验证心跳、协同唤醒和手动交接。
+1. 审查本 PR 的原生单次请求、service 失效/重发现和 native-only 路由。
+2. 在最终协调 PR 运行云端 CI；本平台任务不单独触发中间 CI。
+3. 获得用户授权后，在 Apple Silicon 上分别验证不同型号与同型号多显示器的枚举、连续拖动和失败恢复。

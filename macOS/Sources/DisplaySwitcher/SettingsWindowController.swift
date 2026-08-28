@@ -229,7 +229,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onReadDDC: ((String) -> Void)?
     var onWriteDDC: ((String, DDCCommand, Int) -> Void)?
     var onRefreshDisplays: (() -> Void)?
+    var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
+
+    var isSettingsVisible: Bool { window?.isVisible == true }
 
     private let linkedCheckbox = NSSwitch()
     private let controlChannelPopup = NSPopUpButton()
@@ -325,7 +328,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             displayValueLabels[index]?[command]?.stringValue = resolved.estimated
                 ? "≈\(resolved.reading.current)" : "\(resolved.reading.current)"
         }
-        displayStatusLabels[index]?.stringValue = values.isEmpty ? "读取失败" : "已读取"
+        let estimatedCount = values.values.filter(\.estimated).count
+        if values.isEmpty {
+            displayStatusLabels[index]?.stringValue = "原生读取失败"
+        } else if estimatedCount == values.count {
+            displayStatusLabels[index]?.stringValue = "原生读取失败，显示上次可信值"
+        } else if estimatedCount > 0 {
+            displayStatusLabels[index]?.stringValue = "部分读取失败"
+        } else {
+            displayStatusLabels[index]?.stringValue = "已读取"
+        }
     }
 
     func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?) {
@@ -600,9 +612,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        controlChannelPopup.addItems(withTitles: ["自动", "原生 DDC", "m1ddc 回退"])
-        controlChannelPopup.target = self
-        controlChannelPopup.action = #selector(controlChannelChanged(_:))
+        controlChannelPopup.addItem(withTitle: "Apple Silicon 原生 DDC")
+        controlChannelPopup.isEnabled = false
         refreshDisplaysButton.setAccessibilityLabel("检测并刷新显示器")
         let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制通道"), controlChannelPopup, refreshDisplaysButton])
         channelRow.orientation = .horizontal
@@ -765,8 +776,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
             displayStack.addArrangedSubview(module(
-                title: "显示器 \(configuration.index)",
-                views: [displayForm(index: configuration.index)]
+                title: configuration.name,
+                views: [displayForm(index: configuration.index, name: configuration.name)]
             ))
         }
 
@@ -858,10 +869,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func displayForm(index: Int) -> NSView {
+    private func displayForm(index: Int, name: String) -> NSView {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         readButton.tag = index
-        readButton.setAccessibilityLabel("读取显示器 \(index) DDC 参数")
+        readButton.setAccessibilityLabel("读取\(name) DDC 参数")
         let status = NSTextField(labelWithString: "尚未读取")
         status.textColor = .secondaryLabelColor
         status.font = .systemFont(ofSize: 11)
@@ -977,12 +988,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 showValidationError("登录启动设置失败：\n\(error.localizedDescription)\n\n请确认 App 已放入“应用程序”文件夹。")
             }
         }
-    }
-
-    @objc private func controlChannelChanged(_ sender: NSPopUpButton) {
-        let values = DDCControlChannel.allCases
-        guard values.indices.contains(sender.indexOfSelectedItem) else { return }
-        persistDocument { $0.controlChannel = values[sender.indexOfSelectedItem] }
     }
 
     @objc private func displaySettingChanged(_ sender: NSSwitch) {
@@ -1157,7 +1162,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbLearningPending = false
         reloadProfilePopup()
         linkedCheckbox.state = loaded.document.linkAllDisplays ? .on : .off
-        controlChannelPopup.selectItem(at: DDCControlChannel.allCases.firstIndex(of: loaded.document.controlChannel) ?? 0)
+        controlChannelPopup.selectItem(at: 0)
         usbAutomationCheckbox.state = loaded.document.usbSwitch.enabled ? .on : .off
         usbArrivalSwitchCheckbox.state = loaded.document.usbSwitch.collaborationWakeEnabled ? .on : .off
         usbStatusLabel.stringValue = loaded.document.usbSwitch.enabled ? "等待设备状态" : "USB 切换未启用"
@@ -1238,7 +1243,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             field.widthAnchor.constraint(equalToConstant: 120).isActive = true
             usbInputFields[offset + 1] = field
             usbMappingStack.addArrangedSubview(formRow(
-                title: "显示器 \(offset + 1) 离开后输入源", control: field
+                title: "\(display.name) 离开后输入源", control: field
             ))
         }
     }
@@ -1275,7 +1280,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             field.widthAnchor.constraint(equalToConstant: 120).isActive = true
             inputFields[index] = field
             let row = NSStackView(views: [
-                fixedLabel("显示器 \(index) 输入源", width: 130), field
+                fixedLabel("\(display.name) 输入源", width: 180), field
             ])
             row.orientation = .horizontal
             row.alignment = .centerY
@@ -1480,5 +1485,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbLearningPending = false
         learnUSBButton.isEnabled = true
         onCancelUSBLearning?()
+        onWindowClosed?()
     }
 }

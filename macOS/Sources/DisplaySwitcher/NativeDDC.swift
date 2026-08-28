@@ -2,6 +2,8 @@
 // Discovery and I2C packet handling are derived from AppleSiliconDDC:
 // https://github.com/waydabber/AppleSiliconDDC
 // Copyright (c) 2021 Istvan T., used under the MIT License.
+// MonitorControl uses a different read offset (0 instead of 0x51); DS-009 keeps
+// the offset explicit and testable rather than probing both values on hardware.
 
 import CoreGraphics
 import Foundation
@@ -11,9 +13,15 @@ struct NativeDDCDisplay {
     let name: String
     let systemUUID: String
     let serviceLocation: Int
-    let service: IOAVService
+    let service: IOAVService?
     let chipAddress: UInt32
     let isOnline: Bool
+}
+
+private struct NativeRegistryTransport {
+    let metadata: NativeTransportCandidate
+    let service: IOAVService
+    let chipAddress: UInt32
 }
 
 final class NativeDDCBackend: DDCBackend {
@@ -21,11 +29,15 @@ final class NativeDDCBackend: DDCBackend {
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
     private var knownDisplays: [DDCKnownDisplay]
     private let cacheLock = NSLock()
-    private let transportLock = NSLock()
+    private let transportLocksLock = NSLock()
+    private var transportLocks: [String: NSLock] = [:]
     private var displaysByUUID: [String: NativeDDCDisplay] = [:]
+    private let transportParameters: NativeDDCTransportParameters
 
-    init(knownDisplays: [DDCKnownDisplay] = []) {
+    init(knownDisplays: [DDCKnownDisplay] = [],
+         transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible) {
         self.knownDisplays = knownDisplays
+        self.transportParameters = transportParameters
     }
 
     var availability: DDCBackendAvailability {
@@ -75,41 +87,78 @@ final class NativeDDCBackend: DDCBackend {
 
     func read(stableID: String, selector: String, command: DDCCommand,
               token: DDCCancellationToken) throws -> DDCReading {
+        let transportLock = lock(for: selector)
         transportLock.lock()
         defer { transportLock.unlock() }
         try token.throwIfCancelled()
-        guard let display = display(for: selector) else {
-            throw DDCBackendError.displayUnavailable(stableID: stableID)
-        }
-        guard display.isOnline else {
-            throw DDCBackendError.readFailed(stableID: stableID, command: command)
-        }
-        guard let value = Self.read(
-            service: display.service,
-            chipAddress: display.chipAddress,
-            command: command.rawValue
-        ) else { throw DDCBackendError.readFailed(stableID: stableID, command: command) }
-        try token.throwIfCancelled()
-        return DDCReading(current: Int(value.current), maximum: Int(value.maximum))
+        var resolved: DDCReading?
+        try DDCSingleRetry.perform(operation: {
+            try token.throwIfCancelled()
+            guard let display = display(for: selector) else {
+                throw DDCBackendError.displayUnavailable(stableID: stableID)
+            }
+            guard display.isOnline, let service = display.service else {
+                throw DDCBackendError.displayUnavailable(stableID: stableID)
+            }
+            switch Self.read(
+                service: service,
+                chipAddress: display.chipAddress,
+                command: command,
+                parameters: transportParameters
+            ) {
+            case .success(let reading):
+                try token.throwIfCancelled()
+                resolved = reading
+            case .failure(let issue):
+                throw DDCBackendError.invalidReply(command: command, issue: issue)
+            }
+        }, recover: {
+            try token.throwIfCancelled()
+            invalidate(selector: selector)
+            _ = discover()
+        })
+        guard let resolved else { throw DDCBackendError.readFailed(stableID: stableID, command: command) }
+        return resolved
     }
 
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
                token: DDCCancellationToken) throws {
+        let transportLock = lock(for: selector)
         transportLock.lock()
         defer { transportLock.unlock() }
         try token.throwIfCancelled()
         guard let nativeValue = UInt16(exactly: value) else { throw DDCError.invalidValue(value) }
         try DDCSingleRetry.perform(operation: {
             try token.throwIfCancelled()
-            guard let display = display(for: selector), Self.write(
-                service: display.service, chipAddress: display.chipAddress,
-                command: command.rawValue, value: nativeValue
+            guard let display = display(for: selector), let service = display.service else {
+                throw DDCBackendError.displayUnavailable(stableID: stableID)
+            }
+            guard Self.write(
+                service: service, chipAddress: display.chipAddress,
+                command: command.rawValue, value: nativeValue,
+                parameters: transportParameters
             ) else { throw DDCBackendError.writeFailed(stableID: stableID, command: command) }
             try token.throwIfCancelled()
         }, recover: {
             invalidate(selector: selector)
             _ = discover()
         })
+    }
+
+    func cancelAll() {
+        cacheLock.lock()
+        displaysByUUID.removeAll()
+        cacheLock.unlock()
+    }
+
+    private func lock(for selector: String) -> NSLock {
+        let key = selector.uppercased()
+        transportLocksLock.lock()
+        defer { transportLocksLock.unlock() }
+        if let existing = transportLocks[key] { return existing }
+        let created = NSLock()
+        transportLocks[key] = created
+        return created
     }
 
     private func invalidate(selector: String) {
@@ -136,32 +185,40 @@ final class NativeDDCBackend: DDCBackend {
     private static func discoverDisplays(
         knownDisplays: [DDCKnownDisplay]
     ) -> [NativeDDCDisplay] {
-        let displayIDs = onlineExternalDisplayIDs()
-        let onlineDisplays: [NativeDDCDisplay] = displayIDs.enumerated().compactMap { offset, displayID in
-            guard let info = displayInfo(for: displayID) else { return nil }
-            let adapter = IORegistryEntryCopyFromPath(kIOMainPortDefault, info.ioLocation as CFString)
-            guard adapter != IO_OBJECT_NULL else { return nil }
-            defer { IOObjectRelease(adapter) }
-
-            guard let transport = transport(for: adapter) else { return nil }
+        let identities = onlineExternalDisplayIDs().compactMap(displayInfo(for:))
+        let transports = registryTransports()
+        let matches = NativeDisplayMatcher.matches(
+            identities: identities.map {
+                NativeDisplayIdentity(
+                    stableID: $0.systemUUID,
+                    ioDisplayLocation: $0.ioLocation,
+                    productName: $0.productName,
+                    serialNumber: $0.serialNumber,
+                    edidSearchKeys: $0.edidSearchKeys
+                )
+            },
+            candidates: transports.map(\.metadata)
+        )
+        let transportByLocation = Dictionary(uniqueKeysWithValues: transports.map {
+            ($0.metadata.serviceLocation, $0)
+        })
+        let knownBySelector = Dictionary(uniqueKeysWithValues: knownDisplays.map {
+            ($0.selector.uppercased(), $0)
+        })
+        return identities.map { identity in
+            let transport = matches[identity.systemUUID].flatMap { transportByLocation[$0] }
+            let savedName = knownBySelector[identity.systemUUID.uppercased()]?.name ?? ""
+            let name = !identity.productName.isEmpty ? identity.productName
+                : (!savedName.isEmpty ? savedName : "外接显示器")
             return NativeDDCDisplay(
-                name: productName(for: adapter) ?? "显示器 \(offset + 1)",
-                systemUUID: info.systemUUID,
-                serviceLocation: offset + 1,
-                service: transport.service,
-                chipAddress: transport.chipAddress,
+                name: name,
+                systemUUID: identity.systemUUID,
+                serviceLocation: transport?.metadata.serviceLocation ?? 0,
+                service: transport?.service,
+                chipAddress: transport?.chipAddress ?? 0x37,
                 isOnline: true
             )
         }
-
-        let onlineUUIDs = Set(onlineDisplays.map { $0.systemUUID.uppercased() })
-        let onlineNames = Set(onlineDisplays.map { $0.name.lowercased() })
-        let offlineDisplays = registryDisplays(knownDisplays: knownDisplays)
-            .filter {
-                !onlineUUIDs.contains($0.systemUUID.uppercased()) &&
-                !onlineNames.contains($0.name.lowercased())
-            }
-        return onlineDisplays + offlineDisplays
     }
 
     private static func onlineExternalDisplayIDs() -> [CGDirectDisplayID] {
@@ -174,13 +231,44 @@ final class NativeDDCBackend: DDCBackend {
 
     private static func displayInfo(for displayID: CGDirectDisplayID) -> (
         systemUUID: String,
-        ioLocation: String
+        ioLocation: String,
+        productName: String,
+        serialNumber: Int64,
+        edidSearchKeys: [NativeEDIDSearchKey]
     )? {
         guard let dictionary = CoreDisplay_DisplayCreateInfoDictionary(displayID)?.takeRetainedValue()
             as? [String: Any] else { return nil }
         guard let uuid = dictionary["kCGDisplayUUID"] as? String,
               let ioLocation = dictionary["IODisplayLocation"] as? String else { return nil }
-        return (uuid.uppercased(), ioLocation)
+        let productNames = dictionary["DisplayProductName"] as? [String: String]
+        let productName = productNames?["en_US"] ?? productNames?.values.first ?? ""
+        let serialNumber = dictionary["DisplaySerialNumber"] as? Int64 ?? 0
+        return (uuid.uppercased(), ioLocation, productName, serialNumber, edidSearchKeys(dictionary))
+    }
+
+    private static func edidSearchKeys(_ dictionary: [String: Any]) -> [NativeEDIDSearchKey] {
+        let vendor = dictionary["DisplayVendorID"] as? Int64 ?? 0
+        let product = dictionary["DisplayProductID"] as? Int64 ?? 0
+        let week = dictionary["DisplayWeekManufacture"] as? Int64 ?? 0
+        let year = dictionary["DisplayYearManufacture"] as? Int64 ?? 1990
+        let horizontal = dictionary["DisplayHorizontalImageSize"] as? Int64 ?? 0
+        let vertical = dictionary["DisplayVerticalImageSize"] as? Int64 ?? 0
+        func hex16(_ value: Int64) -> String {
+            String(format: "%04X", UInt16(clamping: value))
+        }
+        func hex8(_ value: Int64) -> String {
+            String(format: "%02X", UInt8(clamping: value))
+        }
+        let productValue = UInt16(clamping: product)
+        return [
+            NativeEDIDSearchKey(value: hex16(vendor), offset: 0),
+            NativeEDIDSearchKey(
+                value: String(format: "%02X%02X", UInt8(productValue & 0xFF), UInt8(productValue >> 8)),
+                offset: 4
+            ),
+            NativeEDIDSearchKey(value: hex8(week) + hex8(year - 1990), offset: 19),
+            NativeEDIDSearchKey(value: hex8(horizontal / 10) + hex8(vertical / 10), offset: 30)
+        ]
     }
 
     private static func productName(for adapter: io_registry_entry_t) -> String? {
@@ -191,9 +279,7 @@ final class NativeDDCBackend: DDCBackend {
         return product["ProductName"] as? String
     }
 
-    private static func registryDisplays(
-        knownDisplays: [DDCKnownDisplay]
-    ) -> [NativeDDCDisplay] {
+    private static func registryTransports() -> [NativeRegistryTransport] {
         let root = IORegistryGetRootEntry(kIOMainPortDefault)
         guard root != IO_OBJECT_NULL else { return [] }
         defer { IOObjectRelease(root) }
@@ -207,90 +293,55 @@ final class NativeDDCBackend: DDCBackend {
         ) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
 
-        var displays: [NativeDDCDisplay] = []
-        while true {
-            let adapter = IOIteratorNext(iterator)
-            guard adapter != IO_OBJECT_NULL else { break }
-            defer { IOObjectRelease(adapter) }
-            guard
-                IOObjectConformsTo(adapter, "IOMobileFramebuffer") != 0,
-                let edidUUID = property(entry: adapter, key: "EDID UUID") as? String,
-                let transport = transport(for: adapter)
-            else { continue }
-
-            let name = productName(for: adapter) ?? "外接显示器 \(displays.count + 1)"
-            let knownMatches = knownDisplays.filter {
-                $0.name.caseInsensitiveCompare(name) == .orderedSame
-            }
-            let selector = knownMatches.count == 1
-                ? knownMatches[0].selector.uppercased()
-                : edidUUID.uppercased()
-            displays.append(NativeDDCDisplay(
-                name: name,
-                systemUUID: selector,
-                serviceLocation: displays.count + 1,
-                service: transport.service,
-                chipAddress: transport.chipAddress,
-                isOnline: false
-            ))
-        }
-        return displays
-    }
-
-    private static func transport(for adapter: io_registry_entry_t) -> (
-        service: IOAVService,
-        chipAddress: UInt32
-    )? {
-        var selectedAdapterID: UInt64 = 0
-        guard IORegistryEntryGetRegistryEntryID(adapter, &selectedAdapterID) == KERN_SUCCESS else {
-            return nil
-        }
-
-        let root = IORegistryGetRootEntry(kIOMainPortDefault)
-        guard root != IO_OBJECT_NULL else { return nil }
-        defer { IOObjectRelease(root) }
-
-        var iterator: io_iterator_t = 0
-        guard IORegistryEntryCreateIterator(
-            root,
-            kIOServicePlane,
-            IOOptionBits(kIORegistryIterateRecursively),
-            &iterator
-        ) == KERN_SUCCESS else {
-            return nil
-        }
-        defer { IOObjectRelease(iterator) }
-
-        var framebufferMatchesDisplay = false
-
+        var transports: [NativeRegistryTransport] = []
+        var currentFramebuffer: (
+            ioDisplayLocation: String,
+            productName: String,
+            serialNumber: Int64,
+            edidUUID: String,
+            serviceLocation: Int
+        )?
+        var serviceLocation = 0
         while true {
             let entry = IOIteratorNext(iterator)
             guard entry != IO_OBJECT_NULL else { break }
             defer { IOObjectRelease(entry) }
-
-            if IOObjectConformsTo(entry, "IOMobileFramebuffer") != 0 {
-                var framebufferID: UInt64 = 0
-                framebufferMatchesDisplay =
-                    IORegistryEntryGetRegistryEntryID(entry, &framebufferID) == KERN_SUCCESS &&
-                    framebufferID == selectedAdapterID
+            var rawName = [CChar](repeating: 0, count: 128)
+            guard IORegistryEntryGetName(entry, &rawName) == KERN_SUCCESS else { continue }
+            let entryName = String(cString: rawName)
+            let isFramebuffer = entryName.contains("AppleCLCD2")
+                || entryName.contains("IOMobileFramebufferShim")
+                || IOObjectConformsTo(entry, "IOMobileFramebuffer") != 0
+            if isFramebuffer {
+                serviceLocation += 1
+                currentFramebuffer = (
+                    ioDisplayLocation: registryPath(entry),
+                    productName: productName(for: entry) ?? "",
+                    serialNumber: productSerialNumber(for: entry),
+                    edidUUID: property(entry: entry, key: "EDID UUID") as? String ?? "",
+                    serviceLocation: serviceLocation
+                )
                 continue
             }
-
-            var name = [CChar](repeating: 0, count: 128)
-            guard IORegistryEntryGetName(entry, &name) == KERN_SUCCESS else { continue }
             guard
-                framebufferMatchesDisplay,
-                String(cString: name) == "DCPAVServiceProxy",
+                entryName == "DCPAVServiceProxy",
+                let currentFramebuffer,
                 property(entry: entry, key: "Location") as? String == "External",
                 let unmanagedService = IOAVServiceCreateWithService(kCFAllocatorDefault, entry)
             else { continue }
-
-            return (
-                unmanagedService.takeRetainedValue() as IOAVService,
-                isMCDP29XXProxy(entry) ? 0xB7 : 0x37
-            )
+            transports.append(NativeRegistryTransport(
+                metadata: NativeTransportCandidate(
+                    serviceLocation: currentFramebuffer.serviceLocation,
+                    ioDisplayLocation: currentFramebuffer.ioDisplayLocation,
+                    productName: currentFramebuffer.productName,
+                    serialNumber: currentFramebuffer.serialNumber,
+                    edidUUID: currentFramebuffer.edidUUID
+                ),
+                service: unmanagedService.takeRetainedValue() as IOAVService,
+                chipAddress: isMCDP29XXProxy(entry) ? 0xB7 : 0x37
+            ))
         }
-        return nil
+        return transports
     }
 
     private static func isMCDP29XXProxy(_ proxy: io_registry_entry_t) -> Bool {
@@ -300,6 +351,20 @@ final class NativeDDCBackend: DDCBackend {
         }
         defer { IOObjectRelease(parent) }
         return property(entry: parent, key: "EPICProviderClass") as? String == "AppleDCPMCDP29XX"
+    }
+
+    private static func registryPath(_ entry: io_registry_entry_t) -> String {
+        var path = [CChar](repeating: 0, count: 1_024)
+        guard IORegistryEntryGetPath(entry, kIOServicePlane, &path) == KERN_SUCCESS else { return "" }
+        return String(cString: path)
+    }
+
+    private static func productSerialNumber(for entry: io_registry_entry_t) -> Int64 {
+        guard
+            let attributes = property(entry: entry, key: "DisplayAttributes") as? [String: Any],
+            let product = attributes["ProductAttributes"] as? [String: Any]
+        else { return 0 }
+        return product["SerialNumber"] as? Int64 ?? 0
     }
 
     private static func property(entry: io_registry_entry_t, key: String) -> Any? {
@@ -314,28 +379,38 @@ final class NativeDDCBackend: DDCBackend {
     private static func read(
         service: IOAVService,
         chipAddress: UInt32,
-        command: UInt8
-    ) -> (current: UInt16, maximum: UInt16)? {
-        var request: [UInt8] = [command]
-        var response = [UInt8](repeating: 0, count: 11)
-        guard communicate(
-            service: service,
-            chipAddress: chipAddress,
-            request: &request,
-            response: &response,
-            attempts: 1
-        ) else { return nil }
-        return (
-            UInt16(response[8]) << 8 | UInt16(response[9]),
-            UInt16(response[6]) << 8 | UInt16(response[7])
-        )
+        command: DDCCommand,
+        parameters: NativeDDCTransportParameters
+    ) -> Result<DDCReading, NativeDDCReplyIssue> {
+        var request: [UInt8] = [command.rawValue]
+        var lastIssue = NativeDDCReplyIssue.transportFailure
+        for _ in 0..<parameters.readAttempts {
+            var response = [UInt8](repeating: 0, count: 11)
+            guard communicate(
+                service: service,
+                chipAddress: chipAddress,
+                request: &request,
+                response: &response,
+                attempts: 1,
+                parameters: parameters
+            ) else {
+                lastIssue = .transportFailure
+                continue
+            }
+            switch NativeDDCReplyValidator.reading(from: response, command: command) {
+            case .success(let reading): return .success(reading)
+            case .failure(let issue): lastIssue = issue
+            }
+        }
+        return .failure(lastIssue)
     }
 
     private static func write(
         service: IOAVService,
         chipAddress: UInt32,
         command: UInt8,
-        value: UInt16
+        value: UInt16,
+        parameters: NativeDDCTransportParameters
     ) -> Bool {
         var request: [UInt8] = [command, UInt8(value >> 8), UInt8(value & 0xff)]
         var response: [UInt8] = []
@@ -344,7 +419,8 @@ final class NativeDDCBackend: DDCBackend {
             chipAddress: chipAddress,
             request: &request,
             response: &response,
-            attempts: 5
+            attempts: 1,
+            parameters: parameters
         )
     }
 
@@ -353,9 +429,10 @@ final class NativeDDCBackend: DDCBackend {
         chipAddress: UInt32,
         request: inout [UInt8],
         response: inout [UInt8],
-        attempts: Int
+        attempts: Int,
+        parameters: NativeDDCTransportParameters
     ) -> Bool {
-        let dataAddress: UInt8 = 0x51
+        let dataAddress = parameters.writeDataAddress
         var packet = [UInt8(0x80 | (request.count + 1)), UInt8(request.count)] + request + [0]
         packet[packet.count - 1] = checksum(
             initial: request.count == 1 ? UInt8(truncatingIfNeeded: chipAddress << 1) : UInt8(truncatingIfNeeded: chipAddress << 1) ^ dataAddress,
@@ -364,8 +441,8 @@ final class NativeDDCBackend: DDCBackend {
 
         for _ in 0..<attempts {
             var writeSucceeded = false
-            for _ in 0..<2 {
-                usleep(10_000)
+            for _ in 0..<parameters.writeCycles {
+                usleep(parameters.writeSleepMicroseconds)
                 writeSucceeded = IOAVServiceWriteI2C(
                     service,
                     chipAddress,
@@ -373,25 +450,23 @@ final class NativeDDCBackend: DDCBackend {
                     &packet,
                     UInt32(packet.count)
                 ) == KERN_SUCCESS
+                if writeSucceeded { break }
             }
 
-            if !response.isEmpty {
-                usleep(50_000)
+            if writeSucceeded, !response.isEmpty {
+                usleep(parameters.readSleepMicroseconds)
                 let readSucceeded = IOAVServiceReadI2C(
                     service,
                     chipAddress,
-                    UInt32(dataAddress),
+                    UInt32(parameters.readDataAddress),
                     &response,
                     UInt32(response.count)
                 ) == KERN_SUCCESS
-                writeSucceeded = readSucceeded && checksum(
-                    initial: 0x50,
-                    bytes: response.dropLast()
-                ) == response.last
+                writeSucceeded = readSucceeded
             }
 
             if writeSucceeded { return true }
-            usleep(20_000)
+            usleep(parameters.retrySleepMicroseconds)
         }
         return false
     }

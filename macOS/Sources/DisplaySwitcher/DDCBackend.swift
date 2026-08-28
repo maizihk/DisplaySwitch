@@ -60,6 +60,7 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
     case displayUnavailable(stableID: String)
     case readFailed(stableID: String, command: DDCCommand)
     case writeFailed(stableID: String, command: DDCCommand)
+    case invalidReply(command: DDCCommand, issue: NativeDDCReplyIssue)
     case cancelled
 
     var errorDescription: String? {
@@ -72,9 +73,133 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
             return "读取\(command.userFacingName)失败。"
         case let .writeFailed(_, command):
             return "写入\(command.userFacingName)失败。"
+        case let .invalidReply(command, issue):
+            return "读取\(command.userFacingName)失败：\(issue.userFacingDescription)。"
         case .cancelled:
             return "DDC 操作已取消。"
         }
+    }
+}
+
+enum NativeDDCReplyIssue: Error, Equatable {
+    case transportFailure
+    case wrongLength
+    case badChecksum
+    case wrongSource
+    case wrongPayloadLength
+    case wrongOpcode
+    case monitorRejected
+    case wrongCommand
+
+    var userFacingDescription: String {
+        switch self {
+        case .transportFailure: return "原生传输失败"
+        case .wrongLength: return "回复长度无效"
+        case .badChecksum: return "回复校验失败"
+        case .wrongSource: return "回复来源无效"
+        case .wrongPayloadLength: return "回复载荷长度无效"
+        case .wrongOpcode: return "回复类型不匹配"
+        case .monitorRejected: return "显示器拒绝该 VCP 请求"
+        case .wrongCommand: return "回复的 VCP 项不匹配"
+        }
+    }
+}
+
+struct NativeDDCTransportParameters: Equatable {
+    let writeDataAddress: UInt8
+    let readDataAddress: UInt8
+    let writeSleepMicroseconds: UInt32
+    let readSleepMicroseconds: UInt32
+    let retrySleepMicroseconds: UInt32
+    let writeCycles: Int
+    let readAttempts: Int
+
+    static let appleSiliconDDCCompatible = NativeDDCTransportParameters(
+        writeDataAddress: 0x51,
+        readDataAddress: 0x51,
+        writeSleepMicroseconds: 10_000,
+        readSleepMicroseconds: 50_000,
+        retrySleepMicroseconds: 20_000,
+        writeCycles: 2,
+        readAttempts: 5
+    )
+}
+
+enum NativeDDCReplyValidator {
+    static func reading(from reply: [UInt8], command: DDCCommand) -> Result<DDCReading, NativeDDCReplyIssue> {
+        guard reply.count == 11 else { return .failure(.wrongLength) }
+        guard reply.dropLast().reduce(UInt8(0x50), ^) == reply.last else { return .failure(.badChecksum) }
+        guard reply[0] == 0x6E else { return .failure(.wrongSource) }
+        guard reply[1] & 0x7F == 8 else { return .failure(.wrongPayloadLength) }
+        guard reply[2] == 0x02 else { return .failure(.wrongOpcode) }
+        guard reply[3] == 0 else { return .failure(.monitorRejected) }
+        guard reply[4] == command.rawValue else { return .failure(.wrongCommand) }
+        return .success(DDCReading(
+            current: Int(UInt16(reply[8]) << 8 | UInt16(reply[9])),
+            maximum: Int(UInt16(reply[6]) << 8 | UInt16(reply[7]))
+        ))
+    }
+}
+
+struct NativeEDIDSearchKey: Equatable {
+    let value: String
+    let offset: Int
+}
+
+struct NativeDisplayIdentity: Equatable {
+    let stableID: String
+    let ioDisplayLocation: String
+    let productName: String
+    let serialNumber: Int64
+    let edidSearchKeys: [NativeEDIDSearchKey]
+}
+
+struct NativeTransportCandidate: Equatable {
+    let serviceLocation: Int
+    let ioDisplayLocation: String
+    let productName: String
+    let serialNumber: Int64
+    let edidUUID: String
+}
+
+enum NativeDisplayMatcher {
+    static func matches(
+        identities: [NativeDisplayIdentity],
+        candidates: [NativeTransportCandidate]
+    ) -> [String: Int] {
+        let scored = identities.flatMap { identity in
+            candidates.compactMap { candidate -> (String, Int, Int)? in
+                var score = 0
+                if !identity.ioDisplayLocation.isEmpty,
+                   identity.ioDisplayLocation == candidate.ioDisplayLocation { score += 10 }
+                if !identity.productName.isEmpty,
+                   identity.productName.caseInsensitiveCompare(candidate.productName) == .orderedSame { score += 1 }
+                if identity.serialNumber != 0, identity.serialNumber == candidate.serialNumber { score += 4 }
+                let candidateEDID = candidate.edidUUID.uppercased()
+                score += identity.edidSearchKeys.filter { key in
+                    !key.value.isEmpty && key.value != "0000" && key.offset >= 0
+                        && candidateEDID.count >= key.offset + key.value.count
+                        && String(candidateEDID.dropFirst(key.offset).prefix(key.value.count)) == key.value
+                }.count
+                // A product-name-only match is unsafe for identical models. Require either
+                // location, serial, or multiple independent EDID/product characteristics.
+                return score < 2 ? nil : (identity.stableID, candidate.serviceLocation, score)
+            }
+        }.sorted { lhs, rhs in
+            if lhs.2 != rhs.2 { return lhs.2 > rhs.2 }
+            if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
+            return lhs.1 < rhs.1
+        }
+        var usedDisplays = Set<String>()
+        var usedServices = Set<Int>()
+        var result: [String: Int] = [:]
+        for (displayID, serviceLocation, _) in scored {
+            guard !usedDisplays.contains(displayID), !usedServices.contains(serviceLocation) else { continue }
+            usedDisplays.insert(displayID)
+            usedServices.insert(serviceLocation)
+            result[displayID] = serviceLocation
+        }
+        return result
     }
 }
 
@@ -130,28 +255,20 @@ extension DDCBackend {
 
 final class DDCBackendRouter {
     private let backends: [DDCBackend]
-    private let stateLock = NSLock()
-    private var controlChannel: DDCControlChannel = .automatic
 
     init(backends: [DDCBackend]) {
         self.backends = backends
     }
 
     func setControlChannel(_ channel: DDCControlChannel) {
-        stateLock.lock()
-        controlChannel = channel
-        stateLock.unlock()
+        // DS-009 deliberately keeps the persisted setting readable while the runtime is
+        // native-only. Selecting automatic or the historical fallback must not silently
+        // launch m1ddc and report a native operation as successful.
+        _ = channel
     }
 
     private var selectedBackends: [DDCBackend] {
-        stateLock.lock()
-        let channel = controlChannel
-        stateLock.unlock()
-        switch channel {
-        case .automatic: return backends
-        case .native: return backends.filter { $0.identifier == "apple-silicon-native" }
-        case .fallback: return backends.filter { $0.identifier == "m1ddc" }
-        }
+        backends.filter { $0.identifier == "apple-silicon-native" }
     }
 
     var availability: DDCBackendAvailability {
@@ -226,6 +343,49 @@ final class DDCBackendRouter {
 
     func cancelAll() {
         backends.forEach { $0.cancelAll() }
+    }
+}
+
+enum DisplayPresentationNameResolver {
+    static func names(
+        for displays: [DDCBackendDisplay],
+        knownDisplays: [DDCKnownDisplay]
+    ) -> [String: String] {
+        let knownByID = Dictionary(uniqueKeysWithValues: knownDisplays.map {
+            ($0.stableID.lowercased(), $0)
+        })
+        let knownRank = Dictionary(uniqueKeysWithValues: knownDisplays.enumerated().map {
+            ($0.element.stableID.lowercased(), $0.offset)
+        })
+        let candidates = displays.map { display -> (DDCBackendDisplay, String) in
+            let saved = knownByID[display.stableID.lowercased()]?.name
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let system = display.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let preferred = saved.flatMap { isGenericLegacyName($0) ? nil : $0 }
+                ?? (system.isEmpty ? "外接显示器" : system)
+            return (display, preferred)
+        }
+        let groups = Dictionary(grouping: candidates) { $0.1.lowercased() }
+        var output: [String: String] = [:]
+        for group in groups.values {
+            let ordered = group.sorted { lhs, rhs in
+                let lhsID = lhs.0.stableID.lowercased()
+                let rhsID = rhs.0.stableID.lowercased()
+                let lhsRank = knownRank[lhsID] ?? Int.max
+                let rhsRank = knownRank[rhsID] ?? Int.max
+                return lhsRank == rhsRank ? lhsID < rhsID : lhsRank < rhsRank
+            }
+            for (offset, item) in ordered.enumerated() {
+                output[item.0.stableID.lowercased()] = ordered.count == 1
+                    ? item.1
+                    : "\(item.1)（\(offset + 1)）"
+            }
+        }
+        return output
+    }
+
+    private static func isGenericLegacyName(_ value: String) -> Bool {
+        value.range(of: #"^(显示器|外接显示器)\s*\d+$"#, options: .regularExpression) != nil
     }
 }
 
