@@ -136,7 +136,6 @@ namespace
         if (kind == L"wakeCompleted") return machine.OnWakeCompleted(atMs, event, Bool(input, L"success"));
         if (kind == L"switchCompleted") return machine.OnSwitchCompleted(atMs, event, Bool(input, L"success"));
         if (kind == L"configurationChanged") return machine.OnConfigurationChanged(atMs);
-        if (kind == L"receiveV1Message") return {};
         throw std::runtime_error("unknown v2 input kind");
     }
 
@@ -234,7 +233,7 @@ int RunV2ProtocolVectorTests()
         for (auto const& targetValue : initialJson.GetNamedArray(L"enabledTargets"))
         {
             auto target = targetValue.GetObjectW();
-            initial.enabledTargets.push_back({ String(target, L"endpointID"), String(target, L"capability") == L"v1" ? 1 : 2, Bool(target, L"reachable") });
+            initial.enabledTargets.push_back({ String(target, L"endpointID"), 2, Bool(target, L"reachable") });
         }
         V2StateMachine machine(std::move(initial)); std::vector<TimedAction> actual; int64_t cursor = -1;
         for (auto const& stepValue : vector.GetNamedArray(L"steps"))
@@ -245,10 +244,8 @@ int RunV2ProtocolVectorTests()
             Append(actual, atMs, machine.Advance(atMs)); cursor = atMs;
         }
         auto expectedActions = vector.GetNamedArray(L"expectedActions");
-        auto v2OnlyLegacyReject = id == L"P-014";
-        if (v2OnlyLegacyReject && !actual.empty()) fail(id, L"v1 message must have zero actions in v2-only runtime");
-        else if (!v2OnlyLegacyReject && actual.size() != expectedActions.Size()) fail(id, L"action count differs");
-        else if (!v2OnlyLegacyReject) for (uint32_t index = 0; index < expectedActions.Size(); ++index)
+        if (actual.size() != expectedActions.Size()) fail(id, L"action count differs");
+        else for (uint32_t index = 0; index < expectedActions.Size(); ++index)
             if (!Matches(actual[index], expectedActions.GetAt(index).GetObjectW())) { fail(id, L"action differs at index " + std::to_wstring(index)); break; }
         auto finalJson = vector.GetNamedObject(L"finalState"); auto snapshot = machine.Snapshot();
         if (snapshot.state != State(String(finalJson, L"state")) || snapshot.activeEventId != String(finalJson, L"activeEventID") ||

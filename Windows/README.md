@@ -123,7 +123,7 @@ Windows\dist\runtime\...
 
 脚本检查入口、runtime 必需文件以及完整绿色版小于 20 MiB。自动测试使用临时配置、模拟时间、
 模拟网络、模拟 USB 和模拟 DDC，读取 `contracts/protocol-v2/` 的 1 条 NFC、4 条认证、20 条
-消息和 20 条状态机向量；不再读取 `contracts/protocol-v1/`。测试不会访问真实局域网、USB、
+消息和 18 条状态机向量；不再读取 `contracts/protocol-v1/`。测试不会访问真实局域网、USB、
 DDC、显示器唤醒、输入源、防火墙或系统设置。
 
 ## 实机验证边界

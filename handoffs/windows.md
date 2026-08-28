@@ -2,14 +2,15 @@
 
 ## 当前任务
 
-- 日期：2026-08-28
+- 日期：2026-08-29
 - 功能：DS-007 / Windows 设置界面、DDC 控制与 v2-only 收敛
 - 分支：`codex/windows-ds-007-settings-ui`
 - 共同基线分支：`origin/codex/coord-ds-007-v2-only`
 - 任务起始基线：`da90d0c598ef683c53b243b804526e09ab0cce4f`
+- 当前合入基线：`06dc0ff`（包含 `8bf895e` 的 v2-only 18 条状态向量）
 - 实现提交：本文件所在提交
-- PR：待创建；base 必须为 `codex/coord-ds-007-v2-only`，不得指向 `main`
-- GitHub CI：待首次推送和 PR 创建后记录
+- PR：#37，base 为 `codex/coord-ds-007-v2-only`，不指向 `main`
+- GitHub CI：协调验收修正 push 后等待最新 head 检查
 
 ## 完成内容
 
@@ -29,11 +30,11 @@
 ## 自动验证
 
 - 本机原生自动测试已通过，使用临时配置、模拟时间、模拟网络、模拟 USB 和模拟 DDC；没有访问真实局域网或硬件。
-- `contracts/protocol-v2/` 原生输出：`DS-005 passed 1 normalization vector, 4 authentication vectors, 20 message vectors and 20 state-machine vectors`。
+- `contracts/protocol-v2/` 原生输出：`DS-005 passed 1 normalization vector, 4 authentication vectors, 20 message vectors and 18 state-machine vectors`。
 - DS-007 Windows 适用自动场景覆盖：即时保存成功/非法回滚、不完整配置零副作用、旧配置备份与 v4 安全默认、v4 写入故障安全标记、version 1/缺失/错误/未知拒绝、关于页零副作用、托盘动态投影与滑杆写入、latest-wins/串行/取消、全零不可信、单项零、失败隔离、联动、原生一次重试及安全闸门。
 - 原有 DS-004 C-001 至 C-024 相关本机模型、保存安全、DDC、USB 学习和关于页回归继续通过；测试不再读取 `contracts/protocol-v1/`。
-- `Windows/build-windows.ps1` x64 Release 完整通过；脚本真实运行原生测试并输出上述 v2 `1+4+20+20` 向量结果。`dist` 包含 `DisplaySwitch.exe`、`runtime/DisplaySwitcher.Windows.exe`、WinMD、PRI、XBF、图标和 Bootstrap DLL，总计 1,653,024 字节（1.58 MiB），低于 20 MiB 限制。
-- 当前 `contracts/protocol-v2/state-machine-vectors.json` 仍含协调基线遗留的 P-014 `routeToV1` 和 P-015 v1-only 描述。共享文件不在本任务权限内；Windows 测试对 P-014 按已批准 v2-only 规则验证零动作，对 P-015 保持其“不得参与 v2 发现”的安全拒绝结果，同时仍加载并报告全部 20 条状态机向量。该差异未通过修改共享合同掩盖。
+- `Windows/build-windows.ps1` x64 Release 完整通过；脚本真实运行原生测试并输出上述 v2 `1+4+20+18` 向量结果。`dist` 包含 `DisplaySwitch.exe`、`runtime/DisplaySwitcher.Windows.exe`、WinMD、PRI、XBF、图标和 Bootstrap DLL，总计 1,653,024 字节（1.58 MiB），低于 20 MiB 限制。
+- PR #37 协调验收后合入最新 base；共享合同已删除 P-014/P-015，Windows 向量适配器同步删除 `receiveV1Message`、`capability=v1` 和 P-014 特判死代码。
 
 ## 尚需实机验证
 
