@@ -5,7 +5,7 @@ import Security
 enum V2MessageType: String, Codable, CaseIterable {
     case statusProbe = "status_probe"
     case statusResponse = "status_response"
-    case inputPresent = "input_present"
+    case wakeDisplay = "wake_display"
     case handoverRequest = "handover_request"
     case targetReady = "target_ready"
     case committed
@@ -14,11 +14,9 @@ enum V2MessageType: String, Codable, CaseIterable {
 
 enum V2HandoverIntent: String, Codable {
     case manual
-    case inputHandover = "input_handover"
 }
 
 enum V2CancellationReason: String, Codable {
-    case sourceInputReturned = "source_input_returned"
     case configurationChanged = "configuration_changed"
     case userCancelled = "user_cancelled"
     case peerUnavailable = "peer_unavailable"
@@ -358,7 +356,7 @@ enum V2MessageValidator {
     private static func decodeSpecificFields(type: V2MessageType, dictionary: [String: Any]) -> SpecificFields? {
         let present = specificFields.intersection(dictionary.keys)
         switch type {
-        case .statusProbe, .statusResponse, .inputPresent:
+        case .statusProbe, .statusResponse, .wakeDisplay:
             guard present.isEmpty else { return nil }
             return SpecificFields(intent: nil, wakeSucceeded: nil, switchSucceeded: nil, reason: nil)
         case .handoverRequest:
@@ -470,7 +468,7 @@ struct V2EndpointRoutingTable {
     let routesByEndpointID: [String: V2ProfileRoute]
     let rejectedProfileIDs: Set<String>
 
-    static func build(from document: DisplayConfigurationStoreV4Document) -> V2EndpointRoutingTable {
+    static func build(from document: DisplayConfigurationStoreV5Document) -> V2EndpointRoutingTable {
         let knownDisplays = Set(document.displays.map { $0.id.lowercased() })
         var candidates: [V2ProfileRoute] = []
         var rejected = Set<String>()
@@ -525,7 +523,7 @@ struct V2UnboundStatusProbeResolution {
 }
 
 enum V2UnboundStatusProbeResolver {
-    static func eligibleProfiles(in document: DisplayConfigurationStoreV4Document) -> [CollaborationProfile] {
+    static func eligibleProfiles(in document: DisplayConfigurationStoreV5Document) -> [CollaborationProfile] {
         let knownDisplays = Set(document.displays.map { $0.id.lowercased() })
         return document.collaborationProfiles.filter { profile in
             profile.peerEndpointID == nil
@@ -540,7 +538,7 @@ enum V2UnboundStatusProbeResolver {
 
     static func resolve(
         data: Data,
-        document: DisplayConfigurationStoreV4Document,
+        document: DisplayConfigurationStoreV5Document,
         routingTable: V2EndpointRoutingTable,
         now: Int64,
         responseNonce: String

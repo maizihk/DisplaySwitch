@@ -222,7 +222,7 @@ private final class SettingsTabButton: NSControl {
 final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
     var onSave: (() -> Void)?
     var onConfigurationSaveFailure: ((DisplayConfigurationStoreError) -> Void)?
-    var onLearnUSB: ((String) -> Void)?
+    var onLearnUSB: (() -> Void)?
     var onCancelUSBLearning: (() -> Void)?
     var onUSBLearningFinished: (() -> Void)?
     var onInspectPeer: ((CollaborationProfile, @escaping (PeerCapabilityInspectionResult) -> Void) -> Void)?
@@ -236,6 +236,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let launchAtLoginCheckbox = NSSwitch()
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
+    private let usbCollaborationProfilePopup = NSPopUpButton()
     private let peerCoordinationCheckbox = NSSwitch()
     private let peerHostField = NSTextField()
     private let peerPortField = NSTextField()
@@ -251,6 +252,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private lazy var inspectProfileButton = NSButton(title: "检测", target: self, action: #selector(inspectCurrentProfile))
     private lazy var refreshDisplaysButton = NSButton(title: "检测/刷新", target: self, action: #selector(refreshDisplays))
     private let usbDeviceLabel = NSTextField(wrappingLabelWithString: "未选择触发设备")
+    private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
+    private let usbMappingStack = NSStackView()
     private lazy var learnUSBButton = NSButton(title: "学习 USB 设备…", target: self, action: #selector(learnUSBDevice))
     private var inputFields: [Int: NSTextField] = [:]
     private var displayFeatureSwitches: [Int: [DDCCommand: NSSwitch]] = [:]
@@ -259,9 +262,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var displayValueLabels: [Int: [DDCCommand: NSTextField]] = [:]
     private var displayStatusLabels: [Int: NSTextField] = [:]
     private let displayStack = NSStackView()
-    private var learnedUSBDevicesByProfileID: [String: USBDevice] = [:]
-    private var usbLearningSession = USBProfileLearningSession()
-    private var configurationDocument: DisplayConfigurationStoreV4Document?
+    private var usbLearningPending = false
+    private var usbInputFields: [Int: NSTextField] = [:]
+    private var configurationDocument: DisplayConfigurationStoreV5Document?
     private var editingProfiles: [CollaborationProfile] = []
     private var selectedProfileIndex = 0
     private let tabView = NSTabView()
@@ -338,6 +341,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
+    func updateUSBSwitchStatus(_ text: String, isError: Bool) {
+        usbStatusLabel.stringValue = text
+        usbStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
     func presentConfigurationSafetyWarning(_ error: DisplayConfigurationStoreError) {
         guard let window else { return }
         let alert = NSAlert()
@@ -356,6 +364,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         launchAtLoginCheckbox.action = #selector(immediateSwitchChanged(_:))
         usbArrivalSwitchCheckbox.target = self
         usbArrivalSwitchCheckbox.action = #selector(immediateSwitchChanged(_:))
+        usbCollaborationProfilePopup.target = self
+        usbCollaborationProfilePopup.action = #selector(usbCollaborationProfileChanged(_:))
 
         let tabs = [
             ("常规", "gearshape.fill"),
@@ -414,11 +424,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
         usbDeviceLabel.textColor = .secondaryLabelColor
         usbDeviceLabel.maximumNumberOfLines = 2
+        usbStatusLabel.textColor = .secondaryLabelColor
+        usbStatusLabel.font = .systemFont(ofSize: 11)
         let usbRow = NSStackView(views: [learnUSBButton, usbDeviceLabel])
         usbRow.orientation = .horizontal
         usbRow.alignment = .centerY
         usbRow.spacing = 10
-        let usbHint = NSTextField(wrappingLabelWithString: "触发设备消失时按已启用协同配置执行自动交接；回到本机时只切换未在本机活动的显示器。学习时请按一次 USB 切换器。")
+        usbMappingStack.orientation = .vertical
+        usbMappingStack.alignment = .leading
+        usbMappingStack.spacing = 8
+        let usbHint = NSTextField(wrappingLabelWithString: "只监听这里学习的一个设备。设备离开时立即按本机映射切换显示器；设备接入时只唤醒本机显示器。")
         usbHint.textColor = .secondaryLabelColor
         usbHint.font = .systemFont(ofSize: 11)
         profilePopup.target = self
@@ -469,22 +484,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerHint.textColor = .secondaryLabelColor
         peerHint.font = .systemFont(ofSize: 11)
         tabView.addTabViewItem(makePage(label: "USB 切换", views: [
-            module(title: "USB 自动切换", views: [
+            module(title: "USB 切换", views: [
                 switchRow(
                     button: usbAutomationCheckbox,
-                    title: "USB 自动切换",
-                    description: "监测指定 USB Hub 的接入和离开，自动触发电脑交接。",
+                    title: "USB 切换",
+                    description: "根据一个本机 USB 设备的接入状态执行本机显示器动作。",
                     symbolName: "cable.connector"
                 ),
                 separator(),
+                usbRow,
+                usbMappingStack,
+                separator(),
                 switchRow(
                     button: usbArrivalSwitchCheckbox,
-                    title: "回到本机时按需切屏",
-                    description: "仅切换没有在本机上活动的显示器；双端协同时由握手流程接管。",
-                    symbolName: "display.2"
+                    title: "联动协同",
+                    description: "USB 离开时并行向所选配置发送一次认证显示器唤醒，不等待网络结果。",
+                    symbolName: "network"
                 ),
-                separator(),
-                usbRow,
+                formRow(title: "联动目标", control: usbCollaborationProfilePopup),
+                usbStatusLabel,
                 usbHint
             ])
         ]))
@@ -496,7 +514,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 switchRow(
                     button: peerCoordinationCheckbox,
                     title: "启用此配置",
-                    description: "目标电脑确认 USB 已接入并唤醒后，源电脑才执行切屏。",
+                    description: "用于检测连接和手动定向协同。USB 本机切换不依赖此开关。",
                     symbolName: "network"
                 ),
                 separator(),
@@ -908,6 +926,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return label
     }
 
+    private func formRow(title: String, control: NSView) -> NSView {
+        let row = NSStackView(views: [fixedLabel(title, width: 90), control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        return row
+    }
+
     private func sectionTitle(_ title: String) -> NSTextField {
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -924,16 +950,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func immediateSwitchChanged(_ sender: NSSwitch) {
         if sender === usbArrivalSwitchCheckbox {
-            persistDocument { $0.usbSwitchDisplaysOnArrival = sender.state == .on }
+            if sender.state == .on, !selectedCollaborationWakeProfileIsValid() {
+                sender.state = .off
+                showValidationError("请选择一个已开启、完整且已确认对端身份的协同配置。")
+                return
+            }
+            persistDocument { $0.usbSwitch.collaborationWakeEnabled = sender.state == .on }
             return
         }
         if sender === usbAutomationCheckbox {
-            if sender.state == .on, selectedUSBTrigger == nil {
+            guard let document = configurationDocument else { return }
+            if sender.state == .on,
+               !DisplayConfigurationStore.isCompleteUSBConfiguration(document.usbSwitch, displays: document.displays) {
                 sender.state = .off
-                showValidationError("请先学习并选择当前配置的 USB 触发设备。")
+                showValidationError("请先学习一个 USB 设备，并至少配置一台显示器的目标输入源。")
                 return
             }
-            persistDocument { $0.usbAutomationEnabled = sender.state == .on }
+            persistDocument { $0.usbSwitch.enabled = sender.state == .on }
             return
         }
         if sender === launchAtLoginCheckbox {
@@ -1002,7 +1035,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func controlTextDidEndEditing(_ obj: Notification) {
+        if let field = obj.object as? NSTextField, usbInputFields.values.contains(where: { $0 === field }) {
+            persistUSBDisplayMappings()
+            return
+        }
         persistSelectedProfileFields(requestedEnabled: nil)
+    }
+
+    @objc private func usbCollaborationProfileChanged(_ sender: NSPopUpButton) {
+        let profileID = sender.selectedItem?.representedObject as? String
+        persistDocument { document in
+            document.usbSwitch.collaborationProfileID = profileID
+            if profileID == nil { document.usbSwitch.collaborationWakeEnabled = false }
+        }
+    }
+
+    private func persistUSBDisplayMappings() {
+        persistDocument { document in
+            document.usbSwitch.displayInputs = document.displays.enumerated().compactMap { offset, display in
+                guard let field = self.usbInputFields[offset + 1],
+                      let value = Int(field.stringValue), (0...65535).contains(value) else { return nil }
+                return USBDisplayInputMapping(displayID: display.id, targetInput: value)
+            }
+            if document.usbSwitch.enabled,
+               !DisplayConfigurationStore.isCompleteUSBConfiguration(document.usbSwitch, displays: document.displays) {
+                document.usbSwitch.enabled = false
+            }
+        }
+    }
+
+    private func selectedCollaborationWakeProfileIsValid() -> Bool {
+        guard var document = configurationDocument else { return false }
+        document.usbSwitch.collaborationProfileID = usbCollaborationProfilePopup.selectedItem?.representedObject as? String
+        document.usbSwitch.collaborationWakeEnabled = true
+        return DisplayConfigurationStore.isValidCollaborationWakeSelection(document.usbSwitch, document: document)
     }
 
     private func persistSelectedProfileFields(requestedEnabled: Bool?) {
@@ -1036,7 +1102,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV4Document) -> Void) {
+    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV5Document) -> Void) {
         guard var document = configurationDocument else { return }
         mutation(&document)
         do {
@@ -1088,17 +1154,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             )]
         }
         selectedProfileIndex = min(selectedProfileIndex, editingProfiles.count - 1)
-        usbLearningSession.cancel()
-        learnedUSBDevicesByProfileID.removeAll()
-        if editingProfiles.count == 1, let device = AppPreferences.usbTriggerDevice,
-           usbTrigger(device, matches: editingProfiles[0]) {
-            learnedUSBDevicesByProfileID[editingProfiles[0].id] = device
-        }
+        usbLearningPending = false
         reloadProfilePopup()
         linkedCheckbox.state = loaded.document.linkAllDisplays ? .on : .off
         controlChannelPopup.selectItem(at: DDCControlChannel.allCases.firstIndex(of: loaded.document.controlChannel) ?? 0)
-        usbAutomationCheckbox.state = AppPreferences.usbAutomationEnabled ? .on : .off
-        usbArrivalSwitchCheckbox.state = AppPreferences.usbSwitchDisplaysOnArrival ? .on : .off
+        usbAutomationCheckbox.state = loaded.document.usbSwitch.enabled ? .on : .off
+        usbArrivalSwitchCheckbox.state = loaded.document.usbSwitch.collaborationWakeEnabled ? .on : .off
+        usbStatusLabel.stringValue = loaded.document.usbSwitch.enabled ? "等待设备状态" : "USB 切换未启用"
+        usbStatusLabel.textColor = .secondaryLabelColor
+        reloadUSBControls(document: loaded.document)
         refreshSelectedCollaborationStatus()
         let configurations = loaded.configurations
         rebuildDisplayForms(configurations)
@@ -1139,6 +1203,46 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         moveProfileDownButton.isEnabled = selectedProfileIndex + 1 < editingProfiles.count
     }
 
+    private func reloadUSBControls(document: DisplayConfigurationStoreV5Document) {
+        updateUSBDeviceLabel()
+        usbCollaborationProfilePopup.removeAllItems()
+        usbCollaborationProfilePopup.addItem(withTitle: "未选择")
+        usbCollaborationProfilePopup.lastItem?.representedObject = nil
+        for profile in document.collaborationProfiles {
+            usbCollaborationProfilePopup.addItem(withTitle: profile.name)
+            usbCollaborationProfilePopup.lastItem?.representedObject = profile.id
+        }
+        if let selectedID = document.usbSwitch.collaborationProfileID,
+           let index = document.collaborationProfiles.firstIndex(where: {
+               $0.id.caseInsensitiveCompare(selectedID) == .orderedSame
+           }) {
+            usbCollaborationProfilePopup.selectItem(at: index + 1)
+        } else {
+            usbCollaborationProfilePopup.selectItem(at: 0)
+        }
+        usbCollaborationProfilePopup.isEnabled = true
+
+        usbMappingStack.arrangedSubviews.forEach {
+            usbMappingStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        usbInputFields.removeAll()
+        let mappings = Dictionary(uniqueKeysWithValues: document.usbSwitch.displayInputs.map {
+            ($0.displayID.lowercased(), $0.targetInput)
+        })
+        for (offset, display) in document.displays.enumerated() {
+            let field = NSTextField()
+            field.placeholderString = "0–65535"
+            field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
+            field.delegate = self
+            field.widthAnchor.constraint(equalToConstant: 120).isActive = true
+            usbInputFields[offset + 1] = field
+            usbMappingStack.addArrangedSubview(formRow(
+                title: "显示器 \(offset + 1) 离开后输入源", control: field
+            ))
+        }
+    }
+
     private func loadSelectedProfileFields() {
         guard editingProfiles.indices.contains(selectedProfileIndex) else { return }
         let profile = editingProfiles[selectedProfileIndex]
@@ -1148,7 +1252,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         pairingCodeField.stringValue = profile.pairingCode
         peerCoordinationCheckbox.state = profile.coordinationEnabled ? .on : .off
         rebuildProfileMappings(profile: profile)
-        updateUSBDeviceLabel()
     }
 
     private func rebuildProfileMappings(profile: CollaborationProfile) {
@@ -1209,9 +1312,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let removedProfileID = editingProfiles[selectedProfileIndex].id
         editingProfiles.remove(at: selectedProfileIndex)
-        learnedUSBDevicesByProfileID.removeValue(forKey: removedProfileID)
         selectedProfileIndex = min(selectedProfileIndex, editingProfiles.count - 1)
-        persistDocument { $0.collaborationProfiles = self.editingProfiles }
+        persistDocument {
+            $0.collaborationProfiles = self.editingProfiles
+            if $0.usbSwitch.collaborationProfileID?.caseInsensitiveCompare(removedProfileID) == .orderedSame {
+                $0.usbSwitch.collaborationProfileID = nil
+                $0.usbSwitch.collaborationWakeEnabled = false
+            }
+        }
     }
 
     @objc private func moveProfileUp() { moveSelectedProfile(by: -1) }
@@ -1311,38 +1419,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func learnUSBDevice() {
-        guard editingProfiles.indices.contains(selectedProfileIndex) else { return }
-        let learningProfileID = editingProfiles[selectedProfileIndex].id
-        usbLearningSession.begin(profileID: learningProfileID)
+        usbLearningPending = true
         usbDeviceLabel.stringValue = "等待 USB 变化，请按一次切换器…"
         learnUSBButton.isEnabled = false
-        onLearnUSB?(learningProfileID)
+        onLearnUSB?()
     }
 
     @discardableResult
-    func presentDetectedUSBDevices(_ devices: [USBDevice], learningProfileID: String) -> Bool {
-        guard usbLearningSession.pendingProfileID == learningProfileID else {
+    func presentDetectedUSBDevices(_ devices: [USBDevice]) -> Bool {
+        guard usbLearningPending else {
             updateUSBDeviceLabel()
             return false
         }
-        let candidates = devices.map {
-            CollaborationTriggerDevice(
-                kind: "usb",
-                localReference: "\($0.vendorID):\($0.productID)",
-                displayName: $0.displayName
-            )
-        }
-        switch usbLearningSession.receiveCandidates(
-            candidates,
-            availableProfileIDs: Set(editingProfiles.map(\.id))
-        ) {
-        case .ignored, .timedOut:
+        guard !devices.isEmpty else {
+            usbLearningPending = false
             learnUSBButton.isEnabled = true
             updateUSBDeviceLabel()
             onUSBLearningFinished?()
             return true
-        case .awaitingSelection:
-            break
         }
 
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 430, height: 26))
@@ -1357,24 +1451,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         alert.beginSheetModal(for: window!) { [weak self] response in
             guard let self else { return }
             defer {
-                self.usbLearningSession.cancel()
+                self.usbLearningPending = false
                 self.learnUSBButton.isEnabled = true
                 self.updateUSBDeviceLabel()
                 self.onUSBLearningFinished?()
             }
             if response == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0,
-               self.usbLearningSession.pendingProfileID == learningProfileID {
+               self.usbLearningPending {
                 let device = devices[popup.indexOfSelectedItem]
-                guard self.editingProfiles.contains(where: { $0.id == learningProfileID }) else { return }
-                self.learnedUSBDevicesByProfileID[learningProfileID] = device
-                self.editingProfiles = self.usbLearningSession.applyCandidate(
-                    at: popup.indexOfSelectedItem,
-                    to: self.editingProfiles
-                )
-                self.usbAutomationCheckbox.state = .on
                 self.persistDocument {
-                    $0.collaborationProfiles = self.editingProfiles
-                    $0.usbAutomationEnabled = true
+                    $0.usbSwitch.triggerDevice = CollaborationTriggerDevice(
+                        kind: "usb",
+                        localReference: device.localReference,
+                        displayName: device.name
+                    )
+                    $0.usbSwitch.enabled = false
                 }
             }
         }
@@ -1382,26 +1473,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func updateUSBDeviceLabel() {
-        usbDeviceLabel.stringValue = selectedUSBTrigger?.displayName ?? "未选择触发设备"
-    }
-
-    private var selectedUSBTrigger: CollaborationTriggerDevice? {
-        guard editingProfiles.indices.contains(selectedProfileIndex) else { return nil }
-        return editingProfiles[selectedProfileIndex].triggerDevices.first {
-            $0.kind.caseInsensitiveCompare("usb") == .orderedSame
-        }
-    }
-
-    private func usbTrigger(_ device: USBDevice?, matches profile: CollaborationProfile) -> Bool {
-        guard let device else { return false }
-        let reference = "\(device.vendorID):\(device.productID)"
-        return profile.triggerDevices.contains {
-            $0.kind.caseInsensitiveCompare("usb") == .orderedSame && $0.localReference == reference
-        }
+        usbDeviceLabel.stringValue = configurationDocument?.usbSwitch.triggerDevice?.displayName ?? "未选择触发设备"
     }
 
     func windowWillClose(_ notification: Notification) {
-        usbLearningSession.cancel()
+        usbLearningPending = false
         learnUSBButton.isEnabled = true
         onCancelUSBLearning?()
     }

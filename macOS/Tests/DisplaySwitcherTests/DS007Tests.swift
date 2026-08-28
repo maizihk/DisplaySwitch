@@ -35,31 +35,6 @@ final class DS007Tests: XCTestCase {
         )
     }
 
-    func testReturnToLocalDisabledTracksPresenceWithoutAnnouncement() {
-        let sink = DS007V2Sink()
-        let scheduler = DS007Scheduler()
-        let machine = HandoffV2StateMachine(
-            localEndpointID: "11111111-1111-4111-8111-111111111111",
-            sink: sink,
-            scheduler: scheduler,
-            eventIDSource: DS007EventIDs()
-        )
-        machine.configure(
-            localEndpointID: "11111111-1111-4111-8111-111111111111",
-            coordinationEnabled: true,
-            sourceInputPresent: false,
-            targetInputPresent: false,
-            enabledTargets: [V2HandoffTarget(
-                endpointID: "22222222-2222-4222-8222-222222222222",
-                capability: .v2,
-                reachable: true
-            )]
-        )
-        machine.handleLocalInputPresenceChanged(true, announceUnsolicitedArrival: false)
-        XCTAssertEqual(machine.snapshot().sourceInputPresent, true)
-        XCTAssertEqual(sink.networkCalls + sink.hardwareCalls, 0)
-    }
-
     func testU018ToU020StatusesAreIndependentAndExpireAfterSixSeconds() {
         let display = configuredDisplay()
         var first = completeProfile(name: "First", displayID: display.id)
@@ -176,27 +151,6 @@ final class DS007Tests: XCTestCase {
             triggerDevices: []
         )
     }
-}
-
-private final class DS007V2Sink: V2HandoffActionSink {
-    private(set) var networkCalls = 0
-    private(set) var hardwareCalls = 0
-    func sendV2Message(type: V2MessageType, eventID: String, endpointID: String,
-                       intent: V2HandoverIntent?, wakeSucceeded: Bool?,
-                       switchSucceeded: Bool?, reason: V2CancellationReason?) { networkCalls += 1 }
-    func requestV2Wake(eventID: String) { hardwareCalls += 1 }
-    func requestV2Switch(eventID: String, endpointID: String) { hardwareCalls += 1 }
-    func promptV2ManualSelection() {}
-    func updateV2PeerReachable(_ reachable: Bool, endpointID: String) {}
-}
-
-private final class DS007Scheduler: HandoffScheduler {
-    func schedule(_ key: String, after delayMs: Int64, _ action: @escaping () -> Void) {}
-    func cancel(_ key: String) {}
-}
-
-private struct DS007EventIDs: HandoffEventIDSource {
-    func nextEventID() -> String { "33333333-3333-4333-8333-333333333333" }
 }
 
 private final class ControlledWriteExecutor: DDCWriteExecuting {

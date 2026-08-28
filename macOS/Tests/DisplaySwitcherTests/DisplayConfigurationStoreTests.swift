@@ -26,15 +26,14 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         storage = MemoryConfigurationStorage()
     }
 
-    func testFreshV4DefaultsAreSafeAndPersistent() {
+    func testFreshV5DefaultsAreSafeAndPersistent() {
         let first = DisplayConfigurationStore.load(storage: storage)
         let second = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(first.safetyState, .ready)
-        XCTAssertEqual(first.document.schemaVersion, 4)
+        XCTAssertEqual(first.document.schemaVersion, 5)
         XCTAssertEqual(first.document.controlChannel, .automatic)
         XCTAssertFalse(first.document.linkAllDisplays)
-        XCTAssertFalse(first.document.usbAutomationEnabled)
-        XCTAssertFalse(first.document.usbSwitchDisplaysOnArrival)
+        XCTAssertEqual(first.document.usbSwitch, .disabled)
         XCTAssertEqual(first.document.localEndpointID, second.document.localEndpointID)
         XCTAssertTrue(first.document.displays.isEmpty)
         XCTAssertEqual(first.document.collaborationProfiles.count, 1)
@@ -67,22 +66,76 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         storage.values["USBAutomation.Enabled"] = true
         let result = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(result.safetyState, .ready)
-        XCTAssertEqual(result.document.schemaVersion, 4)
+        XCTAssertEqual(result.document.schemaVersion, 5)
         XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyV3StorageKey), legacy)
         XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyBackupStorageKey), legacy)
         XCTAssertTrue(result.document.displays.isEmpty)
-        XCTAssertFalse(result.document.usbAutomationEnabled)
+        XCTAssertEqual(result.document.usbSwitch, .disabled)
         XCTAssertFalse(result.document.collaborationProfiles[0].coordinationEnabled)
     }
 
-    func testEarlierFormatsArePreservedAndProduceSafeV4Default() {
+    func testV4MigratesAtomicallyPreservingNonUSBDataAndDisablingIndependentUSB() throws {
+        let original = populatedDocument()
+        var dictionary = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any]
+        )
+        dictionary["schemaVersion"] = 4
+        dictionary.removeValue(forKey: "usbSwitch")
+        dictionary["usbAutomationEnabled"] = true
+        dictionary["usbSwitchDisplaysOnArrival"] = true
+        var profiles = try XCTUnwrap(dictionary["collaborationProfiles"] as? [[String: Any]])
+        profiles[0]["triggerDevices"] = [[
+            "kind": "usb", "localReference": "100:200", "displayName": "Legacy trigger"
+        ]]
+        dictionary["collaborationProfiles"] = profiles
+        let v4Data = try JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys])
+        storage.values[DisplayConfigurationStore.legacyV4StorageKey] = v4Data
+
+        let result = DisplayConfigurationStore.load(storage: storage)
+
+        XCTAssertEqual(result.safetyState, .ready)
+        XCTAssertEqual(result.document.schemaVersion, 5)
+        XCTAssertEqual(result.document.localEndpointID, original.localEndpointID)
+        XCTAssertEqual(result.document.displays, original.displays)
+        XCTAssertEqual(result.document.collaborationProfiles[0].triggerDevices.count, 1)
+        XCTAssertEqual(result.document.usbSwitch, .disabled)
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyV4StorageKey), v4Data)
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyBackupStorageKey), v4Data)
+        XCTAssertNotNil(storage.data(forKey: DisplayConfigurationStore.storageKey))
+    }
+
+    func testV4MigrationWriteFailurePreservesOriginalAndBlocksAllSideEffects() throws {
+        let original = populatedDocument()
+        var dictionary = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any]
+        )
+        dictionary["schemaVersion"] = 4
+        dictionary.removeValue(forKey: "usbSwitch")
+        dictionary["usbAutomationEnabled"] = false
+        dictionary["usbSwitchDisplaysOnArrival"] = false
+        let v4Data = try JSONSerialization.data(withJSONObject: dictionary, options: [.sortedKeys])
+        storage.values[DisplayConfigurationStore.legacyV4StorageKey] = v4Data
+        storage.failWrites = true
+
+        let result = DisplayConfigurationStore.load(storage: storage)
+
+        XCTAssertNotEqual(result.safetyState, .ready)
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyV4StorageKey), v4Data)
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyBackupStorageKey), v4Data)
+        XCTAssertNil(storage.data(forKey: DisplayConfigurationStore.storageKey))
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy {
+            !ConfigurationSafetyGate(state: result.safetyState).allows($0)
+        })
+    }
+
+    func testEarlierFormatsArePreservedAndProduceSafeV5Default() {
         for key in [DisplayConfigurationStore.legacyDocumentStorageKey,
                     DisplayConfigurationStore.legacyArrayStorageKey] {
             storage = MemoryConfigurationStorage()
             let legacy = Data("legacy-format".utf8)
             storage.values[key] = legacy
             let result = DisplayConfigurationStore.load(storage: storage)
-            XCTAssertEqual(result.document.schemaVersion, 4)
+            XCTAssertEqual(result.document.schemaVersion, 5)
             XCTAssertEqual(storage.data(forKey: key), legacy)
             XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyBackupStorageKey), legacy)
             XCTAssertTrue(result.document.displays.isEmpty)
@@ -163,22 +216,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
     }
 
-    func testProfileUSBBindingsRemainIsolatedDuringLearning() {
-        var first = profile(name: "A")
-        let second = profile(name: "B")
-        first.triggerDevices = [CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "A device")]
-        var session = USBProfileLearningSession()
-        session.begin(profileID: first.id)
-        _ = session.receiveCandidates(
-            [CollaborationTriggerDevice(kind: "usb", localReference: "3:4", displayName: "new")],
-            availableProfileIDs: [first.id, second.id]
-        )
-        let updated = session.applyCandidate(at: 0, to: [first, second])
-        XCTAssertEqual(updated[0].triggerDevices[0].localReference, "3:4")
-        XCTAssertTrue(updated[1].triggerDevices.isEmpty)
-    }
-
-    private func populatedDocument() -> DisplayConfigurationStoreV4Document {
+    private func populatedDocument() -> DisplayConfigurationStoreV5Document {
         let display = DisplayConfigurationV4Display(
             id: UUID().uuidString, name: "Display 1", selector: UUID().uuidString,
             localInput: nil, readEnabled: false
@@ -190,8 +228,8 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         peer.peerProtocolVersion = 2
         peer.coordinationEnabled = true
         peer.displayInputs = [DisplayInputMapping(displayID: display.id, peerInput: 18)]
-        return DisplayConfigurationStoreV4Document(
-            schemaVersion: 4, localEndpointID: UUID().uuidString,
+        return DisplayConfigurationStoreV5Document(
+            schemaVersion: 5, localEndpointID: UUID().uuidString,
             localDeviceName: "Local", listenPort: 49731,
             controlChannel: .automatic, linkAllDisplays: false,
             displays: [display], collaborationProfiles: [peer]
