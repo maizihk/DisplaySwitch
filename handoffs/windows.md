@@ -8,9 +8,10 @@
 - 共同基线分支：`origin/codex/coord-ds-007-v2-only`
 - 任务起始基线：`da90d0c598ef683c53b243b804526e09ab0cce4f`
 - 当前合入基线：`06dc0ff`（包含 `8bf895e` 的 v2-only 18 条状态向量）
-- 实现提交：本文件所在提交
+- 首次实现提交：`80321797bc576dea8c1219be147400606c172721`
+- 协调验收修正提交：`84b54e8f7133611900931426733e1fe3f39b6775`
 - PR：#37，base 为 `codex/coord-ds-007-v2-only`，不指向 `main`
-- GitHub CI：协调验收修正 push 后等待最新 head 检查
+- GitHub CI：Windows run [33188504745](https://github.com/maizihk/DisplaySwitch/actions/runs/33188504745) 成功；`build-test-and-package` 通过并上传 761 KB 的 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent` artifact
 
 ## 完成内容
 
