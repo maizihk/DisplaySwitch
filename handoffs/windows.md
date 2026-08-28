@@ -8,7 +8,7 @@
 - PR base：`codex/coord-ds-009-native-display-control`
 - 协调基线：`53c2397011323cd941afe315e3a6881fe772299e`
 - 实现提交：`fc95ea36e6653a91fa19e1ebe831601048914538`
-- PR：待创建，禁止自动合并
+- PR：[#47](https://github.com/maizihk/DisplaySwitch/pull/47)，目标为协调分支，保持开放且禁止自动合并
 
 ## 根因与修复
 
