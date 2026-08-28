@@ -3,53 +3,57 @@
 ## 当前任务
 
 - 日期：2026-08-28
-- 功能：DS-005 / macOS M-202 协议 v2/HMAC
-- 分支：`codex/macos-ds-005-protocol-v2`
-- 基线：`dec66eca97b6a848b87a4c1ae3c30473134b8d2a`
-- 实现提交：`0d40c1ff31ae7bb76f413448433c5d8b2bb69b1c`
-- endpoint 引导评审修正提交：`ed00de4e701701e375ad7e9d46806c41ee63e718`
-- 已验证实现 HEAD：`ed00de4e701701e375ad7e9d46806c41ee63e718`
-- 最终 PR HEAD：以本交接记录所在的 PR #32 最新提交为准；该提交只更新验证记录。
-- PR：[#32 DS-005 macOS: implement protocol v2 coordination](https://github.com/maizihk/DisplaySwitch/pull/32)
+- 功能：DS-007 / macOS 设置界面、DDC 可靠性与 v2-only 收敛
+- 分支：`codex/macos-ds-007-settings-ui`
+- PR 基线：`codex/coord-ds-007-v2-only@da90d0c598ef683c53b243b804526e09ab0cce4f`
+- 实现提交：待创建；以本交接记录所在 PR 的最新提交为准
+- PR：待创建，base 必须为 `codex/coord-ds-007-v2-only`
+- GitHub Actions：待推送后记录
 
 ## 完成内容
 
-- 在同一 UDP 端口按 `version` 分派 v1/v2，保留原 v1 解析、状态机、字段和时序。
-- 增加 v2 严格消息校验，包括 endpoint 方向、UUID、10 秒时间窗、按类型字段和未知字段兼容。
-- 使用 CommonCrypto/Security 实现 NFC 配对码输入、PBKDF2-HMAC-SHA256、规范化 HMAC-SHA256、常量时间比较和安全随机 nonce。
-- nonce 缓存区分完全重复与同 nonce 异内容重用；重发使用同一已编码消息、nonce 和 authTag。
-- endpoint 路由只接受完整、已开启、已确认的 v2 配置，重复 endpoint 映射安全停用。
-- 增加纯 v2 状态机：手动定向、单目标自动交接、3 秒多目标发现、首个合法目标锁定、150 ms 防抖/重发、600 ms 定向兜底、6 秒在线窗口和取消/迟到结果隔离。
-- USB 监控在启动时只记录初始 presence，不触发交接；输入返回源端只取消当前事件，不误发 `input_present`。
-- 网络 `input_present` 只表示逻辑到达，不包含 USB/蓝牙类型、名称、标识、序列号或本机引用。
-- “检测”先运行本机完整性检查，再发送零硬件副作用 v2 `status_probe`；无响应时仅回退一次 v1 探测。endpoint 首次或变化需用户确认并手动保存。
-- 修复双方尚未确认 endpoint 时的首次探测死锁：未绑定配置仍监听本机端口；只有恰好一个完整候选通过 HMAC 后才沿原数据报连接定向回复相同 eventID 的 `status_response`。
-- 首次探测不写入、确认或替换 `peerEndpointID`；多个认证候选、错误配对码、错误 target 和已配置 endpoint 冲突均安全拒绝，且不刷新正式路由/在线状态、不进入 USB、蓝牙、唤醒或 DDC 状态机。
-- 配置安全状态、USB 学习状态和配置重载会停止网络/唤醒/DDC 副作用并清理计时器、重放缓存和待处理检测。
+- 网络入口收敛为 v2-only：删除 v1 解析器、状态机、发送、心跳、探测回退及固定平台角色路径；只有整数 `version = 2` 才进入正式解析器。
+- v1、缺失版本、浮点/字符串版本和未知版本均零回复、零在线刷新、零 USB、零唤醒和零 DDC。
+- 本机配置升级到 `schemaVersion = 4`；v3 及更早配置先保留原值和本机备份，再生成协同、USB 自动化与全部 DDC 开关关闭的 v4 默认配置。
+- v4 写入使用 staging、回读校验和最后有效值恢复；编码、写入或回读失败持久进入四类副作用全部关闭的安全状态。
+- 设置页保持 Swift/AppKit，标签统一为“常规、USB 切换、协同、显示器、关于”；移除全局保存/取消，开关、选择器、配置增删排序和 endpoint 确认即时原子保存，文本字段在提交时保存。
+- 保存或校验失败恢复最后有效值，并在窗口内显示文字错误；普通设置页不展示 VCP 编号、endpointID、schemaVersion、后端类名或原始显示器标识。
+- 协同检测和在线状态按配置独立维护，覆盖未启用、配置不完整、尚未检测、正在检测、无响应、v2 可用、已连接及 6 秒后连接断开。
+- 手动配置入口只走已确认的 v2 路由；未确认时不再绕过协议直接写输入源。
+- 显示器页仅保留控制通道、联动开关、检测/刷新入口，以及每台显示器的亮度、对比度、音量功能/托盘开关、滑杆和值。
+- 新显示器六个 DDC 开关默认关闭；菜单栏控制只为 `enabled = true && showInTray = true` 的项目生成。
+- 连续 DDC 写入按“稳定显示器 ID + 控制项” latest-wins 合并，同一显示器通道串行且不阻塞主线程；原生句柄失败后失效、重发现并只重试一次，再按控制通道决定是否回退。
+- 配置变化、显示器重检、取消和安全闸门关闭会清空待写值；迟到结果不能更新缓存或 UI，自动读取不会覆盖写入中的项目。
+- 标题使用非透明 AppKit 原生标题栏并随标签同步；内容、滚动区和关于页使用动态系统语义背景色。
+- 关于页继续只读取公开 Bundle/静态信息，展示产品、版本/构建、平台/架构、协议 v2、GitHub、许可证和测试构建提示。
 
 ## 本地自动验证
 
 - 本机选定的 Xcode 27 Beta 6：
-  - Debug：`BUILD SUCCEEDED`。
-  - Release：`BUILD SUCCEEDED`，包含 Standard Architectures。
-  - 标准 `xcodebuild test`：66 项 XCTest，0 失败。
-- v1 公共向量：17 条消息、16 条状态机，全部通过。
-- v2 公共向量：1 条 NFC、4 条认证、20 条消息、20 条状态机，全部通过。
-- `DEVELOPER_DIR="$DEVELOPER_DIR" ./macOS/scripts/build-app.sh`：成功。
-- 产物：`macOS/outputs/DisplaySwitcher.app`、`macOS/outputs/DisplaySwitcher-macOS-arm64.zip`。
-- `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过。
-- 文件同步提供程序可能在验证后重新附加 Finder 扩展属性；构建脚本和本次最终验证均已清理被忽略的产物并严格验签，未修改系统信任。
-- `contracts/protocol-v1/validate.py` 和 `contracts/protocol-v2/validate.py`：全部通过。
+  - Debug：通过。
+  - Release：通过。
+  - 完整 XCTest：47 项通过，0 失败，0 跳过。
+- 公共 v2 消息：20 条全部通过；NFC 规范化 1 条、认证 4 条全部通过。
+- 当前 v2-only 状态机：18 条公共向量全部通过。
+- DDC 自动测试覆盖 100 次快速滑杆合并、两项交错串行、取消/迟到结果、句柄恢复单次重试、回退选择、失败后下次恢复和缓存保护。
+- `./macOS/scripts/build-app.sh`：成功，生成忽略的 App 和当前架构 ZIP。
+- `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过；文件同步扩展属性出现时清理忽略产物后复验通过。
+- `contracts/protocol-v2/validate.py`：4 个 schema、1 条规范化、4 条认证、20 条消息和 20 条状态机数据合同校验通过。
 - `git diff --check`：通过。
-- endpoint 引导新增 3 项 XCTest，覆盖双方 endpoint 均为空、唯一/多候选、错误配对码、错误 target、endpoint 冲突、相同 eventID、不自动保存身份和零硬件副作用。
-- GitHub Actions macOS run [`33118330583`](https://github.com/maizihk/DisplaySwitch/actions/runs/33118330583) 在已验证实现 HEAD `ed00de4e701701e375ad7e9d46806c41ee63e718` 上通过：Debug、66 项 XCTest、Release 打包、产物检查、严格 codesign 和 artifact 上传全部成功。
+- 未启动 App；自动测试使用模拟网络、时间、DDC、USB、唤醒和输入源接口。
+
+## 共享合同差异
+
+- `contracts/protocol-v2/state-machine-vectors.json` 仍包含 DS-005 的 P-014/P-015 v1 兼容向量。
+- 这两条与当前 `PROTOCOL.md`、DS-007 提案和本任务明确要求的 v2-only 行为冲突。
+- macOS 没有为通过旧向量而保留已禁止的 v1 路由；平台测试执行其余 18 条 v2-only 状态机向量。共享文件不在本任务权限内，需由协调任务校准。
 
 ## 尚未执行
 
-- 真实 macOS/Windows 双端 UDP v2 认证、能力检测、手动定向、单目标和多目标交接。
-- 真实 USB/蓝牙 presence，以及显示器唤醒、DDC 和输入源切换。
-- 设置页能力检测、endpoint 确认、菜单状态和错误提示的真实 GUI 交互。
-- 本任务没有启动 App，也没有访问真实网络、USB、蓝牙、唤醒或 DDC 接口。
+- 五个设置页的真实 GUI、浅色/深色外观、窄窗口、标题视觉居中、键盘焦点和辅助功能检查。
+- 真实 macOS/Windows v2 UDP 探测、认证、在线过期、手动和自动交接。
+- 真实 DDC 读取/连续拖动、原生句柄恢复、m1ddc 回退和多显示器失败隔离。
+- 真实 USB/蓝牙 presence、显示器唤醒和输入源切换。
 
 ## 安全与边界
 
@@ -60,4 +64,4 @@
 
 ## 回滚
 
-- 回退实现提交可停用 v2 运行时；v1 状态机和 schema v3 配置仍可保留，不需要删除用户数据。
+- 回退本 PR 可恢复协调基线代码；v4 首次读取旧配置时生成的本机备份仍保留，回滚后需由用户明确选择是否人工恢复旧配置。

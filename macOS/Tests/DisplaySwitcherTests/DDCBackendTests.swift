@@ -147,6 +147,25 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(try router.enumerateDisplays(token: token), fallback.displays)
     }
 
+    func testControlChannelRestrictsBackendSelectionWithoutChangingFallbackPolicy() throws {
+        let native = MockDDCBackend(identifier: "apple-silicon-native")
+        let fallback = MockDDCBackend(identifier: "m1ddc")
+        native.readings = ["display-a": [.luminance: DDCReading(current: 31, maximum: 100)]]
+        fallback.readings = ["display-a": [.luminance: DDCReading(current: 72, maximum: 100)]]
+        let router = DDCBackendRouter(backends: [native, fallback])
+        let token = DDCCancellationToken()
+
+        router.setControlChannel(.native)
+        XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
+                                       command: .luminance, token: token).current, 31)
+        XCTAssertEqual(fallback.readCalls.count, 0)
+
+        router.setControlChannel(.fallback)
+        XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
+                                       command: .luminance, token: token).current, 72)
+        XCTAssertEqual(native.readCalls.count, 1)
+    }
+
     func testCancellationAndLateReadCannotCommitCacheOrResult() {
         let backend = MockDDCBackend()
         backend.readings = ["display-a": [.luminance: DDCReading(current: 88, maximum: 100)]]

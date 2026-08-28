@@ -38,7 +38,7 @@ struct AboutPageContent: Equatable {
             productName: name,
             summary: "一款在 macOS 与 Windows 之间协同切换显示器和 USB 设备的原生菜单栏工具。",
             versionText: "版本 \(shortVersion) (\(buildVersion))",
-            platformText: "macOS · \(architecture) · 协议 v1/v2",
+            platformText: "macOS · \(architecture) · 协议 v2",
             buildNotice: "源码构建和测试包不等于经过签名与公证的正式发行版。"
         )
     }
@@ -58,7 +58,7 @@ struct ManualSwitchMenuEntry: Equatable {
     let profileID: String
     let title: String
 
-    static func entries(in document: DisplayConfigurationStoreV3Document) -> [ManualSwitchMenuEntry] {
+    static func entries(in document: DisplayConfigurationStoreV4Document) -> [ManualSwitchMenuEntry] {
         DisplayConfigurationStore.menuEligibleProfiles(in: document).map {
             ManualSwitchMenuEntry(profileID: $0.id, title: "切换到 \($0.name)")
         }

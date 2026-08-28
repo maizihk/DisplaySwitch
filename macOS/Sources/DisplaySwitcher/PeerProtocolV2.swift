@@ -437,16 +437,15 @@ struct V2NonceReplayCache {
 }
 
 enum PeerProtocolVersionDispatcher {
-    enum Version: Equatable { case v1, v2, unsupported(Int) }
+    enum Version: Equatable { case v2, unsupported(Int) }
 
     static func version(in data: Data) -> Version? {
         guard let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any],
               let number = dictionary["version"] as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID(),
-              number.doubleValue.rounded(.towardZero) == number.doubleValue else { return nil }
+              !CFNumberIsFloatType(number) else { return nil }
         switch number.intValue {
-        case 1: return .v1
         case 2: return .v2
         default: return .unsupported(number.intValue)
         }
@@ -455,7 +454,6 @@ enum PeerProtocolVersionDispatcher {
 
 enum PeerCapabilityInspectionResult: Equatable {
     case v2(endpointID: String)
-    case v1Only
     case authenticationFailed
     case noResponse
 }
@@ -472,7 +470,7 @@ struct V2EndpointRoutingTable {
     let routesByEndpointID: [String: V2ProfileRoute]
     let rejectedProfileIDs: Set<String>
 
-    static func build(from document: DisplayConfigurationStoreV3Document) -> V2EndpointRoutingTable {
+    static func build(from document: DisplayConfigurationStoreV4Document) -> V2EndpointRoutingTable {
         let knownDisplays = Set(document.displays.map { $0.id.lowercased() })
         var candidates: [V2ProfileRoute] = []
         var rejected = Set<String>()
@@ -527,11 +525,10 @@ struct V2UnboundStatusProbeResolution {
 }
 
 enum V2UnboundStatusProbeResolver {
-    static func eligibleProfiles(in document: DisplayConfigurationStoreV3Document) -> [CollaborationProfile] {
+    static func eligibleProfiles(in document: DisplayConfigurationStoreV4Document) -> [CollaborationProfile] {
         let knownDisplays = Set(document.displays.map { $0.id.lowercased() })
         return document.collaborationProfiles.filter { profile in
             profile.peerEndpointID == nil
-                && profile.peerProtocolVersion != 1
                 && DisplayConfigurationStore.inspectProfile(
                     profile,
                     displays: document.displays,
@@ -543,7 +540,7 @@ enum V2UnboundStatusProbeResolver {
 
     static func resolve(
         data: Data,
-        document: DisplayConfigurationStoreV3Document,
+        document: DisplayConfigurationStoreV4Document,
         routingTable: V2EndpointRoutingTable,
         now: Int64,
         responseNonce: String

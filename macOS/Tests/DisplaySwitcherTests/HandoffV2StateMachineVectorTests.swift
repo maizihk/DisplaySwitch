@@ -2,13 +2,15 @@ import Foundation
 import XCTest
 
 final class HandoffV2StateMachineVectorTests: XCTestCase {
-    func testAllTwentyPublicV2StateMachineVectors() throws {
+    func testAllEighteenV2OnlyPublicStateMachineVectors() throws {
         let url = try XCTUnwrap(Bundle(for: HandoffV2StateMachineVectorTests.self).resourceURL)
             .appendingPathComponent("contracts/protocol-v2/state-machine-vectors.json")
         let file = try JSONDecoder().decode(V2VectorFile.self, from: Data(contentsOf: url))
         XCTAssertEqual(file.vectors.count, 20)
 
-        for vector in file.vectors {
+        let v2OnlyVectors = file.vectors.filter { !["P-014", "P-015"].contains($0.id) }
+        XCTAssertEqual(v2OnlyVectors.count, 18)
+        for vector in v2OnlyVectors {
             let clock = V2VectorClock()
             let scheduler = V2VectorScheduler(clock: clock)
             let sink = V2VectorSink()
@@ -167,8 +169,6 @@ final class HandoffV2StateMachineVectorTests: XCTestCase {
             machine.handleSwitchCompleted(eventID: try input.requiredEvent(), success: input.success ?? false)
         case "configurationChanged":
             machine.handleConfigurationChanged()
-        case "receiveV1Message":
-            machine.handleV1Message()
         case "advanceTime":
             machine.handleAdvanceTime()
         default:
@@ -268,8 +268,6 @@ private struct V2TimedAction: Equatable {
             kind = "ignoreMessage"; type = nil; self.eventID = eventID; self.endpointID = endpointID; self.reason = reason.rawValue; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
         case let .clearEvent(reason):
             kind = "clearEvent"; type = nil; eventID = nil; endpointID = nil; self.reason = reason?.rawValue; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
-        case .routeToV1:
-            kind = "routeToV1"; type = nil; eventID = nil; endpointID = nil; reason = nil; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
         case let .setPeerReachable(value):
             kind = "setPeerReachable"; type = nil; eventID = nil; endpointID = nil; reason = nil; self.value = value; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
         }

@@ -16,6 +16,15 @@ enum DDCCommand: UInt8, CaseIterable, Hashable {
     }
 
     static let userControls: Set<DDCCommand> = [.luminance, .contrast, .volume]
+
+    var userFacingName: String {
+        switch self {
+        case .luminance: return "亮度"
+        case .contrast: return "对比度"
+        case .input: return "输入源"
+        case .volume: return "音量"
+        }
+    }
 }
 
 struct DDCReading: Equatable {
@@ -60,11 +69,22 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
         case .displayUnavailable:
             return "目标显示器在当前 DDC 后端中不可用。"
         case let .readFailed(_, command):
-            return "读取 VCP 0x\(String(format: "%02X", command.rawValue)) 失败。"
+            return "读取\(command.userFacingName)失败。"
         case let .writeFailed(_, command):
-            return "写入 VCP 0x\(String(format: "%02X", command.rawValue)) 失败。"
+            return "写入\(command.userFacingName)失败。"
         case .cancelled:
             return "DDC 操作已取消。"
+        }
+    }
+}
+
+enum DDCSingleRetry {
+    static func perform(operation: () throws -> Void, recover: () throws -> Void) throws {
+        do {
+            try operation()
+        } catch {
+            try recover()
+            try operation()
         }
     }
 }
@@ -110,19 +130,38 @@ extension DDCBackend {
 
 final class DDCBackendRouter {
     private let backends: [DDCBackend]
+    private let stateLock = NSLock()
+    private var controlChannel: DDCControlChannel = .automatic
 
     init(backends: [DDCBackend]) {
         self.backends = backends
     }
 
+    func setControlChannel(_ channel: DDCControlChannel) {
+        stateLock.lock()
+        controlChannel = channel
+        stateLock.unlock()
+    }
+
+    private var selectedBackends: [DDCBackend] {
+        stateLock.lock()
+        let channel = controlChannel
+        stateLock.unlock()
+        switch channel {
+        case .automatic: return backends
+        case .native: return backends.filter { $0.identifier == "apple-silicon-native" }
+        case .fallback: return backends.filter { $0.identifier == "m1ddc" }
+        }
+    }
+
     var availability: DDCBackendAvailability {
-        backends.contains { $0.availability == .available }
+        selectedBackends.contains { $0.availability == .available }
             ? .available
             : .unavailable("没有可用的硬件 DDC 后端")
     }
 
     var capabilities: DDCBackendCapabilities {
-        let available = backends.filter { $0.availability == .available }
+        let available = selectedBackends.filter { $0.availability == .available }
         return DDCBackendCapabilities(
             canEnumerate: available.contains { $0.capabilities.canEnumerate },
             canReadVCP: available.contains { $0.capabilities.canReadVCP },
@@ -136,7 +175,7 @@ final class DDCBackendRouter {
 
     func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
         var lastError: Error?
-        for backend in backends where backend.availability == .available && backend.capabilities.canEnumerate {
+        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canEnumerate {
             do {
                 try token.throwIfCancelled()
                 let displays = try backend.enumerateDisplays(token: token)
@@ -154,7 +193,7 @@ final class DDCBackendRouter {
     func read(stableID: String, selector: String, command: DDCCommand,
               token: DDCCancellationToken) throws -> DDCReading {
         var lastError: Error?
-        for backend in backends where backend.availability == .available && backend.capabilities.canReadVCP {
+        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canReadVCP {
             do {
                 try token.throwIfCancelled()
                 return try backend.read(stableID: stableID, selector: selector, command: command, token: token)
@@ -170,7 +209,7 @@ final class DDCBackendRouter {
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
                token: DDCCancellationToken) throws {
         var lastError: Error?
-        for backend in backends where backend.availability == .available && backend.capabilities.canWriteVCP {
+        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canWriteVCP {
             do {
                 try token.throwIfCancelled()
                 try backend.write(stableID: stableID, selector: selector, command: command,
@@ -243,6 +282,10 @@ final class DDCControlService {
 
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
         router.updateKnownDisplays(displays)
+    }
+
+    func setControlChannel(_ channel: DDCControlChannel) {
+        router.setControlChannel(channel)
     }
 
     func enumerateDisplays() throws -> [DDCBackendDisplay] {
