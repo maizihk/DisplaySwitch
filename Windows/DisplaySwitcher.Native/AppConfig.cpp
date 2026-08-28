@@ -11,7 +11,7 @@ using namespace Windows::Data::Json;
 
 namespace
 {
-    constexpr int CurrentConfigVersion = 4;
+    constexpr int CurrentConfigVersion = 5;
 
     std::wstring Trim(std::wstring value)
     {
@@ -139,7 +139,7 @@ namespace
     }
 
     std::filesystem::path MarkerPath(std::filesystem::path const& path) { auto value = path; value += L".safety"; return value; }
-    std::filesystem::path BackupPath(std::filesystem::path const& path) { auto value = path; value += L".pre-v4.backup"; return value; }
+    std::filesystem::path BackupPath(std::filesystem::path const& path) { auto value = path; value += L".pre-v5.backup"; return value; }
 
     bool SetMarker(std::filesystem::path const& path) noexcept
     {
@@ -187,7 +187,7 @@ namespace
         return display;
     }
 
-    DisplaySwitcher::Native::CollaborationProfile ReadProfile(JsonObject const& object)
+    DisplaySwitcher::Native::CollaborationProfile ReadProfile(JsonObject const& object, bool readLegacyTriggers)
     {
         DisplaySwitcher::Native::CollaborationProfile profile;
         profile.id = RequiredString(object, L"Id");
@@ -203,11 +203,12 @@ namespace
             auto item = value.GetObject();
             profile.displayInputs.push_back({ RequiredString(item, L"DisplayId"), RequiredInteger(item, L"PeerInput", 0, 65535) });
         }
-        for (auto const& value : RequiredArray(object, L"TriggerDevices"))
-        {
-            auto item = value.GetObject();
-            profile.triggerDevices.push_back({ RequiredString(item, L"Kind"), RequiredString(item, L"LocalReference"), RequiredString(item, L"DisplayName") });
-        }
+        if (readLegacyTriggers)
+            for (auto const& value : RequiredArray(object, L"TriggerDevices"))
+            {
+                auto item = value.GetObject();
+                profile.triggerDevices.push_back({ RequiredString(item, L"Kind"), RequiredString(item, L"LocalReference"), RequiredString(item, L"DisplayName") });
+            }
         return profile;
     }
 
@@ -276,6 +277,27 @@ namespace
             config.displayControlBackend != L"control_my_monitor") throw std::runtime_error("invalid control channel");
         ValidateDisplays(config.displays);
         ValidateProfiles(config.collaborationProfiles);
+        std::set<std::wstring> usbDisplayIds;
+        bool hasUsbMapping{};
+        for (auto const& mapping : config.usbSwitch.displayInputs)
+        {
+            if (!DisplaySwitcher::Native::IsValidDisplayId(mapping.displayId) ||
+                !usbDisplayIds.insert(Lower(mapping.displayId)).second ||
+                (mapping.targetInput && (*mapping.targetInput < 0 || *mapping.targetInput > 65535)))
+                throw std::runtime_error("invalid usb display mapping");
+            if (mapping.targetInput && DisplaySwitcher::Native::FindDisplayById(config.displays, mapping.displayId)) hasUsbMapping = true;
+        }
+        if (config.usbSwitch.enabled &&
+            (config.usbSwitch.deviceLocalReference.empty() || config.usbSwitch.vendorId < 0 ||
+             config.usbSwitch.vendorId > 65535 || config.usbSwitch.productId < 0 ||
+             config.usbSwitch.productId > 65535 || !hasUsbMapping))
+            throw std::runtime_error("enabled usb switch is incomplete");
+        if (config.usbSwitch.collaborationWakeEnabled)
+        {
+            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
+            if (!profile || !profile->coordinationEnabled || !config.InspectProfile(profile->id).complete)
+                throw std::runtime_error("invalid usb collaboration profile");
+        }
         for (auto const& profile : config.collaborationProfiles)
             if (profile.coordinationEnabled && (profile.peerProtocolVersion != 2
                 || !DisplaySwitcher::Native::IsValidDisplayId(profile.peerEndpointId)
@@ -286,22 +308,59 @@ namespace
 
     DisplaySwitcher::Native::AppConfig ReadCompleteV4Config(JsonObject const& object)
     {
-        if (SchemaVersion(object) != CurrentConfigVersion) throw std::runtime_error("invalid settings schema");
+        if (SchemaVersion(object) != 4) throw std::runtime_error("invalid settings schema");
         DisplaySwitcher::Native::AppConfig config;
         config.localEndpointId = RequiredString(object, L"LocalEndpointId");
         config.localDeviceName = RequiredString(object, L"LocalDeviceName");
         config.listenPort = RequiredInteger(object, L"ListenPort", 1, 65535);
-        config.usbAutomationEnabled = RequiredBoolean(object, L"UsbAutomationEnabled");
-        config.usbSwitchDisplaysOnArrival = RequiredBoolean(object, L"UsbSwitchDisplaysOnArrival");
-        config.usbVendorId = RequiredInteger(object, L"UsbVendorId", -1, 65535);
-        config.usbProductId = RequiredInteger(object, L"UsbProductId", -1, 65535);
-        config.usbName = RequiredString(object, L"UsbName");
+        static_cast<void>(RequiredBoolean(object, L"UsbAutomationEnabled"));
+        static_cast<void>(RequiredBoolean(object, L"UsbSwitchDisplaysOnArrival"));
+        static_cast<void>(RequiredInteger(object, L"UsbVendorId", -1, 65535));
+        static_cast<void>(RequiredInteger(object, L"UsbProductId", -1, 65535));
+        static_cast<void>(RequiredString(object, L"UsbName"));
         config.displayControlBackend = RequiredString(object, L"ControlChannel");
         config.controlMyMonitorPath = RequiredString(object, L"ControlMyMonitorPath");
         config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
         config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
-        for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
+        for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), true));
+        for (auto& profile : config.collaborationProfiles) profile.triggerDevices.clear();
+        ValidateConfig(config);
+        return config;
+    }
+
+    DisplaySwitcher::Native::AppConfig ReadCompleteV5Config(JsonObject const& object)
+    {
+        if (SchemaVersion(object) != CurrentConfigVersion) throw std::runtime_error("invalid settings schema");
+        DisplaySwitcher::Native::AppConfig config;
+        config.localEndpointId = RequiredString(object, L"LocalEndpointId");
+        config.localDeviceName = RequiredString(object, L"LocalDeviceName");
+        config.listenPort = RequiredInteger(object, L"ListenPort", 1, 65535);
+        config.displayControlBackend = RequiredString(object, L"ControlChannel");
+        config.controlMyMonitorPath = RequiredString(object, L"ControlMyMonitorPath");
+        config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
+        config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
+        for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
+        for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), false));
+        auto usb = object.GetNamedObject(L"UsbSwitch");
+        config.usbSwitch.enabled = RequiredBoolean(usb, L"Enabled");
+        config.usbSwitch.collaborationWakeEnabled = RequiredBoolean(usb, L"CollaborationWakeEnabled");
+        if (usb.GetNamedValue(L"CollaborationProfileId").ValueType() != JsonValueType::Null)
+            config.usbSwitch.collaborationProfileId = RequiredString(usb, L"CollaborationProfileId");
+        if (usb.GetNamedValue(L"TriggerDevice").ValueType() != JsonValueType::Null)
+        {
+            auto device = usb.GetNamedObject(L"TriggerDevice");
+            config.usbSwitch.deviceLocalReference = RequiredString(device, L"LocalReference");
+            config.usbSwitch.deviceName = RequiredString(device, L"DisplayName");
+            config.usbSwitch.vendorId = RequiredInteger(device, L"VendorId", 0, 65535);
+            config.usbSwitch.productId = RequiredInteger(device, L"ProductId", 0, 65535);
+        }
+        for (auto const& value : RequiredArray(usb, L"DisplayInputs"))
+        {
+            auto mapping = value.GetObject();
+            config.usbSwitch.displayInputs.push_back({ RequiredString(mapping, L"DisplayId"),
+                NullableInteger(mapping, L"TargetInput", 0, 65535, true) });
+        }
         ValidateConfig(config);
         return config;
     }
@@ -309,7 +368,8 @@ namespace
     void EnterSafeMode(DisplaySwitcher::Native::AppConfig& config)
     {
         config.displayConfigurationSafeMode = true;
-        config.usbAutomationEnabled = false;
+        config.usbSwitch.enabled = false;
+        config.usbSwitch.collaborationWakeEnabled = false;
         for (auto& profile : config.collaborationProfiles) profile.coordinationEnabled = false;
     }
 
@@ -348,11 +408,31 @@ namespace
         object.Insert(L"LocalEndpointId", JsonValue::CreateStringValue(config.localEndpointId));
         object.Insert(L"LocalDeviceName", JsonValue::CreateStringValue(config.localDeviceName));
         object.Insert(L"ListenPort", JsonValue::CreateNumberValue(config.listenPort));
-        object.Insert(L"UsbAutomationEnabled", JsonValue::CreateBooleanValue(config.usbAutomationEnabled));
-        object.Insert(L"UsbSwitchDisplaysOnArrival", JsonValue::CreateBooleanValue(config.usbSwitchDisplaysOnArrival));
-        object.Insert(L"UsbVendorId", JsonValue::CreateNumberValue(config.usbVendorId));
-        object.Insert(L"UsbProductId", JsonValue::CreateNumberValue(config.usbProductId));
-        object.Insert(L"UsbName", JsonValue::CreateStringValue(config.usbName));
+        JsonObject usb;
+        usb.Insert(L"Enabled", JsonValue::CreateBooleanValue(config.usbSwitch.enabled));
+        usb.Insert(L"CollaborationWakeEnabled", JsonValue::CreateBooleanValue(config.usbSwitch.collaborationWakeEnabled));
+        usb.Insert(L"CollaborationProfileId", config.usbSwitch.collaborationProfileId.empty() ? JsonValue::CreateNullValue() :
+            JsonValue::CreateStringValue(config.usbSwitch.collaborationProfileId));
+        if (config.usbSwitch.deviceLocalReference.empty()) usb.Insert(L"TriggerDevice", JsonValue::CreateNullValue());
+        else
+        {
+            JsonObject device;
+            device.Insert(L"LocalReference", JsonValue::CreateStringValue(config.usbSwitch.deviceLocalReference));
+            device.Insert(L"DisplayName", JsonValue::CreateStringValue(config.usbSwitch.deviceName));
+            device.Insert(L"VendorId", JsonValue::CreateNumberValue(config.usbSwitch.vendorId));
+            device.Insert(L"ProductId", JsonValue::CreateNumberValue(config.usbSwitch.productId));
+            usb.Insert(L"TriggerDevice", device);
+        }
+        JsonArray usbMappings;
+        for (auto const& mapping : config.usbSwitch.displayInputs)
+        {
+            JsonObject item;
+            item.Insert(L"DisplayId", JsonValue::CreateStringValue(mapping.displayId));
+            item.Insert(L"TargetInput", mapping.targetInput ? JsonValue::CreateNumberValue(*mapping.targetInput) : JsonValue::CreateNullValue());
+            usbMappings.Append(item);
+        }
+        usb.Insert(L"DisplayInputs", usbMappings);
+        object.Insert(L"UsbSwitch", usb);
         object.Insert(L"ControlChannel", JsonValue::CreateStringValue(config.displayControlBackend));
         object.Insert(L"ControlMyMonitorPath", JsonValue::CreateStringValue(config.controlMyMonitorPath));
         object.Insert(L"LinkAllDisplays", JsonValue::CreateBooleanValue(config.linkAllDisplays));
@@ -399,14 +479,7 @@ namespace
                 mappingObject.Insert(L"PeerInput", JsonValue::CreateNumberValue(mapping.peerInput)); mappings.Append(mappingObject);
             }
             item.Insert(L"DisplayInputs", mappings);
-            JsonArray triggers;
-            for (auto const& trigger : profile.triggerDevices)
-            {
-                JsonObject triggerObject; triggerObject.Insert(L"Kind", JsonValue::CreateStringValue(trigger.kind));
-                triggerObject.Insert(L"LocalReference", JsonValue::CreateStringValue(trigger.localReference));
-                triggerObject.Insert(L"DisplayName", JsonValue::CreateStringValue(trigger.displayName)); triggers.Append(triggerObject);
-            }
-            item.Insert(L"TriggerDevices", triggers); profileArray.Append(item);
+            profileArray.Append(item);
         }
         object.Insert(L"CollaborationProfiles", profileArray);
         return object;
@@ -441,7 +514,7 @@ namespace
                 auto current = RequiredInteger(mapping, L"PeerInput", 0, 65535);
                 mapping.Insert(L"PeerInput", JsonValue::CreateNumberValue(current == 65535 ? 65534 : current + 1));
             }
-            auto readback = ReadCompleteV4Config(verifyObject);
+            auto readback = ReadCompleteV5Config(verifyObject);
             auto normalizedReadback = Serialize(readback);
             if (normalizedReadback.Stringify() != object.Stringify())
                 throw std::runtime_error("settings readback mismatch");
@@ -467,8 +540,9 @@ namespace DisplaySwitcher::Native
 {
     bool AppConfig::HasUsbDeviceConfiguration() const noexcept
     {
-        return !displayConfigurationSafeMode && usbVendorId >= 0 && usbVendorId <= 0xFFFF
-            && usbProductId >= 0 && usbProductId <= 0xFFFF;
+        return !displayConfigurationSafeMode && !usbSwitch.deviceLocalReference.empty() &&
+            usbSwitch.vendorId >= 0 && usbSwitch.vendorId <= 0xFFFF &&
+            usbSwitch.productId >= 0 && usbSwitch.productId <= 0xFFFF;
     }
 
     bool AppConfig::HasDisplayConfiguration(std::wstring const& profileId) const noexcept
@@ -543,6 +617,13 @@ namespace DisplaySwitcher::Native
         for (auto const& mapping : profile->displayInputs)
             if (EqualInsensitive(mapping.displayId, displayId)) return mapping.peerInput;
         return fallback;
+    }
+
+    std::optional<int> AppConfig::UsbInputForDisplay(std::wstring const& displayId) const noexcept
+    {
+        for (auto const& mapping : usbSwitch.displayInputs)
+            if (EqualInsensitive(mapping.displayId, displayId)) return mapping.targetInput;
+        return std::nullopt;
     }
 
     ProfileInspectionResult AppConfig::InspectProfile(std::wstring const& profileId,
@@ -622,18 +703,29 @@ namespace DisplaySwitcher::Native
             stream.close();
             auto object = JsonObject::Parse(to_hstring(text));
             auto schema = SchemaVersion(object);
-            if (schema != CurrentConfigVersion)
+            if (schema == 4)
             {
-                auto backup = BackupPath(path);
-                for (unsigned suffix = 1; std::filesystem::exists(backup); ++suffix)
-                    backup = std::filesystem::path(BackupPath(path).wstring() + L"." + std::to_wstring(suffix));
-                if (!CopyFileW(path.c_str(), backup.c_str(), TRUE))
-                    throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
-                WriteAtomic(defaults, path, true);
-                return defaults;
+                auto migrated = ReadCompleteV4Config(object);
+                migrated.usbSwitch = {};
+                try
+                {
+                    auto backup = BackupPath(path);
+                    for (unsigned suffix = 1; std::filesystem::exists(backup); ++suffix)
+                        backup = std::filesystem::path(BackupPath(path).wstring() + L"." + std::to_wstring(suffix));
+                    if (!CopyFileW(path.c_str(), backup.c_str(), TRUE))
+                        throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
+                    WriteAtomic(migrated, path, true);
+                    return migrated;
+                }
+                catch (...)
+                {
+                    SetMarker(path); EnterSafeMode(migrated); return migrated;
+                }
             }
 
-            auto config = ReadCompleteV4Config(object);
+            if (schema != CurrentConfigVersion) throw std::runtime_error("unsupported settings schema");
+
+            auto config = ReadCompleteV5Config(object);
             if (markerPresent) EnterSafeMode(config);
             return config;
         }

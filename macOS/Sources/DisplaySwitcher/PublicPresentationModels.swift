@@ -58,7 +58,7 @@ struct ManualSwitchMenuEntry: Equatable {
     let profileID: String
     let title: String
 
-    static func entries(in document: DisplayConfigurationStoreV4Document) -> [ManualSwitchMenuEntry] {
+    static func entries(in document: DisplayConfigurationStoreV5Document) -> [ManualSwitchMenuEntry] {
         DisplayConfigurationStore.menuEligibleProfiles(in: document).map {
             ManualSwitchMenuEntry(profileID: $0.id, title: "切换到 \($0.name)")
         }

@@ -24,7 +24,7 @@ namespace DisplaySwitcher::Native
         UsbWatcher(UsbWatcher const&) = delete;
         UsbWatcher& operator=(UsbWatcher const&) = delete;
 
-        void Reconfigure(int vendorId, int productId);
+        void Reconfigure(int vendorId, int productId, std::wstring localReference = {});
         bool IsPresent() const;
         static std::vector<UsbDeviceInfo> EnumerateDevices();
 
@@ -32,8 +32,10 @@ namespace DisplaySwitcher::Native
         static DWORD CALLBACK OnDeviceNotification(HCMNOTIFICATION notification, void* context,
             CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA eventData, DWORD eventDataSize);
         void Poll(std::stop_token token);
-        std::atomic<int> vendorId_;
-        std::atomic<int> productId_;
+        mutable std::mutex configurationMutex_;
+        int vendorId_;
+        int productId_;
+        std::wstring localReference_;
         PresenceCallback callback_;
         HANDLE changeEvent_{};
         HCMNOTIFICATION notification_{};

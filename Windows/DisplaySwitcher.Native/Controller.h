@@ -5,6 +5,7 @@
 #include "UdpPeer.h"
 #include "V2Protocol.h"
 #include "V2StateMachine.h"
+#include "UsbSwitchCoordinator.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -30,6 +31,9 @@ namespace DisplaySwitcher::Native
         void EndUsbLearning();
         bool AllowsSideEffects(uint64_t generation) const noexcept;
         void OnUsbPresenceChanged(bool present);
+        void ApplyUsbActions(std::vector<UsbSwitchAction> actions);
+        void WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions);
+        void SendUsbWakeDisplay();
         void ApplyV2Actions(std::vector<V2Action> actions);
         void AdvanceStateMachine();
         void SwitchToProfile(std::wstring const& profileId, std::optional<std::wstring> eventId = std::nullopt);
@@ -61,6 +65,7 @@ namespace DisplaySwitcher::Native
         std::unique_ptr<TrayIcon> trayIcon_;
         std::unique_ptr<UdpPeer> peer_;
         std::unique_ptr<UsbWatcher> usbWatcher_;
+        std::unique_ptr<UsbSwitchCoordinator> usbSwitchCoordinator_;
         std::unique_ptr<V2StateMachine> v2StateMachine_;
         V2ReplayCache v2ReplayCache_;
         std::map<std::wstring, V2Message> v2OutgoingMessages_;

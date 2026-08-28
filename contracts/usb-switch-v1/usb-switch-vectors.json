@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "configSchemaVersion": 5,
+  "wakeCoalescingWindowMs": 2000,
+  "vectors": [
+    {
+      "id": "USB-001", "description": "Startup with selected USB present only establishes baseline",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": null, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 0, "kind": "observeUSB", "present": true }],
+      "expectedActions": [{ "atMs": 0, "kind": "establishBaseline" }]
+    },
+    {
+      "id": "USB-002", "description": "Startup with selected USB absent only establishes baseline",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": null, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 0, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 0, "kind": "establishBaseline" }]
+    },
+    {
+      "id": "USB-003", "description": "USB departure immediately switches all valid mapped displays without network",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }, { "displayID": "display-b", "targetInput": 18, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }, { "atMs": 10, "kind": "switchDisplay", "displayID": "display-b", "targetInput": 18, "succeeded": true }]
+    },
+    {
+      "id": "USB-004", "description": "Repeated absent observations do not repeat DDC",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }, { "atMs": 20, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }]
+    },
+    {
+      "id": "USB-005", "description": "USB arrival wakes locally once without DDC or network",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": false, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": true }],
+      "expectedActions": [{ "atMs": 10, "kind": "wakeDisplay" }]
+    },
+    {
+      "id": "USB-006", "description": "Repeated present observations do not repeat local wake",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": false, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": true }, { "atMs": 20, "kind": "observeUSB", "present": true }],
+      "expectedActions": [{ "atMs": 10, "kind": "wakeDisplay" }]
+    },
+    {
+      "id": "USB-007", "description": "Disabled USB switching has zero side effects",
+      "initialState": { "enabled": false, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": true, "collaborationProfileValid": true, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }, { "atMs": 20, "kind": "observeUSB", "present": true }],
+      "expectedActions": []
+    },
+    {
+      "id": "USB-008", "description": "Learning and safe state suppress all side effects",
+      "initialState": { "enabled": true, "learning": true, "safeState": true, "baselinePresence": true, "collaborationWakeEnabled": true, "collaborationProfileValid": true, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }, { "atMs": 20, "kind": "observeUSB", "present": true }],
+      "expectedActions": []
+    },
+    {
+      "id": "USB-009", "description": "Configuration reload makes the next observation establish a new baseline",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "configurationChanged" }, { "atMs": 20, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 20, "kind": "establishBaseline" }]
+    },
+    {
+      "id": "USB-010", "description": "Missing mapping is reported while valid displays still switch",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }, { "displayID": "display-b", "targetInput": null, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }, { "atMs": 10, "kind": "report", "displayID": "display-b", "reason": "missing_mapping" }]
+    },
+    {
+      "id": "USB-011", "description": "One DDC failure is reported and does not stop other display switches",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": false }, { "displayID": "display-b", "targetInput": 18, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": false }, { "atMs": 10, "kind": "report", "displayID": "display-a", "reason": "ddc_failed" }, { "atMs": 10, "kind": "switchDisplay", "displayID": "display-b", "targetInput": 18, "succeeded": true }]
+    },
+    {
+      "id": "USB-012", "description": "Missing collaboration configuration never blocks local departure and arrival",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }, { "atMs": 20, "kind": "observeUSB", "present": true }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }, { "atMs": 20, "kind": "wakeDisplay" }]
+    },
+    {
+      "id": "USB-013", "description": "Disabled collaboration wake guarantees zero network calls on departure",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": false, "collaborationProfileValid": true, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }]
+    },
+    {
+      "id": "USB-014", "description": "Enabled collaboration wake sends wake-display concurrently without waiting",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": true, "collaborationProfileValid": true, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }, { "atMs": 10, "kind": "sendWakeDisplay" }]
+    },
+    {
+      "id": "USB-015", "description": "Invalid collaboration profile reports unsent wake while local DDC completes",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": true, "collaborationWakeEnabled": true, "collaborationProfileValid": false, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 10, "kind": "observeUSB", "present": false }],
+      "expectedActions": [{ "atMs": 10, "kind": "switchDisplay", "displayID": "display-a", "targetInput": 17, "succeeded": true }, { "atMs": 10, "kind": "report", "reason": "wake_not_sent" }]
+    },
+    {
+      "id": "USB-016", "description": "Network wake and local USB arrival within two seconds coalesce into one wake",
+      "initialState": { "enabled": true, "learning": false, "safeState": false, "baselinePresence": false, "collaborationWakeEnabled": true, "collaborationProfileValid": true, "displayMappings": [{ "displayID": "display-a", "targetInput": 17, "available": true, "switchSucceeds": true }] },
+      "inputs": [{ "atMs": 0, "kind": "receiveWakeDisplay" }, { "atMs": 1500, "kind": "observeUSB", "present": true }],
+      "expectedActions": [{ "atMs": 0, "kind": "wakeDisplay" }]
+    }
+  ]
+}

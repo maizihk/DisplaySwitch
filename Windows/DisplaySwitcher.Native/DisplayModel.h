@@ -46,6 +46,24 @@ namespace DisplaySwitcher::Native
         std::wstring displayName;
     };
 
+    struct UsbDisplayInputMapping
+    {
+        std::wstring displayId;
+        std::optional<int> targetInput;
+    };
+
+    struct UsbSwitchConfig
+    {
+        bool enabled{ false };
+        std::wstring deviceLocalReference;
+        std::wstring deviceName;
+        int vendorId{ -1 };
+        int productId{ -1 };
+        std::vector<UsbDisplayInputMapping> displayInputs;
+        bool collaborationWakeEnabled{ false };
+        std::wstring collaborationProfileId;
+    };
+
     struct CollaborationProfile
     {
         std::wstring id;

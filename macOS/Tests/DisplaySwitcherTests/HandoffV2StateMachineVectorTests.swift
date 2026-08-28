@@ -2,11 +2,11 @@ import Foundation
 import XCTest
 
 final class HandoffV2StateMachineVectorTests: XCTestCase {
-    func testAllEighteenV2OnlyPublicStateMachineVectors() throws {
+    func testAllSixV2OnlyPublicStateMachineVectors() throws {
         let url = try XCTUnwrap(Bundle(for: HandoffV2StateMachineVectorTests.self).resourceURL)
             .appendingPathComponent("contracts/protocol-v2/state-machine-vectors.json")
         let file = try JSONDecoder().decode(V2VectorFile.self, from: Data(contentsOf: url))
-        XCTAssertEqual(file.vectors.count, 18)
+        XCTAssertEqual(file.vectors.count, 6)
         for vector in file.vectors {
             let clock = V2VectorClock()
             let scheduler = V2VectorScheduler(clock: clock)
@@ -22,8 +22,6 @@ final class HandoffV2StateMachineVectorTests: XCTestCase {
             machine.configure(
                 localEndpointID: vector.initialState.localEndpointID,
                 coordinationEnabled: vector.initialState.coordinationEnabled,
-                sourceInputPresent: vector.initialState.sourceInputPresent,
-                targetInputPresent: vector.initialState.targetInputPresent,
                 state: try XCTUnwrap(V2HandoffState(rawValue: vector.initialState.state)),
                 activeEventID: vector.initialState.activeEventID,
                 lockedTargetEndpointID: vector.initialState.lockedTargetEndpointID,
@@ -70,8 +68,6 @@ final class HandoffV2StateMachineVectorTests: XCTestCase {
         machine.configure(
             localEndpointID: "11111111-1111-4111-8111-111111111111",
             coordinationEnabled: false,
-            sourceInputPresent: true,
-            targetInputPresent: false,
             enabledTargets: [V2HandoffTarget(
                 endpointID: "22222222-2222-4222-8222-222222222222",
                 capability: .v2,
@@ -80,8 +76,7 @@ final class HandoffV2StateMachineVectorTests: XCTestCase {
         )
         let eventID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         machine.handleManualSelect(endpointID: "22222222-2222-4222-8222-222222222222", eventID: eventID)
-        machine.handleSourceInputPresenceChanged(false, eventID: eventID)
-        machine.handleTargetInputPresenceChanged(true, eventID: eventID)
+        machine.handleWakeDisplay(endpointID: "22222222-2222-4222-8222-222222222222", eventID: eventID, authenticated: true)
         machine.handleHandoverRequest(endpointID: "22222222-2222-4222-8222-222222222222", eventID: eventID, authenticated: true, intent: .manual)
         machine.handleWakeCompleted(eventID: eventID, success: true)
         machine.handleSwitchCompleted(eventID: eventID, success: true)
@@ -94,61 +89,14 @@ final class HandoffV2StateMachineVectorTests: XCTestCase {
         XCTAssertEqual(sink.inputCalls, 0)
     }
 
-    func testLocalInputAdapterRecordsStartupAndDoesNotAnnounceWhenSourceInputReturns() {
-        let clock = V2VectorClock()
-        let scheduler = V2VectorScheduler(clock: clock)
-        let sink = V2VectorSink()
-        var actions: [V2HandoffAction] = []
-        let machine = HandoffV2StateMachine(
-            localEndpointID: "10000000-0000-4000-8000-000000000001",
-            sink: sink,
-            scheduler: scheduler,
-            eventIDSource: V2VectorEventIDs(),
-            actionLog: { actions.append($0) }
-        )
-        machine.configure(
-            localEndpointID: "10000000-0000-4000-8000-000000000001",
-            coordinationEnabled: true,
-            sourceInputPresent: false,
-            targetInputPresent: false,
-            enabledTargets: [
-                V2HandoffTarget(
-                    endpointID: "20000000-0000-4000-8000-000000000002",
-                    capability: .v2,
-                    reachable: true
-                )
-            ]
-        )
-
-        machine.recordInitialLocalInputPresence(true)
-        XCTAssertTrue(machine.snapshot().sourceInputPresent)
-        XCTAssertTrue(machine.snapshot().targetInputPresent)
-        XCTAssertTrue(actions.isEmpty)
-
-        machine.handleLocalInputPresenceChanged(false, eventID: "30000000-0000-4000-8000-000000000003")
-        scheduler.run(until: 150, includingBoundary: true)
-        machine.handleLocalInputPresenceChanged(true)
-
-        XCTAssertFalse(actions.contains { action in
-            if case .sendMessage(type: .inputPresent, eventID: _, endpointID: _, intent: _, wakeSucceeded: _, switchSucceeded: _, reason: _) = action {
-                return true
-            }
-            return false
-        })
-    }
-
     private func apply(_ input: V2VectorInput, to machine: HandoffV2StateMachine) throws {
         switch input.kind {
         case "statusProbe":
             machine.handleStatusProbe(endpointID: try input.requiredEndpoint(), eventID: try input.requiredEvent(), authenticated: input.authenticated ?? false)
         case "manualSelect":
             machine.handleManualSelect(endpointID: try input.requiredEndpoint(), eventID: try input.requiredEvent())
-        case "sourceInputPresenceChanged":
-            machine.handleSourceInputPresenceChanged(try XCTUnwrap(input.present), eventID: input.eventID)
-        case "targetInputPresenceChanged":
-            machine.handleTargetInputPresenceChanged(try XCTUnwrap(input.present), eventID: input.eventID)
-        case "peerInputPresent":
-            machine.handlePeerInputPresent(endpointID: try input.requiredEndpoint(), eventID: try input.requiredEvent(), authenticated: input.authenticated ?? false)
+        case "receiveWakeDisplay":
+            machine.handleWakeDisplay(endpointID: try input.requiredEndpoint(), eventID: try input.requiredEvent(), authenticated: input.authenticated ?? false)
         case "receiveHandoverRequest":
             machine.handleHandoverRequest(
                 endpointID: try input.requiredEndpoint(),
@@ -187,8 +135,6 @@ private struct V2StateVector: Decodable {
 private struct V2InitialState: Decodable {
     let localEndpointID: String
     let coordinationEnabled: Bool
-    let sourceInputPresent: Bool
-    let targetInputPresent: Bool
     let state: String
     let activeEventID: String?
     let lockedTargetEndpointID: String?
@@ -201,7 +147,6 @@ private struct V2VectorInput: Decodable {
     let endpointID: String?
     let eventID: String?
     let authenticated: Bool?
-    let present: Bool?
     let intent: String?
     let wakeSucceeded: Bool?
     let switchSucceeded: Bool?
@@ -257,10 +202,6 @@ private struct V2TimedAction: Equatable {
             kind = "requestSwitch"; type = nil; self.eventID = eventID; self.endpointID = endpointID; reason = nil; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
         case let .lockTarget(endpointID):
             kind = "lockTarget"; type = nil; eventID = nil; self.endpointID = endpointID; reason = nil; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
-        case .startDiscovery:
-            kind = "startDiscovery"; type = nil; eventID = nil; endpointID = nil; reason = nil; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
-        case let .promptManualSelection(reason):
-            kind = "promptManualSelection"; type = nil; eventID = nil; endpointID = nil; self.reason = reason.rawValue; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
         case let .ignoreMessage(reason, eventID, endpointID):
             kind = "ignoreMessage"; type = nil; self.eventID = eventID; self.endpointID = endpointID; self.reason = reason.rawValue; value = nil; intent = nil; wakeSucceeded = nil; switchSucceeded = nil
         case let .clearEvent(reason):
@@ -303,8 +244,7 @@ private final class V2VectorSink: V2HandoffActionSink {
     var switchCalls = 0
     var inputCalls = 0
     func sendV2Message(type: V2MessageType, eventID: String, endpointID: String, intent: V2HandoverIntent?, wakeSucceeded: Bool?, switchSucceeded: Bool?, reason: V2CancellationReason?) { networkSends += 1 }
-    func requestV2Wake(eventID: String) { wakeCalls += 1 }
+    func requestV2Wake(eventID: String, completionRequired: Bool) { wakeCalls += 1 }
     func requestV2Switch(eventID: String, endpointID: String) { switchCalls += 1 }
-    func promptV2ManualSelection() {}
     func updateV2PeerReachable(_ reachable: Bool, endpointID: String) {}
 }

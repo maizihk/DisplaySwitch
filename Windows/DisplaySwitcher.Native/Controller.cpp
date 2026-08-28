@@ -88,10 +88,12 @@ namespace DisplaySwitcher::Native
         StopPeerHealthCheck();
         peer_->Stop();
         auto usbConfigured = config.HasUsbDeviceConfiguration();
-        auto displayConfigured = config.HasDisplayConfiguration();
-        auto automationConfigured = usbConfigured && displayConfigured;
-        usbWatcher_->Reconfigure(config.usbAutomationEnabled && automationConfigured ? config.usbVendorId : -1,
-            config.usbAutomationEnabled && automationConfigured ? config.usbProductId : -1);
+        auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
+            [&](auto const& mapping) { return mapping.targetInput && FindDisplayById(config.displays, mapping.displayId); });
+        auto automationConfigured = usbConfigured && hasUsbMapping;
+        usbWatcher_->Reconfigure(config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.vendorId : -1,
+            config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.productId : -1,
+            config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.deviceLocalReference : L"");
         auto completeProfiles = config.EnabledCompleteProfiles();
         std::vector<V2Target> v2Targets;
         for (auto const& profile : completeProfiles)
@@ -103,8 +105,20 @@ namespace DisplaySwitcher::Native
         auto hasUnboundV2 = std::any_of(completeProfiles.begin(), completeProfiles.end(), [](auto const& profile)
         { return profile.peerEndpointId.empty() && (!profile.peerProtocolVersion || *profile.peerProtocolVersion == 2); });
         v2StateMachine_ = std::make_unique<V2StateMachine>(V2StateInitial{
-            config.localEndpointId, hasV2, usbWatcher_->IsPresent(), usbWatcher_->IsPresent(),
-            V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
+            config.localEndpointId, hasV2, V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
+        bool collaborationValid{};
+        if (config.usbSwitch.collaborationWakeEnabled)
+        {
+            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
+            collaborationValid = profile && profile->coordinationEnabled &&
+                std::any_of(completeProfiles.begin(), completeProfiles.end(), [&](auto const& item) { return EqualId(item.id, profile->id); });
+        }
+        UsbSwitchInitialState usbInitial{ config.usbSwitch.enabled, usbLearningActive_.load(),
+            config.displayConfigurationSafeMode, std::nullopt, config.usbSwitch.collaborationWakeEnabled, collaborationValid };
+        for (auto const& display : config.displays)
+            usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
+                !display.BackendMonitorId(config.displayControlBackend == L"auto" ? L"native_ddc" : config.displayControlBackend).empty(), true });
+        usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
         v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
@@ -117,14 +131,13 @@ namespace DisplaySwitcher::Native
             try { ApplyAutoStart(config.startWithWindows); }
             catch (hresult_error const& error) { ShowError(L"登录启动设置失败", error.message().c_str()); }
         }
-        if (config.usbAutomationEnabled && !usbConfigured) SetStatus(L"USB 自动切换未配置");
-        else if (config.usbAutomationEnabled && !displayConfigured) SetStatus(L"显示器切换未配置");
-        else if (!config.usbAutomationEnabled) SetStatus(L"USB 自动切换未开启");
+        if (config.usbSwitch.enabled && !usbConfigured) SetStatus(L"USB 自动切换未配置");
+        else if (config.usbSwitch.enabled && !hasUsbMapping) SetStatus(L"USB 显示器输入映射未配置");
+        else if (!config.usbSwitch.enabled) SetStatus(L"USB 自动切换未开启");
         else
         {
-            auto device = config.usbName.empty() ? L"已选择设备" : config.usbName;
-            if (!completeProfiles.empty()) SetStatus(L"协同已开启 · " + device);
-            else SetStatus(L"USB 自动切换已开启 · " + device);
+            auto device = config.usbSwitch.deviceName.empty() ? L"已选择设备" : config.usbSwitch.deviceName;
+            SetStatus(L"USB 自动切换已开启 · " + device);
         }
     }
 
@@ -170,14 +183,64 @@ namespace DisplaySwitcher::Native
     {
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
-        SetStatus(present ? L"USB 已接入 Windows" : L"USB 已离开 Windows，等待确认…");
-        auto now = NowMilliseconds();
-        if (v2StateMachine_)
+        if (usbSwitchCoordinator_) ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present));
+    }
+
+    void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions)
+    {
+        if (std::none_of(actions.begin(), actions.end(), [](auto const& action) { return action.kind == UsbSwitchAction::Kind::WakeDisplay; })) return;
+        auto generation = sideEffectGeneration_.load();
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, generation]
         {
-            auto event = present ? NewEventId() : NewEventId();
-            ApplyV2Actions(v2StateMachine_->OnTargetInputPresenceChanged(now, present, present ? event : L""));
-            ApplyV2Actions(v2StateMachine_->OnSourceInputPresenceChanged(now, present, present ? L"" : event));
+            auto self = weak.lock();
+            if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
+            static_cast<void>(WakeDisplay());
+        }).detach();
+    }
+
+    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions)
+    {
+        if (!sideEffectGate_.AllowsSideEffects()) return;
+        WakeDisplayCoalesced(actions);
+        auto config = Config();
+        std::vector<DisplayConfig> selected;
+        for (auto const& action : actions)
+        {
+            if (action.kind != UsbSwitchAction::Kind::SwitchDisplay || !action.targetInput) continue;
+            auto index = FindDisplayById(config.displays, action.displayId);
+            if (!index) continue;
+            auto display = config.displays[*index]; display.macInput = *action.targetInput; selected.push_back(std::move(display));
         }
+        if (!selected.empty())
+        {
+            auto generation = sideEffectGeneration_.load();
+            auto actionConfig = config; actionConfig.displays = std::move(selected);
+            std::weak_ptr<Controller> weak = shared_from_this();
+            std::thread([weak, generation, actionConfig]
+            {
+                auto self = weak.lock();
+                if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
+                auto result = SwitchDisplaysToMac(actionConfig);
+                if (auto current = weak.lock(); current && current->AllowsSideEffects(generation))
+                    current->Enqueue([weak, generation, result]
+                    {
+                        if (auto value = weak.lock(); value && value->AllowsSideEffects(generation))
+                            value->SetStatus(result.success ? L"USB 已离开，显示器已切换" : L"USB 显示器切换部分失败：" + result.error);
+                    });
+            }).detach();
+        }
+        if (std::any_of(actions.begin(), actions.end(), [](auto const& action) { return action.kind == UsbSwitchAction::Kind::SendWakeDisplay; }))
+            SendUsbWakeDisplay();
+    }
+
+    void Controller::SendUsbWakeDisplay()
+    {
+        auto config = Config();
+        if (!config.usbSwitch.collaborationWakeEnabled) return;
+        auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
+        if (!profile || !profile->coordinationEnabled || profile->peerProtocolVersion != 2 || !IsValidDisplayId(profile->peerEndpointId)) return;
+        SendV2({ V2Action::Kind::SendMessage, L"wake_display", NewEventId(), profile->peerEndpointId });
     }
 
     void Controller::ApplyV2Actions(std::vector<V2Action> actions)
@@ -219,10 +282,7 @@ namespace DisplaySwitcher::Native
                 SetPeerConnectionStatus(action.value ? L"已连接到对端" : L"连接已中断", action.value);
                 break;
             case V2Action::Kind::PromptManualSelection:
-                SetStatus(L"未发现明确目标，请手动选择协同配置");
-                break;
-            case V2Action::Kind::StartDiscovery:
-                SetStatus(L"正在发现接入 USB 的对端…");
+                SetStatus(L"对端不可用，请检查协同配置");
                 break;
             case V2Action::Kind::IgnoreMessage:
                 WriteDiagnostic("protocol.v2 message_ignored=1");
@@ -354,6 +414,12 @@ namespace DisplaySwitcher::Native
             SetPeerConnectionStatus(L"已连接到 " + profile->name, true);
             return;
         }
+        if (message.type == L"wake_display")
+        {
+            if (!validated.duplicate && usbSwitchCoordinator_)
+                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now));
+            return;
+        }
         if (message.type != L"status_probe")
         {
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
@@ -361,8 +427,7 @@ namespace DisplaySwitcher::Native
             SetPeerConnectionStatus(L"已连接到 " + profile->name, true);
         }
         if (message.type == L"status_probe") actions = v2StateMachine_->OnStatusProbe(now, message.sourceEndpointId, message.eventId, true);
-        else if (message.type == L"input_present") actions = v2StateMachine_->OnPeerInputPresent(now, message.sourceEndpointId, message.eventId, true);
-        else if (message.type == L"handover_request") actions = v2StateMachine_->OnHandoverRequest(now, message.sourceEndpointId, message.eventId, true, message.intent.value_or(L"input_handover"));
+        else if (message.type == L"handover_request") actions = v2StateMachine_->OnHandoverRequest(now, message.sourceEndpointId, message.eventId, true, message.intent.value_or(L"manual"));
         else if (message.type == L"target_ready") actions = v2StateMachine_->OnTargetReady(now, message.sourceEndpointId, message.eventId, true, message.wakeSucceeded.value_or(false));
         else if (message.type == L"committed") actions = v2StateMachine_->OnCommitted(now, message.sourceEndpointId, message.eventId, true, message.switchSucceeded.value_or(false));
         else if (message.type == L"cancelled") actions = v2StateMachine_->OnCancelled(now, message.sourceEndpointId, message.eventId, true, message.reason.value_or(L"cancelled"));

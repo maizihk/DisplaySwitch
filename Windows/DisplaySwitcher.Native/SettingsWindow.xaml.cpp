@@ -54,7 +54,19 @@ namespace
     {
         std::vector<::DisplaySwitcher::Native::UsbLearningDevice> result;
         result.reserve(devices.size());
-        for (auto const& device : devices) result.push_back(device.LearningDevice());
+        for (size_t index = 0; index < devices.size(); ++index)
+        {
+            auto item = devices[index].LearningDevice();
+            auto sameNameCount = std::count_if(devices.begin(), devices.end(), [&](auto const& device)
+                { return _wcsicmp(device.name.c_str(), devices[index].name.c_str()) == 0; });
+            if (sameNameCount > 1)
+            {
+                auto ordinal = 1 + std::count_if(devices.begin(), devices.begin() + static_cast<std::ptrdiff_t>(index), [&](auto const& device)
+                    { return _wcsicmp(device.name.c_str(), devices[index].name.c_str()) == 0; });
+                item.displayName += L"（" + std::to_wstring(ordinal) + L"）";
+            }
+            result.push_back(std::move(item));
+        }
         return result;
     }
 }
@@ -101,8 +113,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         validation_ = TextBlock(); validation_.Foreground(SolidColorBrush(Windows::UI::Color{ 255, 196, 43, 28 }));
         validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
         usbAutomation_ = ToggleSwitch(); Header(usbAutomation_, L"USB 自动切换");
-        usbSwitchDisplaysOnArrival_ = ToggleSwitch(); Header(usbSwitchDisplaysOnArrival_, L"回到本机时按需切屏");
-        usbProfileSelector_ = ComboBox(); Header(usbProfileSelector_, L"当前协同配置");
+        usbSwitchDisplaysOnArrival_ = ToggleSwitch(); Header(usbSwitchDisplaysOnArrival_, L"联动协同");
+        usbProfileSelector_ = ComboBox(); Header(usbProfileSelector_, L"联动目标配置");
         usbProfileSelector_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDeviceStatus_ = TextBlock(); usbDeviceStatus_.Opacity(0.72); usbDeviceStatus_.TextWrapping(TextWrapping::Wrap);
@@ -124,16 +136,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (loading_) return;
             auto index = usbDevices_.SelectedIndex();
             if (index < 0 || static_cast<size_t>(index) >= devices_.size()) return;
-            auto profileIndex = usbProfileSelector_.SelectedIndex();
-            if (profileIndex < 0 || static_cast<size_t>(profileIndex) >= workingProfiles_.size()) return;
             auto learned = devices_[static_cast<size_t>(index)].LearningDevice();
-            auto& profile = workingProfiles_[static_cast<size_t>(profileIndex)];
-            profile.triggerDevices.erase(std::remove_if(profile.triggerDevices.begin(), profile.triggerDevices.end(),
-                [](auto const& item) { return item.kind == L"usb"; }), profile.triggerDevices.end());
-            profile.triggerDevices.push_back({ L"usb", learned.localReference, learned.displayName });
+            selectedUsbLocalReference_ = learned.localReference;
+            selectedUsbName_ = learned.displayName;
             selectedUsbVendorId_ = devices_[index].vendorId;
             selectedUsbProductId_ = devices_[index].productId;
-            learnedUsbName_ = learned.displayName;
             SaveImmediately();
             RefreshUsbDeviceSelection();
         });
@@ -143,7 +150,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto index = usbProfileSelector_.SelectedIndex();
             usbSelectedProfileId_ = index >= 0 && static_cast<size_t>(index) < workingProfiles_.size()
                 ? workingProfiles_[static_cast<size_t>(index)].id : L"";
-            RefreshUsbDeviceSelection();
+            SaveImmediately();
         });
 
         auto root = Grid();
@@ -169,28 +176,25 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习 USB 设备…"));
         learnCurrentUsb.Click([this](auto const&, auto const&)
         {
-            auto index = usbProfileSelector_.SelectedIndex();
-            if (index >= 0 && static_cast<size_t>(index) < workingProfiles_.size()) StartUsbLearning(workingProfiles_[static_cast<size_t>(index)].id);
+            StartUsbLearning(L"usb-switch");
         });
-        auto clearCurrentUsb = Button(); clearCurrentUsb.Content(box_value(L"清除当前配置设备"));
+        auto clearCurrentUsb = Button(); clearCurrentUsb.Content(box_value(L"清除当前设备"));
         clearCurrentUsb.Click([this](auto const&, auto const&)
         {
-            auto index = usbProfileSelector_.SelectedIndex();
-            if (index < 0 || static_cast<size_t>(index) >= workingProfiles_.size()) return;
-            auto& triggers = workingProfiles_[static_cast<size_t>(index)].triggerDevices;
-            triggers.erase(std::remove_if(triggers.begin(), triggers.end(), [](auto const& item) { return item.kind == L"usb"; }), triggers.end());
+            selectedUsbLocalReference_.clear(); selectedUsbName_.clear();
             selectedUsbVendorId_ = -1; selectedUsbProductId_ = -1;
-            usbDevices_.SelectedIndex(-1); learnedUsbName_.reset(); SaveImmediately(); RefreshUsbDeviceSelection();
+            usbDevices_.SelectedIndex(-1); SaveImmediately(); RefreshUsbDeviceSelection();
         });
         auto usbButtons = StackPanel(); usbButtons.Orientation(Orientation::Horizontal); usbButtons.Spacing(8);
         usbButtons.Children().Append(learnCurrentUsb); usbButtons.Children().Append(clearCurrentUsb);
         auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
-        auto usbHint = TextBlock(); usbHint.Text(L"在协同配置中使用“学习 USB 设备…”。多个新增候选必须由你明确选择。");
+        usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
+        auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
             usbAutomation_, usbSwitchDisplaysOnArrival_, usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
-            usbButtons, usbDeviceStatus_, usbHint }) }));
+            usbButtons, usbDeviceStatus_, usbMappingsPanel_, usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
@@ -378,13 +382,22 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::LoadValues(::DisplaySwitcher::Native::AppConfig const& config)
     {
         loading_ = true;
-        usbAutomation_.IsOn(config.usbAutomationEnabled);
-        usbSwitchDisplaysOnArrival_.IsOn(config.usbSwitchDisplaysOnArrival);
-        selectedUsbVendorId_ = config.usbVendorId;
-        selectedUsbProductId_ = config.usbProductId;
+        usbAutomation_.IsOn(config.usbSwitch.enabled);
+        usbSwitchDisplaysOnArrival_.IsOn(config.usbSwitch.collaborationWakeEnabled);
+        selectedUsbLocalReference_ = config.usbSwitch.deviceLocalReference;
+        selectedUsbName_ = config.usbSwitch.deviceName;
+        selectedUsbVendorId_ = config.usbSwitch.vendorId;
+        selectedUsbProductId_ = config.usbSwitch.productId;
+        usbSelectedProfileId_ = config.usbSwitch.collaborationProfileId;
         controlMyMonitor_.Text(config.controlMyMonitorPath);
         workingDisplays_ = config.displays;
         workingProfiles_ = config.collaborationProfiles;
+        RebuildUsbMappingEditors();
+        for (auto const& editor : usbMappingEditors_)
+        {
+            auto value = config.UsbInputForDisplay(editor.displayId);
+            editor.targetInput.Text(value ? std::to_wstring(*value) : L"");
+        }
         RebuildDisplayEditors();
         RebuildProfileEditors();
         autoStart_.IsOn(config.startWithWindows);
@@ -404,7 +417,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             devices_ = ::DisplaySwitcher::Native::UsbWatcher::EnumerateDevices(); usbDevices_.Items().Clear();
             for (size_t index = 0; index < devices_.size(); ++index)
             {
-                auto item = ComboBoxItem(); item.Content(box_value(devices_[index].DisplayName())); usbDevices_.Items().Append(item);
+                auto label = devices_[index].DisplayName();
+                auto sameNameCount = std::count_if(devices_.begin(), devices_.end(), [&](auto const& device)
+                    { return _wcsicmp(device.name.c_str(), devices_[index].name.c_str()) == 0; });
+                if (sameNameCount > 1)
+                {
+                    auto ordinal = 1 + std::count_if(devices_.begin(), devices_.begin() + static_cast<std::ptrdiff_t>(index), [&](auto const& device)
+                        { return _wcsicmp(device.name.c_str(), devices_[index].name.c_str()) == 0; });
+                    label += L"（" + std::to_wstring(ordinal) + L"）";
+                }
+                auto item = ComboBoxItem(); item.Content(box_value(label)); usbDevices_.Items().Append(item);
             }
             loading_ = wasLoading;
             RefreshUsbDeviceSelection();
@@ -418,14 +440,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         EndUsbLearning();
         CaptureProfileEditors();
-        auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
-            { return _wcsicmp(item.id.c_str(), profileId.c_str()) == 0; });
-        if (profile == workingProfiles_.end())
-        {
-            ShowValidationError(L"目标协同配置已不存在，未改变 USB 绑定。");
-            return;
-        }
-
         ddcCancellation_.Cancel();
         if (beginUsbLearning_) beginUsbLearning_();
         usbLearningRuntimePaused_ = true;
@@ -438,7 +452,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             usbLearningTimer_.IsRepeating(true);
             usbLearningTimer_.Tick([this](auto const&, auto const&) { PollUsbLearning(); });
             usbLearningTimer_.Start();
-            validation_.Text(L"正在为“" + profile->name + L"”学习 USB 设备：请在 30 秒内接入目标设备。学习完成前自动协同和硬件操作保持暂停。");
+            validation_.Text(L"正在学习本机 USB 设备：请在 30 秒内接入目标设备。学习完成前网络和硬件操作保持暂停。");
             validation_.Visibility(Visibility::Visible);
         }
         catch (...)
@@ -452,8 +466,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (!usbLearning_.Active() || usbLearningDialogOpen_) return;
         auto generation = usbLearningGeneration_;
-        auto profileExists = std::any_of(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& profile)
-            { return _wcsicmp(profile.id.c_str(), usbLearning_.ProfileId().c_str()) == 0; });
+        auto profileExists = usbLearning_.ProfileId() == L"usb-switch";
         try
         {
             auto devices = ::DisplaySwitcher::Native::UsbWatcher::EnumerateDevices();
@@ -508,9 +521,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 return;
             }
             auto index = picker.SelectedIndex();
-            auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
-                { return _wcsicmp(item.id.c_str(), profileId.c_str()) == 0; });
-            if (index < 0 || static_cast<size_t>(index) >= candidates.size() || profile == workingProfiles_.end())
+            if (index < 0 || static_cast<size_t>(index) >= candidates.size() || profileId != L"usb-switch")
             {
                 usbLearning_.Cancel(generation);
                 EndUsbLearning(L"目标配置或候选已失效；原 USB 绑定保持不变。");
@@ -523,16 +534,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 EndUsbLearning(L"USB 学习已超时或结果已失效；原绑定保持不变。");
                 return;
             }
-            profile->triggerDevices.erase(std::remove_if(profile->triggerDevices.begin(), profile->triggerDevices.end(),
-                [](auto const& item) { return item.kind == L"usb"; }), profile->triggerDevices.end());
-            profile->triggerDevices.push_back({ L"usb", selected->localReference, selected->displayName });
+            selectedUsbLocalReference_ = selected->localReference;
+            selectedUsbName_ = selected->displayName;
             selectedUsbVendorId_ = selected->vendorId;
             selectedUsbProductId_ = selected->productId;
-            usbDevices_.SelectedIndex(-1); learnedUsbName_ = selected->displayName;
-            auto profileName = profile->name;
-            RebuildProfileEditors();
+            usbDevices_.SelectedIndex(-1);
             auto saved = SaveImmediately();
-            EndUsbLearning(saved ? L"已为“" + profileName + L"”选择 USB 设备并保存。" :
+            EndUsbLearning(saved ? L"已选择 USB 设备并保存。" :
                 L"USB 绑定未能保存；原配置已保留，自动操作保持停用。");
         });
     }
@@ -586,6 +594,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 if (found != ddcMonitors_.end()) display.nativeMonitorId = found->id;
             }
             RebuildDisplayEditors();
+            RebuildUsbMappingEditors();
             if (workingDisplays_.size() != original_.displays.size()) SaveImmediately();
             if (ddcMonitors_.empty() && displayBackend_.SelectedIndex() == 0)
                 ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
@@ -609,6 +618,26 @@ namespace winrt::DisplaySwitcher::Native::implementation
             display.contrastShowInTray = controls.contrastShowInTray.IsOn() && display.contrastEnabled;
             display.volumeEnabled = controls.volumeEnabled.IsOn();
             display.volumeShowInTray = controls.volumeShowInTray.IsOn() && display.volumeEnabled;
+        }
+    }
+
+    void SettingsWindow::RebuildUsbMappingEditors()
+    {
+        if (!usbMappingsPanel_) return;
+        std::map<std::wstring, std::wstring> previous;
+        for (auto const& editor : usbMappingEditors_) previous[editor.displayId] = editor.targetInput.Text().c_str();
+        usbMappingsPanel_.Children().Clear(); usbMappingEditors_.clear();
+        for (auto const& display : workingDisplays_)
+        {
+            auto input = TextBox(); Header(input, (display.name + L"：USB 离开后切到的输入源").c_str());
+            input.HorizontalAlignment(HorizontalAlignment::Stretch);
+            auto old = previous.find(display.id);
+            if (old != previous.end()) input.Text(old->second);
+            else if (auto value = original_.UsbInputForDisplay(display.id)) input.Text(std::to_wstring(*value));
+            input.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
+            input.KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
+            { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); });
+            usbMappingsPanel_.Children().Append(input); usbMappingEditors_.push_back({ display.id, input });
         }
     }
 
@@ -811,11 +840,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::RefreshProfileSelectors()
     {
         if (selectedProfileId_.empty() && !workingProfiles_.empty()) selectedProfileId_ = workingProfiles_.front().id;
-        if (usbSelectedProfileId_.empty() && !workingProfiles_.empty()) usbSelectedProfileId_ = workingProfiles_.front().id;
         auto wasLoading = loading_; loading_ = true;
         profileSelector_.Items().Clear(); usbProfileSelector_.Items().Clear();
         int selected = 0;
-        int usbSelected = 0;
+        int usbSelected = -1;
         for (size_t index = 0; index < workingProfiles_.size(); ++index)
         {
             profileSelector_.Items().Append(box_value(workingProfiles_[index].name));
@@ -828,7 +856,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             profileSelector_.SelectedIndex(selected);
             usbProfileSelector_.SelectedIndex(usbSelected);
             selectedProfileId_ = workingProfiles_[static_cast<size_t>(selected)].id;
-            usbSelectedProfileId_ = workingProfiles_[static_cast<size_t>(usbSelected)].id;
+            if (usbSelected >= 0) usbSelectedProfileId_ = workingProfiles_[static_cast<size_t>(usbSelected)].id;
         }
         loading_ = wasLoading;
         RefreshUsbDeviceSelection();
@@ -836,20 +864,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::RefreshUsbDeviceSelection()
     {
-        if (!usbProfileSelector_ || !usbDevices_ || !usbDeviceStatus_) return;
-        auto profileIndex = usbProfileSelector_.SelectedIndex();
-        if (profileIndex < 0 || static_cast<size_t>(profileIndex) >= workingProfiles_.size())
-        { usbDevices_.SelectedIndex(-1); usbDeviceStatus_.Text(L"尚未选择协同配置"); return; }
-        auto const& profile = workingProfiles_[static_cast<size_t>(profileIndex)];
-        auto trigger = std::find_if(profile.triggerDevices.begin(), profile.triggerDevices.end(), [](auto const& item) { return item.kind == L"usb"; });
+        if (!usbDevices_ || !usbDeviceStatus_) return;
         auto wasLoading = loading_; loading_ = true; int selected = -1;
-        if (trigger != profile.triggerDevices.end())
+        if (!selectedUsbLocalReference_.empty())
             for (size_t index = 0; index < devices_.size(); ++index)
-                if (_wcsicmp(devices_[index].LearningDevice().localReference.c_str(), trigger->localReference.c_str()) == 0)
+                if (_wcsicmp(devices_[index].LearningDevice().localReference.c_str(), selectedUsbLocalReference_.c_str()) == 0)
                 { selected = static_cast<int>(index); break; }
         usbDevices_.SelectedIndex(selected); loading_ = wasLoading;
-        usbDeviceStatus_.Text(trigger == profile.triggerDevices.end() ? L"当前配置尚未选择 USB 设备" :
-            (selected >= 0 ? L"当前配置的 USB 设备已连接" : L"当前配置的 USB 设备未连接；绑定仍保留"));
+        usbDeviceStatus_.Text(selectedUsbLocalReference_.empty() ? L"尚未选择 USB 设备" :
+            (selected >= 0 ? L"已选择的 USB 设备当前已连接" : L"已选择的 USB 设备当前未连接；绑定仍保留"));
     }
 
     void SettingsWindow::RemoveProfile(std::wstring const& id)
@@ -869,6 +892,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (status != Windows::Foundation::AsyncStatus::Completed || operation.GetResults() != ContentDialogResult::Primary) return;
             auto item = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& value) { return _wcsicmp(value.id.c_str(), id.c_str()) == 0; });
             if (item != workingProfiles_.end() && workingProfiles_.size() > 1) workingProfiles_.erase(item);
+            if (_wcsicmp(usbSelectedProfileId_.c_str(), id.c_str()) == 0)
+            {
+                usbSelectedProfileId_.clear();
+                usbSwitchDisplaysOnArrival_.IsOn(false);
+            }
             RebuildProfileEditors(); SaveImmediately();
         });
     }
@@ -1111,6 +1139,26 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto backendIndex = displayBackend_.SelectedIndex();
         if (usbAutomation_.IsOn() && workingDisplays_.empty())
         { reject(1, L"启用 USB 自动切换前，请先完成显示器配置。"); return false; }
+        std::vector<::DisplaySwitcher::Native::UsbDisplayInputMapping> usbMappings;
+        bool hasUsbMapping{};
+        for (auto const& editor : usbMappingEditors_)
+        {
+            auto text = Trim(editor.targetInput.Text().c_str());
+            auto value = text.empty() ? std::optional<int>{} : ParseInteger(text, 10, 0, 65535);
+            if (!text.empty() && !value) { reject(1, L"USB 显示器输入源必须为 0–65535。"); return false; }
+            usbMappings.push_back({ editor.displayId, value });
+            if (value) hasUsbMapping = true;
+        }
+        if (usbAutomation_.IsOn() && (selectedUsbLocalReference_.empty() || !hasUsbMapping))
+        { reject(1, L"启用 USB 自动切换前，必须选择一个设备并至少配置一台显示器输入源。"); return false; }
+        if (usbSwitchDisplaysOnArrival_.IsOn())
+        {
+            auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
+                { return _wcsicmp(item.id.c_str(), usbSelectedProfileId_.c_str()) == 0; });
+            auto candidate = original_; candidate.displays = workingDisplays_; candidate.collaborationProfiles = workingProfiles_;
+            if (profile == workingProfiles_.end() || !profile->coordinationEnabled || !candidate.InspectProfile(profile->id).complete)
+            { reject(1, L"启用联动协同前，必须选择一个已开启且完整的协同配置。"); return false; }
+        }
         auto controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
         if (backendIndex == 2 && controlMyMonitorPath.empty())
         { reject(3, L"兼容控制通道尚未配置，已恢复最后有效选择。"); return false; }
@@ -1131,12 +1179,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (!hardwareIds.insert(hardwareId).second)
             { reject(3, L"显示器关联发生冲突，已恢复最后有效配置。"); return false; }
         }
-        auto result = original_; result.usbAutomationEnabled = usbAutomation_.IsOn();
-        result.usbSwitchDisplaysOnArrival = usbSwitchDisplaysOnArrival_.IsOn();
-        result.usbVendorId = selectedUsbVendorId_; result.usbProductId = selectedUsbProductId_; auto selected = usbDevices_.SelectedIndex();
-        if (learnedUsbName_) result.usbName = *learnedUsbName_;
-        else if (selected >= 0 && static_cast<size_t>(selected) < devices_.size()) result.usbName = devices_[selected].name;
-        else if (selectedUsbVendorId_ < 0 || selectedUsbProductId_ < 0) result.usbName.clear();
+        auto result = original_;
+        result.usbSwitch.enabled = usbAutomation_.IsOn();
+        result.usbSwitch.collaborationWakeEnabled = usbSwitchDisplaysOnArrival_.IsOn();
+        result.usbSwitch.collaborationProfileId = usbSelectedProfileId_;
+        result.usbSwitch.deviceLocalReference = selectedUsbLocalReference_;
+        result.usbSwitch.deviceName = selectedUsbName_;
+        result.usbSwitch.vendorId = selectedUsbVendorId_; result.usbSwitch.productId = selectedUsbProductId_;
+        result.usbSwitch.displayInputs = std::move(usbMappings);
         result.displayControlBackend = backendIndex == 2 ? L"control_my_monitor" : backendIndex == 1 ? L"native_ddc" : L"auto";
         result.linkAllDisplays = linkAllDisplays_.IsOn();
         result.controlMyMonitorPath = controlMyMonitorPath; result.displays = workingDisplays_;

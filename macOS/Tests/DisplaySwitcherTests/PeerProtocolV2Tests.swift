@@ -126,8 +126,8 @@ final class PeerProtocolV2Tests: XCTestCase {
             )
         }
         let endpoint = "22222222-2222-4222-8222-222222222222"
-        let duplicate = DisplayConfigurationStoreV4Document(
-            schemaVersion: 4,
+        let duplicate = DisplayConfigurationStoreV5Document(
+            schemaVersion: 5,
             localEndpointID: "11111111-1111-4111-8111-111111111111",
             localDeviceName: "Local", listenPort: 49_731,
             controlChannel: .automatic, linkAllDisplays: false, displays: [display],
@@ -144,9 +144,9 @@ final class PeerProtocolV2Tests: XCTestCase {
         XCTAssertEqual(routes.route(for: "33333333-3333-4333-8333-333333333333")?.profileID, "B")
     }
 
-    func testInputPresentCarriesNoDeviceTypeOrIdentifier() throws {
+    func testWakeDisplayCarriesNoDeviceTypeOrIdentifier() throws {
         let message = V2Message(
-            type: .inputPresent,
+            type: .wakeDisplay,
             eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             sourceEndpointID: "11111111-1111-4111-8111-111111111111",
             targetEndpointID: "22222222-2222-4222-8222-222222222222",
@@ -303,7 +303,7 @@ final class PeerProtocolV2Tests: XCTestCase {
     }
 }
 
-private func unboundDocument(localEndpointID: String, pairingCodes: [String]) -> DisplayConfigurationStoreV4Document {
+private func unboundDocument(localEndpointID: String, pairingCodes: [String]) -> DisplayConfigurationStoreV5Document {
     let displayID = "44444444-4444-4444-8444-444444444444"
     let display = DisplayConfigurationV4Display(
         id: displayID, name: "Display", selector: "display-selector", localInput: 15,
@@ -319,8 +319,8 @@ private func unboundDocument(localEndpointID: String, pairingCodes: [String]) ->
             triggerDevices: []
         )
     }
-    return DisplayConfigurationStoreV4Document(
-        schemaVersion: 4, localEndpointID: localEndpointID, localDeviceName: "Local",
+    return DisplayConfigurationStoreV5Document(
+        schemaVersion: 5, localEndpointID: localEndpointID, localDeviceName: "Local",
         listenPort: 49_731, controlChannel: .automatic, linkAllDisplays: false,
         displays: [display], collaborationProfiles: profiles
     )

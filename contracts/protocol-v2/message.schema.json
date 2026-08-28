@@ -21,7 +21,7 @@
       "enum": [
         "status_probe",
         "status_response",
-        "input_present",
+        "wake_display",
         "handover_request",
         "target_ready",
         "committed",
@@ -40,13 +40,12 @@
     "timestamp": { "type": "integer", "minimum": 0 },
     "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{22}$" },
     "authTag": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
-    "intent": { "type": "string", "enum": ["manual", "input_handover"] },
+    "intent": { "type": "string", "const": "manual" },
     "wakeSucceeded": { "type": "boolean" },
     "switchSucceeded": { "type": "boolean" },
     "reason": {
       "type": "string",
       "enum": [
-        "source_input_returned",
         "configuration_changed",
         "user_cancelled",
         "peer_unavailable"
@@ -59,7 +58,7 @@
       "then": { "$ref": "#/$defs/noTypeSpecificFields" }
     },
     {
-      "if": { "properties": { "type": { "enum": ["status_response", "input_present"] } }, "required": ["type"] },
+      "if": { "properties": { "type": { "enum": ["status_response", "wake_display"] } }, "required": ["type"] },
       "then": {
         "allOf": [
           { "properties": { "targetEndpointID": { "$ref": "#/$defs/uuid" } } },

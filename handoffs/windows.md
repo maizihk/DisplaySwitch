@@ -3,48 +3,40 @@
 ## 当前任务
 
 - 日期：2026-08-29
-- 功能：DS-007 / Windows 设置界面、DDC 控制与 v2-only 收敛
-- 分支：`codex/windows-ds-007-settings-ui`
-- 共同基线分支：`origin/codex/coord-ds-007-v2-only`
-- 任务起始基线：`da90d0c598ef683c53b243b804526e09ab0cce4f`
-- 当前合入基线：`06dc0ff`（包含 `8bf895e` 的 v2-only 18 条状态向量）
-- 首次实现提交：`80321797bc576dea8c1219be147400606c172721`
-- 协调验收修正提交：`84b54e8f7133611900931426733e1fe3f39b6775`
-- PR：#37，base 为 `codex/coord-ds-007-v2-only`，不指向 `main`
-- GitHub CI：Windows run [33188504745](https://github.com/maizihk/DisplaySwitch/actions/runs/33188504745) 成功；`build-test-and-package` 通过并上传 761 KB 的 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent` artifact
+- 功能：DS-008 / Windows 本机 USB 双向切换
+- 分支：`codex/windows-ds-008-usb-local-switch`
+- PR base：`codex/coord-ds-008-usb-local-switch`
+- 共享基线：`35c2d156d2c2259fd604f3e305d0b09e234aec2b`
+- 实现提交：`43683d6973e2088ba3e4832a622102cffd081633`
+- PR：[#42](https://github.com/maizihk/DisplaySwitch/pull/42)，目标为协调分支，保持开放且禁止自动合并
 
 ## 完成内容
 
-- Windows 正式运行时已删除 v1 消息类型、解析器、状态机、发送、心跳和探测回退文件及工程引用。UDP 入口使用同一纯版本闸门，只有整数 version 2 进入 v2 解析器；version 1、缺失、类型错误和未知版本直接静默拒绝。
-- v2 的 PBKDF2-HMAC-SHA256、规范化认证输入、常量时间校验、nonce 重放缓存、endpoint 路由、防抖、重发、超时和降级保护保持不变。检测只发送 v2 探测并只接受匹配当前待处理 eventID 的响应。
-- 本机配置升级到 schema v4。v3 或更早文件使用 `.pre-v4.backup` 及递增后缀保留原文，然后原子创建协同、USB 和六个 DDC 开关均关闭的默认配置；不迁移旧字段。v4 临时写入、回读和替换继续使用持久安全标记与运行时安全闸门。
-- v4 不再序列化旧 v1 顶层 host/port/pairing/coordination 镜像或旧显示器本机/对端输入字段。启用配置必须具备合法 v2 对端身份、完整字段和全部显示器映射，否则保存前拒绝。
-- 设置窗口统一为“常规 / USB 切换 / 协同 / 显示器 / 关于”五页，并删除全局保存/取消。开关、选择器、配置增删排序即时原子保存；文本在失焦或 Return 时保存，非法值恢复最后有效状态；所有配置删除均要求确认。
-- USB 页按当前自定义协同配置选择、清除或学习 USB 设备，并提供 USB 自动切换及回到本机时按需切屏。普通界面不显示 VID/PID 或设备路径；30 秒基线、多候选确认、取消/超时/删除/迟到保护和学习期零副作用保持不变。
-- 协同页增加当前配置选择器，只显示用户自定义名称；保留增删排序、名称、地址、端口、配对码、启用、检测和每显示器输入映射。首次或变化的对端身份确认后立即保存，保存失败不会误报成功。
-- 关于信息成为独立标签，显示公开应用元数据、图标、产品、版本/构建、平台/架构、协议 v2、项目、MIT 许可证和 Windows 第三方说明；不读取本机配置或硬件信息。
-- 显示器页只保留全局控制通道、联动开关、重新检测和每台中性序号卡片。卡片仅显示读取按钮，以及亮度/对比度/音量的功能开关、托盘开关、滑杆、值和状态；普通界面不再创建可编辑名称、每显示器后端、设备路径或旧输入字段。
-- 新显示器六个 DDC 开关默认关闭。关闭功能会强制关闭对应托盘入口并保持零读写；读取只覆盖三项控制，不包含输入源、唤醒或协同。
-- 托盘按 enabled 与 showInTray 的交集动态生成真实滑杆，支持鼠标拖动和键盘方向键/Return。连续写入按显示器和项目 latest-wins 合并，单一工作器串行执行；配置代际变化会清空待写值，迟到结果不提交。
-- 原生 DDC 写入失败时重新发现物理显示器并仅重试一次；成功后才更新缓存。全局自动通道仅在原生通道不可用且 ControlMyMonitor 配置完整时回退；单项、单显示器和联动部分失败继续隔离。
+- 配置升级为 schema v5。仅对 v4 执行 `.pre-v5.backup` 后的原子迁移，保留常规、显示器、DDC 和协同配置；旧 profile 设备和协同输入映射不会被猜测为新 USB 配置。迁移失败保留原文件及已解析的非 USB 数据，并持久进入安全状态。
+- 新增独立 `UsbSwitchCoordinator`，USB presence 不再进入 `V2StateMachine`。一个明确选择的本机 USB 设备由本机引用精确监听；启动、重载和换设备后的第一次观察只建立基线。
+- USB 接入变离开时先调度所有合法显示器映射的 DDC 输入源写入，不等待网络；单台失败不阻止其他显示器。离开变接入只请求本机显示器唤醒。
+- “联动协同”默认关闭。关闭时 USB 决策不生成网络动作；开启时在 DDC 已调度后向一个完整目标发送一次认证 `wake_display`，网络失败不阻断或回滚 DDC。
+- 合法 `wake_display` 只进入共享唤醒合并器，不回复、不写 DDC、不进入手动协同状态；网络唤醒和 USB 接入在 2 秒内最多实际唤醒一次。
+- 正式 v2 解析删除 `input_present`，`handover_request` 只接受 `manual`；保留 HMAC、时间窗、nonce、endpoint 和重放保护，以及手动协同的 150 ms 重发和 600 ms 兜底。
+- USB 设置页改为一个设备、每显示器目标输入源、USB 开关、联动开关和联动目标配置。原始 VID/PID 与设备路径不显示；同名设备使用中性序号区分。
 
 ## 自动验证
 
-- 本机原生自动测试已通过，使用临时配置、模拟时间、模拟网络、模拟 USB 和模拟 DDC；没有访问真实局域网或硬件。
-- `contracts/protocol-v2/` 原生输出：`DS-005 passed 1 normalization vector, 4 authentication vectors, 20 message vectors and 18 state-machine vectors`。
-- DS-007 Windows 适用自动场景覆盖：即时保存成功/非法回滚、不完整配置零副作用、旧配置备份与 v4 安全默认、v4 写入故障安全标记、version 1/缺失/错误/未知拒绝、关于页零副作用、托盘动态投影与滑杆写入、latest-wins/串行/取消、全零不可信、单项零、失败隔离、联动、原生一次重试及安全闸门。
-- 原有 DS-004 C-001 至 C-024 相关本机模型、保存安全、DDC、USB 学习和关于页回归继续通过；测试不再读取 `contracts/protocol-v1/`。
-- `Windows/build-windows.ps1` x64 Release 完整通过；脚本真实运行原生测试并输出上述 v2 `1+4+20+18` 向量结果。`dist` 包含 `DisplaySwitch.exe`、`runtime/DisplaySwitcher.Windows.exe`、WinMD、PRI、XBF、图标和 Bootstrap DLL，总计 1,653,024 字节（1.58 MiB），低于 20 MiB 限制。
-- PR #37 协调验收后合入最新 base；共享合同已删除 P-014/P-015，Windows 向量适配器同步删除 `receiveV1Message`、`capability=v1` 和 P-014 特判死代码。
+- `Windows/build-windows.ps1` x64 Release 完整通过，并真实运行 `DisplaySwitcher.Tests.exe`。
+- 原生测试通过 `contracts/usb-switch-v1/` 的 USB-001 至 USB-016。
+- v2 回归通过 1 条 NFC、4 条认证、20 条消息和当前 6 条状态机向量。
+- 既有 DS-004 C-001 至 C-024、DS-005 检测和 DS-007 Windows 适用回归继续通过。
+- `Windows/dist/` 含绿色版入口与完整 `runtime/`，共 1,679,136 字节（1.60 MiB），低于 20 MiB。
+- 公共合同 Python 校验脚本因本机未安装 `jsonschema` 未单独运行；同一 JSON 已由原生测试直接读取并逐项比对，未为此安装额外依赖。
+- `git diff --check`、范围、敏感信息和构建产物检查通过；未提交 `dist/bin/obj`、本机配置、设备引用或秘密。
 
 ## 尚需实机验证
 
-- WinUI 3 五页的正常/窄窗口布局、高 DPI、深浅色、滚动区域、焦点顺序、屏幕阅读器名称及错误提示交互。
-- 设置页即时保存、非法文本回滚、配置选择/增删排序/删除确认、USB 当前配置选择和对端身份确认的真实交互。
-- 托盘 DDC 项即时增删、鼠标/键盘滑杆、菜单关闭行为及连续拖动压力。
-- 真实显示器原生 DDC 和 ControlMyMonitor 的三项回读、写入、一次恢复、全局通道、联动和失败隔离。
-- 真实 USB 学习/自动交接，以及 Windows/macOS 的 v2 检测、在线窗口、手动定向、单配置和多配置发现。
-- 本任务未启动新版程序，未访问真实 UDP、USB、DDC、显示器唤醒、输入源、防火墙、登录项或其他系统设置。
+- 设置页一个设备、动态每显示器映射、即时保存/回滚、同名设备选择、窄窗口和高 DPI 交互。
+- 真实单设备接入/离开检测及首次基线行为。
+- 真实 DDC 输入源切换、单台失败隔离和不同后端兼容性。
+- Windows/macOS 双机认证 `wake_display`、网络失败不影响 DDC，以及网络唤醒与 USB 接入的 2 秒合并。
+- 本任务未启动新版程序，未执行真实 UDP、USB、DDC、显示器唤醒、输入源切换、防火墙或系统设置操作。
 
 ## 范围
 

@@ -3,63 +3,61 @@
 ## 当前任务
 
 - 日期：2026-08-29
-- 功能：DS-007 / macOS 设置界面、DDC 可靠性与 v2-only 收敛
-- 分支：`codex/macos-ds-007-settings-ui`
-- PR 基线：`codex/coord-ds-007-v2-only@06dc0ff9488afbe6edd7b03e5bf9fe1993110c08`
-- 主实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
-- 18 条 v2-only 向量收尾提交：`8bafa57db6ef1835f00dd0c2652a778bdc2e4e9a`
-- 本地完整验证 HEAD：`50424156013f523b31132971e72daa403952dac8`
-- 已验证 PR HEAD：`54455afef0435baf9af81397fc5459dc61e62426`
-- PR：[#36 DS-007 macOS: unify settings, DDC writes, and v2-only runtime](https://github.com/maizihk/DisplaySwitch/pull/36)，base 为 `codex/coord-ds-007-v2-only`
-- GitHub Actions：macOS run [33188061911](https://github.com/maizihk/DisplaySwitch/actions/runs/33188061911) 在上述 PR HEAD 通过
+- 功能：DS-008 / macOS 发布前 UDP 固定源端口修复
+- 共享基线：`codex/coord-ds-008-usb-local-switch@aad145d0e3962c16d05442d34e6b07a8553b21cf`
+- 基线确认：开始前已 fetch；基线包含 PR #41 (`4da002d`) 和 PR #42 (`aad145d`)
+- 分支：`codex/macos-ds-008-fixed-source-port`
+- 实现提交：`bc37d2e214eff1cd514d82878c78e48b8d939966`
+- PR：[#43 DS-008 macOS: bind UDP sends to listen port](https://github.com/maizihk/DisplaySwitch/pull/43)，base 为 `codex/coord-ds-008-usb-local-switch`
+
+## 根因
+
+- Windows `UdpPeer::Start` 把 UDP socket 绑定到本机 `listenPort`，`SendRaw` 复用这个 socket，因此主动数据报的源端口稳定为本机监听端口。
+- Windows 首次未绑定 `status_probe` 只接受 `SourceMatches` 同时匹配配置 host 和 `profile.peerPort` 的来源；其自动测试也按来源地址和来源端口匹配首次探测。
+- macOS 原 `PeerTransport.send` 每次创建未指定本地 endpoint 的 `NWConnection`，系统会分配临时源端口。目标端口虽正确使用 `peerPort`，Windows 仍会在首次 endpoint 绑定前因来源端口不匹配拒绝探测，界面最终表现为等待心跳或无响应。
 
 ## 完成内容
 
-- 网络入口收敛为 v2-only：删除 v1 解析器、状态机、发送、心跳、探测回退及固定平台角色路径；只有整数 `version = 2` 才进入正式解析器。
-- v1、缺失版本、浮点/字符串版本和未知版本均零回复、零在线刷新、零 USB、零唤醒和零 DDC。
-- 本机配置升级到 `schemaVersion = 4`；v3 及更早配置先保留原值和本机备份，再生成协同、USB 自动化与全部 DDC 开关关闭的 v4 默认配置。
-- v4 写入使用 staging、回读校验和最后有效值恢复；编码、写入或回读失败持久进入四类副作用全部关闭的安全状态。
-- 设置页保持 Swift/AppKit，标签统一为“常规、USB 切换、协同、显示器、关于”；移除全局保存/取消，开关、选择器、配置增删排序和 endpoint 确认即时原子保存，文本字段在提交时保存。
-- 保存或校验失败恢复最后有效值，并在窗口内显示文字错误；普通设置页不展示 VCP 编号、endpointID、schemaVersion、后端类名或原始显示器标识。
-- 协同检测和在线状态按配置独立维护，覆盖未启用、配置不完整、尚未检测、正在检测、无响应、v2 可用、已连接及 6 秒后连接断开。
-- 手动配置入口只走已确认的 v2 路由；未确认时不再绕过协议直接写输入源。
-- 显示器页仅保留控制通道、联动开关、检测/刷新入口，以及每台显示器的亮度、对比度、音量功能/托盘开关、滑杆和值。
-- 新显示器六个 DDC 开关默认关闭；菜单栏控制只为 `enabled = true && showInTray = true` 的项目生成。
-- 连续 DDC 写入按“稳定显示器 ID + 控制项” latest-wins 合并，同一显示器通道串行且不阻塞主线程；原生句柄失败后失效、重发现并只重试一次，再按控制通道决定是否回退。
-- 配置变化、显示器重检、取消和安全闸门关闭会清空待写值；迟到结果不能更新缓存或 UI，自动读取不会覆盖写入中的项目。
-- 标题使用非透明 AppKit 原生标题栏并随标签同步；内容、滚动区和关于页使用动态系统语义背景色。
-- 关于页继续只读取公开 Bundle/静态信息，展示产品、版本/构建、平台/架构、协议 v2、GitHub、许可证和测试构建提示。
+- `PeerTransport` 的监听和主动 UDP 连接都启用本地 endpoint 复用；主动连接使用 `requiredLocalEndpoint` 绑定当前 `listenPort`，目标仍使用所选配置的 `peerPort`。
+- 所有主动 `send` 共用同一路径，因此覆盖 `status_probe`、`wake_display`、`handover_request`、状态机重发及其他主动消息；没有新增第二个用户可配置端口。
+- 主动连接按 host/目标端口复用，连接 ready 前的数据报排队；同一主动连接持续接收对端响应，避免固定源端口后回包落到无人接收的 socket。
+- `start` 同端口重复调用不创建第二个监听；端口重配、`stop`、监听失败、连接失败和发送失败会释放相应监听/连接资源，退出时显式停止网络传输。
+- 收到数据报后的回复仍使用该数据报所属连接，没有修改 eventID、HMAC、endpoint 路由、消息缓存或重放保护。
+- 通过可注入 listener/connection factory 新增 5 项纯传输测试，覆盖三类主动请求的源/目标端口、同端口重复 start、端口重配、stop、发送失败重建和原连接回复。
 
-## 本地自动验证
+## 本机验证
 
-- 本机选定的 Xcode 27 Beta 6：
-  - Debug：通过。
-  - Release：通过。
-  - 完整 XCTest：47 项通过，0 失败，0 跳过。
-- 公共 v2 消息：20 条全部通过；NFC 规范化 1 条、认证 4 条全部通过。
-- 当前 v2-only 状态机：直接执行合同中的 18 条公共向量，全部通过；不再过滤历史 v1 向量。
-- DDC 自动测试覆盖 100 次快速滑杆合并、两项交错串行、取消/迟到结果、句柄恢复单次重试、回退选择、失败后下次恢复和缓存保护。
-- `./macOS/scripts/build-app.sh`：成功，生成忽略的 App 和当前架构 ZIP。
-- `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过；文件同步扩展属性出现时清理忽略产物后复验通过。
-- `contracts/protocol-v2/validate.py`：4 个 schema、1 条规范化、4 条认证、20 条消息和 18 条状态机数据合同校验通过。
-- `git diff --check`：通过。
-- GitHub Actions run 33188061911：Debug、XCTest、Release 打包、产物检查、严格签名验证和 artifact 上传全部通过。
-- 未启动 App；自动测试使用模拟网络、时间、DDC、USB、唤醒和输入源接口。
+- 生产 `PeerTransport.swift` 使用本机 macOS 26.5 SDK完成 Swift 类型检查；新增测试文件通过 Swift 语法解析。
+- 仅使用 `127.0.0.1` 的 UDP 运行验证通过：接收端观测到主动请求源端口等于配置 `listenPort`、目标端口等于 loopback 接收端口，且响应由主动连接收到。
+- `contracts/protocol-v2/validate.py`：4 个 schema、1 条 NFC、4 条认证、20 条消息和 6 条状态机向量通过。
+- `contracts/usb-switch-v1/validate.py`：USB-001 至 USB-016 全部通过，配置 schemaVersion 5。
+- `plutil -lint macOS/DisplaySwitcher.xcodeproj/project.pbxproj`、`git diff --check` 和提交内容审查通过。
+- 本机只有 Command Line Tools，没有完整 Xcode；未运行 XCTest、Debug/Release Xcode 构建、`build-app.sh` 或 codesign。按协调策略，不单独触发 workflow_dispatch 或中间云端 CI；这些项目由协调端最终 main PR 的 macOS CI 一次完成。
+
+## 发布产物
+
+- 本机未生成新的忽略发布产物，因为没有完整 Xcode。
+- 协调端可从本分支重建：`./macOS/scripts/build-app.sh`。
+- 预期忽略产物路径：`macOS/outputs/DisplaySwitcher.app` 和 `macOS/outputs/DisplaySwitcher-macOS-$(uname -m).zip`。
+- 最终 main PR 的 macOS CI 应上传 `DisplaySwitcher-macOS-${runner.arch}-unsigned` artifact。
 
 ## 尚未执行
 
-- 五个设置页的真实 GUI、浅色/深色外观、窄窗口、标题视觉居中、键盘焦点和辅助功能检查。
-- 真实 macOS/Windows v2 UDP 探测、认证、在线过期、手动和自动交接。
-- 真实 DDC 读取/连续拖动、原生句柄恢复、m1ddc 回退和多显示器失败隔离。
-- 真实 USB/蓝牙 presence、显示器唤醒和输入源切换。
+- 新增 5 项 `PeerTransportTests` 及现有完整 XCTest 尚待最终 main PR 的 macOS CI 执行。
+- Debug、Release、正式打包与严格 codesign 尚待最终 main PR 的 macOS CI 执行。
+- 未做真实 macOS/Windows 双机首次探测、心跳、`wake_display`、手动交接和重发验证。
+- 未做真实 USB、DDC、显示器唤醒、输入源切换或 GUI 验证。
 
 ## 安全与边界
 
-- 平台收尾只修改 `macOS/` 和 `handoffs/macos.md`；共享文件变化仅来自普通合并指定协调基线 `06dc0ff`。
-- 未手工修改 Windows、`PROTOCOL.md`、`AGENTS.md`、根 README、coordination、specs、contracts、GitHub Actions、版本、tag 或 Release。
-- 未记录真实 IP、配对码、USB/显示器标识、本机绝对路径或个人硬件信息。
+- 仅修改 `macOS/` 和 `handoffs/macos.md`。
+- 未修改 Windows、`PROTOCOL.md`、contracts、coordination、specs、根 README、`AGENTS.md`、GitHub Actions、版本号、tag 或 Release。
+- 未启动 App，未访问局域网，未执行真实 USB、DDC、显示器唤醒或输入源切换。
+- 未记录配对码、凭据、真实 IP、真实 endpoint、USB/显示器标识或个人路径。
 - `macOS/.build/` 和 `macOS/outputs/` 保持 Git 忽略。
 
-## 回滚
+## 协调端下一步
 
-- 回退本 PR 可恢复协调基线代码；v4 首次读取旧配置时生成的本机备份仍保留，回滚后需由用户明确选择是否人工恢复旧配置。
+1. 审查并合并本 PR 到 `codex/coord-ds-008-usb-local-switch`。
+2. 从协调分支创建最终 main PR，让 macOS CI 一次运行完整 XCTest、Debug、Release、打包、严格验签和 artifact 上传。
+3. CI 通过后再做授权的 macOS/Windows 双机首次探测，确认 Windows 看到的来源端口等于 Mac `listenPort`，并验证心跳、协同唤醒和手动交接。
