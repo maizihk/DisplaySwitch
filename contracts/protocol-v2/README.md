@@ -13,8 +13,8 @@
 ## 版本边界
 
 - `protocolVersion = 2` 对应网络字段 `version = 2`。
-- contracts 自身使用 `schemaVersion = 1`；它不是平台本机配置的 `schemaVersion = 3`。
-- v2 与 v1 必须使用独立解析器和状态机。v2 contracts 不修改或替代 `contracts/protocol-v1/`。
+- contracts 自身使用 `schemaVersion = 1`；它不是平台本机配置的 `schemaVersion = 4`。
+- 当前网络协议只支持 `version = 2`；`version = 1`、缺少版本和未知版本必须安全拒绝，且不得回复、刷新在线状态或触发硬件副作用。
 
 ## 合成测试材料
 

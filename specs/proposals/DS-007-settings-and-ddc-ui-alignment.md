@@ -8,7 +8,7 @@
 - 提案基线：`bbbcf203c9616dcf21f50c0e1a8190a0921c6390`
 - 网络协议：保留 `version = 2` 的字段和语义，停止支持 `version = 1`
 - 本机配置：建议升级为 `schemaVersion = 4`，不迁移 v3 或更早配置
-- 公共 contract：保留 `contracts/protocol-v2/`；批准后停用并移除 `contracts/protocol-v1/`
+- 公共 contract：只保留 `contracts/protocol-v2/`；`contracts/protocol-v1/` 已获用户批准移除
 - 关联协调记录：`coordination/DS-007.md`
 
 ## 用户决定
@@ -312,4 +312,4 @@ DDC 当前值、最大值、缓存时间和后端句柄属于本机运行时/缓
 2. 新显示器的亮度、对比度、音量及三项托盘显示开关默认全部关闭。
 3. v3 及更早配置只备份、不迁移，重新生成安全的 v4 默认配置。
 4. 网络运行时彻底移除 v1；`version = 2` 语义不变，不升级为 v3。
-5. 在两端 v2-only 实现通过前，暂不修改当前生效的 `PROTOCOL.md` 和 `contracts/protocol-v1/`。
+5. 原计划在两端实现通过后再修改 `PROTOCOL.md` 和 `contracts/protocol-v1/`；用户于 2026-08-28 进一步明确批准先更新并合并 v2-only 共享规范，再派发两端实现，以避免平台代码偏离当前生效协议。
