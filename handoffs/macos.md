@@ -7,8 +7,8 @@
 - 分支：`codex/macos-ds-007-settings-ui`
 - PR 基线：`codex/coord-ds-007-v2-only@da90d0c598ef683c53b243b804526e09ab0cce4f`
 - 实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
-- PR：待创建，base 必须为 `codex/coord-ds-007-v2-only`
-- GitHub Actions：待推送后记录
+- PR：[#36 DS-007 macOS: unify settings, DDC writes, and v2-only runtime](https://github.com/maizihk/DisplaySwitch/pull/36)，base 为 `codex/coord-ds-007-v2-only`
+- GitHub Actions：以 PR #36 最新提交对应的 run 为准；等待完成后记录最终结果
 
 ## 完成内容
 
