@@ -552,16 +552,11 @@ namespace DisplaySwitcher::Native
         for (auto const& display : displays)
         {
             if (!IsValidDisplayId(display.id) || !VisibleText(display.name, 1, 64) || !ids.insert(Lower(display.id)).second) return false;
-            std::wstring hardwareId;
-            auto backend = displayControlBackend == L"auto" ? L"native_ddc" : displayControlBackend;
-            if (backend == L"native_ddc") hardwareId = display.nativeMonitorId;
-            else if (backend == L"control_my_monitor") hardwareId = display.controlMonitorPath;
-            else return false;
+            auto hardwareId = CanonicalDdcMonitorId(display.nativeMonitorId);
             if (hardwareId.empty()) return false;
-            hardwareId = backend + L":" + hardwareId;
+            hardwareId = L"native_ddc:" + hardwareId;
             if (!hardwareIds.insert(Lower(hardwareId)).second) return false;
         }
-        if (displayControlBackend == L"control_my_monitor" && controlMyMonitorPath.empty()) return false;
         return profileId.empty() || IsProfileDisplayMappingComplete(profileId);
     }
 

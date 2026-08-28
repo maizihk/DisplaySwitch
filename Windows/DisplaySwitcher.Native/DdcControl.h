@@ -64,6 +64,14 @@ namespace DisplaySwitcher::Native
         std::wstring message;
     };
 
+    struct DdcEnumerationResult
+    {
+        bool success{};
+        DdcErrorKind error{ DdcErrorKind::None };
+        std::wstring message;
+        std::vector<DdcMonitorInfo> monitors;
+    };
+
     struct DdcCancellationState
     {
         std::atomic<uint64_t> generation{};
@@ -101,7 +109,7 @@ namespace DisplaySwitcher::Native
         virtual std::wstring Key() const = 0;
         virtual std::wstring DisplayName() const = 0;
         virtual DdcBackendStatus Status() const = 0;
-        virtual std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const& cancellation) = 0;
+        virtual DdcEnumerationResult Enumerate(DdcCancellationToken const& cancellation) = 0;
         virtual DdcCapabilities Capabilities(std::wstring const& monitorId,
             DdcCancellationToken const& cancellation) = 0;
         virtual DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
@@ -111,6 +119,9 @@ namespace DisplaySwitcher::Native
     };
 
     using DdcBackendLookup = std::function<IDdcBackend*(std::wstring const& key)>;
+
+    DdcWriteResult WriteNativeWithOneRefresh(IDdcBackend& backend, std::wstring const& monitorId,
+        DdcVcpCode code, int value, DdcCancellationToken const& cancellation);
 
     struct DdcControlItemResult
     {

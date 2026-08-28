@@ -9,62 +9,100 @@ namespace
     struct NativeMonitor
     {
         DdcMonitorInfo info;
-        HANDLE handle{};
+        NativeMonitorHandleLease handles{ [](HANDLE handle) { DestroyPhysicalMonitor(handle); } };
     };
 
-    std::vector<NativeMonitor> EnumerateNativeMonitors()
+    struct NativeEnumeration
     {
-        std::vector<NativeMonitor> result;
-        EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM parameter) -> BOOL
+        bool success{ true };
+        bool partialFailure{};
+        DWORD error{};
+        std::vector<NativeMonitor> monitors;
+    };
+
+    std::mutex nativeDdcMutex;
+
+    NativeEnumeration EnumerateNativeMonitors()
+    {
+        NativeEnumeration result;
+        SetLastError(ERROR_SUCCESS);
+        auto enumerated = EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM parameter) -> BOOL
         {
-            auto& monitors = *reinterpret_cast<std::vector<NativeMonitor>*>(parameter);
+            auto& state = *reinterpret_cast<NativeEnumeration*>(parameter);
             MONITORINFOEXW monitorInfo{ sizeof(monitorInfo) };
-            if (!GetMonitorInfoW(monitor, &monitorInfo)) return TRUE;
+            if (!GetMonitorInfoW(monitor, &monitorInfo)) { state.partialFailure = true; return TRUE; }
             DISPLAY_DEVICEW displayDevice{ sizeof(displayDevice) };
-            EnumDisplayDevicesW(monitorInfo.szDevice, 0, &displayDevice, EDD_GET_DEVICE_INTERFACE_NAME);
-            std::wstring baseId = displayDevice.DeviceID[0] ? displayDevice.DeviceID : displayDevice.DeviceKey;
+            if (!EnumDisplayDevicesW(monitorInfo.szDevice, 0, &displayDevice, EDD_GET_DEVICE_INTERFACE_NAME))
+            { state.partialFailure = true; return TRUE; }
+            std::wstring baseId = CanonicalDdcMonitorId(displayDevice.DeviceID[0] ? displayDevice.DeviceID : displayDevice.DeviceKey);
             std::wstring friendlyName = displayDevice.DeviceString[0] ? displayDevice.DeviceString : monitorInfo.szDevice;
             DWORD count{};
-            if (baseId.empty() || !GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, &count) || count == 0) return TRUE;
+            if (baseId.empty()) { state.partialFailure = true; return TRUE; }
+            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, &count))
+            { state.partialFailure = true; state.error = GetLastError(); return TRUE; }
+            if (count == 0) return TRUE;
             std::vector<PHYSICAL_MONITOR> physical(count);
-            if (!GetPhysicalMonitorsFromHMONITOR(monitor, count, physical.data())) return TRUE;
+            if (!GetPhysicalMonitorsFromHMONITOR(monitor, count, physical.data()))
+            { state.partialFailure = true; state.error = GetLastError(); return TRUE; }
+
+            auto found = std::find_if(state.monitors.begin(), state.monitors.end(), [&](auto const& item)
+                { return _wcsicmp(item.info.id.c_str(), baseId.c_str()) == 0; });
+            if (found == state.monitors.end())
+            {
+                NativeMonitor item;
+                item.info = { baseId, friendlyName, monitorInfo.szDevice };
+                state.monitors.push_back(std::move(item));
+                found = std::prev(state.monitors.end());
+            }
             for (DWORD index = 0; index < count; ++index)
             {
-                std::wstring id = baseId + L"|" + std::to_wstring(index);
-                std::wstring label = friendlyName;
                 if (physical[index].szPhysicalMonitorDescription[0]
-                    && _wcsicmp(physical[index].szPhysicalMonitorDescription, friendlyName.c_str()) != 0)
-                    label += L" · " + std::wstring(physical[index].szPhysicalMonitorDescription);
-                label += L" (" + std::wstring(monitorInfo.szDevice) + L")";
-                monitors.push_back({ { std::move(id), std::move(label), monitorInfo.szDevice }, physical[index].hPhysicalMonitor });
+                    && (_wcsicmp(friendlyName.c_str(), L"Generic PnP Monitor") == 0 || friendlyName == monitorInfo.szDevice))
+                    found->info.displayName = physical[index].szPhysicalMonitorDescription;
+                found->handles.Add(physical[index].hPhysicalMonitor);
             }
             return TRUE;
         }, reinterpret_cast<LPARAM>(&result));
+        if (!enumerated)
+        {
+            result.success = false;
+            result.error = GetLastError();
+        }
         return result;
     }
 
-    void CloseNativeMonitors(std::vector<NativeMonitor>& monitors)
+    std::vector<DdcMonitorInfo> PublicMonitorInfo(std::vector<NativeMonitor> const& native)
     {
-        for (auto& monitor : monitors) if (monitor.handle) DestroyPhysicalMonitor(monitor.handle);
+        std::vector<DdcMonitorInfo> result;
+        for (auto const& monitor : native) result.push_back(monitor.info);
+        return NormalizeDdcMonitorCollection(std::move(result));
     }
 
     template<typename Action>
     auto WithNativeMonitor(std::wstring const& monitorId, Action const& action)
     {
-        auto monitors = EnumerateNativeMonitors();
-        auto found = std::find_if(monitors.begin(), monitors.end(), [&](auto const& monitor)
-        { return _wcsicmp(monitor.info.id.c_str(), monitorId.c_str()) == 0; });
-        if (found == monitors.end())
+        std::scoped_lock lock(nativeDdcMutex);
+        auto enumeration = EnumerateNativeMonitors();
+        auto canonicalId = CanonicalDdcMonitorId(monitorId);
+        auto found = std::find_if(enumeration.monitors.begin(), enumeration.monitors.end(), [&](auto const& monitor)
+        { return _wcsicmp(monitor.info.id.c_str(), canonicalId.c_str()) == 0; });
+        if (!enumeration.success || found == enumeration.monitors.end() || found->handles.Handles().empty())
         {
-            CloseNativeMonitors(monitors);
             using Result = decltype(action(HANDLE{}));
+            auto message = !enumeration.success ? L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(enumeration.error)
+                : L"找不到按稳定 ID 配置的原生 DDC/CI 显示器";
             if constexpr (std::is_same_v<Result, DdcValueResult>)
-                return Result{ false, 0, 0, DdcErrorKind::MonitorUnavailable, L"找不到按稳定 ID 配置的原生 DDC/CI 显示器" };
+                return Result{ false, 0, 0, DdcErrorKind::MonitorUnavailable, std::move(message) };
             else
-                return Result{ false, DdcErrorKind::MonitorUnavailable, L"找不到按稳定 ID 配置的原生 DDC/CI 显示器" };
+                return Result{ false, DdcErrorKind::MonitorUnavailable, std::move(message) };
         }
-        auto result = action(found->handle);
-        CloseNativeMonitors(monitors);
+        using Result = decltype(action(HANDLE{}));
+        Result result{};
+        for (auto handle : found->handles.Handles())
+        {
+            result = action(handle);
+            if (result.success || result.error == DdcErrorKind::Canceled) break;
+        }
         return result;
     }
 
@@ -135,15 +173,17 @@ namespace
         std::wstring DisplayName() const override { return L"Windows 原生 DDC/CI"; }
         DdcBackendStatus Status() const override { return { DdcAvailability::Available, L"Windows 物理显示器 DDC/CI" }; }
 
-        std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const& cancellation) override
+        DdcEnumerationResult Enumerate(DdcCancellationToken const& cancellation) override
         {
-            if (cancellation.IsCanceled()) return {};
-            auto native = EnumerateNativeMonitors(); std::vector<DdcMonitorInfo> result;
-            for (auto const& monitor : native) result.push_back(monitor.info);
-            CloseNativeMonitors(native);
-            std::sort(result.begin(), result.end(), [](auto const& left, auto const& right)
-            { return _wcsicmp(left.displayName.c_str(), right.displayName.c_str()) < 0; });
-            return cancellation.IsCanceled() ? std::vector<DdcMonitorInfo>{} : result;
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {} };
+            std::scoped_lock lock(nativeDdcMutex);
+            auto native = EnumerateNativeMonitors();
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {} };
+            if (!native.success || (native.partialFailure && native.monitors.empty())) return { false, DdcErrorKind::BackendUnavailable,
+                L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(native.error), {} };
+            auto monitors = PublicMonitorInfo(native.monitors);
+            return { true, DdcErrorKind::None, native.partialFailure ? L"部分显示器无法通过 Windows 原生接口枚举" : L"",
+                std::move(monitors) };
         }
 
         DdcCapabilities Capabilities(std::wstring const& monitorId,
@@ -151,10 +191,14 @@ namespace
         {
             if (cancellation.IsCanceled())
                 return { { DdcAvailability::TemporarilyUnavailable, L"操作已取消" }, true, {}, {} };
-            auto monitors = EnumerateNativeMonitors();
-            auto found = std::find_if(monitors.begin(), monitors.end(), [&](auto const& monitor)
-            { return _wcsicmp(monitor.info.id.c_str(), monitorId.c_str()) == 0; });
-            auto available = found != monitors.end(); CloseNativeMonitors(monitors);
+            std::scoped_lock lock(nativeDdcMutex);
+            auto enumeration = EnumerateNativeMonitors();
+            if (!enumeration.success) return { { DdcAvailability::TemporarilyUnavailable,
+                L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(enumeration.error) }, true, {}, {} };
+            auto canonicalId = CanonicalDdcMonitorId(monitorId);
+            auto found = std::find_if(enumeration.monitors.begin(), enumeration.monitors.end(), [&](auto const& monitor)
+            { return _wcsicmp(monitor.info.id.c_str(), canonicalId.c_str()) == 0; });
+            auto available = found != enumeration.monitors.end() && !found->handles.Handles().empty();
             if (!available) return { { DdcAvailability::TemporarilyUnavailable, L"显示器当前未连接" }, true, {}, {} };
             // MCCS capability strings are optional and frequently incomplete. Unknown means
             // that the actual Get/Set VCP call is the authoritative capability probe.
@@ -208,7 +252,8 @@ namespace
                 ? DdcBackendStatus{ DdcAvailability::Available, L"ControlMyMonitor 硬件 DDC/CI 可用" }
                 : DdcBackendStatus{ DdcAvailability::TemporarilyUnavailable, L"ControlMyMonitor 程序当前不可用" };
         }
-        std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const&) override { return {}; }
+        DdcEnumerationResult Enumerate(DdcCancellationToken const&) override
+        { return { false, DdcErrorKind::Unsupported, L"本轮不使用 ControlMyMonitor 枚举", {} }; }
         DdcCapabilities Capabilities(std::wstring const& monitorId, DdcCancellationToken const& cancellation) override
         {
             auto status = Status();

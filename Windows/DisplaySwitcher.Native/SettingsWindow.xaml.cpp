@@ -119,11 +119,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDeviceStatus_ = TextBlock(); usbDeviceStatus_.Opacity(0.72); usbDeviceStatus_.TextWrapping(TextWrapping::Wrap);
         displayBackend_ = ComboBox(); Header(displayBackend_, L"控制通道"); displayBackend_.HorizontalAlignment(HorizontalAlignment::Stretch);
-        displayBackend_.Items().Append(box_value(L"自动"));
-        displayBackend_.Items().Append(box_value(L"原生 DDC"));
-        cmmChannelAvailable_ = !original_.controlMyMonitorPath.empty();
-        if (cmmChannelAvailable_) displayBackend_.Items().Append(box_value(L"ControlMyMonitor 回退"));
-        displayBackend_.SelectionChanged([this](auto const&, auto const&) { UpdateDisplayBackendVisibility(); SaveImmediately(); });
+        displayBackend_.Items().Append(box_value(L"Windows 原生 DDC/CI"));
+        displayBackend_.IsEnabled(false);
         controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
         linkAllDisplays_ = ToggleSwitch(); Header(linkAllDisplays_, L"联动调节所有显示器");
         autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录时启动");
@@ -402,9 +399,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         RebuildProfileEditors();
         autoStart_.IsOn(config.startWithWindows);
         linkAllDisplays_.IsOn(config.linkAllDisplays);
-        if (config.displayControlBackend == L"native_ddc") displayBackend_.SelectedIndex(1);
-        else if (config.displayControlBackend == L"control_my_monitor" && cmmChannelAvailable_) displayBackend_.SelectedIndex(2);
-        else displayBackend_.SelectedIndex(0);
+        displayBackend_.SelectedIndex(0);
         UpdateDisplayBackendVisibility();
         loading_ = false;
     }
@@ -570,20 +565,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
         CaptureDisplayEditors();
         try
         {
-            ddcMonitors_ = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
-            for (auto const& monitor : ddcMonitors_)
+            auto enumeration = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
+            if (!enumeration.success)
             {
-                auto known = std::any_of(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
-                    { return _wcsicmp(display.nativeMonitorId.c_str(), monitor.id.c_str()) == 0; });
-                if (known) continue;
-                auto display = ::DisplaySwitcher::Native::CreateDisplayConfig(
-                    L"显示器 " + std::to_wstring(workingDisplays_.size() + 1));
-                display.nativeMonitorId = monitor.id;
-                display.backend.clear();
-                workingDisplays_.push_back(std::move(display));
+                ShowValidationError(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message);
+                return;
             }
+            ddcMonitors_ = std::move(enumeration.monitors);
             // Old ControlMyMonitor paths often start with the GDI device name. Use that only once
             // when no stable native ID has been saved; later matching is always by native ID.
+            bool legacyAssociationChanged{};
             for (auto& display : workingDisplays_)
             {
                 if (!display.nativeMonitorId.empty() || display.controlMonitorPath.empty()) continue;
@@ -591,13 +582,24 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 {
                     return display.controlMonitorPath.starts_with(monitor.gdiName);
                 });
-                if (found != ddcMonitors_.end()) display.nativeMonitorId = found->id;
+                if (found != ddcMonitors_.end())
+                {
+                    display.nativeMonitorId = found->id;
+                    legacyAssociationChanged = true;
+                }
             }
+            auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(workingDisplays_, ddcMonitors_);
+            workingDisplays_ = std::move(reconciled.displays);
+            auto usbSwitch = original_.usbSwitch;
+            auto mappingsChanged = ::DisplaySwitcher::Native::RemoveOrphanedDisplayMappings(
+                workingDisplays_, workingProfiles_, usbSwitch);
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
-            if (workingDisplays_.size() != original_.displays.size()) SaveImmediately();
-            if (ddcMonitors_.empty() && displayBackend_.SelectedIndex() == 0)
+            RebuildProfileEditors();
+            if (legacyAssociationChanged || reconciled.changed || mappingsChanged) SaveImmediately();
+            if (ddcMonitors_.empty())
                 ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
+            else if (!enumeration.message.empty()) ShowValidationError(enumeration.message);
             else validation_.Visibility(Visibility::Collapsed);
         }
         catch (...) { ShowValidationError(L"读取原生 DDC/CI 显示器失败。"); }
@@ -675,7 +677,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.status.TextWrapping(TextWrapping::Wrap);
 
             auto read = Button(); read.Content(box_value(L"读取 DDC 参数"));
-            AutomationProperties::SetName(read, L"读取显示器 " + std::to_wstring(index + 1) + L" 的 DDC 参数");
+            AutomationProperties::SetName(read, L"读取 " + display.name + L" 的 DDC 参数");
             read.Click([this, id = display.id](auto const&, auto const&) { ReadDdc(id); });
             auto controlRow = [&](wchar_t const* name, ::DisplaySwitcher::Native::DdcVcpCode code, Slider const& slider,
                 ToggleSwitch const& enabled, ToggleSwitch const& showInTray)
@@ -716,7 +718,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 controls.volume, controls.volumeEnabled, controls.volumeShowInTray);
 
             auto fields = StackPanel(); fields.Spacing(10);
-            auto displayTitle = TextBlock(); displayTitle.Text(L"显示器 " + std::to_wstring(index + 1));
+            auto displayTitle = TextBlock(); displayTitle.Text(display.name);
             displayTitle.FontSize(18); displayTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
             auto columns = TextBlock(); columns.Text(L"                 功能      托盘"); columns.Opacity(0.66);
             fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(columns);
@@ -996,9 +998,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         CaptureDisplayEditors();
         auto config = original_;
-        config.displayControlBackend = displayBackend_.SelectedIndex() == 2 ? L"control_my_monitor" :
-            displayBackend_.SelectedIndex() == 1 ? L"native_ddc" : L"auto";
-        config.controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
+        config.displayControlBackend = L"native_ddc";
         config.linkAllDisplays = linkAllDisplays_.IsOn();
         config.displays = workingDisplays_;
         return config;
@@ -1136,7 +1136,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
             }
         }
         CaptureDisplayEditors();
-        auto backendIndex = displayBackend_.SelectedIndex();
         if (usbAutomation_.IsOn() && workingDisplays_.empty())
         { reject(1, L"启用 USB 自动切换前，请先完成显示器配置。"); return false; }
         std::vector<::DisplaySwitcher::Native::UsbDisplayInputMapping> usbMappings;
@@ -1159,19 +1158,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (profile == workingProfiles_.end() || !profile->coordinationEnabled || !candidate.InspectProfile(profile->id).complete)
             { reject(1, L"启用联动协同前，必须选择一个已开启且完整的协同配置。"); return false; }
         }
-        auto controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
-        if (backendIndex == 2 && controlMyMonitorPath.empty())
-        { reject(3, L"兼容控制通道尚未配置，已恢复最后有效选择。"); return false; }
         std::set<std::wstring> hardwareIds;
         for (auto const& display : workingDisplays_)
         {
             if (display.name.empty())
             { reject(3, L"显示器信息不完整，已恢复最后有效配置。"); return false; }
-            std::wstring backend = backendIndex == 2 ? L"control_my_monitor" : L"native_ddc";
-            auto hardwareId = backend == L"native_ddc" ? display.nativeMonitorId : display.controlMonitorPath;
+            std::wstring backend = L"native_ddc";
+            auto hardwareId = ::DisplaySwitcher::Native::CanonicalDdcMonitorId(display.nativeMonitorId);
             if (hardwareId.empty())
             {
-                reject(3, display.name + (backend == L"native_ddc" ? L"当前未关联可用显示器。" : L"尚未配置兼容通道。"));
+                reject(3, display.name + L"当前未关联可用显示器。");
                 return false;
             }
             hardwareId = backend + L":" + hardwareId;
@@ -1187,9 +1183,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         result.usbSwitch.deviceName = selectedUsbName_;
         result.usbSwitch.vendorId = selectedUsbVendorId_; result.usbSwitch.productId = selectedUsbProductId_;
         result.usbSwitch.displayInputs = std::move(usbMappings);
-        result.displayControlBackend = backendIndex == 2 ? L"control_my_monitor" : backendIndex == 1 ? L"native_ddc" : L"auto";
+        result.displayControlBackend = L"native_ddc";
         result.linkAllDisplays = linkAllDisplays_.IsOn();
-        result.controlMyMonitorPath = controlMyMonitorPath; result.displays = workingDisplays_;
+        result.displays = workingDisplays_;
         result.collaborationProfiles = workingProfiles_;
         for (auto& display : result.displays) display.macInput = -1;
         result.displayConfigurationSafeMode = false; result.startWithWindows = autoStart_.IsOn();

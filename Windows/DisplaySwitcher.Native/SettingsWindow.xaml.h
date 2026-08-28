@@ -158,7 +158,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
         bool loading_{};
-        bool cmmChannelAvailable_{};
     };
 }
 

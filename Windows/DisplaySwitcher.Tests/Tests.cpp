@@ -1,6 +1,7 @@
 #include "../DisplaySwitcher.Native/pch.h"
 #include "../DisplaySwitcher.Native/AppConfig.h"
 #include "../DisplaySwitcher.Native/AboutInfo.h"
+#include "../DisplaySwitcher.Native/DdcBackends.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
 #include "../DisplaySwitcher.Native/ProfileDetection.h"
@@ -80,7 +81,8 @@ namespace
         std::wstring Key() const override { return key; }
         std::wstring DisplayName() const override { return L"模拟硬件 DDC/CI"; }
         DdcBackendStatus Status() const override { return status; }
-        std::vector<DdcMonitorInfo> Enumerate(DdcCancellationToken const&) override { return {}; }
+        DdcEnumerationResult Enumerate(DdcCancellationToken const&) override
+        { return { true, DdcErrorKind::None, {}, {} }; }
         DdcCapabilities Capabilities(std::wstring const&, DdcCancellationToken const&) override
         {
             return { status, false, {}, {} };
@@ -505,6 +507,81 @@ namespace
         Check(FindDdcMonitorById(monitors, L"monitor-c").has_value(), L"显示器重新接入后应恢复稳定匹配");
     }
 
+    void TestNativeDisplayCollection()
+    {
+        auto first = Display(L"工作主屏", L"device-a|0", 16);
+        first.brightnessEnabled = true;
+        first.brightnessValue = 42;
+        auto second = Display(L"显示器 2", L"device-b|1", 17);
+        auto firstLogicalId = first.id;
+        auto secondLogicalId = second.id;
+
+        std::vector<DdcMonitorInfo> duplicated{
+            { L"device-b|1", L"相同型号", L"DISPLAY2" },
+            { L"device-a|0", L"相同型号", L"DISPLAY1" },
+            { L"device-a|1", L"相同型号", L"DISPLAY1" },
+            { L"DEVICE-B|0", L"相同型号", L"DISPLAY2" },
+        };
+        auto normalized = NormalizeDdcMonitorCollection(duplicated);
+        Check(normalized.size() == 2 && normalized[0].displayName == L"相同型号（1）"
+            && normalized[1].displayName == L"相同型号（2）",
+            L"W-009: 同一物理接口的重复句柄必须去重，同型号名称按稳定 ID 给出本机序号");
+        auto differentModels = NormalizeDdcMonitorCollection(
+            { { L"device-c", L"型号甲", L"DISPLAY3" }, { L"device-d", L"型号乙", L"DISPLAY4" } });
+        Check(differentModels.size() == 2 && differentModels[0].displayName == L"型号甲"
+            && differentModels[1].displayName == L"型号乙",
+            L"W-009: 不同型号显示器必须直接使用系统友好名称而不添加无意义序号");
+
+        auto reconciled = ReconcileDisplayConfigurations({ first, second }, duplicated);
+        auto preservedFirst = std::find_if(reconciled.displays.begin(), reconciled.displays.end(), [&](auto const& display)
+            { return display.id == firstLogicalId; });
+        auto preservedSecond = std::find_if(reconciled.displays.begin(), reconciled.displays.end(), [&](auto const& display)
+            { return display.id == secondLogicalId; });
+        Check(reconciled.displays.size() == 2 && preservedFirst != reconciled.displays.end()
+            && preservedFirst->name == L"工作主屏" && preservedFirst->brightnessEnabled
+            && preservedFirst->brightnessValue == 42 && preservedSecond != reconciled.displays.end()
+            && preservedSecond->name.starts_with(L"相同型号"),
+            L"W-009: 枚举重排后仍按稳定物理 ID 保留用户设置并用系统友好名称替换通用名称");
+        preservedFirst->brightnessShowInTray = true;
+        AppConfig trayConfig; trayConfig.displays = reconciled.displays;
+        auto trayNames = BuildDdcTrayControls(trayConfig);
+        Check(trayNames.size() == 1 && trayNames[0].displayName == L"工作主屏",
+            L"W-009: 托盘 DDC 项必须使用保留的用户名称或系统友好名称");
+
+        auto disconnected = ReconcileDisplayConfigurations(reconciled.displays,
+            { { L"device-b", L"相同型号", L"DISPLAY9" } });
+        Check(disconnected.displays.size() == 1 && disconnected.removed == 1
+            && disconnected.displays[0].id == secondLogicalId,
+            L"W-009: 已断开或失效显示器必须从实时集合清理，仍存在显示器保持逻辑 ID");
+
+        CollaborationProfile profile = Profile(L"模拟对端");
+        profile.displayInputs = { { firstLogicalId, 16 }, { secondLogicalId, 17 } };
+        UsbSwitchConfig usb;
+        usb.displayInputs = { { firstLogicalId, 18 }, { secondLogicalId, 19 } };
+        std::vector<CollaborationProfile> profiles{ profile };
+        Check(RemoveOrphanedDisplayMappings(disconnected.displays, profiles, usb)
+            && profiles[0].displayInputs.size() == 1 && usb.displayInputs.size() == 1,
+            L"W-009: 显示器清理必须同步移除孤立映射且不污染仍连接显示器");
+
+        auto reconnected = ReconcileDisplayConfigurations(disconnected.displays,
+            { { L"device-a", L"另一型号", L"DISPLAY4" }, { L"device-b", L"相同型号", L"DISPLAY9" } });
+        auto newFirst = std::find_if(reconnected.displays.begin(), reconnected.displays.end(), [&](auto const& display)
+            { return _wcsicmp(display.nativeMonitorId.c_str(), L"device-a") == 0; });
+        Check(reconnected.added == 1 && newFirst != reconnected.displays.end()
+            && newFirst->id != firstLogicalId && !newFirst->brightnessEnabled && !newFirst->brightnessValue,
+            L"W-009: 被清理显示器重新接入时作为新显示器加入，不继承已失效实例的控制状态");
+
+        int released{};
+        {
+            NativeMonitorHandleLease handles([&](HANDLE) { ++released; });
+            auto one = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+            auto two = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(2));
+            handles.Add(one); handles.Add(one); handles.Add(two);
+            Check(handles.Handles().size() == 2, L"W-009: 重复物理句柄只能登记一次");
+        }
+        Check(released == 2, L"W-009: 每个唯一物理监视器句柄必须在所有路径恰好释放一次");
+    }
+
     void TestDdcControls()
     {
         auto config = ConfigWithDisplays(2);
@@ -606,15 +683,16 @@ namespace
         native.status = { DdcAvailability::Unsupported, L"模拟原生通道不可用" };
         native.reads.clear(); fallback.reads.clear();
         auto mixed = FakeService(native, &fallback).Read(config, {}, cancellation.Begin());
-        Check(native.reads.empty() && fallback.reads.size() == 6 && config.displays[0].brightnessValue == 11
-            && config.displays[1].brightnessValue == 21,
-            L"U-016: 全局自动控制通道在原生通道不可用时应明确回退，且不得混用每显示器后端");
+        Check(!mixed.success && native.reads.empty() && fallback.reads.empty()
+            && std::all_of(mixed.items.begin(), mixed.items.end(), [](auto const& item) { return !item.success; }),
+            L"W-009: 原生通道不可用时必须明确失败，绝不调用 ControlMyMonitor");
 
         auto reordered = config;
         std::swap(reordered.displays[0], reordered.displays[1]);
+        native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
         native.reads.clear(); fallback.reads.clear();
         FakeService(native, &fallback).Read(reordered, { firstId }, cancellation.Begin());
-        Check(native.reads.empty() && !fallback.reads.empty() && fallback.reads.front().first == L"path-monitor-0",
+        Check(!native.reads.empty() && fallback.reads.empty() && native.reads.front().first == L"monitor-0",
             L"显示器枚举重排后仍须按稳定逻辑 ID 关联后端监视器 ID");
 
         config.displayControlBackend = L"native_ddc";
@@ -683,6 +761,15 @@ namespace
         auto second = device(L"usb:pnp:candidate-b", L"候选设备 B", 0x1002, 0x2002);
         UsbLearningSession learning;
         std::wstring originalBinding = L"usb:pnp:original";
+
+        auto reconnectGeneration = learning.Start(L"usb-switch", { baseline }, 100);
+        learning.Observe(reconnectGeneration, {}, 200, true);
+        Check(learning.Candidates().empty(),
+            L"W-009: 学习开始时已存在的设备离开时不能立即成为候选");
+        learning.Observe(reconnectGeneration, { baseline }, 300, true);
+        Check(learning.Candidates().size() == 1 && learning.Candidates()[0].localReference == baseline.localReference,
+            L"W-009: 学习开始时已存在的设备离开后重新接入必须成为候选");
+        learning.Cancel(reconnectGeneration);
 
         auto generation = learning.Start(L"profile-stable-id", { baseline }, 1000);
         Check(learning.Active() && learning.BlocksSideEffects() && learning.ProfileId() == L"profile-stable-id",
@@ -960,6 +1047,7 @@ int wmain()
         TestNormalV4SaveFailureSafety(root);
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
+        TestNativeDisplayCollection();
         TestDdcControls();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();

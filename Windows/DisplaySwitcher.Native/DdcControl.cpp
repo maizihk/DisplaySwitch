@@ -138,6 +138,16 @@ namespace DisplaySwitcher::Native
     {
     }
 
+    DdcWriteResult WriteNativeWithOneRefresh(IDdcBackend& backend, std::wstring const& monitorId,
+        DdcVcpCode code, int value, DdcCancellationToken const& cancellation)
+    {
+        auto result = backend.Write(monitorId, code, value, cancellation);
+        if (!result.success && !cancellation.IsCanceled()
+            && (result.error == DdcErrorKind::WriteFailed || result.error == DdcErrorKind::MonitorUnavailable))
+            result = backend.Write(monitorId, code, value, cancellation);
+        return result;
+    }
+
     int DdcControlService::EffectiveMaximum(int current, int reportedMaximum) noexcept
     {
         return reportedMaximum >= 10 && reportedMaximum >= current ? reportedMaximum : (std::max)(100, current);
@@ -153,8 +163,9 @@ namespace DisplaySwitcher::Native
 
     std::wstring DdcControlService::BackendKey(AppConfig const& config, DisplayConfig const& display)
     {
+        static_cast<void>(config);
         static_cast<void>(display);
-        return config.displayControlBackend == L"auto" ? L"native_ddc" : config.displayControlBackend;
+        return L"native_ddc";
     }
 
     bool DdcControlService::Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const
@@ -194,13 +205,6 @@ namespace DisplaySwitcher::Native
                 continue;
             }
             status = backend->Status();
-            if (config.displayControlBackend == L"auto" && status.availability != DdcAvailability::Available &&
-                !config.controlMyMonitorPath.empty() && !display.controlMonitorPath.empty())
-            {
-                if (auto fallback = lookup_ ? lookup_(L"control_my_monitor") : nullptr;
-                    fallback && fallback->Status().availability == DdcAvailability::Available)
-                { backend = fallback; backendKey = L"control_my_monitor"; status = backend->Status(); }
-            }
             if (status.availability != DdcAvailability::Available)
             {
                 for (auto code : ControlCodes()) if (FeatureEnabled(display, code))
@@ -304,13 +308,6 @@ namespace DisplaySwitcher::Native
                 continue;
             }
             auto status = backend->Status();
-            if (config.displayControlBackend == L"auto" && status.availability != DdcAvailability::Available &&
-                !config.controlMyMonitorPath.empty() && !display.controlMonitorPath.empty())
-            {
-                if (auto fallback = lookup_ ? lookup_(L"control_my_monitor") : nullptr;
-                    fallback && fallback->Status().availability == DdcAvailability::Available)
-                { backend = fallback; backendKey = L"control_my_monitor"; status = backend->Status(); }
-            }
             if (status.availability != DdcAvailability::Available)
             {
                 batch.items.push_back(Failure(display, code, status, DdcErrorKind::BackendUnavailable, status.message));
@@ -324,15 +321,9 @@ namespace DisplaySwitcher::Native
                     capabilities.status.message.empty() ? L"显示器未报告该硬件 DDC 功能" : capabilities.status.message));
                 continue;
             }
-            auto result = backend->Write(monitorId, code, value, cancellation);
-            if (!result.success && backendKey == L"native_ddc" && Allowed(config, cancellation)
-                && (result.error == DdcErrorKind::WriteFailed || result.error == DdcErrorKind::MonitorUnavailable))
-            {
-                // The native backend discovers a fresh physical-monitor handle on
-                // every call. Retry exactly once after a stale handle/write failure.
-                if (auto refreshed = lookup_ ? lookup_(L"native_ddc") : nullptr)
-                    result = refreshed->Write(monitorId, code, value, cancellation);
-            }
+            auto result = backendKey == L"native_ddc" && Allowed(config, cancellation)
+                ? WriteNativeWithOneRefresh(*backend, monitorId, code, value, cancellation)
+                : backend->Write(monitorId, code, value, cancellation);
             DdcControlItemResult item{ display.id, code, result.success, false, result.success, false,
                 result.success ? std::optional<int>{ value } : std::nullopt,
                 result.success ? std::optional<int>{ EffectiveMaximum(value, CachedMaximum(display, code).value_or(100)) } : std::nullopt,

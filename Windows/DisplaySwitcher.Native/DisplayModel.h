@@ -106,7 +106,22 @@ namespace DisplaySwitcher::Native
         std::wstring gdiName;
     };
 
+    struct DisplayReconciliationResult
+    {
+        std::vector<DisplayConfig> displays;
+        bool changed{};
+        size_t added{};
+        size_t removed{};
+    };
+
     DisplayConfig CreateDisplayConfig(std::wstring const& name = {});
+    std::wstring CanonicalDdcMonitorId(std::wstring const& id);
+    std::vector<DdcMonitorInfo> NormalizeDdcMonitorCollection(std::vector<DdcMonitorInfo> monitors);
+    DisplayReconciliationResult ReconcileDisplayConfigurations(
+        std::vector<DisplayConfig> const& existing,
+        std::vector<DdcMonitorInfo> const& connected);
+    bool RemoveOrphanedDisplayMappings(std::vector<DisplayConfig> const& displays,
+        std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch);
     bool IsValidDisplayId(std::wstring const& id) noexcept;
     std::optional<size_t> FindDisplayById(
         std::vector<DisplayConfig> const& displays,

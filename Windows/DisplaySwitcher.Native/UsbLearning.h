@@ -37,6 +37,8 @@ namespace DisplaySwitcher::Native
         int64_t deadlineMilliseconds_{};
         std::wstring profileId_;
         std::vector<std::wstring> baselineReferences_;
+        std::vector<std::wstring> previousReferences_;
+        std::vector<std::wstring> departedBaselineReferences_;
         std::vector<UsbLearningDevice> candidates_;
     };
 }
