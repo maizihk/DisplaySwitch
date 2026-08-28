@@ -21,6 +21,7 @@ final class NativeDDCBackend: DDCBackend {
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
     private var knownDisplays: [DDCKnownDisplay]
     private let cacheLock = NSLock()
+    private let transportLock = NSLock()
     private var displaysByUUID: [String: NativeDDCDisplay] = [:]
 
     init(knownDisplays: [DDCKnownDisplay] = []) {
@@ -74,6 +75,8 @@ final class NativeDDCBackend: DDCBackend {
 
     func read(stableID: String, selector: String, command: DDCCommand,
               token: DDCCancellationToken) throws -> DDCReading {
+        transportLock.lock()
+        defer { transportLock.unlock() }
         try token.throwIfCancelled()
         guard let display = display(for: selector) else {
             throw DDCBackendError.displayUnavailable(stableID: stableID)
@@ -92,18 +95,27 @@ final class NativeDDCBackend: DDCBackend {
 
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
                token: DDCCancellationToken) throws {
+        transportLock.lock()
+        defer { transportLock.unlock() }
         try token.throwIfCancelled()
         guard let nativeValue = UInt16(exactly: value) else { throw DDCError.invalidValue(value) }
-        guard let display = display(for: selector) else {
-            throw DDCBackendError.displayUnavailable(stableID: stableID)
-        }
-        guard Self.write(
-            service: display.service,
-            chipAddress: display.chipAddress,
-            command: command.rawValue,
-            value: nativeValue
-        ) else { throw DDCBackendError.writeFailed(stableID: stableID, command: command) }
-        try token.throwIfCancelled()
+        try DDCSingleRetry.perform(operation: {
+            try token.throwIfCancelled()
+            guard let display = display(for: selector), Self.write(
+                service: display.service, chipAddress: display.chipAddress,
+                command: command.rawValue, value: nativeValue
+            ) else { throw DDCBackendError.writeFailed(stableID: stableID, command: command) }
+            try token.throwIfCancelled()
+        }, recover: {
+            invalidate(selector: selector)
+            _ = discover()
+        })
+    }
+
+    private func invalidate(selector: String) {
+        cacheLock.lock()
+        displaysByUUID.removeValue(forKey: selector.uppercased())
+        cacheLock.unlock()
     }
 
     private func display(for selector: String) -> NativeDDCDisplay? {

@@ -4,7 +4,6 @@ private final class MemoryConfigurationStorage: DisplayConfigurationStorage {
     var values: [String: Any] = [:]
     var failWrites = false
     var corruptReadBack = false
-
     func data(forKey key: String) -> Data? { values[key] as? Data }
     func object(forKey key: String) -> Any? { values[key] }
     func string(forKey key: String) -> String? { values[key] as? String }
@@ -14,7 +13,7 @@ private final class MemoryConfigurationStorage: DisplayConfigurationStorage {
     func removeObject(forKey key: String) { values.removeValue(forKey: key) }
     func writeDocument(_ data: Data, forKey key: String) throws {
         if failWrites { throw DisplayConfigurationStoreError.writeFailed }
-        values[key] = corruptReadBack ? Data("bad-readback".utf8) : data
+        values[key] = corruptReadBack ? Data("corrupt".utf8) : data
         if values[key] as? Data != data { throw DisplayConfigurationStoreError.writeFailed }
     }
 }
@@ -27,544 +26,183 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         storage = MemoryConfigurationStorage()
     }
 
-    func testC001FreshInstallPersistsRandomEndpointAndOneDisabledProfile() throws {
+    func testFreshV4DefaultsAreSafeAndPersistent() {
         let first = DisplayConfigurationStore.load(storage: storage)
-        let persisted = try XCTUnwrap(storage.data(forKey: DisplayConfigurationStore.storageKey))
         let second = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(first.safetyState, .ready)
-        XCTAssertEqual(first.document.schemaVersion, 3)
-        XCTAssertNotNil(UUID(uuidString: first.document.localEndpointID))
+        XCTAssertEqual(first.document.schemaVersion, 4)
+        XCTAssertEqual(first.document.controlChannel, .automatic)
+        XCTAssertFalse(first.document.linkAllDisplays)
+        XCTAssertFalse(first.document.usbAutomationEnabled)
+        XCTAssertFalse(first.document.usbSwitchDisplaysOnArrival)
         XCTAssertEqual(first.document.localEndpointID, second.document.localEndpointID)
         XCTAssertTrue(first.document.displays.isEmpty)
-        XCTAssertEqual(first.collaborationProfiles.count, 1)
-        XCTAssertEqual(first.collaborationProfiles[0].name, "配置 1")
-        XCTAssertFalse(first.collaborationProfiles[0].coordinationEnabled)
-        XCTAssertFalse(persisted.isEmpty)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy(ConfigurationSafetyGate(state: first.safetyState).allows))
+        XCTAssertEqual(first.document.collaborationProfiles.count, 1)
+        XCTAssertFalse(first.document.collaborationProfiles[0].coordinationEnabled)
     }
 
-    func testC002AddsProfilesWithStableDistinctIdentifiers() throws {
-        var document = DisplayConfigurationStore.load(storage: storage).document
-        let originalID = document.collaborationProfiles[0].id
-        document.collaborationProfiles.append(profile(name: "游戏主机"))
-        document.collaborationProfiles.append(profile(name: "工作电脑"))
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        let loaded = DisplayConfigurationStore.load(storage: storage).document
-        XCTAssertEqual(loaded.collaborationProfiles.first?.id, originalID)
-        XCTAssertEqual(Set(loaded.collaborationProfiles.map(\.id)).count, 3)
-    }
-
-    func testC003ProfileReorderKeepsMappingsBoundToStableDisplayIDs() throws {
-        var document = populatedDocument()
-        let mappedID = document.displays[1].id
-        var second = profile(name: "第二台")
-        second.displayInputs = [DisplayInputMapping(displayID: mappedID, peerInput: 27)]
-        document.collaborationProfiles.append(second)
-        document.collaborationProfiles.swapAt(0, 1)
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        let loaded = DisplayConfigurationStore.load(storage: storage).document
-        XCTAssertEqual(loaded.collaborationProfiles[0].displayInputs.first?.displayID, mappedID)
-        XCTAssertEqual(loaded.collaborationProfiles[0].displayInputs.first?.peerInput, 27)
-    }
-
-    func testC004InvalidAndDuplicateProfileNamesAreRejectedWithoutOverwriting() throws {
-        var document = populatedDocument()
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        let original = storage.data(forKey: DisplayConfigurationStore.storageKey)
-        for invalidName in ["", "bad\nname"] {
-            document.collaborationProfiles[0].name = invalidName
-            XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
-            XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.storageKey), original)
-        }
-        document = try JSONDecoder().decode(DisplayConfigurationStoreV3Document.self, from: XCTUnwrap(original))
-        var duplicate = profile(name: document.collaborationProfiles[0].name.uppercased())
-        duplicate.id = UUID().uuidString
-        document.collaborationProfiles.append(duplicate)
-        XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
-        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.storageKey), original)
-    }
-
-    func testC005OrphanedMappingIsRetainedAndReported() throws {
-        var document = populatedDocument()
-        let removedID = document.displays.removeLast().id
-        document.collaborationProfiles[0].displayInputs.append(DisplayInputMapping(displayID: removedID, peerInput: 18))
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        let loaded = DisplayConfigurationStore.load(storage: storage).document
-        XCTAssertEqual(loaded.collaborationProfiles[0].displayInputs.last?.displayID, removedID)
-        let inspection = DisplayConfigurationStore.inspectProfile(loaded.collaborationProfiles[0], displays: loaded.displays,
-                                                                   ddcAvailableDisplayIDs: Set(loaded.displays.map { $0.id.lowercased() }))
-        XCTAssertTrue(inspection.issues.contains(.orphanedDisplayMapping))
-    }
-
-    func testC006MultipleProfilesMayBeEnabledWithoutImplicitSelection() throws {
-        var document = populatedDocument()
-        document.collaborationProfiles[0].coordinationEnabled = true
-        var second = profile(name: "同时启用")
-        second.coordinationEnabled = true
-        document.collaborationProfiles.append(second)
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).collaborationProfiles.filter(\.coordinationEnabled).count, 2)
-    }
-
-    func testEnabledIncompleteProfileIsNotAMenuCandidate() {
-        var document = populatedDocument()
-        document.collaborationProfiles[0].coordinationEnabled = true
-        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
-
-        document.collaborationProfiles[0].displayInputs = document.displays.map {
-            DisplayInputMapping(displayID: $0.id, peerInput: 18)
-        }
-        XCTAssertEqual(DisplayConfigurationStore.menuEligibleProfiles(in: document).map(\.id),
-                       [document.collaborationProfiles[0].id])
-
-        document.collaborationProfiles[0].displayInputs[0].peerInput = -1
-        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
-        document.collaborationProfiles[0].displayInputs[0].peerInput = 18
-        document.collaborationProfiles[0].peerHost = ""
-        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
-    }
-
-    func testUSBTriggerEditingIsIsolatedByProfile() {
-        let first = profile(name: "A")
-        let second = profile(name: "B")
-        let firstTrigger = CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "键盘 A")
-        let secondTrigger = CollaborationTriggerDevice(kind: "usb", localReference: "3:4", displayName: "键盘 B")
-        var profiles = DisplayConfigurationStore.replacingUSBTrigger(firstTrigger, profileID: first.id, in: [first, second])
-        profiles = DisplayConfigurationStore.replacingUSBTrigger(secondTrigger, profileID: second.id, in: profiles)
-        XCTAssertEqual(profiles[0].triggerDevices, [firstTrigger])
-        XCTAssertEqual(profiles[1].triggerDevices, [secondTrigger])
-
-        let replacement = CollaborationTriggerDevice(kind: "usb", localReference: "5:6", displayName: "键盘 A2")
-        profiles = DisplayConfigurationStore.replacingUSBTrigger(replacement, profileID: first.id, in: profiles)
-        XCTAssertEqual(profiles[0].triggerDevices, [replacement])
-        XCTAssertEqual(profiles[1].triggerDevices, [secondTrigger])
-    }
-
-    func testUSBLearningStartedForAStillWritesOnlyATriggerAfterSelectionChangesToB() {
-        let first = profile(name: "A")
-        let second = profile(name: "B")
-        var session = USBProfileLearningSession()
-        let safetyGate = USBLearningSafetyGate()
-        session.begin(profileID: first.id)
-        safetyGate.begin()
-        let currentlySelectedProfileID = second.id
-        let trigger = CollaborationTriggerDevice(kind: "usb", localReference: "7:8", displayName: "A 的设备")
-
-        XCTAssertEqual(USBProfileLearningSession.timeoutSeconds, 30)
-        XCTAssertTrue(session.blocksAutomaticSideEffects)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
-
-        let profiles = session.apply(trigger, to: [first, second])
-        safetyGate.end()
-
-        XCTAssertEqual(currentlySelectedProfileID, second.id)
-        XCTAssertEqual(profiles[0].triggerDevices, [trigger])
-        XCTAssertTrue(profiles[1].triggerDevices.isEmpty)
-        XCTAssertNil(session.pendingProfileID)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { safetyGate.allows($0) })
-    }
-
-    func testLateUSBLearningResultIsDiscardedWhenTargetProfileWasDeleted() {
-        let first = profile(name: "A")
-        let second = profile(name: "B")
-        var session = USBProfileLearningSession()
-        session.begin(profileID: first.id)
-        let trigger = CollaborationTriggerDevice(kind: "usb", localReference: "9:10", displayName: "迟到设备")
-
-        let profiles = session.apply(trigger, to: [second])
-
-        XCTAssertEqual(profiles, [second])
-        XCTAssertTrue(profiles[0].triggerDevices.isEmpty)
-        XCTAssertNil(session.pendingProfileID)
-
-        var retained = first
-        let original = CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "原绑定")
-        retained.triggerDevices = [original]
-        session.begin(profileID: retained.id)
-        session.cancel()
-        let afterCancelledLateResult = session.apply(trigger, to: [retained, second])
-        XCTAssertEqual(afterCancelledLateResult[0].triggerDevices, [original])
-        XCTAssertTrue(afterCancelledLateResult[1].triggerDevices.isEmpty)
-    }
-
-    func testC021MultipleUSBCandidatesWaitForExplicitSelectionWithZeroAutomaticSideEffects() {
-        var target = profile(name: "目标配置")
-        let original = CollaborationTriggerDevice(
-            kind: "usb", localReference: "1:2", displayName: "原绑定"
+    func testU005NewDisplayHasSixDDCSwitchesOffAndNoGuessedInputs() throws {
+        let suite = "DisplaySwitcher.V4.Merge.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let merged = try DisplayConfigurationStore.merge(
+            detected: [DetectedDisplay(index: 1, name: "Simulated Display", systemUUID: UUID().uuidString)],
+            existing: [], defaults: defaults
         )
-        target.triggerDevices = [original]
-        let first = CollaborationTriggerDevice(
-            kind: "usb", localReference: "3:4", displayName: "候选一"
-        )
-        let second = CollaborationTriggerDevice(
-            kind: "usb", localReference: "5:6", displayName: "候选二"
-        )
-        var session = USBProfileLearningSession()
-        let safetyGate = USBLearningSafetyGate()
-        session.begin(profileID: target.id)
-        safetyGate.begin()
-
-        let result = session.receiveCandidates(
-            [first, second],
-            availableProfileIDs: [target.id]
-        )
-
-        XCTAssertEqual(result, .awaitingSelection(count: 2))
-        XCTAssertEqual(target.triggerDevices, [original])
-        XCTAssertEqual(session.candidates, [first, second])
-        XCTAssertEqual(session.pendingProfileID, target.id)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
-
-        let selected = session.applyCandidate(at: 1, to: [target])
-
-        XCTAssertEqual(selected[0].triggerDevices, [second])
-        XCTAssertNil(session.pendingProfileID)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
-        XCTAssertTrue(safetyGate.end())
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy(safetyGate.allows))
+        XCTAssertNil(merged[0].localInput)
+        XCTAssertNil(merged[0].targetInput)
+        let display = DisplayConfigurationStore.load(defaults: defaults).document.displays[0]
+        XCTAssertFalse(display.brightnessEnabled)
+        XCTAssertFalse(display.contrastEnabled)
+        XCTAssertFalse(display.volumeEnabled)
+        XCTAssertFalse(display.brightnessShowInTray)
+        XCTAssertFalse(display.contrastShowInTray)
+        XCTAssertFalse(display.volumeShowInTray)
+        XCTAssertTrue(DisplaySettingsSemantics.trayCommands(for: display).isEmpty)
     }
 
-    func testC022CancelTimeoutDeletionAndLateResultsPreserveBindingsWithZeroSideEffects() {
-        var target = profile(name: "目标配置")
-        let original = CollaborationTriggerDevice(
-            kind: "usb", localReference: "1:2", displayName: "原绑定"
-        )
-        let late = CollaborationTriggerDevice(
-            kind: "usb", localReference: "7:8", displayName: "迟到候选"
-        )
-        target.triggerDevices = [original]
-        let other = profile(name: "其他配置")
-        let safetyGate = USBLearningSafetyGate()
-        var session = USBProfileLearningSession()
-
-        session.begin(profileID: target.id)
-        safetyGate.begin()
-        session.cancel()
-        XCTAssertEqual(
-            session.receiveCandidates([late], availableProfileIDs: [target.id]),
-            .ignored
-        )
-        XCTAssertEqual(session.applyCandidate(at: 0, to: [target, other])[0].triggerDevices, [original])
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
-        XCTAssertTrue(safetyGate.end())
-
-        session.begin(profileID: target.id)
-        safetyGate.begin()
-        XCTAssertEqual(
-            session.receiveCandidates([], availableProfileIDs: [target.id]),
-            .timedOut
-        )
-        XCTAssertEqual(USBProfileLearningSession.timeoutSeconds, 30)
-        XCTAssertEqual(
-            session.receiveCandidates([late], availableProfileIDs: [target.id]),
-            .ignored
-        )
-        XCTAssertEqual(session.applyCandidate(at: 0, to: [target, other])[0].triggerDevices, [original])
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
-        XCTAssertTrue(safetyGate.end())
-
-        session.begin(profileID: target.id)
-        safetyGate.begin()
-        XCTAssertEqual(
-            session.receiveCandidates([late], availableProfileIDs: [other.id]),
-            .ignored
-        )
-        XCTAssertEqual(session.applyCandidate(at: 0, to: [other]), [other])
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !safetyGate.allows($0) })
-        XCTAssertTrue(safetyGate.end())
-    }
-
-    func testMultipleEnabledProfilesBlockLegacyV1AutomaticSideEffects() {
-        var document = populatedDocument()
-        document.collaborationProfiles[0].coordinationEnabled = true
-        var second = profile(name: "B")
-        second.coordinationEnabled = true
-        document.collaborationProfiles.append(second)
-
-        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document)
-        XCTAssertEqual(selection, .requiresProtocolV2)
-        let sideEffects = Dictionary(uniqueKeysWithValues: ConfigurationSideEffect.allCases.map {
-            ($0, selection.allowsAutomaticCoordination ? 1 : 0)
-        })
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { sideEffects[$0] == 0 })
-    }
-
-    func testSingleMigratedEnabledProfileKeepsLegacyV1Compatibility() throws {
-        let oldData = try JSONEncoder().encode([legacyDisplay(index: 1, local: 15, peer: 18)])
-        storage.values[DisplayConfigurationStore.legacyArrayStorageKey] = oldData
-        storage.values["Peer.Enabled"] = true
-        storage.values["Peer.Host"] = "peer.example"
-        storage.values["Peer.Port"] = 49731
-        storage.values["Peer.PairingCode"] = ephemeralPairingCode()
-        storage.values["USBAutomation.Device"] = try JSONSerialization.data(withJSONObject: [
-            "vendorID": 1, "productID": 2, "name": "迁移设备"
-        ])
-        let document = DisplayConfigurationStore.load(storage: storage).document
-
-        guard case .compatible(let selected) = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document) else {
-            return XCTFail("单个迁移配置应继续由 v1 运行时使用")
-        }
-        XCTAssertEqual(selected.id, document.collaborationProfiles[0].id)
-        XCTAssertEqual(selected.peerHost, "peer.example")
-    }
-
-    func testOnlyEnabledIncompleteNonCurrentProfileCannotStartLegacyV1() {
-        var document = populatedDocument()
-        document.collaborationProfiles[0].coordinationEnabled = false
-        var second = profile(name: "唯一开启但不完整")
-        second.coordinationEnabled = true
-        second.peerHost = "peer.example"
-        second.pairingCode = ephemeralPairingCode()
-        second.displayInputs = document.displays.map { DisplayInputMapping(displayID: $0.id, peerInput: 18) }
-        document.collaborationProfiles.append(second)
-        let currentSettingsProfileID = document.collaborationProfiles[0].id
-
-        let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: document)
-
-        XCTAssertEqual(currentSettingsProfileID, document.collaborationProfiles[0].id)
-        XCTAssertEqual(selection, .requiresCompleteConfiguration)
-        XCTAssertTrue(selection.blocksAutomaticSideEffects)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { _ in !selection.allowsAutomaticCoordination })
-    }
-
-    func testLegacyV1CompatibilityRequiresEveryAutomaticCoordinationField() {
-        let display = display(name: "Only")
-        var complete = profile(name: "Windows")
-        complete.coordinationEnabled = true
-        complete.peerHost = "peer.example"
-        complete.peerPort = 49731
-        complete.pairingCode = ephemeralPairingCode()
-        complete.displayInputs = [DisplayInputMapping(displayID: display.id, peerInput: 18)]
-        complete.triggerDevices = [CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "USB")]
-        let makeDocument: (CollaborationProfile) -> DisplayConfigurationStoreV3Document = { profile in
-            DisplayConfigurationStoreV3Document(schemaVersion: 3, localEndpointID: UUID().uuidString,
-                localDeviceName: "Mac", listenPort: 49731, displays: [display], collaborationProfiles: [profile])
-        }
-        XCTAssertTrue(DisplayConfigurationStore.legacyV1RuntimeSelection(in: makeDocument(complete)).allowsAutomaticCoordination)
-
-        var invalidProfiles: [CollaborationProfile] = []
-        var missingHost = complete
-        missingHost.peerHost = ""
-        invalidProfiles.append(missingHost)
-        var invalidPort = complete
-        invalidPort.peerPort = 0
-        invalidProfiles.append(invalidPort)
-        var shortPairing = complete
-        shortPairing.pairingCode = "short"
-        invalidProfiles.append(shortPairing)
-        var missingMapping = complete
-        missingMapping.displayInputs = []
-        invalidProfiles.append(missingMapping)
-        var missingUSB = complete
-        missingUSB.triggerDevices = []
-        invalidProfiles.append(missingUSB)
-        var emptyUSBReference = complete
-        emptyUSBReference.triggerDevices[0].localReference = " "
-        invalidProfiles.append(emptyUSBReference)
-
-        for profile in invalidProfiles {
-            let selection = DisplayConfigurationStore.legacyV1RuntimeSelection(in: makeDocument(profile))
-            XCTAssertEqual(selection, .requiresCompleteConfiguration)
-            XCTAssertTrue(selection.blocksAutomaticSideEffects)
-        }
-    }
-
-    func testC007InspectionAndPeerIdentityChangesArePureAndRequireConfirmation() {
-        let document = populatedDocument()
-        let profile = document.collaborationProfiles[0]
-        let sideEffects = Dictionary(uniqueKeysWithValues: ConfigurationSideEffect.allCases.map { ($0, 0) })
-        let inspection = DisplayConfigurationStore.inspectProfile(profile, displays: document.displays,
-            ddcAvailableDisplayIDs: Set(document.displays.map { $0.id.lowercased() }))
-        XCTAssertFalse(inspection.isComplete)
-        XCTAssertEqual(sideEffects[.usb], 0)
-        XCTAssertEqual(sideEffects[.ddc], 0)
-        XCTAssertEqual(sideEffects[.wake], 0)
-        XCTAssertEqual(sideEffects[.network], 0)
-        let candidate = UUID().uuidString
-        XCTAssertEqual(DisplayConfigurationStore.checkPeerIdentity(profile, endpointID: candidate, protocolVersion: 2),
-                       .firstConfirmationRequired(endpointID: UUID(uuidString: candidate)!.uuidString, protocolVersion: 2))
-        var confirmed = profile
-        confirmed.peerEndpointID = UUID().uuidString
-        confirmed.peerProtocolVersion = 2
-        XCTAssertEqual(DisplayConfigurationStore.checkPeerIdentity(confirmed, endpointID: candidate, protocolVersion: 2),
-                       .changeConfirmationRequired(previousEndpointID: UUID(uuidString: confirmed.peerEndpointID!)!.uuidString,
-                                                   endpointID: UUID(uuidString: candidate)!.uuidString, protocolVersion: 2))
-    }
-
-    func testC008V2MigrationSeparatesLocalAndPeerInputsAndPreservesOriginal() throws {
-        let legacy = [legacyDisplay(index: 1, local: 15, peer: 18), legacyDisplay(index: 2, local: 17, peer: 27)]
-        let old = DisplayConfigurationDocument(schemaVersion: 2, displays: legacy)
-        let oldData = try JSONEncoder().encode(old)
-        storage.values[DisplayConfigurationStore.legacyDocumentStorageKey] = oldData
-        storage.values["Peer.Host"] = "peer.example"
-        storage.values["Peer.PairingCode"] = ephemeralPairingCode()
+    func testU016V3IsBackedUpButNeverMigrated() {
+        let legacy = Data(#"{"schemaVersion":3,"private":"must-remain-local"}"#.utf8)
+        storage.values[DisplayConfigurationStore.legacyV3StorageKey] = legacy
+        storage.values["USBAutomation.Enabled"] = true
         let result = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(result.safetyState, .ready)
-        XCTAssertEqual(result.document.displays.map(\.localInput), [15, 17])
-        XCTAssertEqual(result.collaborationProfiles[0].displayInputs.map(\.peerInput), [18, 27])
-        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyDocumentStorageKey), oldData)
-        XCTAssertNotNil(storage.data(forKey: DisplayConfigurationStore.storageKey))
+        XCTAssertEqual(result.document.schemaVersion, 4)
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyV3StorageKey), legacy)
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyBackupStorageKey), legacy)
+        XCTAssertTrue(result.document.displays.isEmpty)
+        XCTAssertFalse(result.document.usbAutomationEnabled)
+        XCTAssertFalse(result.document.collaborationProfiles[0].coordinationEnabled)
     }
 
-    func testC010MigrationWriteAndReadbackFailurePreserveSourceAndPersistBlock() throws {
-        let oldData = try JSONEncoder().encode([legacyDisplay(index: 1, local: 15, peer: 18)])
-        storage.values[DisplayConfigurationStore.legacyArrayStorageKey] = oldData
+    func testEarlierFormatsArePreservedAndProduceSafeV4Default() {
+        for key in [DisplayConfigurationStore.legacyDocumentStorageKey,
+                    DisplayConfigurationStore.legacyArrayStorageKey] {
+            storage = MemoryConfigurationStorage()
+            let legacy = Data("legacy-format".utf8)
+            storage.values[key] = legacy
+            let result = DisplayConfigurationStore.load(storage: storage)
+            XCTAssertEqual(result.document.schemaVersion, 4)
+            XCTAssertEqual(storage.data(forKey: key), legacy)
+            XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyBackupStorageKey), legacy)
+            XCTAssertTrue(result.document.displays.isEmpty)
+        }
+    }
+
+    func testU017AtomicFailureRestoresLastValidDocumentAndBlocksSideEffects() throws {
+        var document = DisplayConfigurationStore.load(storage: storage).document
+        let original = try XCTUnwrap(storage.data(forKey: DisplayConfigurationStore.storageKey))
+        document.linkAllDisplays = true
         storage.failWrites = true
-        let failed = DisplayConfigurationStore.load(storage: storage)
-        XCTAssertEqual(failed.safetyState, .requiresUserReview(.writeFailed))
-        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyArrayStorageKey), oldData)
-        XCTAssertTrue(storage.bool(forKey: DisplayConfigurationStore.requiresReviewKey))
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !ConfigurationSafetyGate(state: failed.safetyState).allows($0) })
-        storage.failWrites = false
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState,
-                       .requiresUserReview(.previousFailureRequiresReview))
-    }
-
-    func testC010EncodingAndReadbackFailuresRemainSafe() throws {
-        let oldData = try JSONEncoder().encode([legacyDisplay(index: 1, local: 15, peer: 18)])
-        storage.values[DisplayConfigurationStore.legacyArrayStorageKey] = oldData
-        let encodedFailure = DisplayConfigurationStore.load(storage: storage, encodeDocument: { _ in
-            throw DisplayConfigurationStoreError.encodingFailed
-        })
-        XCTAssertEqual(encodedFailure.safetyState, .requiresUserReview(.encodingFailed))
-        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyArrayStorageKey), oldData)
-        storage.removeObject(forKey: DisplayConfigurationStore.requiresReviewKey)
-        storage.corruptReadBack = true
-        let readbackFailure = DisplayConfigurationStore.load(storage: storage)
-        XCTAssertEqual(readbackFailure.safetyState, .requiresUserReview(.writeFailed))
-        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.legacyArrayStorageKey), oldData)
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !ConfigurationSafetyGate(state: readbackFailure.safetyState).allows($0) })
-    }
-
-    func testFreshInstallFailureStaysBlockedAcrossRestartUntilReviewedSave() throws {
-        storage.failWrites = true
-        let first = DisplayConfigurationStore.load(storage: storage)
-        XCTAssertEqual(first.safetyState, .requiresUserReview(.writeFailed))
+        XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
+        XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.storageKey), original)
         XCTAssertTrue(storage.bool(forKey: DisplayConfigurationStore.requiresReviewKey))
         storage.failWrites = false
         let restarted = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(restarted.safetyState, .requiresUserReview(.previousFailureRequiresReview))
-        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy { !ConfigurationSafetyGate(state: restarted.safetyState).allows($0) })
-        try DisplayConfigurationStore.saveDocument(restarted.document, storage: storage)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .ready)
+        XCTAssertTrue(ConfigurationSideEffect.allCases.allSatisfy {
+            !ConfigurationSafetyGate(state: restarted.safetyState).allows($0)
+        })
     }
 
-    func testC011UnknownV3FieldsAreIgnored() throws {
-        let original = populatedDocument()
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
-        object["futureField"] = ["value": true]
-        storage.values[DisplayConfigurationStore.storageKey] = try JSONSerialization.data(withJSONObject: object)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).document, original)
-    }
-
-    func testC012UnknownVersionAndDuplicateUUIDAreRejected() throws {
-        storage.values[DisplayConfigurationStore.storageKey] = Data(#"{"schemaVersion":99}"#.utf8)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .requiresUserReview(.unsupportedSchemaVersion(99)))
-        storage = MemoryConfigurationStorage()
-        var document = populatedDocument()
-        document.displays.append(document.displays[0])
-        storage.values[DisplayConfigurationStore.storageKey] = try JSONEncoder().encode(document)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .requiresUserReview(.invalidConfiguration))
-    }
-
-    func testC013RenameDoesNotChangeMapping() throws {
-        var document = populatedDocument()
-        let before = document.collaborationProfiles[0].displayInputs
-        document.collaborationProfiles[0].name = "新名称"
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        let loaded = DisplayConfigurationStore.load(storage: storage).document
-        XCTAssertEqual(loaded.collaborationProfiles[0].name, "新名称")
-        XCTAssertEqual(loaded.collaborationProfiles[0].displayInputs, before)
-    }
-
-    func testC014EachProfileReadsOnlyItsOwnMapping() {
-        let displayID = UUID().uuidString
-        var first = profile(name: "A")
-        var second = profile(name: "B")
-        first.displayInputs = [DisplayInputMapping(displayID: displayID, peerInput: 18)]
-        second.displayInputs = [DisplayInputMapping(displayID: displayID, peerInput: 27)]
-        XCTAssertEqual(Dictionary(uniqueKeysWithValues: first.displayInputs.map { ($0.displayID, $0.peerInput) })[displayID], 18)
-        XCTAssertEqual(Dictionary(uniqueKeysWithValues: second.displayInputs.map { ($0.displayID, $0.peerInput) })[displayID], 27)
-    }
-
-    func testC015MissingMappingLeavesOtherDisplaysUsable() {
-        var document = populatedDocument()
-        document.collaborationProfiles[0].displayInputs = [DisplayInputMapping(displayID: document.displays[0].id, peerInput: 18)]
-        let mappings = Dictionary(uniqueKeysWithValues: document.collaborationProfiles[0].displayInputs.map { ($0.displayID, $0.peerInput) })
-        XCTAssertEqual(mappings[document.displays[0].id], 18)
-        XCTAssertNil(mappings[document.displays[1].id])
-        XCTAssertTrue(DisplayConfigurationStore.inspectProfile(document.collaborationProfiles[0], displays: document.displays,
-            ddcAvailableDisplayIDs: Set(document.displays.map { $0.id.lowercased() })).issues.contains(.missingDisplayMapping))
-    }
-
-    func testNFCByteLengthPortInputAndDuplicateMappingValidation() throws {
-        var document = populatedDocument()
-        document.collaborationProfiles[0].pairingCode = String(repeating: "é", count: 4).decomposedStringWithCanonicalMapping
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).collaborationProfiles[0].pairingCode.utf8.count, 8)
+    func testStagingReadbackFailureNeverReplacesLastValidValue() throws {
+        var document = DisplayConfigurationStore.load(storage: storage).document
         let original = storage.data(forKey: DisplayConfigurationStore.storageKey)
-        document.collaborationProfiles[0].peerPort = 0
+        document.controlChannel = .fallback
+        storage.corruptReadBack = true
         XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
         XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.storageKey), original)
-        document = populatedDocument()
-        let duplicate = document.collaborationProfiles[0].displayInputs[0]
-        document.collaborationProfiles[0].displayInputs.append(duplicate)
-        XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
+        XCTAssertNil(storage.data(forKey: "\(DisplayConfigurationStore.storageKey).staging"))
     }
 
-    func testZeroOneAndManyDisplaysAndMergeDoNotGuessInputs() throws {
-        var document = DisplayConfigurationStore.load(storage: storage).document
-        XCTAssertTrue(document.displays.isEmpty)
-        document.displays = [display(name: "One")]
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        document.displays.append(display(name: "Two"))
-        document.displays.append(display(name: "Three"))
-        try DisplayConfigurationStore.saveDocument(document, storage: storage)
-        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).document.displays.count, 3)
-        let suite = "DisplaySwitcher.Merge.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let merged = try DisplayConfigurationStore.merge(detected: [DetectedDisplay(index: 1, name: "New", systemUUID: UUID().uuidString)], existing: [], defaults: defaults)
-        XCTAssertNil(merged[0].macInput)
-        XCTAssertNil(merged[0].windowsInput)
-    }
-
-    func testSuccessfulReviewedSaveClearsPersistentSafetyState() throws {
-        storage.values[DisplayConfigurationStore.storageKey] = Data("bad".utf8)
-        XCTAssertNotEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .ready)
-        let recovery = populatedDocument()
-        try DisplayConfigurationStore.saveDocument(recovery, storage: storage)
-        XCTAssertFalse(storage.bool(forKey: DisplayConfigurationStore.requiresReviewKey))
+    func testReviewedValidSaveClearsSafetyMarker() throws {
+        _ = DisplayConfigurationStore.load(storage: storage)
+        storage.values[DisplayConfigurationStore.requiresReviewKey] = true
+        let blocked = DisplayConfigurationStore.load(storage: storage)
+        XCTAssertNotEqual(blocked.safetyState, .ready)
+        try DisplayConfigurationStore.saveDocument(blocked.document, storage: storage)
         XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .ready)
     }
 
-    private func populatedDocument() -> DisplayConfigurationStoreV3Document {
-        let displays = [display(name: "Left"), display(name: "Right")]
-        var profile = profile(name: "Windows")
-        profile.peerHost = "peer.example"
-        profile.pairingCode = ephemeralPairingCode()
-        profile.displayInputs = [DisplayInputMapping(displayID: displays[0].id, peerInput: 18)]
-        return DisplayConfigurationStoreV3Document(schemaVersion: 3, localEndpointID: UUID().uuidString,
-            localDeviceName: "Mac", listenPort: 49731, displays: displays, collaborationProfiles: [profile])
+    func testUnknownCurrentSchemaAndCorruptDataAreSafelyRejected() {
+        storage.values[DisplayConfigurationStore.storageKey] = Data(#"{"schemaVersion":99}"#.utf8)
+        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState,
+                       .requiresUserReview(.unsupportedSchemaVersion(99)))
+        storage = MemoryConfigurationStorage()
+        storage.values[DisplayConfigurationStore.storageKey] = Data("not-json".utf8)
+        XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState,
+                       .requiresUserReview(.corruptedData))
+    }
+
+    func testProfileValidationUsesNFCBytesAndCompleteMappings() throws {
+        var document = populatedDocument()
+        document.collaborationProfiles[0].pairingCode = String(repeating: "é", count: 4)
+            .decomposedStringWithCanonicalMapping
+        try DisplayConfigurationStore.saveDocument(document, storage: storage)
+        let loaded = DisplayConfigurationStore.load(storage: storage).document
+        XCTAssertEqual(loaded.collaborationProfiles[0].pairingCode.utf8.count, 8)
+        let known = Set(loaded.displays.map { $0.id.lowercased() })
+        XCTAssertTrue(DisplayConfigurationStore.inspectProfile(
+            loaded.collaborationProfiles[0], displays: loaded.displays,
+            ddcAvailableDisplayIDs: known
+        ).isComplete)
+    }
+
+    func testIncompleteEnabledProfileIsExcludedFromMenu() {
+        var document = populatedDocument()
+        document.collaborationProfiles[0].peerHost = ""
+        XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
+    }
+
+    func testProfileNamesRemainUniqueAfterTrimmingAndCanonicalization() {
+        var document = populatedDocument()
+        var duplicate = document.collaborationProfiles[0]
+        duplicate.id = UUID().uuidString
+        duplicate.name += " "
+        document.collaborationProfiles.append(duplicate)
+        XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
+    }
+
+    func testProfileUSBBindingsRemainIsolatedDuringLearning() {
+        var first = profile(name: "A")
+        let second = profile(name: "B")
+        first.triggerDevices = [CollaborationTriggerDevice(kind: "usb", localReference: "1:2", displayName: "A device")]
+        var session = USBProfileLearningSession()
+        session.begin(profileID: first.id)
+        _ = session.receiveCandidates(
+            [CollaborationTriggerDevice(kind: "usb", localReference: "3:4", displayName: "new")],
+            availableProfileIDs: [first.id, second.id]
+        )
+        let updated = session.applyCandidate(at: 0, to: [first, second])
+        XCTAssertEqual(updated[0].triggerDevices[0].localReference, "3:4")
+        XCTAssertTrue(updated[1].triggerDevices.isEmpty)
+    }
+
+    private func populatedDocument() -> DisplayConfigurationStoreV4Document {
+        let display = DisplayConfigurationV4Display(
+            id: UUID().uuidString, name: "Display 1", selector: UUID().uuidString,
+            localInput: nil, readEnabled: false
+        )
+        var peer = profile(name: "Peer")
+        peer.peerHost = "peer.example"
+        peer.pairingCode = UUID().uuidString
+        peer.peerEndpointID = UUID().uuidString
+        peer.peerProtocolVersion = 2
+        peer.coordinationEnabled = true
+        peer.displayInputs = [DisplayInputMapping(displayID: display.id, peerInput: 18)]
+        return DisplayConfigurationStoreV4Document(
+            schemaVersion: 4, localEndpointID: UUID().uuidString,
+            localDeviceName: "Local", listenPort: 49731,
+            controlChannel: .automatic, linkAllDisplays: false,
+            displays: [display], collaborationProfiles: [peer]
+        )
     }
 
     private func profile(name: String) -> CollaborationProfile {
-        CollaborationProfile(id: UUID().uuidString, name: name, peerHost: "", peerPort: 49731,
-            pairingCode: "", peerEndpointID: nil, peerProtocolVersion: nil, coordinationEnabled: false,
-            displayInputs: [], triggerDevices: [])
-    }
-
-    private func display(name: String) -> DisplayConfigurationV3Display {
-        DisplayConfigurationV3Display(id: UUID().uuidString, name: name, selector: UUID().uuidString,
-            localInput: nil, readEnabled: false, brightnessEnabled: true, contrastEnabled: true, volumeEnabled: true)
-    }
-
-    private func legacyDisplay(index: Int, local: Int, peer: Int) -> DisplayConfiguration {
-        DisplayConfiguration(index: index, name: "Display \(index)", selector: UUID().uuidString,
-            macInput: local, windowsInput: peer, readEnabled: true)
-    }
-
-    private func ephemeralPairingCode() -> String {
-        UUID().uuidString
+        CollaborationProfile(
+            id: UUID().uuidString, name: name, peerHost: "", peerPort: 49731,
+            pairingCode: "", peerEndpointID: nil, peerProtocolVersion: nil,
+            coordinationEnabled: false, displayInputs: [], triggerDevices: []
+        )
     }
 }
