@@ -30,7 +30,7 @@ namespace DisplaySwitcher::Native
 
     struct V2Action
     {
-        enum class Kind { SendMessage, RequestWake, RequestSwitch, LockTarget, StartDiscovery, PromptManualSelection, IgnoreMessage, ClearEvent, RouteToV1, SetPeerReachable };
+        enum class Kind { SendMessage, RequestWake, RequestSwitch, LockTarget, StartDiscovery, PromptManualSelection, IgnoreMessage, ClearEvent, SetPeerReachable };
         Kind kind{};
         std::wstring type;
         std::wstring eventId;
@@ -66,7 +66,6 @@ namespace DisplaySwitcher::Native
         std::vector<V2Action> OnWakeCompleted(int64_t nowMs, std::wstring const& eventId, bool success);
         std::vector<V2Action> OnSwitchCompleted(int64_t nowMs, std::wstring const& eventId, bool success);
         std::vector<V2Action> OnConfigurationChanged(int64_t nowMs);
-        std::vector<V2Action> OnV1Message(int64_t nowMs, int version);
         std::vector<V2Action> Advance(int64_t nowMs, bool includeExactDue = true);
         V2StateSnapshot Snapshot() const { return { state_, activeEventId_, lockedTargetEndpointId_ }; }
 

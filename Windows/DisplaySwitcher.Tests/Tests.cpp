@@ -11,7 +11,6 @@
 using namespace DisplaySwitcher::Native;
 using namespace winrt::Windows::Data::Json;
 
-int RunStateMachineVectorTests();
 int RunV2ProtocolVectorTests();
 
 namespace
@@ -24,7 +23,7 @@ namespace
         ++checks;
         if (condition) return;
         ++failures;
-        std::wcerr << L"FAIL check " << checks << L": " << message << L'\n';
+        std::cerr << "FAIL check " << checks << ": " << winrt::to_string(message) << '\n';
     }
 
     DisplayConfig Display(std::wstring const& name, std::wstring const& monitor, int peerInput)
@@ -71,6 +70,7 @@ namespace
         DdcBackendStatus status{ DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
         std::map<std::pair<std::wstring, DdcVcpCode>, DdcValueResult> values;
         std::set<std::pair<std::wstring, DdcVcpCode>> writeFailures;
+        std::map<std::pair<std::wstring, DdcVcpCode>, int> transientWriteFailures;
         std::vector<std::pair<std::wstring, DdcVcpCode>> reads;
         std::vector<std::tuple<std::wstring, DdcVcpCode, int>> writes;
         std::function<void()> onRead;
@@ -99,6 +99,9 @@ namespace
             writes.emplace_back(monitorId, code, value);
             if (onWrite) onWrite();
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"已取消" };
+            auto transient = transientWriteFailures.find({ monitorId, code });
+            if (transient != transientWriteFailures.end() && transient->second-- > 0)
+                return { false, DdcErrorKind::WriteFailed, L"模拟句柄失效" };
             if (writeFailures.contains({ monitorId, code })) return { false, DdcErrorKind::WriteFailed, L"模拟写入失败" };
             return { true, DdcErrorKind::None, {} };
         }
@@ -116,9 +119,10 @@ namespace
     DdcControlService FakeService(FakeDdcBackend& native, FakeDdcBackend* fallback = nullptr,
         std::function<bool()> allowed = {})
     {
-        return DdcControlService([&](std::wstring const& key) -> IDdcBackend*
+        auto nativeBackend = &native;
+        return DdcControlService([nativeBackend, fallback](std::wstring const& key) -> IDdcBackend*
         {
-            if (_wcsicmp(key.c_str(), native.key.c_str()) == 0) return &native;
+            if (_wcsicmp(key.c_str(), nativeBackend->key.c_str()) == 0) return nativeBackend;
             if (fallback && _wcsicmp(key.c_str(), fallback->key.c_str()) == 0) return fallback;
             return nullptr;
         }, std::move(allowed));
@@ -171,6 +175,13 @@ namespace
             && !first.collaborationProfiles[0].coordinationEnabled, L"C-001: 全新安装应只有一个关闭的空配置");
         Check(first.displays.empty() && !first.HasUsbDeviceConfiguration() && !first.HasDisplayConfiguration(),
             L"C-001: 全新安装不得具备硬件动作条件");
+        auto freshJson = ReadObject(freshPath);
+        Check(freshJson.GetNamedNumber(L"schemaVersion") == 4
+            && !freshJson.GetNamedBoolean(L"UsbAutomationEnabled")
+            && !freshJson.GetNamedBoolean(L"UsbSwitchDisplaysOnArrival")
+            && !freshJson.HasKey(L"CoordinationEnabled") && !freshJson.HasKey(L"PeerHost")
+            && !freshJson.HasKey(L"Port") && !freshJson.HasKey(L"PairingCode"),
+            L"U-015/U-016: v4 默认配置必须安全关闭且不得保留 v1 顶层镜像字段");
 
         for (size_t count : { size_t{ 0 }, size_t{ 1 }, size_t{ 2 }, size_t{ 4 } })
         {
@@ -190,6 +201,13 @@ namespace
         auto originalId = config.collaborationProfiles[0].id;
         auto second = Profile(L"游戏主机", true);
         auto third = Profile(L"备用电脑", true);
+        second.peerEndpointId = GenerateIdentifier(); second.peerProtocolVersion = 2;
+        third.peerEndpointId = GenerateIdentifier(); third.peerProtocolVersion = 2;
+        for (auto const& display : config.displays)
+        {
+            second.displayInputs.push_back({ display.id, 20 });
+            third.displayInputs.push_back({ display.id, 21 });
+        }
         Check(originalId != second.id && second.id != third.id, L"C-002: 添加配置必须产生不同 UUID");
         config.collaborationProfiles.push_back(second);
         config.collaborationProfiles.push_back(third);
@@ -200,8 +218,8 @@ namespace
         auto loaded = AppConfig::LoadFromPath(path);
         Check(loaded.collaborationProfiles[2].id == originalId && loaded.PeerInputForDisplay(originalId, displayId) == 17,
             L"C-003: 配置重排后映射必须仍按 UUID 关联");
-        Check(loaded.ReadonlyEnabledProfiles().size() == 2 && !loaded.coordinationEnabled,
-            L"C-006: 多个配置可同时开启，但 v1 兼容桥不得选择列表第一项");
+        Check(loaded.ReadonlyEnabledProfiles().size() == 2,
+            L"C-006/U-003: 多个配置可同时开启且不得暗中选择列表第一项");
     }
 
     void TestValidationAndNfc(std::filesystem::path const& root)
@@ -223,6 +241,37 @@ namespace
         auto decomposed = std::wstring(L"1234567e\u0301");
         Check(AppConfig::NormalizeNfc(decomposed) != decomposed && AppConfig::IsValidPairingCode(decomposed),
             L"配对码必须执行真实 NFC 规范化");
+    }
+
+    void TestImmediateCommitSafety(std::filesystem::path const& root)
+    {
+        auto path = root / L"immediate.json";
+        auto runtime = ConfigWithDisplays(1);
+        runtime.SaveToPath(path);
+        auto lastValid = runtime;
+        auto edited = runtime;
+        edited.collaborationProfiles[0].peerPort = -1;
+        bool saved{};
+        try { edited.SaveToPath(path); runtime = edited; saved = true; } catch (...) {}
+        int networkCalls{}, usbCalls{}, wakeCalls{}, ddcCalls{};
+        Check(!saved && runtime.collaborationProfiles[0].peerPort == lastValid.collaborationProfiles[0].peerPort
+            && networkCalls == 0 && usbCalls == 0 && wakeCalls == 0 && ddcCalls == 0,
+            L"U-002: 非法文本提交必须恢复最后有效运行时值并保持零副作用");
+
+        auto incomplete = lastValid;
+        incomplete.collaborationProfiles[0].coordinationEnabled = true;
+        incomplete.collaborationProfiles[0].peerEndpointId.clear();
+        incomplete.collaborationProfiles[0].peerProtocolVersion.reset();
+        Check(incomplete.EnabledCompleteProfiles().empty() && networkCalls == 0 && usbCalls == 0
+            && wakeCalls == 0 && ddcCalls == 0,
+            L"U-003: 不完整协同配置不得进入启用运行时或触发任何副作用");
+
+        auto valid = lastValid;
+        valid.startWithWindows = !valid.startWithWindows;
+        valid.SaveToPath(path);
+        runtime = AppConfig::LoadFromPath(path);
+        Check(runtime.startWithWindows == valid.startWithWindows,
+            L"U-001: 普通开关只在原子保存成功后更新运行时值");
     }
 
     void TestOrphansInspectionAndSelection()
@@ -258,7 +307,7 @@ namespace
             L"C-015: 单台缺少映射时其他显示器仍应独立进入执行集合");
     }
 
-    void TestWindowsV2Migration(std::filesystem::path const& root)
+    void TestLegacyConfigResetToSafeV4(std::filesystem::path const& root)
     {
         auto path = root / L"v2.json";
         auto id1 = GenerateIdentifier(); auto id2 = GenerateIdentifier();
@@ -267,19 +316,19 @@ namespace
             + "{\"Id\":\"" + winrt::to_string(id1) + "\",\"Name\":\"A\",\"NativeMonitorId\":\"monitor-a\",\"ControlMonitorPath\":\"\",\"MacInput\":16},"
             + "{\"Id\":\"" + winrt::to_string(id2) + "\",\"Name\":\"B\",\"NativeMonitorId\":\"monitor-b\",\"ControlMonitorPath\":\"\",\"MacInput\":17}]}";
         WriteBytes(path, text);
-        auto migrated = AppConfig::LoadFromPath(path);
-        Check(migrated.displays.size() == 2 && !migrated.displays[0].localInput && !migrated.displays[1].localInput,
-            L"C-009: Windows v2 迁移时 localInput 必须保持 null");
-        Check(migrated.collaborationProfiles.size() == 1 && migrated.collaborationProfiles[0].name == L"Mac"
-            && migrated.PeerInputForDisplay(migrated.collaborationProfiles[0].id, id2) == 17,
-            L"C-009: MacInput 应迁移到旧对端配置映射");
-        Check(migrated.collaborationProfiles[0].triggerDevices.size() == 1
-            && migrated.collaborationProfiles[0].triggerDevices[0].kind == L"usb",
-            L"C-009: 旧 USB 触发设置应迁移为配置内本机引用");
-        Check(std::filesystem::exists(path.wstring() + L".v2.backup") && ReadBytes(path.wstring() + L".v2.backup") == text,
-            L"C-009: 迁移应保留原 v2 文件备份");
-        auto endpoint = migrated.localEndpointId;
-        Check(AppConfig::LoadFromPath(path).localEndpointId == endpoint, L"迁移生成的 endpointID 应持久稳定");
+        auto reset = AppConfig::LoadFromPath(path);
+        auto backup = std::filesystem::path(path.wstring() + L".pre-v4.backup");
+        Check(std::filesystem::exists(backup) && ReadBytes(backup) == text,
+            L"U-004/U-005: v3 及更早配置必须原样备份，不能静默删除或覆盖");
+        Check(ReadObject(path).GetNamedNumber(L"schemaVersion") == 4 && reset.displays.empty() && reset.collaborationProfiles.size() == 1
+            && !reset.collaborationProfiles[0].coordinationEnabled && !reset.usbAutomationEnabled,
+            L"U-004/U-005: 旧配置必须重建为协同和硬件动作均关闭的 v4 默认值");
+        Check(!reset.HasDisplayConfiguration() && !reset.HasUsbDeviceConfiguration()
+            && !reset.displayConfigurationSafeMode,
+            L"U-004/U-005: 成功备份后的 v4 默认值不得具备任何硬件动作前置条件");
+        auto endpoint = reset.localEndpointId;
+        Check(AppConfig::LoadFromPath(path).localEndpointId == endpoint,
+            L"U-004/U-005: 新 v4 endpointID 必须持久稳定且不得从旧硬件信息派生");
     }
 
     void TestSafeFailures(std::filesystem::path const& root)
@@ -289,7 +338,7 @@ namespace
         auto malformed = AppConfig::LoadFromPath(malformedPath);
         auto restarted = AppConfig::LoadFromPath(malformedPath);
         Check(malformed.displayConfigurationSafeMode && restarted.displayConfigurationSafeMode
-            && !malformed.usbAutomationEnabled && !malformed.coordinationEnabled,
+            && !malformed.usbAutomationEnabled,
             L"C-010: 读取失败后应跨重启保持安全状态");
         Check(ReadBytes(malformedPath) == "{not-json", L"C-010: 读取失败不得覆盖原数据");
 
@@ -307,7 +356,7 @@ namespace
         SetFileAttributesW(readOnlyPath.c_str(), FILE_ATTRIBUTE_NORMAL);
     }
 
-    void TestNormalV3SaveFailureSafety(std::filesystem::path const& root)
+    void TestNormalV4SaveFailureSafety(std::filesystem::path const& root)
     {
         auto runFailure = [&](wchar_t const* fileName, AppConfigSaveFaultForTesting fault, bool invalidEncoding)
         {
@@ -317,6 +366,8 @@ namespace
             original.usbVendorId = 0x1234;
             original.usbProductId = 0x5678;
             original.collaborationProfiles[0].coordinationEnabled = true;
+            original.collaborationProfiles[0].peerEndpointId = GenerateIdentifier();
+            original.collaborationProfiles[0].peerProtocolVersion = 2;
             original.SaveToPath(path);
             auto oldBytes = ReadBytes(path);
 
@@ -329,16 +380,15 @@ namespace
             try { edited.SaveToPath(path, fault); }
             catch (...) { rejected = true; }
             auto marker = std::filesystem::path(path.wstring() + L".safety");
-            Check(rejected, L"正常 v3 设置保存阶段失败必须重新抛出错误");
-            Check(ReadBytes(path) == oldBytes, L"正常 v3 设置保存失败必须保留磁盘旧配置");
-            Check(std::filesystem::exists(marker), L"正常 v3 设置保存失败必须写入持久安全标记");
+            Check(rejected, L"正常 v4 设置保存阶段失败必须重新抛出错误");
+            Check(ReadBytes(path) == oldBytes, L"正常 v4 设置保存失败必须保留磁盘旧配置");
+            Check(std::filesystem::exists(marker), L"正常 v4 设置保存失败必须写入持久安全标记");
 
             auto currentProcess = original;
             RuntimeSafetyGate gate;
             gate.Block();
             currentProcess.EnterSafeState();
             Check(currentProcess.displayConfigurationSafeMode && !currentProcess.usbAutomationEnabled
-                && !currentProcess.coordinationEnabled
                 && std::none_of(currentProcess.collaborationProfiles.begin(), currentProcess.collaborationProfiles.end(),
                     [](auto const& profile) { return profile.coordinationEnabled; }),
                 L"当前进程收到保存失败后必须立即关闭 UDP、USB 自动切换和状态机协同");
@@ -349,7 +399,6 @@ namespace
 
             auto restarted = AppConfig::LoadFromPath(path);
             Check(restarted.displayConfigurationSafeMode && !restarted.usbAutomationEnabled
-                && !restarted.coordinationEnabled
                 && std::none_of(restarted.collaborationProfiles.begin(), restarted.collaborationProfiles.end(),
                     [](auto const& profile) { return profile.coordinationEnabled; }),
                 L"保存失败后重启必须继续关闭 UDP、USB 自动切换和状态机协同");
@@ -359,7 +408,7 @@ namespace
             auto recovered = original;
             recovered.localDeviceName = L"恢复后的本机";
             recovered.SaveToPath(path);
-            Check(!std::filesystem::exists(marker), L"只有后续成功保存合法 v3 配置才清除安全标记");
+            Check(!std::filesystem::exists(marker), L"只有后续成功保存合法 v4 配置才清除安全标记");
             auto loaded = AppConfig::LoadFromPath(path);
             Check(!loaded.displayConfigurationSafeMode && loaded.localDeviceName == recovered.localDeviceName,
                 L"成功保存合法配置后应恢复正常加载并保留编辑内容");
@@ -378,10 +427,15 @@ namespace
         auto object = ReadObject(path);
         object.Insert(L"FutureField", JsonValue::CreateStringValue(L"ignored"));
         WriteObject(path, object);
-        Check(!AppConfig::LoadFromPath(path).displayConfigurationSafeMode, L"C-011: v3 未知字段应忽略");
+        Check(!AppConfig::LoadFromPath(path).displayConfigurationSafeMode, L"U-006: v4 未知字段应忽略");
 
         object = ReadObject(path); object.Insert(L"schemaVersion", JsonValue::CreateNumberValue(99)); WriteObject(path, object);
-        Check(AppConfig::LoadFromPath(path).displayConfigurationSafeMode, L"C-012: 未知 schemaVersion 应安全拒绝");
+        auto futureBytes = ReadBytes(path);
+        auto future = AppConfig::LoadFromPath(path);
+        Check(ReadObject(path).GetNamedNumber(L"schemaVersion") == 4 && future.displays.empty() && !future.usbAutomationEnabled
+            && std::filesystem::exists(path.wstring() + L".pre-v4.backup")
+            && ReadBytes(path.wstring() + L".pre-v4.backup") == futureBytes,
+            L"U-004/U-005: 未知 schemaVersion 必须备份并重建安全关闭的 v4 默认值");
 
         auto duplicatePath = root / L"duplicate.json"; config.SaveToPath(duplicatePath);
         object = ReadObject(duplicatePath); auto profiles = object.GetNamedArray(L"CollaborationProfiles"); profiles.Append(profiles.GetAt(0));
@@ -391,6 +445,13 @@ namespace
         auto fractionalPath = root / L"fractional.json"; config.SaveToPath(fractionalPath);
         object = ReadObject(fractionalPath); object.Insert(L"ListenPort", JsonValue::CreateNumberValue(49731.5)); WriteObject(fractionalPath, object);
         Check(AppConfig::LoadFromPath(fractionalPath).displayConfigurationSafeMode, L"非法数值范围或非整数应安全拒绝");
+
+        auto missingPath = root / L"missing-v4-field.json"; config.SaveToPath(missingPath);
+        object = ReadObject(missingPath); object.Remove(L"LinkAllDisplays"); WriteObject(missingPath, object);
+        auto missingBytes = ReadBytes(missingPath); auto missing = AppConfig::LoadFromPath(missingPath);
+        Check(missing.displayConfigurationSafeMode && ReadBytes(missingPath) == missingBytes
+            && missing.EnabledCompleteProfiles().empty() && !missing.HasDisplayConfiguration(),
+            L"U-017: 缺少 v4 必填字段必须保留原文件并持续阻断网络和硬件副作用");
     }
 
     void TestRenameAndFailureIsolation(std::filesystem::path const& root)
@@ -399,6 +460,8 @@ namespace
         auto id = config.collaborationProfiles[0].id;
         auto mappedId = config.displays[1].id;
         config.collaborationProfiles[0].coordinationEnabled = true;
+        config.collaborationProfiles[0].peerEndpointId = GenerateIdentifier();
+        config.collaborationProfiles[0].peerProtocolVersion = 2;
         config.collaborationProfiles[0].name = L"新名称";
         auto path = root / L"rename.json"; config.SaveToPath(path);
         auto loaded = AppConfig::LoadFromPath(path);
@@ -431,7 +494,33 @@ namespace
     void TestDdcControls()
     {
         auto config = ConfigWithDisplays(2);
+        Check(BuildDdcTrayControls(config).empty(),
+            L"U-005/U-009: 新显示器六个 DDC 开关默认全关且托盘无入口");
         for (auto& display : config.displays) EnableDdcControls(display);
+        config.displays[0].brightnessShowInTray = true;
+        auto tray = BuildDdcTrayControls(config);
+        Check(tray.size() == 1 && tray[0].displayId == config.displays[0].id
+            && tray[0].code == DdcVcpCode::Brightness,
+            L"U-009: 只有 enabled=true 且 showInTray=true 的项目进入托盘投影");
+        config.displays[0].brightnessShowInTray = false;
+        Check(BuildDdcTrayControls(config).empty(),
+            L"U-009: 关闭托盘开关应立即移除入口且不产生 DDC 写入");
+
+        DdcWriteQueue queue;
+        int workerStarts{};
+        for (int value = 0; value < 100; ++value)
+            if (queue.Submit({ config.displays[0].id, DdcVcpCode::Brightness, value, 7 })) ++workerStarts;
+        auto latest = queue.TakeNext();
+        Check(workerStarts == 1 && latest && latest->value == 99 && !queue.TakeNext(),
+            L"U-021: 同一滑杆的连续变化必须 latest-wins 合并为最终值");
+        queue.Submit({ config.displays[0].id, DdcVcpCode::Brightness, 30, 8 });
+        queue.Submit({ config.displays[0].id, DdcVcpCode::Contrast, 40, 8 });
+        Check(queue.PendingCount() == 2 && queue.TakeNext() && queue.TakeNext() && !queue.TakeNext(),
+            L"U-022: 不同显示器项目必须独立保留并由单一工作器串行提交");
+        queue.Submit({ config.displays[0].id, DdcVcpCode::Volume, 50, 9 });
+        queue.CancelPending();
+        Check(queue.PendingCount() == 0 && !queue.TakeNext(),
+            L"U-025: 配置变化或取消必须清空待提交 DDC 值");
         auto firstId = config.displays[0].id;
         auto secondId = config.displays[1].id;
         FakeDdcBackend native;
@@ -444,6 +533,15 @@ namespace
         Check(normal.success && normal.items.size() == 6 && config.displays[0].brightnessValue == 35
             && config.displays[0].brightnessMax == 100 && config.displays[1].volumeMax == 120,
             L"C-016: 三项正常回读应按稳定显示器 ID 缓存，并修正异常最大值");
+        Check(native.writes.empty() && std::all_of(native.reads.begin(), native.reads.end(), [](auto const& call)
+            { return call.second == DdcVcpCode::Brightness || call.second == DdcVcpCode::Contrast || call.second == DdcVcpCode::Volume; }),
+            L"U-006: 读取 DDC 参数只允许读取亮度、对比度和音量，零输入源写入");
+
+        native.writes.clear();
+        auto trayWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 36, false, cancellation.Begin());
+        Check(trayWrite.success && native.writes.size() == 1 && std::get<0>(native.writes[0]) == L"monitor-0"
+            && std::get<1>(native.writes[0]) == DdcVcpCode::Brightness && config.displays[0].brightnessValue == 36,
+            L"U-010: 托盘滑杆只写对应显示器和项目，成功后才提交缓存");
 
         auto cachedFirst = config.displays[0];
         SetThreeValues(native, L"monitor-0", 0, 0, 0);
@@ -487,27 +585,46 @@ namespace
         native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
 
         FakeDdcBackend fallback; fallback.key = L"control_my_monitor";
-        config.displays[1].backend = fallback.key;
+        config.displayControlBackend = L"auto";
+        config.controlMyMonitorPath = L"simulated-cmm.exe";
         SetThreeValues(fallback, L"path-monitor-1", 21, 22, 23);
+        SetThreeValues(fallback, L"path-monitor-0", 11, 12, 13);
+        native.status = { DdcAvailability::Unsupported, L"模拟原生通道不可用" };
         native.reads.clear(); fallback.reads.clear();
         auto mixed = FakeService(native, &fallback).Read(config, {}, cancellation.Begin());
-        Check(!native.reads.empty() && !fallback.reads.empty() && config.displays[1].brightnessValue == 21,
-            L"每台显示器应选择独立后端，ControlMyMonitor 回退不得改变其他显示器语义");
+        Check(native.reads.empty() && fallback.reads.size() == 6 && config.displays[0].brightnessValue == 11
+            && config.displays[1].brightnessValue == 21,
+            L"U-016: 全局自动控制通道在原生通道不可用时应明确回退，且不得混用每显示器后端");
 
         auto reordered = config;
         std::swap(reordered.displays[0], reordered.displays[1]);
         native.reads.clear(); fallback.reads.clear();
         FakeService(native, &fallback).Read(reordered, { firstId }, cancellation.Begin());
-        Check(!native.reads.empty() && fallback.reads.empty() && native.reads.front().first == L"monitor-0",
+        Check(native.reads.empty() && !fallback.reads.empty() && fallback.reads.front().first == L"path-monitor-0",
             L"显示器枚举重排后仍须按稳定逻辑 ID 关联后端监视器 ID");
 
-        config.displays[1].backend = L"native_ddc";
+        config.displayControlBackend = L"native_ddc";
+        native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
         native.writes.clear(); native.writeFailures = { { L"monitor-1", DdcVcpCode::Brightness } };
         auto oldSecond = config.displays[1].brightnessValue;
         auto linked = service.Write(config, firstId, DdcVcpCode::Brightness, 42, true, cancellation.Begin());
-        Check(!linked.success && native.writes.size() == 2 && config.displays[0].brightnessValue == 42
+        Check(!linked.success && native.writes.size() == 3 && config.displays[0].brightnessValue == 42
             && config.displays[1].brightnessValue == oldSecond,
             L"显式联动模式的部分失败不得阻止成功显示器，也不得污染失败显示器缓存");
+
+        native.writeFailures.clear(); native.writes.clear();
+        native.transientWriteFailures[{ L"monitor-0", DdcVcpCode::Brightness }] = 1;
+        auto recoveredWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 58, false, cancellation.Begin());
+        Check(recoveredWrite.success && native.writes.size() == 2 && config.displays[0].brightnessValue == 58,
+            L"U-023: 原生写入句柄失效后必须重新发现并仅重试一次，成功后提交缓存");
+        native.writes.clear(); native.writeFailures.insert({ L"monitor-0", DdcVcpCode::Brightness });
+        auto beforePermanentFailure = config.displays[0].brightnessValue;
+        auto permanentFailure = service.Write(config, firstId, DdcVcpCode::Brightness, 59, false, cancellation.Begin());
+        auto secondAttempt = service.Write(config, firstId, DdcVcpCode::Brightness, 60, false, cancellation.Begin());
+        Check(!permanentFailure.success && !secondAttempt.success && native.writes.size() == 4
+            && config.displays[0].brightnessValue == beforePermanentFailure,
+            L"U-024: 原生重建失败应明确失败、不改缓存，下一次操作仍重新尝试");
+        native.writeFailures.clear(); native.writes.clear();
 
         native.reads.clear(); native.writes.clear();
         config.displayConfigurationSafeMode = true;
@@ -620,7 +737,7 @@ namespace
         Check(about.applicationName == L"DisplaySwitch" && about.versionFromApplicationMetadata
             && !about.publicVersion.empty() && about.publicVersion != L"未知"
             && !missingMetadata.versionFromApplicationMetadata && missingMetadata.publicVersion == L"未知"
-            && about.architecture.find(L"Windows") != std::wstring::npos && about.protocol == L"UDP 协议 v1 / v2"
+            && about.architecture.find(L"Windows") != std::wstring::npos && about.protocol == L"UDP 协议 v2"
             && about.projectUrl == L"https://github.com/maizihk/DisplaySwitch"
             && about.licenseUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/LICENSE"
             && about.thirdPartyNoticesUrl == L"https://github.com/maizihk/DisplaySwitch/blob/main/THIRD_PARTY_NOTICES.md",
@@ -632,13 +749,31 @@ namespace
             L"C-023: 打开关于页面不得触发网络或硬件动作");
     }
 
+    void TestV2OnlyDatagramGate()
+    {
+        int replies{}, onlineRefreshes{}, usbCalls{}, wakeCalls{}, ddcCalls{}, inputSwitchCalls{};
+        auto dispatch = [&](std::string_view datagram)
+        {
+            if (!IsV2Datagram(datagram)) return;
+            ++replies;
+        };
+        dispatch(R"({"version":1,"type":"status_probe"})");
+        dispatch(R"({"type":"status_probe"})");
+        dispatch(R"({"version":"2","type":"status_probe"})");
+        dispatch(R"({"version":3,"type":"status_probe"})");
+        Check(replies == 0 && onlineRefreshes == 0 && usbCalls == 0 && wakeCalls == 0
+            && ddcCalls == 0 && inputSwitchCalls == 0,
+            L"U-015: v1、缺失、类型错误和未知 version 必须零回复、零在线刷新和零硬件副作用");
+        Check(IsV2Datagram(R"({"version":2,"type":"status_probe"})"),
+            L"v2-only 分派只允许整数 version=2 进入正式解析器");
+    }
+
     void TestProfileNetworkDetection()
     {
         struct Harness
         {
             ProfileDetectionSession session;
             int v2Sends{};
-            int v1Sends{};
             int usbCalls{};
             int bluetoothCalls{};
             int wakeCalls{};
@@ -648,7 +783,6 @@ namespace
             void Apply(ProfileDetectionAction action)
             {
                 if (action.kind == ProfileDetectionAction::Kind::SendV2Probe) ++v2Sends;
-                else if (action.kind == ProfileDetectionAction::Kind::SendV1Probe) ++v1Sends;
                 else if (action.kind == ProfileDetectionAction::Kind::Complete) result = action.result;
             }
         };
@@ -656,7 +790,6 @@ namespace
         auto endpointA = GenerateIdentifier();
         auto endpointB = GenerateIdentifier();
         auto v2Event = GenerateIdentifier();
-        auto v1Event = GenerateIdentifier();
 
         PendingStatusProbe health;
         health.Begin(v2Event, 2000);
@@ -672,7 +805,7 @@ namespace
 
         Harness first;
         auto started = first.session.Start(1000, true, {}, v2Event); first.Apply(started);
-        Check(started.eventId == v2Event && first.v2Sends == 1 && first.v1Sends == 0,
+        Check(started.eventId == v2Event && first.v2Sends == 1,
             L"网络检测：v2 status_probe 必须使用待处理 eventID");
         first.Apply(first.session.OnV2StatusResponse(1100, GenerateIdentifier(), endpointA, true));
         Check(!first.result && first.session.Active(), L"网络检测：非待处理 eventID 不得完成检测或更新在线状态");
@@ -682,7 +815,7 @@ namespace
             !first.result->endpointChanged,
             L"网络检测：首次 endpoint 必须匹配 eventID 并要求用户确认");
         first.Apply(first.session.OnV2StatusResponse(1300, v2Event, endpointA, true));
-        Check(first.v2Sends == 1 && first.v1Sends == 0,
+        Check(first.v2Sends == 1,
             L"网络检测：已完成会话的重复响应不得产生新发送或新完成结果");
 
         Harness changed;
@@ -717,38 +850,23 @@ namespace
         Check(authentication.result && authentication.result->outcome == ProfileDetectionOutcome::AuthenticationFailed,
             L"网络检测：匹配探测的 v2 HMAC 失败必须报告认证失败");
 
-        Harness fallback;
-        fallback.Apply(fallback.session.Start(5000, true, endpointA, v2Event));
-        fallback.Apply(fallback.session.OnV2StatusResponse(7001, v2Event, endpointA, true));
-        Check(!fallback.result, L"网络检测：过期 v2 响应必须忽略");
-        auto v1Probe = fallback.session.Advance(7001, v1Event); fallback.Apply(v1Probe);
-        fallback.Apply(fallback.session.Advance(7100, GenerateIdentifier()));
-        Check(v1Probe.eventId == v1Event && fallback.v1Sends == 1,
-            L"网络检测：v2 超时后最多发送一次 v1 status_probe");
-        fallback.Apply(fallback.session.OnV1StatusResponse(7200, GenerateIdentifier(), true));
-        Check(!fallback.result, L"网络检测：错误 v1 eventID 不得完成检测");
-        fallback.Apply(fallback.session.OnV1StatusResponse(7300, v1Event, true));
-        Check(fallback.result && fallback.result->outcome == ProfileDetectionOutcome::V1Only,
-            L"网络检测：匹配且合法的 v1 status_response 应报告仅 v1 可用");
-
         Harness timeout;
         timeout.Apply(timeout.session.Start(8000, true, endpointA, v2Event));
-        timeout.Apply(timeout.session.Advance(10000, v1Event));
-        timeout.Apply(timeout.session.Advance(12000));
+        timeout.Apply(timeout.session.Advance(10000));
         Check(timeout.result && timeout.result->outcome == ProfileDetectionOutcome::NoResponse &&
-            timeout.v2Sends == 1 && timeout.v1Sends == 1,
-            L"网络检测：两阶段超时必须报告无响应且 v1 只发送一次");
+            timeout.v2Sends == 1,
+            L"网络检测：v2 超时必须报告无响应且不得发送 v1");
 
         Harness incomplete;
         incomplete.Apply(incomplete.session.Start(13000, false, {}, v2Event));
         Check(incomplete.result && incomplete.result->outcome == ProfileDetectionOutcome::LocalConfigurationIncomplete &&
-            incomplete.v2Sends == 0 && incomplete.v1Sends == 0,
+            incomplete.v2Sends == 0,
             L"网络检测：本机配置不完整必须零网络发送");
 
         auto noHardware = [&](Harness const& value)
         { return value.usbCalls == 0 && value.bluetoothCalls == 0 && value.wakeCalls == 0 && value.ddcCalls == 0; };
         Check(noHardware(first) && noHardware(changed) && noHardware(known) && noHardware(authentication) &&
-            noHardware(fallback) && noHardware(timeout) && noHardware(incomplete),
+            noHardware(timeout) && noHardware(incomplete),
             L"网络检测：模拟全流程必须保持 USB、蓝牙、唤醒和 DDC 调用为零");
 
         // Simulate first contact where neither side has persisted the peer endpoint.
@@ -817,13 +935,15 @@ int wmain()
     std::filesystem::create_directories(root);
     try
     {
+        TestV2OnlyDatagramGate();
         TestFreshInstallAndCounts(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);
+        TestImmediateCommitSafety(root);
         TestOrphansInspectionAndSelection();
-        TestWindowsV2Migration(root);
+        TestLegacyConfigResetToSafeV4(root);
         TestSafeFailures(root);
-        TestNormalV3SaveFailureSafety(root);
+        TestNormalV4SaveFailureSafety(root);
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
         TestDdcControls();
@@ -833,7 +953,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-021 through C-023 USB-learning and about scenarios\n";
         if (!failures) std::wcout << L"DS-005 network detection pending-event and zero-hardware scenarios passed\n";
-        failures += RunStateMachineVectorTests();
+        if (!failures) std::wcout << L"DS-007 Windows-applicable settings, v2-only, DDC and tray scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
     }
     catch (winrt::hresult_error const& error)

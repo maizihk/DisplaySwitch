@@ -55,7 +55,7 @@ namespace DisplaySwitcher::Native
             L"DisplaySwitch",
             version.value_or(L"未知"),
             architecture,
-            L"UDP 协议 v1 / v2",
+            L"UDP 协议 v2",
             L"https://github.com/maizihk/DisplaySwitch",
             L"https://github.com/maizihk/DisplaySwitch/blob/main/LICENSE",
             L"https://github.com/maizihk/DisplaySwitch/blob/main/THIRD_PARTY_NOTICES.md",

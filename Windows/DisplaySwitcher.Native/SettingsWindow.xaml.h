@@ -49,12 +49,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void PollUsbLearning();
         void ShowUsbLearningCandidates();
         void EndUsbLearning(std::wstring const& message = {});
-        void ShowAbout();
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
         void CaptureProfileEditors();
         void RebuildProfileEditors();
+        void RefreshProfileSelectors();
+        void RefreshUsbDeviceSelection();
         void RemoveProfile(std::wstring const& id);
         void DetectProfile(std::wstring const& id);
         void CompleteProfileDetection(std::wstring const& id,
@@ -66,7 +67,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void CompleteDdcOperation(::DisplaySwitcher::Native::AppConfig const& config,
             ::DisplaySwitcher::Native::DdcControlBatchResult const& result,
             ::DisplaySwitcher::Native::DdcCancellationToken const& cancellation, bool write);
-        void Save();
+        bool Save(bool hideAfterSave = false);
+        bool SaveImmediately();
         void ShowValidationError(std::wstring const& message);
 
         ::DisplaySwitcher::Native::AppConfig original_;
@@ -93,25 +95,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
         std::vector<::DisplaySwitcher::Native::CollaborationProfile> workingProfiles_;
+        std::wstring selectedProfileId_;
+        std::wstring usbSelectedProfileId_;
         struct DisplayEditorControls
         {
             std::wstring id;
-            Microsoft::UI::Xaml::Controls::TextBox name{ nullptr };
-            Microsoft::UI::Xaml::Controls::ComboBox backend{ nullptr };
-            Microsoft::UI::Xaml::Controls::ComboBox nativeMonitor{ nullptr };
-            std::vector<std::wstring> nativeMonitorIds;
-            Microsoft::UI::Xaml::Controls::TextBox controlMonitorPath{ nullptr };
-            Microsoft::UI::Xaml::Controls::TextBox macInput{ nullptr };
-            Microsoft::UI::Xaml::Controls::ToggleSwitch readEnabled{ nullptr };
             Microsoft::UI::Xaml::Controls::ToggleSwitch brightnessEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch brightnessShowInTray{ nullptr };
             Microsoft::UI::Xaml::Controls::ToggleSwitch contrastEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch contrastShowInTray{ nullptr };
             Microsoft::UI::Xaml::Controls::ToggleSwitch volumeEnabled{ nullptr };
+            Microsoft::UI::Xaml::Controls::ToggleSwitch volumeShowInTray{ nullptr };
             Microsoft::UI::Xaml::Controls::Slider brightness{ nullptr };
             Microsoft::UI::Xaml::Controls::Slider contrast{ nullptr };
             Microsoft::UI::Xaml::Controls::Slider volume{ nullptr };
             Microsoft::UI::Xaml::Controls::TextBlock status{ nullptr };
-            Microsoft::UI::Xaml::FrameworkElement nativeFields{ nullptr };
-            Microsoft::UI::Xaml::FrameworkElement controlMyMonitorFields{ nullptr };
         };
         std::vector<DisplayEditorControls> displayEditors_;
         struct ProfileMappingControls
@@ -136,18 +134,22 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::TextBlock connectionDot_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbAutomation_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch usbSwitchDisplaysOnArrival_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel profileEditorsPanel_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox profileSelector_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ComboBox usbProfileSelector_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbDevices_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox vendorId_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox productId_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock usbDeviceStatus_{ nullptr };
+        int selectedUsbVendorId_{ -1 };
+        int selectedUsbProductId_{ -1 };
         Microsoft::UI::Xaml::Controls::ComboBox displayBackend_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
-        Microsoft::UI::Xaml::Controls::StackPanel nativeDdcPanel_{ nullptr };
-        Microsoft::UI::Xaml::Controls::StackPanel controlMyMonitorPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox controlMyMonitor_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
+        bool loading_{};
+        bool cmmChannelAvailable_{};
     };
 }
 

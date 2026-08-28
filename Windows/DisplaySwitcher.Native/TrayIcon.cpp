@@ -46,6 +46,8 @@ namespace
         std::wstring text;
         bool separator{};
         bool enabled{ true };
+        bool slider{};
+        DisplaySwitcher::Native::TrayDdcItem ddc;
         RECT bounds{};
     };
 
@@ -61,6 +63,8 @@ namespace
         bool closing{};
         bool inputArmed{};
         bool heapOwned{};
+        int draggingIndex{ -1 };
+        std::function<void(std::wstring const&, DisplaySwitcher::Native::DdcVcpCode, int)> writeDdc;
 
         ~PopupMenuState()
         {
@@ -142,6 +146,26 @@ namespace
             RECT textBounds = item.bounds;
             textBounds.left += ScaleForDpi(20, state.dpi);
             textBounds.right -= ScaleForDpi(20, state.dpi);
+            if (item.slider)
+            {
+                auto labelBounds = textBounds; labelBounds.right = labelBounds.left + ScaleForDpi(92, state.dpi);
+                DrawTextW(dc, item.text.c_str(), static_cast<int>(item.text.size()), &labelBounds,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                RECT track{ labelBounds.right, (item.bounds.top + item.bounds.bottom) / 2 - ScaleForDpi(2, state.dpi),
+                    item.bounds.right - ScaleForDpi(52, state.dpi), (item.bounds.top + item.bounds.bottom) / 2 + ScaleForDpi(2, state.dpi) };
+                auto trackBrush = CreateSolidBrush(state.dark ? RGB(105, 105, 105) : RGB(145, 145, 145));
+                FillRect(dc, &track, trackBrush); DeleteObject(trackBrush);
+                auto maximum = (std::max)(1, item.ddc.maximum);
+                auto x = track.left + MulDiv((std::clamp)(item.ddc.value, 0, maximum), track.right - track.left, maximum);
+                auto thumbBrush = CreateSolidBrush(state.dark ? RGB(96, 205, 255) : RGB(0, 95, 184));
+                auto radius = ScaleForDpi(6, state.dpi); auto oldBrush = SelectObject(dc, thumbBrush);
+                Ellipse(dc, x - radius, (track.top + track.bottom) / 2 - radius, x + radius, (track.top + track.bottom) / 2 + radius);
+                SelectObject(dc, oldBrush); DeleteObject(thumbBrush);
+                auto valueBounds = item.bounds; valueBounds.left = track.right + ScaleForDpi(8, state.dpi); valueBounds.right -= ScaleForDpi(12, state.dpi);
+                auto value = item.ddc.known ? std::to_wstring(item.ddc.value) : L"--";
+                DrawTextW(dc, value.c_str(), static_cast<int>(value.size()), &valueBounds, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+                continue;
+            }
             DrawTextW(dc, item.text.c_str(), static_cast<int>(item.text.size()), &textBounds,
                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
@@ -178,6 +202,14 @@ namespace
         case WM_MOUSEMOVE:
         {
             auto point = MAKEPOINTS(lParam);
+            if (state->draggingIndex >= 0)
+            {
+                auto& item = state->items[static_cast<size_t>(state->draggingIndex)];
+                auto left = ScaleForDpi(112, state->dpi); auto right = static_cast<int>(item.bounds.right) - ScaleForDpi(52, state->dpi);
+                item.ddc.value = MulDiv((std::clamp)(static_cast<int>(point.x), left, right) - left,
+                    (std::max)(1, item.ddc.maximum), (std::max)(1, right - left));
+                InvalidateRect(window, &item.bounds, FALSE); return 0;
+            }
             auto hotIndex = HitTestMenuItem(*state, point.x, point.y);
             if (hotIndex != state->hotIndex)
             {
@@ -192,10 +224,32 @@ namespace
             state->hotIndex = -1;
             InvalidateRect(window, nullptr, FALSE);
             return 0;
+        case WM_LBUTTONDOWN:
+        {
+            auto point = MAKEPOINTS(lParam); auto index = HitTestMenuItem(*state, point.x, point.y);
+            if (index >= 0 && state->items[static_cast<size_t>(index)].slider)
+            {
+                state->draggingIndex = index;
+                auto& item = state->items[static_cast<size_t>(index)];
+                auto left = ScaleForDpi(112, state->dpi); auto right = static_cast<int>(item.bounds.right) - ScaleForDpi(52, state->dpi);
+                item.ddc.value = MulDiv((std::clamp)(static_cast<int>(point.x), left, right) - left,
+                    (std::max)(1, item.ddc.maximum), (std::max)(1, right - left));
+                InvalidateRect(window, &item.bounds, FALSE);
+                SetCapture(window); return 0;
+            }
+            break;
+        }
         case WM_LBUTTONUP:
         case WM_RBUTTONUP:
         {
             auto point = MAKEPOINTS(lParam);
+            if (state->draggingIndex >= 0)
+            {
+                auto index = state->draggingIndex; state->draggingIndex = -1; ReleaseCapture();
+                auto& item = state->items[static_cast<size_t>(index)];
+                if (state->writeDdc) state->writeDdc(item.ddc.displayId, item.ddc.code, item.ddc.value);
+                InvalidateRect(window, &item.bounds, FALSE); return 0;
+            }
             auto index = HitTestMenuItem(*state, point.x, point.y);
             if (index >= 0) PostMessageW(state->owner, PopupCommandMessage, state->items[index].command, 0);
             ClosePopupMenu(window, *state);
@@ -213,9 +267,23 @@ namespace
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
             }
+            if ((wParam == VK_LEFT || wParam == VK_RIGHT) && state->hotIndex >= 0
+                && state->items[static_cast<size_t>(state->hotIndex)].slider)
+            {
+                auto& item = state->items[static_cast<size_t>(state->hotIndex)];
+                item.ddc.value = (std::clamp)(item.ddc.value + (wParam == VK_RIGHT ? 1 : -1), 0,
+                    (std::max)(1, item.ddc.maximum));
+                InvalidateRect(window, &item.bounds, FALSE);
+                return 0;
+            }
             if (wParam == VK_RETURN && state->hotIndex >= 0)
             {
-                PostMessageW(state->owner, PopupCommandMessage, state->items[state->hotIndex].command, 0);
+                auto& item = state->items[static_cast<size_t>(state->hotIndex)];
+                if (item.slider)
+                {
+                    if (state->writeDdc) state->writeDdc(item.ddc.displayId, item.ddc.code, item.ddc.value);
+                }
+                else PostMessageW(state->owner, PopupCommandMessage, item.command, 0);
                 ClosePopupMenu(window, *state);
                 return 0;
             }
@@ -261,8 +329,9 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
-    TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch, std::function<void()> exit) :
-        showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)), exit_(std::move(exit))
+    TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch,
+        std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc, std::function<void()> exit) :
+        showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)), writeDdc_(std::move(writeDdc)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
         icon_ = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON));
@@ -323,6 +392,11 @@ namespace DisplaySwitcher::Native
         profiles_ = std::move(profiles);
     }
 
+    void TrayIcon::SetDdcItems(std::vector<TrayDdcItem> items)
+    {
+        ddcItems_ = std::move(items);
+    }
+
     void TrayIcon::ShowBalloon(std::wstring const& title, std::wstring const& message)
     {
         if (disposed_) return;
@@ -381,6 +455,7 @@ namespace DisplaySwitcher::Native
         state->dpi = GetDpiForWindow(window_);
         if (!state->dpi) state->dpi = 96;
         state->font = CreateMenuFont(state->dpi);
+        state->writeDdc = writeDdc_;
         state->items = {
             { 0, Limit(status_, 70), false, false },
             { 0, L"", true, false },
@@ -388,20 +463,26 @@ namespace DisplaySwitcher::Native
         for (size_t index = 0; index < profiles_.size(); ++index)
             state->items.push_back({ FirstProfileCommand + static_cast<UINT>(index), L"切换到 " + profiles_[index].second, false, true });
         if (!profiles_.empty()) state->items.push_back({ 0, L"", true, false });
+        for (auto const& ddc : ddcItems_)
+        {
+            PopupMenuItem item; item.text = ddc.displayName + L" · " + ddc.label; item.slider = true; item.ddc = ddc;
+            state->items.push_back(std::move(item));
+        }
+        if (!ddcItems_.empty()) state->items.push_back({ 0, L"", true, false });
         state->items.push_back({ SettingsCommand, L"设置…", false, true });
         state->items.push_back({ 0, L"", true, false });
         state->items.push_back({ ExitCommand, L"退出", false, true });
 
         auto rowHeight = ScaleForDpi(32, state->dpi);
         auto separatorHeight = ScaleForDpi(1, state->dpi);
-        auto menuWidth = ScaleForDpi(120, state->dpi);
+        auto menuWidth = ScaleForDpi(ddcItems_.empty() ? 120 : 340, state->dpi);
         auto menuHeight = 0;
         HDC dc = GetDC(window_);
         HGDIOBJ previousFont{};
         if (dc) previousFont = SelectObject(dc, state->font ? state->font : GetStockObject(DEFAULT_GUI_FONT));
         for (auto& item : state->items)
         {
-            auto itemHeight = item.separator ? separatorHeight : rowHeight;
+            auto itemHeight = item.separator ? separatorHeight : item.slider ? ScaleForDpi(44, state->dpi) : rowHeight;
             item.bounds = { 0, menuHeight, 0, menuHeight + itemHeight };
             menuHeight += itemHeight;
             if (!item.separator && dc)

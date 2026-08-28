@@ -106,7 +106,6 @@ namespace
         case V2Action::Kind::PromptManualSelection: return L"promptManualSelection";
         case V2Action::Kind::IgnoreMessage: return L"ignoreMessage";
         case V2Action::Kind::ClearEvent: return L"clearEvent";
-        case V2Action::Kind::RouteToV1: return L"routeToV1";
         case V2Action::Kind::SetPeerReachable: return L"setPeerReachable";
         }
         return {};
@@ -137,7 +136,6 @@ namespace
         if (kind == L"wakeCompleted") return machine.OnWakeCompleted(atMs, event, Bool(input, L"success"));
         if (kind == L"switchCompleted") return machine.OnSwitchCompleted(atMs, event, Bool(input, L"success"));
         if (kind == L"configurationChanged") return machine.OnConfigurationChanged(atMs);
-        if (kind == L"receiveV1Message") return machine.OnV1Message(atMs, static_cast<int>(input.GetNamedNumber(L"version")));
         throw std::runtime_error("unknown v2 input kind");
     }
 
@@ -219,8 +217,9 @@ int RunV2ProtocolVectorTests()
         auto serialized = SerializeV2Message(replayed);
         if (serialized.find("pairingCode") != std::string::npos || serialized.find("usb") != std::string::npos || serialized.find("displayID") != std::string::npos)
             fail(L"PRIVACY-001", L"v2 datagram contains local device data");
-        if (ParseProtocolVersion(serialized) != 2 || ParseProtocolVersion(R"({"version":1})") != 1)
-            fail(L"DISPATCH-001", L"version dispatcher differs");
+        if (!IsV2Datagram(serialized) || IsV2Datagram(R"({"version":1})")
+            || IsV2Datagram(R"({"version":"2"})") || IsV2Datagram(R"({"version":3})"))
+            fail(L"DISPATCH-001", L"v2-only version dispatcher differs");
     }
 
     auto states = ReadJson(root / L"contracts/protocol-v2/state-machine-vectors.json");
@@ -234,7 +233,7 @@ int RunV2ProtocolVectorTests()
         for (auto const& targetValue : initialJson.GetNamedArray(L"enabledTargets"))
         {
             auto target = targetValue.GetObjectW();
-            initial.enabledTargets.push_back({ String(target, L"endpointID"), String(target, L"capability") == L"v1" ? 1 : 2, Bool(target, L"reachable") });
+            initial.enabledTargets.push_back({ String(target, L"endpointID"), 2, Bool(target, L"reachable") });
         }
         V2StateMachine machine(std::move(initial)); std::vector<TimedAction> actual; int64_t cursor = -1;
         for (auto const& stepValue : vector.GetNamedArray(L"steps"))

@@ -10,10 +10,13 @@ namespace DisplaySwitcher::Native
         std::wstring name;
         std::wstring backend;
         std::optional<int> localInput;
-        bool readEnabled{ false };
-        bool brightnessEnabled{ true };
-        bool contrastEnabled{ true };
-        bool volumeEnabled{ true };
+        bool readEnabled{ true };
+        bool brightnessEnabled{ false };
+        bool brightnessShowInTray{ false };
+        bool contrastEnabled{ false };
+        bool contrastShowInTray{ false };
+        bool volumeEnabled{ false };
+        bool volumeShowInTray{ false };
         int macInput{ -1 };
         std::wstring nativeMonitorId;
         std::wstring controlMonitorPath;

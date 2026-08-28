@@ -55,6 +55,7 @@ namespace DisplaySwitcher::Native
     };
 
     std::optional<int> ParseProtocolVersion(std::string_view json);
+    bool IsV2Datagram(std::string_view json);
     V2ValidationResult ParseV2Message(std::string_view json, V2Message& message);
     V2ValidationResult ValidateV2Message(V2Message const& message,
         std::wstring const& localEndpointId, std::wstring const& knownSourceEndpointId,
