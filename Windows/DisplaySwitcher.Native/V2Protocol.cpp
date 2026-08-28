@@ -49,7 +49,7 @@ namespace
 
     bool KnownType(std::wstring const& value)
     {
-        return value == L"status_probe" || value == L"status_response" || value == L"input_present" ||
+        return value == L"status_probe" || value == L"status_response" || value == L"wake_display" ||
             value == L"handover_request" || value == L"target_ready" || value == L"committed" || value == L"cancelled";
     }
 
@@ -66,7 +66,7 @@ namespace
         auto count = static_cast<int>(message.intent.has_value()) + static_cast<int>(message.wakeSucceeded.has_value()) +
             static_cast<int>(message.switchSucceeded.has_value()) + static_cast<int>(message.reason.has_value());
         if (message.type == L"handover_request")
-            return count == 1 && message.intent && (*message.intent == L"manual" || *message.intent == L"input_handover") && message.targetEndpointId;
+            return count == 1 && message.intent && *message.intent == L"manual" && message.targetEndpointId;
         if (message.type == L"target_ready") return count == 1 && message.wakeSucceeded && message.targetEndpointId;
         if (message.type == L"committed") return count == 1 && message.switchSucceeded && message.targetEndpointId;
         if (message.type == L"cancelled")

@@ -1,0 +1,49 @@
+#pragma once
+
+namespace DisplaySwitcher::Native
+{
+    struct UsbSwitchDisplayState
+    {
+        std::wstring displayId;
+        std::optional<int> targetInput;
+        bool available{ true };
+        bool switchSucceeds{ true };
+    };
+
+    struct UsbSwitchInitialState
+    {
+        bool enabled{};
+        bool learning{};
+        bool safeState{};
+        std::optional<bool> baselinePresence;
+        bool collaborationWakeEnabled{};
+        bool collaborationProfileValid{};
+        std::vector<UsbSwitchDisplayState> displayMappings;
+    };
+
+    struct UsbSwitchAction
+    {
+        enum class Kind { EstablishBaseline, SwitchDisplay, WakeDisplay, SendWakeDisplay, Report };
+        Kind kind{};
+        std::wstring displayId;
+        std::optional<int> targetInput;
+        std::optional<bool> succeeded;
+        std::wstring reason;
+    };
+
+    class UsbSwitchCoordinator final
+    {
+    public:
+        static constexpr int64_t WakeCoalescingWindowMilliseconds = 2000;
+
+        explicit UsbSwitchCoordinator(UsbSwitchInitialState initial = {});
+        std::vector<UsbSwitchAction> ObserveUsb(int64_t nowMilliseconds, bool present);
+        std::vector<UsbSwitchAction> ReceiveWakeDisplay(int64_t nowMilliseconds);
+        void ConfigurationChanged() noexcept;
+
+    private:
+        std::vector<UsbSwitchAction> RequestWake(int64_t nowMilliseconds);
+        UsbSwitchInitialState state_;
+        std::optional<int64_t> lastWakeMilliseconds_;
+    };
+}

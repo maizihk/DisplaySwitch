@@ -55,6 +55,7 @@
     <ClCompile Include="..\DisplaySwitcher.Native\V2Protocol.cpp"><Link>Native\V2Protocol.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\V2StateMachine.cpp"><Link>Native\V2StateMachine.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\UsbLearning.cpp"><Link>Native\UsbLearning.cpp</Link></ClCompile>
+    <ClCompile Include="..\DisplaySwitcher.Native\UsbSwitchCoordinator.cpp"><Link>Native\UsbSwitchCoordinator.cpp</Link></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260818.1" />
