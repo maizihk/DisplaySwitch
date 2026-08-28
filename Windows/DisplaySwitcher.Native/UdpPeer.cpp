@@ -1,6 +1,5 @@
 #include "pch.h"
 #include "Diagnostics.h"
-#include "ProtocolMessage.h"
 #include "UdpPeer.h"
 
 using namespace winrt;
@@ -128,22 +127,6 @@ namespace DisplaySwitcher::Native
         }
         FreeAddrInfoW(addresses);
         return matched;
-    }
-
-    void UdpPeer::Send(PeerMessage const& message, std::wstring const& host, int port)
-    {
-        if (host.empty()) return;
-        auto trace = message.type != L"status_probe" && message.type != L"status_response";
-        JsonObject object;
-        object.Insert(L"version", JsonValue::CreateNumberValue(message.version));
-        object.Insert(L"type", JsonValue::CreateStringValue(message.type));
-        object.Insert(L"eventID", JsonValue::CreateStringValue(message.eventId));
-        object.Insert(L"source", JsonValue::CreateStringValue(message.source));
-        object.Insert(L"target", JsonValue::CreateStringValue(message.target));
-        object.Insert(L"timestamp", JsonValue::CreateNumberValue(message.timestamp));
-        object.Insert(L"pairingCode", JsonValue::CreateStringValue(message.pairingCode));
-        if (message.wakeSucceeded) object.Insert(L"wakeSucceeded", JsonValue::CreateBooleanValue(*message.wakeSucceeded));
-        SendRaw(to_string(object.Stringify()), host, port, trace);
     }
 
     void UdpPeer::SendRaw(std::string const& data, std::wstring const& host, int port, bool trace)

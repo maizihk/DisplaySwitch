@@ -104,15 +104,15 @@ final class PeerProtocolV2Tests: XCTestCase {
         XCTAssertEqual(cache.classify(changed, nowMs: 2), .nonceReuse)
     }
 
-    func testVersionDispatcherKeepsV1AndV2Independent() throws {
-        XCTAssertEqual(PeerProtocolVersionDispatcher.version(in: Data(#"{"version":1}"#.utf8)), .v1)
+    func testVersionDispatcherOnlyAdmitsIntegerV2() throws {
+        XCTAssertEqual(PeerProtocolVersionDispatcher.version(in: Data(#"{"version":1}"#.utf8)), .unsupported(1))
         XCTAssertEqual(PeerProtocolVersionDispatcher.version(in: Data(#"{"version":2}"#.utf8)), .v2)
         XCTAssertEqual(PeerProtocolVersionDispatcher.version(in: Data(#"{"version":9}"#.utf8)), .unsupported(9))
         XCTAssertNil(PeerProtocolVersionDispatcher.version(in: Data(#"{"version":"2"}"#.utf8)))
     }
 
     func testEndpointRoutingRejectsDuplicatesAndUsesStableLogicalIDs() throws {
-        let display = DisplayConfigurationV3Display(
+        let display = DisplayConfigurationV4Display(
             id: "display-a", name: "Display A", selector: "1", localInput: 15,
             readEnabled: true, brightnessEnabled: true, contrastEnabled: true, volumeEnabled: true
         )
@@ -126,10 +126,11 @@ final class PeerProtocolV2Tests: XCTestCase {
             )
         }
         let endpoint = "22222222-2222-4222-8222-222222222222"
-        let duplicate = DisplayConfigurationStoreV3Document(
-            schemaVersion: 3,
+        let duplicate = DisplayConfigurationStoreV4Document(
+            schemaVersion: 4,
             localEndpointID: "11111111-1111-4111-8111-111111111111",
-            localDeviceName: "Local", listenPort: 49_731, displays: [display],
+            localDeviceName: "Local", listenPort: 49_731,
+            controlChannel: .automatic, linkAllDisplays: false, displays: [display],
             collaborationProfiles: [profile("A", endpoint: endpoint), profile("B", endpoint: endpoint.uppercased())]
         )
         let rejected = V2EndpointRoutingTable.build(from: duplicate)
@@ -302,9 +303,9 @@ final class PeerProtocolV2Tests: XCTestCase {
     }
 }
 
-private func unboundDocument(localEndpointID: String, pairingCodes: [String]) -> DisplayConfigurationStoreV3Document {
+private func unboundDocument(localEndpointID: String, pairingCodes: [String]) -> DisplayConfigurationStoreV4Document {
     let displayID = "44444444-4444-4444-8444-444444444444"
-    let display = DisplayConfigurationV3Display(
+    let display = DisplayConfigurationV4Display(
         id: displayID, name: "Display", selector: "display-selector", localInput: 15,
         readEnabled: true, brightnessEnabled: true, contrastEnabled: true, volumeEnabled: true
     )
@@ -318,9 +319,10 @@ private func unboundDocument(localEndpointID: String, pairingCodes: [String]) ->
             triggerDevices: []
         )
     }
-    return DisplayConfigurationStoreV3Document(
-        schemaVersion: 3, localEndpointID: localEndpointID, localDeviceName: "Local",
-        listenPort: 49_731, displays: [display], collaborationProfiles: profiles
+    return DisplayConfigurationStoreV4Document(
+        schemaVersion: 4, localEndpointID: localEndpointID, localDeviceName: "Local",
+        listenPort: 49_731, controlChannel: .automatic, linkAllDisplays: false,
+        displays: [display], collaborationProfiles: profiles
     )
 }
 

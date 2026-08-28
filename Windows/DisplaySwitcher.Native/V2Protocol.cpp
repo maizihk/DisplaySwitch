@@ -110,10 +110,17 @@ namespace DisplaySwitcher::Native
             auto object = JsonObject::Parse(to_hstring(std::string(json)));
             if (!Required(object, L"version", JsonValueType::Number)) return std::nullopt;
             auto number = object.GetNamedNumber(L"version");
-            if (!std::isfinite(number) || std::trunc(number) != number) return std::nullopt;
+            if (!std::isfinite(number) || std::trunc(number) != number
+                || number < 0 || number > static_cast<double>(INT_MAX)) return std::nullopt;
             return static_cast<int>(number);
         }
         catch (...) { return std::nullopt; }
+    }
+
+    bool IsV2Datagram(std::string_view json)
+    {
+        auto version = ParseProtocolVersion(json);
+        return version && *version == 2;
     }
 
     V2ValidationResult ParseV2Message(std::string_view json, V2Message& message)

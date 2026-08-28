@@ -204,6 +204,10 @@ final class DDCController {
         service.updateKnownDisplays(Self.knownDisplays(from: configurations))
     }
 
+    func setControlChannel(_ channel: DDCControlChannel) {
+        service.setControlChannel(channel)
+    }
+
     func read(targets: [DDCDisplayTarget]) -> [String: [DDCCommand: DDCResolvedReading]] {
         service.read(targets)
     }

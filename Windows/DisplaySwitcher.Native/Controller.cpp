@@ -3,7 +3,6 @@
 #include "AutoStart.h"
 #include "Diagnostics.h"
 #include "DdcBackends.h"
-#include "ProtocolMessage.h"
 #include "SettingsWindow.xaml.h"
 #include "SystemActions.h"
 #include "TrayIcon.h"
@@ -62,6 +61,8 @@ namespace DisplaySwitcher::Native
         trayIcon_ = std::make_unique<TrayIcon>(
             [weak] { if (auto self = weak.lock()) self->ShowSettings(); },
             [weak](std::wstring const& profileId) { if (auto self = weak.lock()) self->ManualSwitch(profileId); },
+            [weak](std::wstring const& displayId, DdcVcpCode code, int value)
+            { if (auto self = weak.lock()) self->WriteTrayDdc(displayId, code, value); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
     }
@@ -78,10 +79,12 @@ namespace DisplaySwitcher::Native
     {
         ++sideEffectGeneration_;
         sideEffectGate_.Block();
+        trayDdcWrites_.CancelPending();
         auto config = Config();
         std::vector<std::pair<std::wstring, std::wstring>> menuProfiles;
         for (auto const& profile : config.EnabledCompleteProfiles()) menuProfiles.emplace_back(profile.id, profile.name);
         trayIcon_->SetProfiles(std::move(menuProfiles));
+        RefreshTrayDdcControls();
         StopPeerHealthCheck();
         peer_->Stop();
         auto usbConfigured = config.HasUsbDeviceConfiguration();
@@ -89,42 +92,26 @@ namespace DisplaySwitcher::Native
         auto automationConfigured = usbConfigured && displayConfigured;
         usbWatcher_->Reconfigure(config.usbAutomationEnabled && automationConfigured ? config.usbVendorId : -1,
             config.usbAutomationEnabled && automationConfigured ? config.usbProductId : -1);
-        auto coordinationConfigured = automationConfigured && !config.peerHost.empty() &&
-            config.port >= 1 && config.port <= 65535 && config.pairingCode.size() >= 8;
         auto completeProfiles = config.EnabledCompleteProfiles();
-        auto hasV1 = config.usbAutomationEnabled && config.coordinationEnabled && coordinationConfigured &&
-            config.collaborationProfiles.size() == 1 && config.collaborationProfiles.front().peerProtocolVersion.value_or(1) == 1;
-        auto legacyUsbAutomation = config.usbAutomationEnabled && automationConfigured && (completeProfiles.empty() || hasV1);
-        StateMachineInitialState initial{
-            .localPlatform = L"windows",
-            .coordinationEnabled = hasV1,
-            .usbAutomationEnabled = legacyUsbAutomation,
-            .usbPresent = usbWatcher_->IsPresent(),
-        };
-        stateMachine_ = std::make_unique<HandoverStateMachine>(StateMachineConfig{
-            L"windows", config.pairingCode, initial.coordinationEnabled, initial.usbAutomationEnabled, 0.0, {}
-        }, initial, [] { return Controller::NewEventId(); });
         std::vector<V2Target> v2Targets;
         for (auto const& profile : completeProfiles)
-            if (profile.peerProtocolVersion == 1)
-                v2Targets.push_back({ IsValidDisplayId(profile.peerEndpointId) ? profile.peerEndpointId : profile.id, 1, false });
-            else if (profile.peerProtocolVersion == 2 && IsValidDisplayId(profile.peerEndpointId) && !EqualId(profile.peerEndpointId, config.localEndpointId) &&
+            if (profile.peerProtocolVersion == 2 && IsValidDisplayId(profile.peerEndpointId) && !EqualId(profile.peerEndpointId, config.localEndpointId) &&
                 std::count_if(completeProfiles.begin(), completeProfiles.end(), [&](auto const& candidate)
                 { return candidate.peerProtocolVersion == 2 && EqualId(candidate.peerEndpointId, profile.peerEndpointId); }) == 1)
                 v2Targets.push_back({ profile.peerEndpointId, 2, false });
         auto hasV2 = std::any_of(v2Targets.begin(), v2Targets.end(), [](auto const& target) { return target.protocolVersion == 2; });
         auto hasUnboundV2 = std::any_of(completeProfiles.begin(), completeProfiles.end(), [](auto const& profile)
-        { return profile.peerEndpointId.empty() && profile.peerProtocolVersion != 1; });
+        { return profile.peerEndpointId.empty() && (!profile.peerProtocolVersion || *profile.peerProtocolVersion == 2); });
         v2StateMachine_ = std::make_unique<V2StateMachine>(V2StateInitial{
             config.localEndpointId, hasV2, usbWatcher_->IsPresent(), usbWatcher_->IsPresent(),
             V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
-        v1HealthProbe_.Clear(); v2HealthProbes_.clear();
+        v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
-        if (hasV1 || hasV2 || hasUnboundV2) peer_->Start(config.listenPort);
+        if (hasV2 || hasUnboundV2) peer_->Start(config.listenPort);
         else SetPeerConnectionStatus(!config.ReadonlyEnabledProfiles().empty() ? L"协同配置不完整" : L"协同未启用", false);
-        if (hasUnboundV2 && !hasV1 && !hasV2) SetPeerConnectionStatus(L"等待首次 endpoint 检测", false);
-        if (hasV1 || hasV2) StartPeerHealthCheck();
+        if (hasUnboundV2 && !hasV2) SetPeerConnectionStatus(L"等待首次检测", false);
+        if (hasV2) StartPeerHealthCheck();
         if (applyAutoStart)
         {
             try { ApplyAutoStart(config.startWithWindows); }
@@ -135,9 +122,9 @@ namespace DisplaySwitcher::Native
         else if (!config.usbAutomationEnabled) SetStatus(L"USB 自动切换未开启");
         else
         {
-            wchar_t ids[16]{}; swprintf_s(ids, L"%04X:%04X", config.usbVendorId, config.usbProductId);
-            if (config.coordinationEnabled && coordinationConfigured) SetStatus(L"协同已开启 · USB " + std::wstring(ids));
-            else SetStatus(L"USB 自动切换已开启 · USB " + std::wstring(ids));
+            auto device = config.usbName.empty() ? L"已选择设备" : config.usbName;
+            if (!completeProfiles.empty()) SetStatus(L"协同已开启 · " + device);
+            else SetStatus(L"USB 自动切换已开启 · " + device);
         }
     }
 
@@ -164,7 +151,6 @@ namespace DisplaySwitcher::Native
         StopPeerHealthCheck();
         peer_->Stop();
         usbWatcher_->Reconfigure(-1, -1);
-        stateMachine_.reset();
         SetPeerConnectionStatus(L"USB 学习中，协同已暂停", false);
         SetStatus(L"正在学习 USB 设备；自动协同和硬件操作已暂停");
     }
@@ -184,10 +170,8 @@ namespace DisplaySwitcher::Native
     {
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
-        if (!stateMachine_) return;
         SetStatus(present ? L"USB 已接入 Windows" : L"USB 已离开 Windows，等待确认…");
         auto now = NowMilliseconds();
-        ApplyStateMachineActions(stateMachine_->OnUsbPresenceChanged(now, present));
         if (v2StateMachine_)
         {
             auto event = present ? NewEventId() : NewEventId();
@@ -245,62 +229,6 @@ namespace DisplaySwitcher::Native
                 break;
             case V2Action::Kind::LockTarget:
             case V2Action::Kind::ClearEvent:
-            case V2Action::Kind::RouteToV1:
-                break;
-            }
-        }
-    }
-
-    void Controller::ApplyStateMachineActions(std::vector<StateMachineAction> actions)
-    {
-        if (!sideEffectGate_.AllowsSideEffects()) return;
-        for (auto const& action : actions)
-        {
-            switch (action.kind)
-            {
-            case StateMachineAction::Kind::AcceptMessage:
-                if (action.type != L"status_probe" && action.type != L"status_response")
-                    WriteDiagnostic("state_machine.message accepted=1");
-                break;
-            case StateMachineAction::Kind::RejectMessage:
-                WriteDiagnostic("state_machine.message rejected=1");
-                break;
-            case StateMachineAction::Kind::SendMessage:
-                Send(action.type, action.eventId,
-                    action.type == L"committed" ? std::optional<bool>{ action.wakeSucceeded } : std::nullopt);
-                break;
-            case StateMachineAction::Kind::SendBurst:
-                SendRepeated(action.type, action.eventId, action.wakeSucceeded);
-                break;
-            case StateMachineAction::Kind::RequestWake:
-            {
-                if (profileDetectionActive_) break;
-                auto eventId = action.eventId;
-                auto generation = sideEffectGeneration_.load();
-                std::weak_ptr<Controller> weak = shared_from_this();
-                std::thread([weak, eventId, generation]
-                {
-                    auto controller = weak.lock();
-                    if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
-                    auto success = WakeDisplay();
-                    if (auto self = weak.lock(); self && !self->disposed_)
-                        self->Enqueue([weak, eventId, success, generation]
-                        {
-                            if (auto value = weak.lock(); value && value->stateMachine_ && value->AllowsSideEffects(generation))
-                                value->ApplyStateMachineActions(value->stateMachine_->OnWakeCompleted(NowMilliseconds(), eventId, success));
-                        });
-                }).detach();
-                break;
-            }
-            case StateMachineAction::Kind::RequestSwitch:
-                if (!profileDetectionActive_)
-                    SwitchToMac(action.eventId.empty() ? std::nullopt : std::optional<std::wstring>{ action.eventId }, false);
-                break;
-            case StateMachineAction::Kind::SetPeerReachable:
-                SetPeerConnectionStatus(action.value ? L"已连接到对端" : L"连接已中断", action.value);
-                break;
-            case StateMachineAction::Kind::CancelOutgoing:
-                WriteDiagnostic("state_machine.outgoing canceled=1");
                 break;
             }
         }
@@ -308,8 +236,6 @@ namespace DisplaySwitcher::Native
 
     void Controller::AdvanceStateMachine()
     {
-        if (sideEffectGate_.AllowsSideEffects() && stateMachine_)
-            ApplyStateMachineActions(stateMachine_->Advance(NowMilliseconds()));
         if (sideEffectGate_.AllowsSideEffects() && v2StateMachine_)
         {
             auto now = NowMilliseconds();
@@ -325,47 +251,8 @@ namespace DisplaySwitcher::Native
             }
             for (auto item = v2HealthProbes_.begin(); item != v2HealthProbes_.end();)
                 if (item->second.Expired(now)) item = v2HealthProbes_.erase(item); else ++item;
-            if (v1HealthProbe_.Expired(now)) v1HealthProbe_.Clear();
             ApplyV2Actions(v2StateMachine_->Advance(NowMilliseconds()));
         }
-    }
-
-    void Controller::SwitchToMac(std::optional<std::wstring> eventId, bool manual)
-    {
-        if (!sideEffectGate_.AllowsSideEffects()) return;
-        auto config = Config();
-        if (!config.HasDisplayConfiguration())
-        {
-            WriteDiagnostic("display.switch_blocked configuration_missing=1");
-            SetStatus(L"显示器尚未配置，未执行切换");
-            if (manual) ShowError(L"无法切换显示器", L"请先在设置的“显示器”页完成配置。");
-            return;
-        }
-        WriteDiagnostic(manual ? "display.switch_begin manual=1" : "display.switch_begin manual=0");
-        SetStatus(manual ? L"正在手动切换显示器到对端…" : L"正在切换显示器到对端…");
-        auto generation = sideEffectGeneration_.load();
-        std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, config, eventId, manual, generation]
-        {
-            auto controller = weak.lock();
-            if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
-            auto result = SwitchDisplaysToMac(config);
-            if (auto self = weak.lock(); self && !self->disposed_)
-            {
-                self->Enqueue([weak, result, manual, eventId, generation]
-                {
-                    if (auto value = weak.lock(); value && value->AllowsSideEffects(generation))
-                    {
-                        if (eventId && value->stateMachine_)
-                            value->ApplyStateMachineActions(value->stateMachine_->OnSwitchCompleted(NowMilliseconds(), *eventId, result.success));
-                        std::wstring success = manual ? L"已手动切换到对端" : L"已切换到对端";
-                        std::wstring failure = manual ? L"切换失败：" : L"部分切换失败：";
-                        value->SetStatus(result.success ? success : failure + result.error);
-                        if (!result.success) value->ShowError(L"显示器切换失败", result.error.empty() ? L"未知错误" : result.error);
-                    }
-                });
-            }
-        }).detach();
     }
 
     void Controller::StartPeerHealthCheck()
@@ -390,9 +277,6 @@ namespace DisplaySwitcher::Native
                         if (auto value = weak.lock())
                         {
                             auto config = value->Config();
-                            if (config.collaborationProfiles.size() == 1 &&
-                                config.collaborationProfiles.front().peerProtocolVersion.value_or(1) == 1)
-                                value->Send(L"status_probe", value->NewEventId(), std::nullopt);
                             for (auto const& profile : config.EnabledCompleteProfiles())
                                 if (profile.peerProtocolVersion == 2 && IsValidDisplayId(profile.peerEndpointId)) value->SendV2Probe(profile);
                         }
@@ -411,39 +295,10 @@ namespace DisplaySwitcher::Native
         if (peerHealthThread_.joinable()) peerHealthThread_.join();
     }
 
-    void Controller::HandlePeerMessage(PeerMessage const& message)
-    {
-        if (!sideEffectGate_.AllowsSideEffects() || !stateMachine_) return;
-        ApplyStateMachineActions(stateMachine_->OnPeerMessage(NowMilliseconds(), message));
-    }
-
     void Controller::HandleDatagram(UdpPeer::Datagram const& datagram)
     {
         if (!sideEffectGate_.AllowsSideEffects()) return;
-        auto version = ParseProtocolVersion(datagram.data);
-        if (version == 1)
-        {
-            PeerMessage message; auto parsed = ParsePeerMessage(datagram.data, message);
-            if (!parsed.accepted) return;
-            if (profileDetection_ && profileDetection_->session.WaitingForV1() && message.type == L"status_response" &&
-                EqualId(message.eventId, profileDetection_->session.PendingEventId()))
-            {
-                auto accepted = ValidatePeerMessage(message, L"windows", profileDetection_->profile.pairingCode,
-                    UdpPeer::TimestampNow()).accepted;
-                ApplyProfileDetectionAction(profileDetection_->session.OnV1StatusResponse(
-                    NowMilliseconds(), message.eventId, accepted));
-                return;
-            }
-            if (message.type == L"status_response")
-            {
-                auto config = Config();
-                if (!ValidatePeerMessage(message, L"windows", config.pairingCode, UdpPeer::TimestampNow()).accepted ||
-                    !v1HealthProbe_.MatchesAndConsume(message.eventId, NowMilliseconds())) return;
-            }
-            HandlePeerMessage(message);
-            return;
-        }
-        if (version != 2) return;
+        if (!IsV2Datagram(datagram.data)) return;
         V2Message message; auto parsed = ParseV2Message(datagram.data, message); if (!parsed.accepted) return;
         if (profileDetection_ && profileDetection_->session.WaitingForV2() && message.type == L"status_response" &&
             EqualId(message.eventId, profileDetection_->session.PendingEventId()))
@@ -522,7 +377,7 @@ namespace DisplaySwitcher::Native
         {
             auto const& draft = profileDetection_->profile;
             auto inspection = profileDetection_->workingConfig.InspectProfile(draft.id);
-            if (inspection.complete && draft.peerEndpointId.empty() && draft.peerProtocolVersion != 1)
+            if (inspection.complete && draft.peerEndpointId.empty() && (!draft.peerProtocolVersion || *draft.peerProtocolVersion == 2))
             {
                 auto existing = std::find_if(candidates.begin(), candidates.end(), [&](auto const& profile)
                 { return EqualId(profile.id, draft.id); });
@@ -554,16 +409,6 @@ namespace DisplaySwitcher::Native
             return true;
         }
         catch (...) { return false; }
-    }
-
-    void Controller::Send(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
-    {
-        if (disposed_ || !peer_ || !sideEffectGate_.AllowsSideEffects()) return;
-        auto config = Config();
-        if (!config.coordinationEnabled || config.pairingCode.size() < 8) return;
-        if (type == L"status_probe") v1HealthProbe_.Begin(eventId, NowMilliseconds() + 10000);
-        peer_->Send(PeerMessage{ 1, type, eventId, L"windows", L"mac", UdpPeer::TimestampNow(), config.pairingCode, wakeSucceeded },
-            config.peerHost, config.port);
     }
 
     void Controller::SendV2(V2Action const& action)
@@ -611,23 +456,6 @@ namespace DisplaySwitcher::Native
         auto eventId = NewEventId();
         v2HealthProbes_[profile.peerEndpointId].Begin(eventId, NowMilliseconds() + 10000);
         SendV2({ V2Action::Kind::SendMessage, L"status_probe", eventId, profile.peerEndpointId });
-    }
-
-    void Controller::SendRepeated(std::wstring const& type, std::wstring const& eventId, std::optional<bool> wakeSucceeded)
-    {
-        Send(type, eventId, wakeSucceeded);
-        auto generation = sideEffectGeneration_.load();
-        std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, type, eventId, wakeSucceeded, generation]
-        {
-            for (int attempt = 1; attempt < 3; ++attempt)
-            {
-                std::this_thread::sleep_for(std::chrono::milliseconds(120));
-                if (auto self = weak.lock(); self && !self->disposed_ && self->AllowsSideEffects(generation))
-                    self->Send(type, eventId, wakeSucceeded);
-                else return;
-            }
-        }).detach();
     }
 
     void Controller::SwitchToProfile(std::wstring const& profileId, std::optional<std::wstring> eventId)
@@ -689,6 +517,57 @@ namespace DisplaySwitcher::Native
         SwitchToProfile(profileId);
     }
 
+    void Controller::WriteTrayDdc(std::wstring const& displayId, DdcVcpCode code, int value)
+    {
+        if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
+        auto generation = sideEffectGeneration_.load();
+        if (!trayDdcWrites_.Submit({ displayId, code, value, generation })) return;
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak] { if (auto self = weak.lock()) self->ProcessTrayDdcWrites(); }).detach();
+    }
+
+    void Controller::ProcessTrayDdcWrites()
+    {
+        while (auto request = trayDdcWrites_.TakeNext())
+        {
+            if (!AllowsSideEffects(request->generation) || profileDetectionActive_) continue;
+            auto config = Config();
+            DdcBackendSet backends(config); DdcCancellationSource cancellation; auto token = cancellation.Begin();
+            std::weak_ptr<Controller> weak = shared_from_this();
+            DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
+                [weak, generation = request->generation]
+                { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
+            auto result = service.Write(config, request->displayId, request->code, request->value,
+                config.linkAllDisplays, token);
+            if (!result.success || !AllowsSideEffects(request->generation)) continue;
+            try { config.Save(); }
+            catch (...)
+            {
+                trayDdcWrites_.CancelPending();
+                static_cast<void>(trayDdcWrites_.TakeNext());
+                Enqueue([weak] { if (auto current = weak.lock()) current->EnterSafeStateAfterSaveFailure(); });
+                return;
+            }
+            if (!AllowsSideEffects(request->generation)) continue;
+            { std::scoped_lock lock(configMutex_); config_ = std::move(config); }
+            Enqueue([weak, generation = request->generation]
+            {
+                if (auto current = weak.lock(); current && current->AllowsSideEffects(generation))
+                    current->RefreshTrayDdcControls();
+            });
+        }
+    }
+
+    void Controller::RefreshTrayDdcControls()
+    {
+        if (!trayIcon_) return;
+        std::vector<TrayDdcItem> items;
+        for (auto const& control : BuildDdcTrayControls(Config()))
+            items.push_back({ control.displayId, control.displayName, control.code, control.label,
+                control.value, control.maximum, control.hasValue });
+        trayIcon_->SetDdcItems(std::move(items));
+    }
+
     void Controller::BeginProfileDetection(AppConfig const& workingConfig, std::wstring const& profileId,
         std::function<void(ProfileDetectionResult const&)> completed)
     {
@@ -739,17 +618,8 @@ namespace DisplaySwitcher::Native
     void Controller::AdvanceProfileDetection(uint64_t generation)
     {
         if (!profileDetection_ || profileDetection_->generation != generation) return;
-        auto action = profileDetection_->session.Advance(NowMilliseconds(), NewEventId());
-        auto startedV1 = action.kind == ProfileDetectionAction::Kind::SendV1Probe;
+        auto action = profileDetection_->session.Advance(NowMilliseconds());
         ApplyProfileDetectionAction(std::move(action));
-        if (!startedV1 || !profileDetection_ || profileDetection_->generation != generation) return;
-        std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, generation]
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(ProfileDetectionSession::ProbeTimeoutMilliseconds));
-            if (auto self = weak.lock(); self && !self->disposed_)
-                self->Enqueue([weak, generation] { if (auto value = weak.lock()) value->AdvanceProfileDetection(generation); });
-        }).detach();
     }
 
     void Controller::ApplyProfileDetectionAction(ProfileDetectionAction action)
@@ -763,12 +633,6 @@ namespace DisplaySwitcher::Native
         if (!peer_ || !peer_->IsRunning()) return;
         auto const& config = profileDetection_->workingConfig;
         auto const& profile = profileDetection_->profile;
-        if (action.kind == ProfileDetectionAction::Kind::SendV1Probe)
-        {
-            peer_->Send(PeerMessage{ 1, L"status_probe", action.eventId, L"windows", L"mac",
-                UdpPeer::TimestampNow(), profile.pairingCode, std::nullopt }, profile.peerHost, profile.peerPort);
-            return;
-        }
         if (action.kind != ProfileDetectionAction::Kind::SendV2Probe) return;
         V2Message message;
         message.type = L"status_probe";
@@ -828,7 +692,7 @@ namespace DisplaySwitcher::Native
                         return false;
                     }
                     { std::scoped_lock lock(self->configMutex_); self->config_ = config; }
-                    self->ApplyConfiguration();
+                    if (!self->usbLearningActive_) self->ApplyConfiguration();
                     return true;
                 }
                 return false;

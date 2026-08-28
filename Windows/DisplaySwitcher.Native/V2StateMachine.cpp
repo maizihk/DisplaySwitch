@@ -198,11 +198,6 @@ namespace DisplaySwitcher::Native
         return Clear(L"configuration_changed", V2CoordinatorState::Cancelled);
     }
 
-    std::vector<V2Action> V2StateMachine::OnV1Message(int64_t, int version)
-    {
-        return version == 1 ? std::vector<V2Action>{ { V2Action::Kind::RouteToV1 } } : std::vector<V2Action>{};
-    }
-
     std::vector<V2Action> V2StateMachine::Advance(int64_t nowMs, bool includeExactDue)
     {
         auto due = [&](std::optional<int64_t> value) { return value && (nowMs > *value || (includeExactDue && nowMs == *value)); };

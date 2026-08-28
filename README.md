@@ -16,7 +16,7 @@ DisplaySwitch 是一个面向多台 macOS / Windows 电脑共享显示器和 USB
 
 当前 macOS 源码版本为 `2.1.0 (19)`，最低支持 macOS 12。Windows 端为 framework-dependent 绿色版，需要 Microsoft Windows App Runtime 2.4 x64，不依赖 .NET。历史 v2.1.0 安装包不代表当前 `main` 的安全基线，已暂时撤下公开下载；当前请从源码构建并将产物视为未签名测试版本。
 
-两端实现遵循 [`PROTOCOL.md`](PROTOCOL.md) 中的 UDP v1 交接协议。公共消息校验和状态机行为由 [`contracts/protocol-v1/`](contracts/protocol-v1/) 中的脱敏 schema 与测试向量约束。
+两端实现遵循 [`PROTOCOL.md`](PROTOCOL.md) 中的 UDP v2 协同协议。公共认证、消息校验和状态机行为由 [`contracts/protocol-v2/`](contracts/protocol-v2/) 中的脱敏 schema 与测试向量约束。
 
 ## 工作方式
 
@@ -40,7 +40,7 @@ DisplaySwitch 是一个面向多台 macOS / Windows 电脑共享显示器和 USB
 - 输入源编号取决于显示器和接口，必须由用户根据自己的设备填写。
 - GPU 驱动、线材、转接器、扩展坞或 KVM 可能不透传 DDC/CI。
 - 两台电脑需要位于可信局域网；防火墙放行时只选择专用网络。
-- UDP v1 配对码用于降低局域网误触发风险，不提供加密或强身份认证。
+- UDP v2 使用配对码派生的 HMAC-SHA256 验证消息身份和完整性；通信内容本身不加密，因此仍应只在可信局域网中使用。
 - 当前构建产物是本地临时签名或未签名测试包，不等同于经过公证或商业代码签名的正式发行版。
 
 ## macOS 快速开始
@@ -115,7 +115,7 @@ Windows 端的详细安装、后端选择和首次测试说明见 [`Windows/READ
 - 每台显示器对应的对端输入源；
 - 需要自动切换时使用的本机 USB 触发设备。
 
-菜单只为完整且已开启的配置显示 `切换到 {配置名称}`，不提供“切换到本机”，也不硬编码目标平台。当前生效的网络协议仍是 UDP v1：单一完整配置可以使用现有自动交接；多目标发现、HMAC 和协议 v2 运行时仍在提案阶段，多个配置不会擅自选择列表第一项。
+菜单只为完整且已开启的配置显示 `切换到 {配置名称}`，不提供“切换到本机”，也不硬编码目标平台。当前仅支持 UDP v2：单一目标直接协同；存在多个目标时，由首个通过认证且声明输入设备已到达的目标锁定流程。3 秒内没有合法目标则停止自动交接并转为手动选择，不会擅自选择列表第一项。
 
 首次实机测试应保持参与电脑均处于运行状态，并确保可以恢复显示器输入源；不要从整机睡眠、无人值守或远程环境开始测试。
 
@@ -125,14 +125,14 @@ GitHub Actions 分别在 macOS 和 Windows 托管 runner 上执行构建、测�
 
 - macOS：Debug 构建、XCTest、Release 构建、打包和严格签名验证。
 - Windows：x64 Release 构建、自动测试、绿色版结构/体积检查和 artifact 上传。
-- 公共协议：两端共同验证 17 条消息向量和 16 条状态机向量。
+- 公共协议：两端共同验证 1 条 NFC 规范化向量、4 条认证向量、20 条消息向量和 18 条状态机向量。
 
 自动测试使用虚拟时间、模拟网络和模拟硬件接口，不访问真实 UDP、USB、DDC、睡眠或唤醒设备。CI artifact 是短期保留的未签名测试产物，不是 GitHub Release。
 
 公共向量也可以独立验证结构：
 
 ```bash
-python3 contracts/protocol-v1/validate.py
+python3 contracts/protocol-v2/validate.py
 ```
 
 ## 仓库结构
@@ -140,7 +140,7 @@ python3 contracts/protocol-v1/validate.py
 ```text
 macOS/                 Swift/AppKit 正式实现、测试和构建脚本
 Windows/               C++/WinUI 3 正式实现、测试和构建脚本
-contracts/protocol-v1/ 公共 schema 与脱敏测试向量
+contracts/protocol-v2/ v2 公共 schema 与脱敏测试向量
 specs/proposals/       尚未进入生效协议的协调提案
 coordination/          跨平台功能状态与验收记录
 handoffs/              两个平台 Agent 的交接记录

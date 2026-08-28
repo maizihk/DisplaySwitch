@@ -13,56 +13,19 @@ enum AppPreferences {
         try DisplayConfigurationStore.saveAll(configurations)
     }
 
-    static var localConfiguration: DisplayConfigurationStoreV3Document {
+    static var localConfiguration: DisplayConfigurationStoreV4Document {
         DisplayConfigurationStore.load().document
     }
 
-    static func saveLocalConfiguration(_ document: DisplayConfigurationStoreV3Document) throws {
+    static func saveLocalConfiguration(_ document: DisplayConfigurationStoreV4Document) throws {
         try DisplayConfigurationStore.saveDocument(document)
     }
 
-    static var linkedDisplays: Bool {
-        get {
-            let defaults = UserDefaults.standard
-            return defaults.object(forKey: "LinkedDisplays") as? Bool ?? true
-        }
-        set {
-            UserDefaults.standard.set(newValue, forKey: "LinkedDisplays")
-        }
-    }
+    static var linkedDisplays: Bool { localConfiguration.linkAllDisplays }
 
-    static var usbAutomationEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "USBAutomation.Enabled") }
-        set { UserDefaults.standard.set(newValue, forKey: "USBAutomation.Enabled") }
-    }
+    static var usbAutomationEnabled: Bool { localConfiguration.usbAutomationEnabled }
 
-    static var usbSwitchDisplaysOnArrival: Bool {
-        get { UserDefaults.standard.bool(forKey: "USBAutomation.SwitchDisplaysOnArrival") }
-        set { UserDefaults.standard.set(newValue, forKey: "USBAutomation.SwitchDisplaysOnArrival") }
-    }
-
-    static var peerCoordinationEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "Peer.Enabled") }
-        set { UserDefaults.standard.set(newValue, forKey: "Peer.Enabled") }
-    }
-
-    static var peerHost: String {
-        get { UserDefaults.standard.string(forKey: "Peer.Host") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "Peer.Host") }
-    }
-
-    static var peerPort: Int {
-        get {
-            let value = UserDefaults.standard.integer(forKey: "Peer.Port")
-            return value == 0 ? 49731 : value
-        }
-        set { UserDefaults.standard.set(newValue, forKey: "Peer.Port") }
-    }
-
-    static var pairingCode: String {
-        get { UserDefaults.standard.string(forKey: "Peer.PairingCode") ?? "" }
-        set { UserDefaults.standard.set(newValue, forKey: "Peer.PairingCode") }
-    }
+    static var usbSwitchDisplaysOnArrival: Bool { localConfiguration.usbSwitchDisplaysOnArrival }
 
     static var usbTriggerDevice: USBDevice? {
         get {

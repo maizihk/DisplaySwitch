@@ -14,11 +14,6 @@ namespace DisplaySwitcher::Native
     bool ApplyProfileDetectionResult(CollaborationProfile& profile,
         ProfileDetectionResult const& result, bool endpointConfirmed)
     {
-        if (result.outcome == ProfileDetectionOutcome::V1Only)
-        {
-            profile.peerProtocolVersion = 1;
-            return true;
-        }
         if (result.outcome != ProfileDetectionOutcome::V2Available) return false;
         if (result.endpointConfirmationRequired && !endpointConfirmed) return false;
         if (result.endpointConfirmationRequired) profile.peerEndpointId = result.observedEndpointId;
@@ -58,17 +53,9 @@ namespace DisplaySwitcher::Native
         return { ProfileDetectionAction::Kind::SendV2Probe, pendingEventId_ };
     }
 
-    ProfileDetectionAction ProfileDetectionSession::Advance(int64_t nowMilliseconds, std::wstring v1EventId)
+    ProfileDetectionAction ProfileDetectionSession::Advance(int64_t nowMilliseconds)
     {
         if (!active_ || nowMilliseconds < deadlineMilliseconds_) return {};
-        if (phase_ == Phase::V2 && !v1ProbeSent_ && !v1EventId.empty())
-        {
-            phase_ = Phase::V1;
-            v1ProbeSent_ = true;
-            pendingEventId_ = std::move(v1EventId);
-            deadlineMilliseconds_ = nowMilliseconds + ProbeTimeoutMilliseconds;
-            return { ProfileDetectionAction::Kind::SendV1Probe, pendingEventId_ };
-        }
         return Complete({ ProfileDetectionOutcome::NoResponse });
     }
 
@@ -85,13 +72,6 @@ namespace DisplaySwitcher::Native
         return Complete(std::move(result));
     }
 
-    ProfileDetectionAction ProfileDetectionSession::OnV1StatusResponse(int64_t nowMilliseconds,
-        std::wstring const& eventId, bool accepted)
-    {
-        if (!WaitingForV1() || nowMilliseconds > deadlineMilliseconds_ || !EqualId(eventId, pendingEventId_) || !accepted) return {};
-        return Complete({ ProfileDetectionOutcome::V1Only });
-    }
-
     void ProfileDetectionSession::Cancel() noexcept
     {
         active_ = false;
@@ -99,7 +79,6 @@ namespace DisplaySwitcher::Native
         deadlineMilliseconds_ = 0;
         pendingEventId_.clear();
         savedEndpointId_.clear();
-        v1ProbeSent_ = false;
     }
 
     ProfileDetectionAction ProfileDetectionSession::Complete(ProfileDetectionResult result)

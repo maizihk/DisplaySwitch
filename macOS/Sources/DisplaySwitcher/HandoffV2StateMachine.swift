@@ -1,7 +1,15 @@
 import Foundation
 
+protocol HandoffScheduler {
+    func schedule(_ key: String, after delayMs: Int64, _ action: @escaping () -> Void)
+    func cancel(_ key: String)
+}
+
+protocol HandoffEventIDSource {
+    func nextEventID() -> String
+}
+
 enum V2PeerCapability: String, Codable {
-    case v1
     case v2
 }
 
@@ -29,7 +37,6 @@ enum V2HandoffIgnoreReason: String {
     case authenticationFailed = "authentication_failed"
     case endpointChanged = "endpoint_changed"
     case noPendingEvent = "no_pending_event"
-    case v1NotEligible = "v1_not_eligible"
     case sourceInputReturned = "source_input_returned"
     case configurationChanged = "configuration_changed"
     case discoveryTimeout = "discovery_timeout"
@@ -52,7 +59,6 @@ enum V2HandoffAction: Equatable {
     case promptManualSelection(reason: V2HandoffIgnoreReason)
     case ignoreMessage(reason: V2HandoffIgnoreReason, eventID: String?, endpointID: String?)
     case clearEvent(reason: V2HandoffIgnoreReason?)
-    case routeToV1
     case setPeerReachable(Bool)
 }
 
@@ -250,12 +256,19 @@ final class HandoffV2StateMachine {
         targetInputPresent = present
     }
 
-    func handleLocalInputPresenceChanged(_ present: Bool, eventID: String? = nil) {
+    func handleLocalInputPresenceChanged(_ present: Bool, eventID: String? = nil,
+                                         announceUnsolicitedArrival: Bool = true) {
         if present {
             if eventRole == .source {
                 handleSourceInputPresenceChanged(true, eventID: eventID)
-            } else {
+            } else if activeIntent == .inputHandover, activeEventID != nil {
                 handleTargetInputPresenceChanged(true, eventID: eventID)
+                sourceInputPresent = true
+            } else if announceUnsolicitedArrival {
+                handleTargetInputPresenceChanged(true, eventID: eventID)
+                sourceInputPresent = true
+            } else {
+                targetInputPresent = true
                 sourceInputPresent = true
             }
         } else {
@@ -272,10 +285,6 @@ final class HandoffV2StateMachine {
         }
         guard let candidate = target(endpointID) else {
             ignore(.endpointChanged, eventID: eventID, endpointID: endpointID)
-            return
-        }
-        guard candidate.capability == .v2 else {
-            ignore(.v1NotEligible, eventID: eventID, endpointID: endpointID)
             return
         }
         guard state == .discovering, lockedTargetEndpointID == nil else {
@@ -402,20 +411,18 @@ final class HandoffV2StateMachine {
         if self.coordinationEnabled == false { clearInternalEvent(finalState: .cancelled) }
     }
 
-    func handleV1Message() { log(.routeToV1) }
     func handleAdvanceTime() {}
 
     private func finishSourceDebounce() {
         timerKeys.remove("v2-debounce")
         guard coordinationEnabled, !sourceInputPresent else { return }
-        let v2Targets = enabledTargets.filter { $0.capability == .v2 }
-        if v2Targets.count == 1, let target = v2Targets.first {
+        if enabledTargets.count == 1, let target = enabledTargets.first {
             let eventID = (pendingSourceEventID ?? eventIDSource.nextEventID()).lowercased()
             activeEventID = eventID
             activeIntent = .inputHandover
             lock(target.endpointID)
             beginDirectedRequest(target: target, eventID: eventID, intent: .inputHandover)
-        } else if v2Targets.count > 1 {
+        } else if enabledTargets.count > 1 {
             state = .discovering
             log(.startDiscovery)
             schedule("v2-discovery-timeout", after: Self.discoveryMs) { [weak self] in

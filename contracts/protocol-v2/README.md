@@ -1,6 +1,6 @@
 # DisplaySwitch 协议 v2 公共合同
 
-本目录是 DS-005 获批方向对应的机器可读公共合同草案，供 Windows 和 macOS 使用相同字节、消息和状态机向量实现。当前运行时唯一生效规范仍是仓库根目录 `PROTOCOL.md` 的 v1；本目录在提案合并并完成双端实现前不改变线上行为。
+本目录是当前 `version = 2` 协议的机器可读公共合同，供 Windows 和 macOS 使用相同字节、消息和状态机向量实现。仓库根目录 `PROTOCOL.md` 是唯一生效规范。
 
 ## 文件
 
@@ -13,8 +13,8 @@
 ## 版本边界
 
 - `protocolVersion = 2` 对应网络字段 `version = 2`。
-- contracts 自身使用 `schemaVersion = 1`；它不是平台本机配置的 `schemaVersion = 3`。
-- v2 与 v1 必须使用独立解析器和状态机。v2 contracts 不修改或替代 `contracts/protocol-v1/`。
+- contracts 自身使用 `schemaVersion = 1`；它不是平台本机配置的 `schemaVersion = 4`。
+- 当前网络协议只支持 `version = 2`；`version = 1`、缺少版本和未知版本必须安全拒绝，且不得回复、刷新在线状态或触发硬件副作用。
 
 ## 合成测试材料
 

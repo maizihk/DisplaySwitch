@@ -42,14 +42,14 @@ final class PublicPresentationModelsTests: XCTestCase {
         ])
         XCTAssertEqual(content.productName, "DisplaySwitcher")
         XCTAssertEqual(content.versionText, "版本 2.1.0 (19)")
-        XCTAssertEqual(content.platformText, "macOS · simulated-arch · 协议 v1/v2")
+        XCTAssertEqual(content.platformText, "macOS · simulated-arch · 协议 v2")
         for privateValue in metadata.values.values where privateValue.hasPrefix("private-") {
             XCTAssertFalse(renderedPublicText.contains(privateValue))
         }
     }
 
     func testManualEntriesUseOnlyCompleteEnabledProfileNames() {
-        let display = DisplayConfigurationV3Display(
+        let display = DisplayConfigurationV4Display(
             id: UUID().uuidString,
             name: "模拟显示器",
             selector: UUID().uuidString,
@@ -77,11 +77,11 @@ final class PublicPresentationModelsTests: XCTestCase {
         let eligible = profile(name: "工作电脑", enabled: true, complete: true)
         let incomplete = profile(name: "未完成配置", enabled: true, complete: false)
         let disabled = profile(name: "已停用配置", enabled: false, complete: true)
-        let document = DisplayConfigurationStoreV3Document(
-            schemaVersion: 3,
+        let document = DisplayConfigurationStoreV4Document(
+            schemaVersion: 4,
             localEndpointID: UUID().uuidString,
             localDeviceName: "本机",
-            listenPort: 49731,
+            listenPort: 49731, controlChannel: .automatic, linkAllDisplays: false,
             displays: [display],
             collaborationProfiles: [eligible, incomplete, disabled]
         )

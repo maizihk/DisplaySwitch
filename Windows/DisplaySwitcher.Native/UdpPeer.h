@@ -1,5 +1,4 @@
 #pragma once
-#include "ProtocolTypes.h"
 #include "UnboundProbeRouter.h"
 
 namespace DisplaySwitcher::Native
@@ -23,7 +22,6 @@ namespace DisplaySwitcher::Native
         void Start(int port);
         void Stop();
         bool IsRunning() const;
-        void Send(PeerMessage const& message, std::wstring const& host, int port);
         void SendRaw(std::string const& data, std::wstring const& host, int port, bool trace = true);
         static bool SourceMatches(DatagramSource const& source, std::wstring const& configuredHost, int configuredPort);
         static double TimestampNow();
