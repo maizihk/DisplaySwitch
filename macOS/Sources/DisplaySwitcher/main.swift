@@ -1221,6 +1221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     func applicationWillTerminate(_ notification: Notification) {
         ddcWriteCoordinator.cancelAll()
+        peerTransport.stop()
         releaseSingleInstanceLock()
     }
 

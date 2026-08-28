@@ -47,6 +47,7 @@
 		A1000000000000000000002C /* LocalUSBSwitchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* LocalUSBSwitchCoordinator.swift */; };
 		A1000000000000000000002D /* LocalUSBSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000029 /* LocalUSBSwitchTests.swift */; };
 		A1000000000000000000002E /* USBMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* USBMonitor.swift */; };
+		A1000000000000000000002F /* PeerTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002A /* PeerTransportTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -89,6 +90,7 @@
 		A20000000000000000000027 /* DS007Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DS007Tests.swift; sourceTree = "<group>"; };
 		A20000000000000000000028 /* LocalUSBSwitchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalUSBSwitchCoordinator.swift; sourceTree = "<group>"; };
 		A20000000000000000000029 /* LocalUSBSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalUSBSwitchTests.swift; sourceTree = "<group>"; };
+		A2000000000000000000002A /* PeerTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerTransportTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -183,6 +185,7 @@
 				A20000000000000000000023 /* HandoffV2StateMachineVectorTests.swift */,
 				A20000000000000000000027 /* DS007Tests.swift */,
 				A20000000000000000000029 /* LocalUSBSwitchTests.swift */,
+				A2000000000000000000002A /* PeerTransportTests.swift */,
 			);
 			path = DisplaySwitcherTests;
 			sourceTree = "<group>";
@@ -319,7 +322,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000E /* PeerTransport.swift in Sources */, A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */, A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */, A1000000000000000000001A /* DDCBackend.swift in Sources */, A1000000000000000000001B /* DDCBackendTests.swift in Sources */, A10000000000000000000027 /* DDCWriteCoordinator.swift in Sources */, A10000000000000000000029 /* DS007SettingsModels.swift in Sources */, A1000000000000000000002A /* DS007Tests.swift in Sources */, A1000000000000000000002C /* LocalUSBSwitchCoordinator.swift in Sources */, A1000000000000000000002D /* LocalUSBSwitchTests.swift in Sources */, A1000000000000000000002E /* USBMonitor.swift in Sources */, A1000000000000000000001D /* PublicPresentationModels.swift in Sources */, A1000000000000000000001E /* PublicPresentationModelsTests.swift in Sources */, A10000000000000000000020 /* PeerProtocolV2.swift in Sources */, A10000000000000000000022 /* HandoffV2StateMachine.swift in Sources */, A10000000000000000000023 /* PeerProtocolV2Tests.swift in Sources */, A10000000000000000000024 /* HandoffV2StateMachineVectorTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0;};
+		A80000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000000E /* PeerTransport.swift in Sources */, A1000000000000000000002F /* PeerTransportTests.swift in Sources */, A10000000000000000000013 /* DisplayConfigurationStore.swift in Sources */, A10000000000000000000014 /* DisplayConfigurationStoreTests.swift in Sources */, A1000000000000000000001A /* DDCBackend.swift in Sources */, A1000000000000000000001B /* DDCBackendTests.swift in Sources */, A10000000000000000000027 /* DDCWriteCoordinator.swift in Sources */, A10000000000000000000029 /* DS007SettingsModels.swift in Sources */, A1000000000000000000002A /* DS007Tests.swift in Sources */, A1000000000000000000002C /* LocalUSBSwitchCoordinator.swift in Sources */, A1000000000000000000002D /* LocalUSBSwitchTests.swift in Sources */, A1000000000000000000002E /* USBMonitor.swift in Sources */, A1000000000000000000001D /* PublicPresentationModels.swift in Sources */, A1000000000000000000001E /* PublicPresentationModelsTests.swift in Sources */, A10000000000000000000020 /* PeerProtocolV2.swift in Sources */, A10000000000000000000022 /* HandoffV2StateMachine.swift in Sources */, A10000000000000000000023 /* PeerProtocolV2Tests.swift in Sources */, A10000000000000000000024 /* HandoffV2StateMachineVectorTests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0;};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
