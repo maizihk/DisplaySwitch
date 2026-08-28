@@ -25,11 +25,7 @@ namespace DisplaySwitcher::Native
 
     struct AppConfig
     {
-        bool usbAutomationEnabled{ false };
-        bool usbSwitchDisplaysOnArrival{ false };
-        int usbVendorId{ -1 };
-        int usbProductId{ -1 };
-        std::wstring usbName;
+        UsbSwitchConfig usbSwitch;
 
         std::wstring displayControlBackend;
         std::wstring controlMyMonitorPath;
@@ -52,6 +48,7 @@ namespace DisplaySwitcher::Native
         std::vector<std::wstring> OrderedDisplayIds() const;
         bool IsProfileDisplayMappingComplete(std::wstring const& profileId) const noexcept;
         int PeerInputForDisplay(std::wstring const& profileId, std::wstring const& displayId, int fallback = -1) const noexcept;
+        std::optional<int> UsbInputForDisplay(std::wstring const& displayId) const noexcept;
         ProfileInspectionResult InspectProfile(std::wstring const& profileId,
             std::wstring const& observedEndpointId = {}, std::optional<int> observedProtocolVersion = std::nullopt) const;
         ProfileDisplaySelection SelectProfileDisplays(std::wstring const& profileId) const;

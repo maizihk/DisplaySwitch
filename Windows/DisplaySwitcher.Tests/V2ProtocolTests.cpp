@@ -1,6 +1,7 @@
 #include "../DisplaySwitcher.Native/pch.h"
 #include "../DisplaySwitcher.Native/V2Protocol.h"
 #include "../DisplaySwitcher.Native/V2StateMachine.h"
+#include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
 
 #include <iostream>
 
@@ -83,9 +84,6 @@ namespace
     V2CoordinatorState State(std::wstring const& value)
     {
         if (value == L"idle") return V2CoordinatorState::Idle;
-        if (value == L"debouncing") return V2CoordinatorState::Debouncing;
-        if (value == L"discovering") return V2CoordinatorState::Discovering;
-        if (value == L"awaiting_input") return V2CoordinatorState::AwaitingInput;
         if (value == L"awaiting_ready") return V2CoordinatorState::AwaitingReady;
         if (value == L"awaiting_commit") return V2CoordinatorState::AwaitingCommit;
         if (value == L"switching") return V2CoordinatorState::Switching;
@@ -102,7 +100,6 @@ namespace
         case V2Action::Kind::RequestWake: return L"requestWake";
         case V2Action::Kind::RequestSwitch: return L"requestSwitch";
         case V2Action::Kind::LockTarget: return L"lockTarget";
-        case V2Action::Kind::StartDiscovery: return L"startDiscovery";
         case V2Action::Kind::PromptManualSelection: return L"promptManualSelection";
         case V2Action::Kind::IgnoreMessage: return L"ignoreMessage";
         case V2Action::Kind::ClearEvent: return L"clearEvent";
@@ -127,9 +124,7 @@ namespace
         if (kind == L"advanceTime") return {};
         if (kind == L"statusProbe") return machine.OnStatusProbe(atMs, endpoint, event, authenticated);
         if (kind == L"manualSelect") return machine.OnManualSelect(atMs, endpoint, event);
-        if (kind == L"sourceInputPresenceChanged") return machine.OnSourceInputPresenceChanged(atMs, Bool(input, L"present"), event);
-        if (kind == L"targetInputPresenceChanged") return machine.OnTargetInputPresenceChanged(atMs, Bool(input, L"present"), event);
-        if (kind == L"peerInputPresent") return machine.OnPeerInputPresent(atMs, endpoint, event, authenticated);
+        if (kind == L"receiveWakeDisplay") return machine.OnWakeDisplay(atMs, endpoint, event, authenticated);
         if (kind == L"receiveHandoverRequest") return machine.OnHandoverRequest(atMs, endpoint, event, authenticated, String(input, L"intent"));
         if (kind == L"receiveTargetReady") return machine.OnTargetReady(atMs, endpoint, event, authenticated, Bool(input, L"wakeSucceeded"));
         if (kind == L"receiveCommitted") return machine.OnCommitted(atMs, endpoint, event, authenticated, Bool(input, L"switchSucceeded"));
@@ -227,8 +222,7 @@ int RunV2ProtocolVectorTests()
     for (auto const& item : states.GetNamedArray(L"vectors"))
     {
         ++stateCount; auto vector = item.GetObjectW(); auto id = String(vector, L"id"); auto initialJson = vector.GetNamedObject(L"initialState");
-        V2StateInitial initial{ String(initialJson, L"localEndpointID"), Bool(initialJson, L"coordinationEnabled"),
-            Bool(initialJson, L"sourceInputPresent"), Bool(initialJson, L"targetInputPresent"), State(String(initialJson, L"state")),
+        V2StateInitial initial{ String(initialJson, L"localEndpointID"), Bool(initialJson, L"coordinationEnabled"), State(String(initialJson, L"state")),
             String(initialJson, L"activeEventID"), String(initialJson, L"lockedTargetEndpointID") };
         for (auto const& targetValue : initialJson.GetNamedArray(L"enabledTargets"))
         {
@@ -258,5 +252,70 @@ int RunV2ProtocolVectorTests()
     }
     if (!failures) std::wcout << L"DS-005 passed 1 normalization vector, 4 authentication vectors, " << messageCount
         << L" message vectors and " << stateCount << L" state-machine vectors\n";
+    return failures;
+}
+
+int RunUsbSwitchVectorTests()
+{
+    auto root = FindRepositoryRoot();
+    auto document = ReadJson(root / L"contracts/usb-switch-v1/usb-switch-vectors.json");
+    int failures{}, count{};
+    auto actionKind = [](UsbSwitchAction::Kind kind)
+    {
+        switch (kind)
+        {
+        case UsbSwitchAction::Kind::EstablishBaseline: return std::wstring(L"establishBaseline");
+        case UsbSwitchAction::Kind::SwitchDisplay: return std::wstring(L"switchDisplay");
+        case UsbSwitchAction::Kind::WakeDisplay: return std::wstring(L"wakeDisplay");
+        case UsbSwitchAction::Kind::SendWakeDisplay: return std::wstring(L"sendWakeDisplay");
+        case UsbSwitchAction::Kind::Report: return std::wstring(L"report");
+        }
+        return std::wstring{};
+    };
+    for (auto const& value : document.GetNamedArray(L"vectors"))
+    {
+        ++count;
+        auto vector = value.GetObjectW(); auto initialJson = vector.GetNamedObject(L"initialState");
+        UsbSwitchInitialState initial;
+        initial.enabled = Bool(initialJson, L"enabled"); initial.learning = Bool(initialJson, L"learning");
+        initial.safeState = Bool(initialJson, L"safeState");
+        if (initialJson.GetNamedValue(L"baselinePresence").ValueType() != JsonValueType::Null)
+            initial.baselinePresence = Bool(initialJson, L"baselinePresence");
+        initial.collaborationWakeEnabled = Bool(initialJson, L"collaborationWakeEnabled");
+        initial.collaborationProfileValid = Bool(initialJson, L"collaborationProfileValid");
+        for (auto const& mappingValue : initialJson.GetNamedArray(L"displayMappings"))
+        {
+            auto mapping = mappingValue.GetObjectW(); std::optional<int> input;
+            if (mapping.GetNamedValue(L"targetInput").ValueType() != JsonValueType::Null)
+                input = static_cast<int>(mapping.GetNamedNumber(L"targetInput"));
+            initial.displayMappings.push_back({ String(mapping, L"displayID"), input,
+                Bool(mapping, L"available"), Bool(mapping, L"switchSucceeds") });
+        }
+        UsbSwitchCoordinator coordinator(std::move(initial));
+        struct TimedUsb { int64_t atMs{}; UsbSwitchAction action; };
+        std::vector<TimedUsb> actual;
+        for (auto const& stepValue : vector.GetNamedArray(L"inputs"))
+        {
+            auto step = stepValue.GetObjectW(); auto atMs = static_cast<int64_t>(step.GetNamedNumber(L"atMs"));
+            auto kind = String(step, L"kind"); std::vector<UsbSwitchAction> actions;
+            if (kind == L"observeUSB") actions = coordinator.ObserveUsb(atMs, Bool(step, L"present"));
+            else if (kind == L"configurationChanged") coordinator.ConfigurationChanged();
+            else if (kind == L"receiveWakeDisplay") actions = coordinator.ReceiveWakeDisplay(atMs);
+            else throw std::runtime_error("unknown USB vector input");
+            for (auto& action : actions) actual.push_back({ atMs, std::move(action) });
+        }
+        auto expected = vector.GetNamedArray(L"expectedActions"); bool matches = actual.size() == expected.Size();
+        for (uint32_t index = 0; matches && index < expected.Size(); ++index)
+        {
+            auto item = expected.GetAt(index).GetObjectW(); auto const& action = actual[index];
+            matches = action.atMs == static_cast<int64_t>(item.GetNamedNumber(L"atMs")) && actionKind(action.action.kind) == String(item, L"kind");
+            if (item.HasKey(L"displayID")) matches = matches && action.action.displayId == String(item, L"displayID");
+            if (item.HasKey(L"targetInput")) matches = matches && action.action.targetInput == std::optional<int>(static_cast<int>(item.GetNamedNumber(L"targetInput")));
+            if (item.HasKey(L"succeeded")) matches = matches && action.action.succeeded == std::optional<bool>(Bool(item, L"succeeded"));
+            if (item.HasKey(L"reason")) matches = matches && action.action.reason == String(item, L"reason");
+        }
+        if (!matches) { ++failures; std::wcerr << L"FAIL " << String(vector, L"id") << L": USB actions differ\n"; }
+    }
+    if (!failures) std::wcout << L"DS-008 passed " << count << L" USB switching vectors\n";
     return failures;
 }

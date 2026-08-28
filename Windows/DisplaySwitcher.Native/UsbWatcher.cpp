@@ -28,9 +28,7 @@ namespace DisplaySwitcher::Native
 {
     std::wstring UsbDeviceInfo::DisplayName() const
     {
-        wchar_t ids[16]{};
-        swprintf_s(ids, L"%04X:%04X", vendorId, productId);
-        return name + L" (" + ids + L")";
+        return name;
     }
 
     UsbLearningDevice UsbDeviceInfo::LearningDevice() const
@@ -70,10 +68,14 @@ namespace DisplaySwitcher::Native
         }
     }
 
-    void UsbWatcher::Reconfigure(int vendorId, int productId)
+    void UsbWatcher::Reconfigure(int vendorId, int productId, std::wstring localReference)
     {
-        vendorId_.store(vendorId);
-        productId_.store(productId);
+        {
+            std::scoped_lock lock(configurationMutex_);
+            vendorId_ = vendorId;
+            productId_ = productId;
+            localReference_ = std::move(localReference);
+        }
         if (changeEvent_) SetEvent(changeEvent_);
     }
 
@@ -87,35 +89,40 @@ namespace DisplaySwitcher::Native
 
     bool UsbWatcher::IsPresent() const
     {
-        auto vendor = vendorId_.load();
-        auto product = productId_.load();
+        int vendor{}, product{};
+        std::wstring localReference;
+        { std::scoped_lock lock(configurationMutex_); vendor = vendorId_; product = productId_; localReference = localReference_; }
         if (vendor < 0 || vendor > 0xFFFF || product < 0 || product > 0xFFFF) return false;
         auto devices = EnumerateDevices();
-        return std::any_of(devices.begin(), devices.end(), [=](auto const& device)
+        return std::any_of(devices.begin(), devices.end(), [&](auto const& device)
         {
-            return device.vendorId == vendor && device.productId == product;
+            return device.vendorId == vendor && device.productId == product &&
+                (localReference.empty() || _wcsicmp(device.LearningDevice().localReference.c_str(), localReference.c_str()) == 0);
         });
     }
 
     void UsbWatcher::Poll(std::stop_token token)
     {
         std::optional<bool> last;
-        int lastVendor = vendorId_.load();
-        int lastProduct = productId_.load();
+        int lastVendor{}, lastProduct{};
+        { std::scoped_lock lock(configurationMutex_); lastVendor = vendorId_; lastProduct = productId_; }
+        std::wstring lastReference;
         while (!token.stop_requested())
         {
             try
             {
-                auto vendor = vendorId_.load();
-                auto product = productId_.load();
-                if (vendor != lastVendor || product != lastProduct)
+                int vendor{}, product{};
+                std::wstring reference;
+                { std::scoped_lock lock(configurationMutex_); vendor = vendorId_; product = productId_; reference = localReference_; }
+                if (vendor != lastVendor || product != lastProduct || _wcsicmp(reference.c_str(), lastReference.c_str()) != 0)
                 {
                     last.reset();
                     lastVendor = vendor;
                     lastProduct = product;
+                    lastReference = std::move(reference);
                 }
                 auto present = IsPresent();
-                if (last.has_value() && *last != present && callback_)
+                if ((!last.has_value() || *last != present) && callback_)
                 {
                     WriteDiagnostic(present ? "usb.poll_change present=1" : "usb.poll_change present=0");
                     callback_(present);
@@ -162,11 +169,12 @@ namespace DisplaySwitcher::Native
 
         std::sort(devices.begin(), devices.end(), [](auto const& left, auto const& right)
         {
-            return std::tie(left.name, left.vendorId, left.productId) < std::tie(right.name, right.vendorId, right.productId);
+            return std::tie(left.name, left.vendorId, left.productId, left.pnpDeviceId) <
+                std::tie(right.name, right.vendorId, right.productId, right.pnpDeviceId);
         });
         devices.erase(std::unique(devices.begin(), devices.end(), [](auto const& left, auto const& right)
         {
-            return left.vendorId == right.vendorId && left.productId == right.productId && left.name == right.name;
+            return _wcsicmp(left.pnpDeviceId.c_str(), right.pnpDeviceId.c_str()) == 0;
         }), devices.end());
         return devices;
     }

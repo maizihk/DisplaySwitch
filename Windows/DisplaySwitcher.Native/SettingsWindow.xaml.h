@@ -52,6 +52,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
+        void RebuildUsbMappingEditors();
         void CaptureProfileEditors();
         void RebuildProfileEditors();
         void RefreshProfileSelectors();
@@ -90,7 +91,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
         uint64_t usbLearningGeneration_{};
         bool usbLearningDialogOpen_{};
         bool usbLearningRuntimePaused_{};
-        std::optional<std::wstring> learnedUsbName_;
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
@@ -140,6 +140,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ComboBox usbProfileSelector_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbDevices_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock usbDeviceStatus_{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel usbMappingsPanel_{ nullptr };
+        struct UsbMappingEditor
+        {
+            std::wstring displayId;
+            Microsoft::UI::Xaml::Controls::TextBox targetInput{ nullptr };
+        };
+        std::vector<UsbMappingEditor> usbMappingEditors_;
+        std::wstring selectedUsbLocalReference_;
+        std::wstring selectedUsbName_;
         int selectedUsbVendorId_{ -1 };
         int selectedUsbProductId_{ -1 };
         Microsoft::UI::Xaml::Controls::ComboBox displayBackend_{ nullptr };

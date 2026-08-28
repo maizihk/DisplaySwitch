@@ -12,6 +12,7 @@ using namespace DisplaySwitcher::Native;
 using namespace winrt::Windows::Data::Json;
 
 int RunV2ProtocolVectorTests();
+int RunUsbSwitchVectorTests();
 
 namespace
 {
@@ -176,12 +177,13 @@ namespace
         Check(first.displays.empty() && !first.HasUsbDeviceConfiguration() && !first.HasDisplayConfiguration(),
             L"C-001: 全新安装不得具备硬件动作条件");
         auto freshJson = ReadObject(freshPath);
-        Check(freshJson.GetNamedNumber(L"schemaVersion") == 4
-            && !freshJson.GetNamedBoolean(L"UsbAutomationEnabled")
-            && !freshJson.GetNamedBoolean(L"UsbSwitchDisplaysOnArrival")
+        auto freshUsb = freshJson.GetNamedObject(L"UsbSwitch");
+        Check(freshJson.GetNamedNumber(L"schemaVersion") == 5
+            && !freshUsb.GetNamedBoolean(L"Enabled")
+            && !freshUsb.GetNamedBoolean(L"CollaborationWakeEnabled")
             && !freshJson.HasKey(L"CoordinationEnabled") && !freshJson.HasKey(L"PeerHost")
             && !freshJson.HasKey(L"Port") && !freshJson.HasKey(L"PairingCode"),
-            L"U-015/U-016: v4 默认配置必须安全关闭且不得保留 v1 顶层镜像字段");
+            L"DS-008: v5 默认配置必须安全关闭且不得保留旧顶层 USB 字段");
 
         for (size_t count : { size_t{ 0 }, size_t{ 1 }, size_t{ 2 }, size_t{ 4 } })
         {
@@ -309,26 +311,32 @@ namespace
 
     void TestLegacyConfigResetToSafeV4(std::filesystem::path const& root)
     {
-        auto path = root / L"v2.json";
-        auto id1 = GenerateIdentifier(); auto id2 = GenerateIdentifier();
-        auto text = std::string("{\"schemaVersion\":2,\"CoordinationEnabled\":true,\"PeerHost\":\"peer.example\",\"Port\":49731,\"UsbVendorId\":4660,\"UsbProductId\":22136,\"UsbName\":\"Test USB\",")
-            + "\"PairingCode\":\"TEST-CODE-0001\",\"DisplayControlBackend\":\"native_ddc\",\"Displays\":["
-            + "{\"Id\":\"" + winrt::to_string(id1) + "\",\"Name\":\"A\",\"NativeMonitorId\":\"monitor-a\",\"ControlMonitorPath\":\"\",\"MacInput\":16},"
-            + "{\"Id\":\"" + winrt::to_string(id2) + "\",\"Name\":\"B\",\"NativeMonitorId\":\"monitor-b\",\"ControlMonitorPath\":\"\",\"MacInput\":17}]}";
-        WriteBytes(path, text);
-        auto reset = AppConfig::LoadFromPath(path);
-        auto backup = std::filesystem::path(path.wstring() + L".pre-v4.backup");
-        Check(std::filesystem::exists(backup) && ReadBytes(backup) == text,
-            L"U-004/U-005: v3 及更早配置必须原样备份，不能静默删除或覆盖");
-        Check(ReadObject(path).GetNamedNumber(L"schemaVersion") == 4 && reset.displays.empty() && reset.collaborationProfiles.size() == 1
-            && !reset.collaborationProfiles[0].coordinationEnabled && !reset.usbAutomationEnabled,
-            L"U-004/U-005: 旧配置必须重建为协同和硬件动作均关闭的 v4 默认值");
-        Check(!reset.HasDisplayConfiguration() && !reset.HasUsbDeviceConfiguration()
-            && !reset.displayConfigurationSafeMode,
-            L"U-004/U-005: 成功备份后的 v4 默认值不得具备任何硬件动作前置条件");
-        auto endpoint = reset.localEndpointId;
-        Check(AppConfig::LoadFromPath(path).localEndpointId == endpoint,
-            L"U-004/U-005: 新 v4 endpointID 必须持久稳定且不得从旧硬件信息派生");
+        auto path = root / L"v4.json";
+        auto original = ConfigWithDisplays(2); original.SaveToPath(path);
+        auto object = ReadObject(path); object.Insert(L"schemaVersion", JsonValue::CreateNumberValue(4)); object.Remove(L"UsbSwitch");
+        object.Insert(L"UsbAutomationEnabled", JsonValue::CreateBooleanValue(true));
+        object.Insert(L"UsbSwitchDisplaysOnArrival", JsonValue::CreateBooleanValue(true));
+        object.Insert(L"UsbVendorId", JsonValue::CreateNumberValue(0x1234)); object.Insert(L"UsbProductId", JsonValue::CreateNumberValue(0x5678));
+        object.Insert(L"UsbName", JsonValue::CreateStringValue(L"旧设备"));
+        for (auto const& value : object.GetNamedArray(L"CollaborationProfiles"))
+        {
+            JsonArray triggers; JsonObject trigger; trigger.Insert(L"Kind", JsonValue::CreateStringValue(L"usb"));
+            trigger.Insert(L"LocalReference", JsonValue::CreateStringValue(L"private-old-reference"));
+            trigger.Insert(L"DisplayName", JsonValue::CreateStringValue(L"旧设备")); triggers.Append(trigger);
+            value.GetObject().Insert(L"TriggerDevices", triggers);
+        }
+        WriteObject(path, object); auto oldBytes = ReadBytes(path);
+        auto migrated = AppConfig::LoadFromPath(path);
+        auto backup = std::filesystem::path(path.wstring() + L".pre-v5.backup");
+        Check(std::filesystem::exists(backup) && ReadBytes(backup) == oldBytes,
+            L"DS-008: v4 配置必须原样备份后再原子迁移");
+        Check(ReadObject(path).GetNamedNumber(L"schemaVersion") == 5 && migrated.displays.size() == 2 &&
+            migrated.collaborationProfiles.size() == 1 && !migrated.usbSwitch.enabled &&
+            migrated.usbSwitch.deviceLocalReference.empty() && migrated.usbSwitch.displayInputs.empty() &&
+            !migrated.usbSwitch.collaborationWakeEnabled && migrated.collaborationProfiles[0].triggerDevices.empty(),
+            L"DS-008: v4→v5 必须保留非 USB 数据且不得猜测设备、映射或联动配置");
+        Check(AppConfig::LoadFromPath(path).localEndpointId == original.localEndpointId,
+            L"DS-008: v4→v5 必须保留稳定 localEndpointID");
     }
 
     void TestSafeFailures(std::filesystem::path const& root)
@@ -338,19 +346,23 @@ namespace
         auto malformed = AppConfig::LoadFromPath(malformedPath);
         auto restarted = AppConfig::LoadFromPath(malformedPath);
         Check(malformed.displayConfigurationSafeMode && restarted.displayConfigurationSafeMode
-            && !malformed.usbAutomationEnabled,
+            && !malformed.usbSwitch.enabled,
             L"C-010: 读取失败后应跨重启保持安全状态");
         Check(ReadBytes(malformedPath) == "{not-json", L"C-010: 读取失败不得覆盖原数据");
 
-        auto readOnlyPath = root / L"readonly-v2.json";
-        auto id = GenerateIdentifier();
-        auto legacy = std::string("{\"schemaVersion\":2,\"UsbAutomationEnabled\":true,\"DisplayControlBackend\":\"native_ddc\",\"Displays\":[{\"Id\":\"")
-            + winrt::to_string(id) + "\",\"Name\":\"A\",\"NativeMonitorId\":\"monitor-a\",\"ControlMonitorPath\":\"\",\"MacInput\":16}]}";
-        WriteBytes(readOnlyPath, legacy);
+        auto readOnlyPath = root / L"readonly-v4.json";
+        auto legacyConfig = ConfigWithDisplays(1); legacyConfig.SaveToPath(readOnlyPath);
+        auto legacyObject = ReadObject(readOnlyPath); legacyObject.Insert(L"schemaVersion", JsonValue::CreateNumberValue(4)); legacyObject.Remove(L"UsbSwitch");
+        legacyObject.Insert(L"UsbAutomationEnabled", JsonValue::CreateBooleanValue(true));
+        legacyObject.Insert(L"UsbSwitchDisplaysOnArrival", JsonValue::CreateBooleanValue(true));
+        legacyObject.Insert(L"UsbVendorId", JsonValue::CreateNumberValue(0x1234)); legacyObject.Insert(L"UsbProductId", JsonValue::CreateNumberValue(0x5678));
+        legacyObject.Insert(L"UsbName", JsonValue::CreateStringValue(L"旧设备"));
+        for (auto const& value : legacyObject.GetNamedArray(L"CollaborationProfiles")) value.GetObject().Insert(L"TriggerDevices", JsonArray());
+        WriteObject(readOnlyPath, legacyObject); auto legacy = ReadBytes(readOnlyPath);
         Check(SetFileAttributesW(readOnlyPath.c_str(), FILE_ATTRIBUTE_READONLY) != FALSE, L"测试夹具应能设为只读");
         auto failed = AppConfig::LoadFromPath(readOnlyPath);
         Check(failed.displayConfigurationSafeMode && !failed.HasDisplayConfiguration() && ReadBytes(readOnlyPath) == legacy,
-            L"C-010: 迁移写入失败应保留原数据并阻断硬件/网络条件");
+            L"DS-008: v4→v5 原子替换失败应保留原数据并阻断硬件/网络条件");
         Check(AppConfig::LoadFromPath(readOnlyPath).displayConfigurationSafeMode,
             L"C-010: 迁移失败安全状态应跨重启持续");
         SetFileAttributesW(readOnlyPath.c_str(), FILE_ATTRIBUTE_NORMAL);
@@ -362,9 +374,12 @@ namespace
         {
             auto path = root / fileName;
             auto original = ConfigWithDisplays(2);
-            original.usbAutomationEnabled = true;
-            original.usbVendorId = 0x1234;
-            original.usbProductId = 0x5678;
+            original.usbSwitch.enabled = true;
+            original.usbSwitch.deviceLocalReference = L"test-local-reference";
+            original.usbSwitch.deviceName = L"测试设备";
+            original.usbSwitch.vendorId = 0x1234;
+            original.usbSwitch.productId = 0x5678;
+            original.usbSwitch.displayInputs.push_back({ original.displays[0].id, 17 });
             original.collaborationProfiles[0].coordinationEnabled = true;
             original.collaborationProfiles[0].peerEndpointId = GenerateIdentifier();
             original.collaborationProfiles[0].peerProtocolVersion = 2;
@@ -388,7 +403,7 @@ namespace
             RuntimeSafetyGate gate;
             gate.Block();
             currentProcess.EnterSafeState();
-            Check(currentProcess.displayConfigurationSafeMode && !currentProcess.usbAutomationEnabled
+            Check(currentProcess.displayConfigurationSafeMode && !currentProcess.usbSwitch.enabled
                 && std::none_of(currentProcess.collaborationProfiles.begin(), currentProcess.collaborationProfiles.end(),
                     [](auto const& profile) { return profile.coordinationEnabled; }),
                 L"当前进程收到保存失败后必须立即关闭 UDP、USB 自动切换和状态机协同");
@@ -398,7 +413,7 @@ namespace
                 L"当前进程进入安全状态后必须产生零 UDP、USB、DDC 和唤醒副作用");
 
             auto restarted = AppConfig::LoadFromPath(path);
-            Check(restarted.displayConfigurationSafeMode && !restarted.usbAutomationEnabled
+            Check(restarted.displayConfigurationSafeMode && !restarted.usbSwitch.enabled
                 && std::none_of(restarted.collaborationProfiles.begin(), restarted.collaborationProfiles.end(),
                     [](auto const& profile) { return profile.coordinationEnabled; }),
                 L"保存失败后重启必须继续关闭 UDP、USB 自动切换和状态机协同");
@@ -427,15 +442,14 @@ namespace
         auto object = ReadObject(path);
         object.Insert(L"FutureField", JsonValue::CreateStringValue(L"ignored"));
         WriteObject(path, object);
-        Check(!AppConfig::LoadFromPath(path).displayConfigurationSafeMode, L"U-006: v4 未知字段应忽略");
+        Check(!AppConfig::LoadFromPath(path).displayConfigurationSafeMode, L"U-006: v5 未知字段应忽略");
 
         object = ReadObject(path); object.Insert(L"schemaVersion", JsonValue::CreateNumberValue(99)); WriteObject(path, object);
         auto futureBytes = ReadBytes(path);
         auto future = AppConfig::LoadFromPath(path);
-        Check(ReadObject(path).GetNamedNumber(L"schemaVersion") == 4 && future.displays.empty() && !future.usbAutomationEnabled
-            && std::filesystem::exists(path.wstring() + L".pre-v4.backup")
-            && ReadBytes(path.wstring() + L".pre-v4.backup") == futureBytes,
-            L"U-004/U-005: 未知 schemaVersion 必须备份并重建安全关闭的 v4 默认值");
+        Check(future.displayConfigurationSafeMode && future.displays.empty() && !future.usbSwitch.enabled
+            && ReadBytes(path) == futureBytes,
+            L"DS-008: 未知 schemaVersion 必须保留原文件并进入安全状态");
 
         auto duplicatePath = root / L"duplicate.json"; config.SaveToPath(duplicatePath);
         object = ReadObject(duplicatePath); auto profiles = object.GetNamedArray(L"CollaborationProfiles"); profiles.Append(profiles.GetAt(0));
@@ -955,6 +969,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-005 network detection pending-event and zero-hardware scenarios passed\n";
         if (!failures) std::wcout << L"DS-007 Windows-applicable settings, v2-only, DDC and tray scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
+        failures += RunUsbSwitchVectorTests();
     }
     catch (winrt::hresult_error const& error)
     {

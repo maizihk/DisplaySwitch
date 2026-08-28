@@ -7,7 +7,7 @@
 
 namespace DisplaySwitcher::Native
 {
-    enum class V2CoordinatorState { Idle, Debouncing, Discovering, AwaitingInput, AwaitingReady, AwaitingCommit, Switching, Completed, Cancelled };
+    enum class V2CoordinatorState { Idle, AwaitingReady, AwaitingCommit, Switching, Completed, Cancelled };
 
     struct V2Target
     {
@@ -20,8 +20,6 @@ namespace DisplaySwitcher::Native
     {
         std::wstring localEndpointId;
         bool coordinationEnabled{};
-        bool sourceInputPresent{};
-        bool targetInputPresent{};
         V2CoordinatorState state{ V2CoordinatorState::Idle };
         std::wstring activeEventId;
         std::wstring lockedTargetEndpointId;
@@ -30,7 +28,7 @@ namespace DisplaySwitcher::Native
 
     struct V2Action
     {
-        enum class Kind { SendMessage, RequestWake, RequestSwitch, LockTarget, StartDiscovery, PromptManualSelection, IgnoreMessage, ClearEvent, SetPeerReachable };
+        enum class Kind { SendMessage, RequestWake, RequestSwitch, LockTarget, PromptManualSelection, IgnoreMessage, ClearEvent, SetPeerReachable };
         Kind kind{};
         std::wstring type;
         std::wstring eventId;
@@ -55,9 +53,7 @@ namespace DisplaySwitcher::Native
         explicit V2StateMachine(V2StateInitial initial);
         std::vector<V2Action> OnStatusProbe(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId, bool authenticated);
         std::vector<V2Action> OnManualSelect(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId);
-        std::vector<V2Action> OnSourceInputPresenceChanged(int64_t nowMs, bool present, std::wstring const& eventId = {});
-        std::vector<V2Action> OnTargetInputPresenceChanged(int64_t nowMs, bool present, std::wstring const& eventId = {});
-        std::vector<V2Action> OnPeerInputPresent(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId, bool authenticated);
+        std::vector<V2Action> OnWakeDisplay(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId, bool authenticated);
         std::vector<V2Action> OnHandoverRequest(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId, bool authenticated, std::wstring const& intent);
         std::vector<V2Action> OnTargetReady(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId, bool authenticated, bool wakeSucceeded);
         std::vector<V2Action> OnCommitted(int64_t nowMs, std::wstring const& endpointId, std::wstring const& eventId, bool authenticated, bool switchSucceeded);
@@ -78,19 +74,14 @@ namespace DisplaySwitcher::Native
 
         std::wstring localEndpointId_;
         bool coordinationEnabled_{};
-        bool sourceInputPresent_{};
-        bool targetInputPresent_{};
         V2CoordinatorState state_{ V2CoordinatorState::Idle };
         std::wstring activeEventId_;
         std::wstring lockedTargetEndpointId_;
         std::vector<V2Target> enabledTargets_;
-        std::optional<int64_t> debounceDueMs_;
-        std::optional<int64_t> discoveryDueMs_;
         std::optional<int64_t> retryDueMs_;
         std::optional<int64_t> fallbackDueMs_;
         int requestCount_{};
         std::wstring incomingIntent_;
-        std::optional<bool> wakeResult_;
         std::set<std::wstring> seenMessages_;
     };
 
