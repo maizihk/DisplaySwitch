@@ -77,10 +77,7 @@
     <ClInclude Include="DdcBackends.h" />
     <ClInclude Include="DdcControl.h" />
     <ClInclude Include="DisplayModel.h" />
-    <ClInclude Include="HandoverStateMachine.h" />
-    <ClInclude Include="ProtocolMessage.h" />
     <ClInclude Include="ProfileDetection.h" />
-    <ClInclude Include="ProtocolTypes.h" />
     <ClInclude Include="V2Protocol.h" />
     <ClInclude Include="V2StateMachine.h" />
     <ClInclude Include="SystemActions.h" />
@@ -103,8 +100,6 @@
     <ClCompile Include="DdcControl.cpp" />
     <ClCompile Include="Diagnostics.cpp" />
     <ClCompile Include="DisplayModel.cpp" />
-    <ClCompile Include="HandoverStateMachine.cpp" />
-    <ClCompile Include="ProtocolMessage.cpp" />
     <ClCompile Include="ProfileDetection.cpp" />
     <ClCompile Include="V2Protocol.cpp" />
     <ClCompile Include="V2StateMachine.cpp" />

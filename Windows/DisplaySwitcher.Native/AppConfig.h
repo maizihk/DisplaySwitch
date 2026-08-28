@@ -26,19 +26,14 @@ namespace DisplaySwitcher::Native
     struct AppConfig
     {
         bool usbAutomationEnabled{ false };
-        bool coordinationEnabled{ false };
+        bool usbSwitchDisplaysOnArrival{ false };
         int usbVendorId{ -1 };
         int usbProductId{ -1 };
         std::wstring usbName;
-        std::wstring peerHost;
-        int peerPort{ 49731 };
-        // Deprecated compatibility alias kept for current C++ call-sites and settings
-        // pages that still write `port`. Kept synchronized with `peerPort` on load/save.
-        int port{ 49731 };
-        std::wstring pairingCode;
 
         std::wstring displayControlBackend;
         std::wstring controlMyMonitorPath;
+        bool linkAllDisplays{ false };
         std::vector<DisplayConfig> displays;
         std::wstring localEndpointId;
         std::wstring localDeviceName{ L"本机" };

@@ -11,7 +11,7 @@ using namespace Windows::Data::Json;
 
 namespace
 {
-    constexpr int CurrentConfigVersion = 3;
+    constexpr int CurrentConfigVersion = 4;
 
     std::wstring Trim(std::wstring value)
     {
@@ -139,7 +139,7 @@ namespace
     }
 
     std::filesystem::path MarkerPath(std::filesystem::path const& path) { auto value = path; value += L".safety"; return value; }
-    std::filesystem::path BackupPath(std::filesystem::path const& path) { auto value = path; value += L".v2.backup"; return value; }
+    std::filesystem::path BackupPath(std::filesystem::path const& path) { auto value = path; value += L".pre-v4.backup"; return value; }
 
     bool SetMarker(std::filesystem::path const& path) noexcept
     {
@@ -161,20 +161,23 @@ namespace
         std::filesystem::remove(MarkerPath(path), ignored);
     }
 
-    DisplaySwitcher::Native::DisplayConfig ReadV3Display(JsonObject const& object)
+    DisplaySwitcher::Native::DisplayConfig ReadV4Display(JsonObject const& object)
     {
         DisplaySwitcher::Native::DisplayConfig display;
         display.id = RequiredString(object, L"Id");
         display.name = RequiredString(object, L"Name");
-        display.backend = OptionalString(object, L"Backend");
-        display.localInput = NullableInteger(object, L"LocalInput", 0, 65535, true);
+        display.backend.clear();
+        display.localInput.reset();
         display.readEnabled = RequiredBoolean(object, L"ReadEnabled");
         display.brightnessEnabled = RequiredBoolean(object, L"BrightnessEnabled");
+        display.brightnessShowInTray = RequiredBoolean(object, L"BrightnessShowInTray");
         display.contrastEnabled = RequiredBoolean(object, L"ContrastEnabled");
+        display.contrastShowInTray = RequiredBoolean(object, L"ContrastShowInTray");
         display.volumeEnabled = RequiredBoolean(object, L"VolumeEnabled");
+        display.volumeShowInTray = RequiredBoolean(object, L"VolumeShowInTray");
         display.nativeMonitorId = OptionalString(object, L"NativeMonitorId");
         display.controlMonitorPath = OptionalString(object, L"ControlMonitorPath");
-        display.macInput = OptionalInteger(object, L"MacInput", -1, -1, 65535);
+        display.macInput = -1;
         display.brightnessValue = NullableInteger(object, L"Brightness", 0, 65535, false);
         display.contrastValue = NullableInteger(object, L"Contrast", 0, 65535, false);
         display.volumeValue = NullableInteger(object, L"Volume", 0, 65535, false);
@@ -182,37 +185,6 @@ namespace
         display.contrastMax = NullableInteger(object, L"ContrastMax", 1, 65535, false);
         display.volumeMax = NullableInteger(object, L"VolumeMax", 1, 65535, false);
         return display;
-    }
-
-    DisplaySwitcher::Native::DisplayConfig ReadV2Display(JsonObject const& object)
-    {
-        DisplaySwitcher::Native::DisplayConfig display;
-        display.id = RequiredString(object, L"Id");
-        display.name = RequiredString(object, L"Name");
-        display.nativeMonitorId = OptionalString(object, L"NativeMonitorId");
-        display.controlMonitorPath = OptionalString(object, L"ControlMonitorPath");
-        display.macInput = RequiredInteger(object, L"MacInput", -1, 65535);
-        display.localInput.reset();
-        display.readEnabled = display.brightnessEnabled = display.contrastEnabled = display.volumeEnabled = true;
-        return display;
-    }
-
-    DisplaySwitcher::Native::DisplayConfig ReadLegacyDisplay(JsonObject const& object, wchar_t const* name,
-        wchar_t const* path, wchar_t const* nativeId, wchar_t const* input)
-    {
-        auto display = DisplaySwitcher::Native::CreateDisplayConfig(name);
-        display.controlMonitorPath = OptionalString(object, path);
-        display.nativeMonitorId = OptionalString(object, nativeId);
-        display.macInput = OptionalInteger(object, input, -1, -1, 65535);
-        display.localInput.reset();
-        display.readEnabled = true;
-        return display;
-    }
-
-    bool HasLegacyDisplay(JsonObject const& object, wchar_t const* path, wchar_t const* nativeId, wchar_t const* input)
-    {
-        return !OptionalString(object, path).empty() || !OptionalString(object, nativeId).empty()
-            || OptionalInteger(object, input, -1, -1, 65535) >= 0;
     }
 
     DisplaySwitcher::Native::CollaborationProfile ReadProfile(JsonObject const& object)
@@ -224,7 +196,7 @@ namespace
         profile.peerPort = RequiredInteger(object, L"PeerPort", 1, 65535);
         profile.pairingCode = RequiredString(object, L"PairingCode");
         if (Type(object, L"PeerEndpointID") != JsonValueType::Null) profile.peerEndpointId = RequiredString(object, L"PeerEndpointID");
-        profile.peerProtocolVersion = NullableInteger(object, L"PeerProtocolVersion", 1, 2, true);
+        profile.peerProtocolVersion = NullableInteger(object, L"PeerProtocolVersion", 2, 2, true);
         profile.coordinationEnabled = RequiredBoolean(object, L"CoordinationEnabled");
         for (auto const& value : RequiredArray(object, L"DisplayInputs"))
         {
@@ -256,8 +228,10 @@ namespace
             if (!DisplaySwitcher::Native::IsValidDisplayId(display.id) || !ids.insert(Lower(display.id)).second)
                 throw std::runtime_error("invalid or duplicate display id");
             if (!VisibleText(display.name, 1, 64)) throw std::runtime_error("invalid display name");
-            if (!display.backend.empty() && display.backend != L"native_ddc" && display.backend != L"control_my_monitor")
-                throw std::runtime_error("invalid display backend");
+            if ((!display.brightnessEnabled && display.brightnessShowInTray) ||
+                (!display.contrastEnabled && display.contrastShowInTray) ||
+                (!display.volumeEnabled && display.volumeShowInTray))
+                throw std::runtime_error("disabled display feature cannot be shown in tray");
             if (display.localInput && (*display.localInput < 0 || *display.localInput > 65535)) throw std::runtime_error("invalid local input");
         }
     }
@@ -281,7 +255,7 @@ namespace
                 throw std::runtime_error("invalid profile fields");
             if (!profile.peerEndpointId.empty() && !DisplaySwitcher::Native::IsValidDisplayId(profile.peerEndpointId))
                 throw std::runtime_error("invalid peer endpoint");
-            if (profile.peerProtocolVersion && *profile.peerProtocolVersion != 1 && *profile.peerProtocolVersion != 2)
+            if (profile.peerProtocolVersion && *profile.peerProtocolVersion != 2)
                 throw std::runtime_error("invalid peer protocol version");
             std::set<std::wstring> mappingIds;
             for (auto const& mapping : profile.displayInputs)
@@ -298,24 +272,19 @@ namespace
     {
         if (!DisplaySwitcher::Native::IsValidDisplayId(config.localEndpointId) || !VisibleText(config.localDeviceName, 1, 32)
             || config.listenPort < 1 || config.listenPort > 65535) throw std::runtime_error("invalid top-level fields");
+        if (config.displayControlBackend != L"auto" && config.displayControlBackend != L"native_ddc" &&
+            config.displayControlBackend != L"control_my_monitor") throw std::runtime_error("invalid control channel");
         ValidateDisplays(config.displays);
         ValidateProfiles(config.collaborationProfiles);
+        for (auto const& profile : config.collaborationProfiles)
+            if (profile.coordinationEnabled && (profile.peerProtocolVersion != 2
+                || !DisplaySwitcher::Native::IsValidDisplayId(profile.peerEndpointId)
+                || !config.InspectProfile(profile.id).complete
+                || !config.IsProfileDisplayMappingComplete(profile.id)))
+                throw std::runtime_error("enabled collaboration profile is incomplete");
     }
 
-    void LegacyBridge(DisplaySwitcher::Native::AppConfig& config)
-    {
-        config.peerHost.clear(); config.pairingCode.clear(); config.peerPort = config.port = 49731; config.coordinationEnabled = false;
-        for (auto& display : config.displays) display.macInput = -1;
-        if (config.collaborationProfiles.size() != 1) return;
-        auto const& profile = config.collaborationProfiles.front();
-        config.peerHost = profile.peerHost; config.pairingCode = profile.pairingCode;
-        config.peerPort = config.port = profile.peerPort; config.coordinationEnabled = profile.coordinationEnabled;
-        for (auto& display : config.displays)
-            for (auto const& mapping : profile.displayInputs)
-                if (EqualInsensitive(display.id, mapping.displayId)) { display.macInput = mapping.peerInput; break; }
-    }
-
-    DisplaySwitcher::Native::AppConfig ReadCompleteV3Config(JsonObject const& object)
+    DisplaySwitcher::Native::AppConfig ReadCompleteV4Config(JsonObject const& object)
     {
         if (SchemaVersion(object) != CurrentConfigVersion) throw std::runtime_error("invalid settings schema");
         DisplaySwitcher::Native::AppConfig config;
@@ -323,21 +292,17 @@ namespace
         config.localDeviceName = RequiredString(object, L"LocalDeviceName");
         config.listenPort = RequiredInteger(object, L"ListenPort", 1, 65535);
         config.usbAutomationEnabled = RequiredBoolean(object, L"UsbAutomationEnabled");
+        config.usbSwitchDisplaysOnArrival = RequiredBoolean(object, L"UsbSwitchDisplaysOnArrival");
         config.usbVendorId = RequiredInteger(object, L"UsbVendorId", -1, 65535);
         config.usbProductId = RequiredInteger(object, L"UsbProductId", -1, 65535);
         config.usbName = RequiredString(object, L"UsbName");
-        config.displayControlBackend = RequiredString(object, L"DisplayControlBackend");
+        config.displayControlBackend = RequiredString(object, L"ControlChannel");
         config.controlMyMonitorPath = RequiredString(object, L"ControlMyMonitorPath");
+        config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
         config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
-        config.coordinationEnabled = RequiredBoolean(object, L"CoordinationEnabled");
-        config.peerHost = RequiredString(object, L"PeerHost");
-        config.port = config.peerPort = RequiredInteger(object, L"Port", 1, 65535);
-        config.pairingCode = RequiredString(object, L"PairingCode");
-        for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV3Display(value.GetObject()));
-        for (auto& display : config.displays) if (display.backend.empty()) display.backend = config.displayControlBackend;
+        for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
         for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
         ValidateConfig(config);
-        LegacyBridge(config);
         return config;
     }
 
@@ -345,7 +310,6 @@ namespace
     {
         config.displayConfigurationSafeMode = true;
         config.usbAutomationEnabled = false;
-        config.coordinationEnabled = false;
         for (auto& profile : config.collaborationProfiles) profile.coordinationEnabled = false;
     }
 
@@ -353,6 +317,8 @@ namespace
     {
         DisplaySwitcher::Native::AppConfig config;
         config.localEndpointId = DisplaySwitcher::Native::GenerateIdentifier();
+        config.displayControlBackend = L"auto";
+        config.linkAllDisplays = false;
         EnsureDefaultProfile(config);
         return config;
     }
@@ -366,7 +332,10 @@ namespace
         for (auto& display : config.displays)
         {
             display.name = Trim(display.name);
-            if (display.backend.empty()) display.backend = config.displayControlBackend;
+            display.backend.clear();
+            if (!display.brightnessEnabled) display.brightnessShowInTray = false;
+            if (!display.contrastEnabled) display.contrastShowInTray = false;
+            if (!display.volumeEnabled) display.volumeShowInTray = false;
         }
         for (auto& profile : config.collaborationProfiles)
         {
@@ -374,39 +343,35 @@ namespace
             profile.pairingCode = NormalizeNfcValue(profile.pairingCode);
         }
         ValidateConfig(config);
-        LegacyBridge(config);
-
         JsonObject object;
         object.Insert(L"schemaVersion", JsonValue::CreateNumberValue(CurrentConfigVersion));
         object.Insert(L"LocalEndpointId", JsonValue::CreateStringValue(config.localEndpointId));
         object.Insert(L"LocalDeviceName", JsonValue::CreateStringValue(config.localDeviceName));
         object.Insert(L"ListenPort", JsonValue::CreateNumberValue(config.listenPort));
         object.Insert(L"UsbAutomationEnabled", JsonValue::CreateBooleanValue(config.usbAutomationEnabled));
+        object.Insert(L"UsbSwitchDisplaysOnArrival", JsonValue::CreateBooleanValue(config.usbSwitchDisplaysOnArrival));
         object.Insert(L"UsbVendorId", JsonValue::CreateNumberValue(config.usbVendorId));
         object.Insert(L"UsbProductId", JsonValue::CreateNumberValue(config.usbProductId));
         object.Insert(L"UsbName", JsonValue::CreateStringValue(config.usbName));
-        object.Insert(L"DisplayControlBackend", JsonValue::CreateStringValue(config.displayControlBackend));
+        object.Insert(L"ControlChannel", JsonValue::CreateStringValue(config.displayControlBackend));
         object.Insert(L"ControlMyMonitorPath", JsonValue::CreateStringValue(config.controlMyMonitorPath));
+        object.Insert(L"LinkAllDisplays", JsonValue::CreateBooleanValue(config.linkAllDisplays));
         object.Insert(L"StartWithWindows", JsonValue::CreateBooleanValue(config.startWithWindows));
-        object.Insert(L"CoordinationEnabled", JsonValue::CreateBooleanValue(config.coordinationEnabled));
-        object.Insert(L"PeerHost", JsonValue::CreateStringValue(config.peerHost));
-        object.Insert(L"Port", JsonValue::CreateNumberValue(config.port));
-        object.Insert(L"PairingCode", JsonValue::CreateStringValue(config.pairingCode));
 
         JsonArray displayArray;
         for (auto const& display : config.displays)
         {
             JsonObject item;
             item.Insert(L"Id", JsonValue::CreateStringValue(display.id)); item.Insert(L"Name", JsonValue::CreateStringValue(display.name));
-            item.Insert(L"Backend", JsonValue::CreateStringValue(display.backend));
-            item.Insert(L"LocalInput", display.localInput ? JsonValue::CreateNumberValue(*display.localInput) : JsonValue::CreateNullValue());
             item.Insert(L"ReadEnabled", JsonValue::CreateBooleanValue(display.readEnabled));
             item.Insert(L"BrightnessEnabled", JsonValue::CreateBooleanValue(display.brightnessEnabled));
+            item.Insert(L"BrightnessShowInTray", JsonValue::CreateBooleanValue(display.brightnessShowInTray));
             item.Insert(L"ContrastEnabled", JsonValue::CreateBooleanValue(display.contrastEnabled));
+            item.Insert(L"ContrastShowInTray", JsonValue::CreateBooleanValue(display.contrastShowInTray));
             item.Insert(L"VolumeEnabled", JsonValue::CreateBooleanValue(display.volumeEnabled));
+            item.Insert(L"VolumeShowInTray", JsonValue::CreateBooleanValue(display.volumeShowInTray));
             item.Insert(L"NativeMonitorId", JsonValue::CreateStringValue(display.nativeMonitorId));
             item.Insert(L"ControlMonitorPath", JsonValue::CreateStringValue(display.controlMonitorPath));
-            item.Insert(L"MacInput", JsonValue::CreateNumberValue(display.macInput));
             item.Insert(L"Brightness", display.brightnessValue ? JsonValue::CreateNumberValue(*display.brightnessValue) : JsonValue::CreateNullValue());
             item.Insert(L"Contrast", display.contrastValue ? JsonValue::CreateNumberValue(*display.contrastValue) : JsonValue::CreateNullValue());
             item.Insert(L"Volume", display.volumeValue ? JsonValue::CreateNumberValue(*display.volumeValue) : JsonValue::CreateNullValue());
@@ -476,7 +441,7 @@ namespace
                 auto current = RequiredInteger(mapping, L"PeerInput", 0, 65535);
                 mapping.Insert(L"PeerInput", JsonValue::CreateNumberValue(current == 65535 ? 65534 : current + 1));
             }
-            auto readback = ReadCompleteV3Config(verifyObject);
+            auto readback = ReadCompleteV4Config(verifyObject);
             auto normalizedReadback = Serialize(readback);
             if (normalizedReadback.Stringify() != object.Stringify())
                 throw std::runtime_error("settings readback mismatch");
@@ -513,9 +478,8 @@ namespace DisplaySwitcher::Native
         for (auto const& display : displays)
         {
             if (!IsValidDisplayId(display.id) || !VisibleText(display.name, 1, 64) || !ids.insert(Lower(display.id)).second) return false;
-            if (profileId.empty() && (display.macInput < 0 || display.macInput > 65535)) return false;
             std::wstring hardwareId;
-            auto backend = display.backend.empty() ? displayControlBackend : display.backend;
+            auto backend = displayControlBackend == L"auto" ? L"native_ddc" : displayControlBackend;
             if (backend == L"native_ddc") hardwareId = display.nativeMonitorId;
             else if (backend == L"control_my_monitor") hardwareId = display.controlMonitorPath;
             else return false;
@@ -523,9 +487,7 @@ namespace DisplaySwitcher::Native
             hardwareId = backend + L":" + hardwareId;
             if (!hardwareIds.insert(Lower(hardwareId)).second) return false;
         }
-        if (std::any_of(displays.begin(), displays.end(), [&](auto const& display)
-            { return (display.backend.empty() ? displayControlBackend : display.backend) == L"control_my_monitor"; })
-            && controlMyMonitorPath.empty()) return false;
+        if (displayControlBackend == L"control_my_monitor" && controlMyMonitorPath.empty()) return false;
         return profileId.empty() || IsProfileDisplayMappingComplete(profileId);
     }
 
@@ -554,7 +516,9 @@ namespace DisplaySwitcher::Native
     {
         std::vector<CollaborationProfile> result;
         for (auto const& profile : collaborationProfiles)
-            if (profile.coordinationEnabled && InspectProfile(profile.id).complete) result.push_back(profile);
+            if (profile.coordinationEnabled && InspectProfile(profile.id).complete &&
+                profile.peerProtocolVersion == 2 && IsValidDisplayId(profile.peerEndpointId) &&
+                !EqualInsensitive(profile.peerEndpointId, localEndpointId)) result.push_back(profile);
         return result;
     }
 
@@ -600,7 +564,7 @@ namespace DisplaySwitcher::Native
             else if (!profile->peerEndpointId.empty() && !EqualInsensitive(profile->peerEndpointId, observedEndpointId))
                 result.endpointConfirmationRequired = true;
         }
-        if (observedProtocolVersion && *observedProtocolVersion != 1 && *observedProtocolVersion != 2)
+        if (observedProtocolVersion && *observedProtocolVersion != 2)
             result.problems.push_back(L"检测到未知协议版本");
         result.complete = result.problems.empty() && !result.endpointConfirmationRequired;
         return result;
@@ -658,65 +622,18 @@ namespace DisplaySwitcher::Native
             stream.close();
             auto object = JsonObject::Parse(to_hstring(text));
             auto schema = SchemaVersion(object);
-            if (schema > CurrentConfigVersion) throw std::runtime_error("unsupported settings schema");
-
-            AppConfig config;
-            config.localEndpointId = schema == CurrentConfigVersion ? RequiredString(object, L"LocalEndpointId") : GenerateIdentifier();
-            config.localDeviceName = schema == CurrentConfigVersion ? RequiredString(object, L"LocalDeviceName") : L"本机";
-            config.listenPort = schema == CurrentConfigVersion ? RequiredInteger(object, L"ListenPort", 1, 65535)
-                : OptionalInteger(object, L"Port", 49731, 1, 65535);
-            config.usbAutomationEnabled = OptionalBoolean(object, L"UsbAutomationEnabled", false);
-            config.usbVendorId = OptionalInteger(object, L"UsbVendorId", -1, -1, 65535);
-            config.usbProductId = OptionalInteger(object, L"UsbProductId", -1, -1, 65535);
-            config.usbName = OptionalString(object, L"UsbName");
-            config.displayControlBackend = OptionalString(object, L"DisplayControlBackend");
-            config.controlMyMonitorPath = OptionalString(object, L"ControlMyMonitorPath");
-            config.startWithWindows = OptionalBoolean(object, L"StartWithWindows", false);
-
-            if (schema == CurrentConfigVersion)
-            {
-                for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV3Display(value.GetObject()));
-                for (auto& display : config.displays) if (display.backend.empty()) display.backend = config.displayControlBackend;
-                for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject()));
-            }
-            else
-            {
-                if (object.HasKey(L"Displays"))
-                    for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV2Display(value.GetObject()));
-                else
-                {
-                    if (HasLegacyDisplay(object, L"RedmiMonitorPath", L"RedmiNativeMonitorId", L"RedmiMacInput"))
-                        config.displays.push_back(ReadLegacyDisplay(object, L"显示器 1", L"RedmiMonitorPath", L"RedmiNativeMonitorId", L"RedmiMacInput"));
-                    if (HasLegacyDisplay(object, L"DellMonitorPath", L"DellNativeMonitorId", L"DellMacInput"))
-                        config.displays.push_back(ReadLegacyDisplay(object, L"显示器 2", L"DellMonitorPath", L"DellNativeMonitorId", L"DellMacInput"));
-                }
-                for (auto& display : config.displays) display.backend = config.displayControlBackend;
-                CollaborationProfile profile;
-                profile.id = GenerateIdentifier(); profile.name = L"Mac";
-                profile.peerHost = OptionalString(object, L"PeerHost");
-                profile.peerPort = OptionalInteger(object, L"Port", 49731, 1, 65535);
-                profile.pairingCode = NormalizeNfcValue(OptionalString(object, L"PairingCode"));
-                profile.coordinationEnabled = OptionalBoolean(object, L"CoordinationEnabled", false);
-                for (auto const& display : config.displays) if (display.macInput >= 0) profile.displayInputs.push_back({ display.id, display.macInput });
-                if (config.usbVendorId >= 0 && config.usbProductId >= 0)
-                {
-                    wchar_t reference[32]{};
-                    swprintf_s(reference, L"usb:%04X:%04X", config.usbVendorId, config.usbProductId);
-                    profile.triggerDevices.push_back({ L"usb", reference, config.usbName.empty() ? L"USB 触发设备" : config.usbName });
-                }
-                if (config.displays.empty() && profile.peerHost.empty() && profile.pairingCode.empty()) profile.name = L"配置 1";
-                config.collaborationProfiles.push_back(std::move(profile));
-            }
-
-            ValidateConfig(config);
-            LegacyBridge(config);
-            if (schema < CurrentConfigVersion)
+            if (schema != CurrentConfigVersion)
             {
                 auto backup = BackupPath(path);
-                if (!std::filesystem::exists(backup) && !CopyFileW(path.c_str(), backup.c_str(), TRUE))
+                for (unsigned suffix = 1; std::filesystem::exists(backup); ++suffix)
+                    backup = std::filesystem::path(BackupPath(path).wstring() + L"." + std::to_wstring(suffix));
+                if (!CopyFileW(path.c_str(), backup.c_str(), TRUE))
                     throw hresult_error(HRESULT_FROM_WIN32(GetLastError()));
-                WriteAtomic(config, path, false);
+                WriteAtomic(defaults, path, true);
+                return defaults;
             }
+
+            auto config = ReadCompleteV4Config(object);
             if (markerPresent) EnterSafeMode(config);
             return config;
         }

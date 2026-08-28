@@ -50,6 +50,63 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
+    std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config)
+    {
+        std::vector<DdcTrayControl> result;
+        auto append = [&](DisplayConfig const& display, DdcVcpCode code, wchar_t const* label,
+            bool enabled, bool show, std::optional<int> value, std::optional<int> maximum)
+        {
+            if (!enabled || !show) return;
+            result.push_back({ display.id, display.name, code, label, value.value_or(0),
+                DdcControlService::EffectiveMaximum(value.value_or(0), maximum.value_or(100)), value.has_value() });
+        };
+        for (auto const& display : config.displays)
+        {
+            append(display, DdcVcpCode::Brightness, L"亮度", display.brightnessEnabled,
+                display.brightnessShowInTray, display.brightnessValue, display.brightnessMax);
+            append(display, DdcVcpCode::Contrast, L"对比度", display.contrastEnabled,
+                display.contrastShowInTray, display.contrastValue, display.contrastMax);
+            append(display, DdcVcpCode::Volume, L"音量", display.volumeEnabled,
+                display.volumeShowInTray, display.volumeValue, display.volumeMax);
+        }
+        return result;
+    }
+
+    bool DdcWriteQueue::Submit(DdcWriteRequest request)
+    {
+        std::scoped_lock lock(mutex_);
+        pending_[{ request.displayId, request.code }] = std::move(request);
+        if (workerActive_) return false;
+        workerActive_ = true;
+        return true;
+    }
+
+    std::optional<DdcWriteRequest> DdcWriteQueue::TakeNext()
+    {
+        std::scoped_lock lock(mutex_);
+        if (pending_.empty())
+        {
+            workerActive_ = false;
+            return std::nullopt;
+        }
+        auto item = pending_.begin();
+        auto request = std::move(item->second);
+        pending_.erase(item);
+        return request;
+    }
+
+    void DdcWriteQueue::CancelPending()
+    {
+        std::scoped_lock lock(mutex_);
+        pending_.clear();
+    }
+
+    size_t DdcWriteQueue::PendingCount() const
+    {
+        std::scoped_lock lock(mutex_);
+        return pending_.size();
+    }
+
     bool DdcCapabilities::CanRead(DdcVcpCode code) const noexcept
     {
         return status.availability == DdcAvailability::Available && (!known || Contains(readable, code));
@@ -96,7 +153,8 @@ namespace DisplaySwitcher::Native
 
     std::wstring DdcControlService::BackendKey(AppConfig const& config, DisplayConfig const& display)
     {
-        return display.backend.empty() ? config.displayControlBackend : display.backend;
+        static_cast<void>(display);
+        return config.displayControlBackend == L"auto" ? L"native_ddc" : config.displayControlBackend;
     }
 
     bool DdcControlService::Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const
@@ -126,6 +184,7 @@ namespace DisplaySwitcher::Native
             if (!requested(display) || !display.readEnabled) continue;
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
             auto backend = Backend(config, display);
+            auto backendKey = BackendKey(config, display);
             DdcBackendStatus status;
             if (!backend)
             {
@@ -135,6 +194,13 @@ namespace DisplaySwitcher::Native
                 continue;
             }
             status = backend->Status();
+            if (config.displayControlBackend == L"auto" && status.availability != DdcAvailability::Available &&
+                !config.controlMyMonitorPath.empty() && !display.controlMonitorPath.empty())
+            {
+                if (auto fallback = lookup_ ? lookup_(L"control_my_monitor") : nullptr;
+                    fallback && fallback->Status().availability == DdcAvailability::Available)
+                { backend = fallback; backendKey = L"control_my_monitor"; status = backend->Status(); }
+            }
             if (status.availability != DdcAvailability::Available)
             {
                 for (auto code : ControlCodes()) if (FeatureEnabled(display, code))
@@ -143,7 +209,8 @@ namespace DisplaySwitcher::Native
                         status.message));
                 continue;
             }
-            auto capabilities = backend->Capabilities(display.BackendMonitorId(BackendKey(config, display)), cancellation);
+            auto monitorId = display.BackendMonitorId(backendKey);
+            auto capabilities = backend->Capabilities(monitorId, cancellation);
             std::vector<DdcControlItemResult> displayResults;
             for (auto code : ControlCodes())
             {
@@ -155,7 +222,7 @@ namespace DisplaySwitcher::Native
                         capabilities.status.message.empty() ? L"显示器未报告该硬件 DDC 功能" : capabilities.status.message));
                     continue;
                 }
-                auto value = backend->Read(display.BackendMonitorId(BackendKey(config, display)), code, cancellation);
+                auto value = backend->Read(monitorId, code, cancellation);
                 DdcControlItemResult item{ display.id, code, value.success, false, value.success, false,
                     value.success ? std::optional<int>{ value.current } : std::nullopt,
                     value.success ? std::optional<int>{ EffectiveMaximum(value.current, value.maximum) } : std::nullopt,
@@ -211,7 +278,7 @@ namespace DisplaySwitcher::Native
         if (value < 0 || value > 65535)
         {
             batch.items.push_back({ displayId, code, false, false, false, false, {}, {}, DdcAvailability::Available,
-                DdcErrorKind::InvalidValue, L"VCP 值超出有效范围" });
+                DdcErrorKind::InvalidValue, L"调节值超出有效范围" });
             return batch;
         }
         auto source = FindDisplayById(config.displays, displayId);
@@ -229,6 +296,7 @@ namespace DisplaySwitcher::Native
             auto& display = config.displays[index];
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
             auto backend = Backend(config, display);
+            auto backendKey = BackendKey(config, display);
             if (!backend)
             {
                 batch.items.push_back(Failure(display, code, { DdcAvailability::Unsupported, L"未选择可用的硬件 DDC 后端" },
@@ -236,12 +304,19 @@ namespace DisplaySwitcher::Native
                 continue;
             }
             auto status = backend->Status();
+            if (config.displayControlBackend == L"auto" && status.availability != DdcAvailability::Available &&
+                !config.controlMyMonitorPath.empty() && !display.controlMonitorPath.empty())
+            {
+                if (auto fallback = lookup_ ? lookup_(L"control_my_monitor") : nullptr;
+                    fallback && fallback->Status().availability == DdcAvailability::Available)
+                { backend = fallback; backendKey = L"control_my_monitor"; status = backend->Status(); }
+            }
             if (status.availability != DdcAvailability::Available)
             {
                 batch.items.push_back(Failure(display, code, status, DdcErrorKind::BackendUnavailable, status.message));
                 continue;
             }
-            auto monitorId = display.BackendMonitorId(BackendKey(config, display));
+            auto monitorId = display.BackendMonitorId(backendKey);
             auto capabilities = backend->Capabilities(monitorId, cancellation);
             if (!capabilities.CanWrite(code))
             {
@@ -250,6 +325,14 @@ namespace DisplaySwitcher::Native
                 continue;
             }
             auto result = backend->Write(monitorId, code, value, cancellation);
+            if (!result.success && backendKey == L"native_ddc" && Allowed(config, cancellation)
+                && (result.error == DdcErrorKind::WriteFailed || result.error == DdcErrorKind::MonitorUnavailable))
+            {
+                // The native backend discovers a fresh physical-monitor handle on
+                // every call. Retry exactly once after a stale handle/write failure.
+                if (auto refreshed = lookup_ ? lookup_(L"native_ddc") : nullptr)
+                    result = refreshed->Write(monitorId, code, value, cancellation);
+            }
             DdcControlItemResult item{ display.id, code, result.success, false, result.success, false,
                 result.success ? std::optional<int>{ value } : std::nullopt,
                 result.success ? std::optional<int>{ EffectiveMaximum(value, CachedMaximum(display, code).value_or(100)) } : std::nullopt,

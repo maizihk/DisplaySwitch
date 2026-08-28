@@ -134,6 +134,42 @@ namespace DisplaySwitcher::Native
         std::vector<DdcControlItemResult> items;
     };
 
+    struct DdcTrayControl
+    {
+        std::wstring displayId;
+        std::wstring displayName;
+        DdcVcpCode code{ DdcVcpCode::Brightness };
+        std::wstring label;
+        int value{};
+        int maximum{ 100 };
+        bool hasValue{};
+    };
+
+    std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config);
+
+    struct DdcWriteRequest
+    {
+        std::wstring displayId;
+        DdcVcpCode code{ DdcVcpCode::Brightness };
+        int value{};
+        uint64_t generation{};
+    };
+
+    class DdcWriteQueue final
+    {
+    public:
+        bool Submit(DdcWriteRequest request);
+        std::optional<DdcWriteRequest> TakeNext();
+        void CancelPending();
+        size_t PendingCount() const;
+
+    private:
+        using Key = std::pair<std::wstring, DdcVcpCode>;
+        mutable std::mutex mutex_;
+        std::map<Key, DdcWriteRequest> pending_;
+        bool workerActive_{};
+    };
+
     class DdcControlService final
     {
     public:
