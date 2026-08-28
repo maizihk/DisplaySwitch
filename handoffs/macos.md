@@ -8,7 +8,7 @@
 - 基线确认：开始前已 fetch；基线包含 PR #41 (`4da002d`) 和 PR #42 (`aad145d`)
 - 分支：`codex/macos-ds-008-fixed-source-port`
 - 实现提交：`bc37d2e214eff1cd514d82878c78e48b8d939966`
-- PR：待创建，base 为 `codex/coord-ds-008-usb-local-switch`
+- PR：[#43 DS-008 macOS: bind UDP sends to listen port](https://github.com/maizihk/DisplaySwitch/pull/43)，base 为 `codex/coord-ds-008-usb-local-switch`
 
 ## 根因
 
