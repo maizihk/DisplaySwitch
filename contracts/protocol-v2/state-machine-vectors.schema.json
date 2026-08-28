@@ -9,8 +9,8 @@
     "protocolVersion": { "type": "integer", "const": 2 },
     "vectors": {
       "type": "array",
-      "minItems": 20,
-      "maxItems": 20,
+      "minItems": 18,
+      "maxItems": 18,
       "items": { "$ref": "#/$defs/vector" }
     }
   },
@@ -27,7 +27,7 @@
       "required": ["endpointID", "capability", "reachable"],
       "properties": {
         "endpointID": { "$ref": "#/$defs/uuid" },
-        "capability": { "type": "string", "enum": ["v1", "v2"] },
+        "capability": { "type": "string", "const": "v2" },
         "reachable": { "type": "boolean" }
       },
       "additionalProperties": false
@@ -59,7 +59,7 @@
           "enum": [
             "statusProbe", "manualSelect", "sourceInputPresenceChanged", "targetInputPresenceChanged",
             "peerInputPresent", "receiveHandoverRequest", "receiveTargetReady", "receiveCommitted",
-            "wakeCompleted", "switchCompleted", "configurationChanged", "receiveV1Message", "advanceTime"
+            "wakeCompleted", "switchCompleted", "configurationChanged", "advanceTime"
           ]
         },
         "endpointID": { "$ref": "#/$defs/uuid" },
@@ -69,8 +69,7 @@
         "intent": { "type": "string", "enum": ["manual", "input_handover"] },
         "success": { "type": "boolean" },
         "wakeSucceeded": { "type": "boolean" },
-        "switchSucceeded": { "type": "boolean" },
-        "version": { "type": "integer" }
+        "switchSucceeded": { "type": "boolean" }
       },
       "additionalProperties": false
     },
@@ -92,7 +91,7 @@
           "type": "string",
           "enum": [
             "sendMessage", "requestWake", "requestSwitch", "lockTarget", "startDiscovery",
-            "promptManualSelection", "ignoreMessage", "clearEvent", "routeToV1", "setPeerReachable"
+            "promptManualSelection", "ignoreMessage", "clearEvent", "setPeerReachable"
           ]
         },
         "type": {
@@ -105,7 +104,7 @@
           "type": "string",
           "enum": [
             "late_target", "duplicate", "authentication_failed", "endpoint_changed", "no_pending_event",
-            "v1_not_eligible", "source_input_returned", "configuration_changed", "discovery_timeout"
+            "source_input_returned", "configuration_changed", "discovery_timeout"
           ]
         },
         "value": { "type": "boolean" },

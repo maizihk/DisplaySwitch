@@ -266,9 +266,14 @@ def main() -> None:
             raise AssertionError(f"{vector['id']}: only status_probe may reply during validation")
 
     state_ids = [vector["id"] for vector in state_vectors["vectors"]]
-    expected_ids = [f"P-{index:03d}" for index in range(1, 21)]
+    expected_ids = [f"P-{index:03d}" for index in range(1, 14)] + [
+        f"P-{index:03d}" for index in range(16, 21)
+    ]
     if state_ids != expected_ids:
-        raise AssertionError(f"state vector IDs must be exactly P-001 through P-020: {state_ids}")
+        raise AssertionError(
+            "state vector IDs must be P-001 through P-013 and P-016 through P-020: "
+            f"{state_ids}"
+        )
     for vector in state_vectors["vectors"]:
         assert_sorted(vector["steps"], f"{vector['id']} steps")
         assert_sorted(vector["expectedActions"], f"{vector['id']} expectedActions")
@@ -315,7 +320,7 @@ def main() -> None:
     ]
     if p19_sends != [0, 150, 300, 450] or p19_switches != [600]:
         raise AssertionError("P-019 must preserve four retries and the 600 ms manual fallback")
-    for vector_id in ("P-001", "P-006", "P-008", "P-010", "P-013", "P-014", "P-015", "P-016", "P-020"):
+    for vector_id in ("P-001", "P-006", "P-008", "P-010", "P-013", "P-016", "P-020"):
         if any(by_id[vector_id]["expectedHardwareCalls"].values()):
             raise AssertionError(f"{vector_id} must have zero hardware effects")
 
