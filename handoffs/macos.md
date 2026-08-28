@@ -6,7 +6,7 @@
 - 功能：DS-007 / macOS 设置界面、DDC 可靠性与 v2-only 收敛
 - 分支：`codex/macos-ds-007-settings-ui`
 - PR 基线：`codex/coord-ds-007-v2-only@da90d0c598ef683c53b243b804526e09ab0cce4f`
-- 实现提交：待创建；以本交接记录所在 PR 的最新提交为准
+- 实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
 - PR：待创建，base 必须为 `codex/coord-ds-007-v2-only`
 - GitHub Actions：待推送后记录
 
