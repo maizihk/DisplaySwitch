@@ -3,63 +3,55 @@
 ## 当前任务
 
 - 日期：2026-08-29
-- 功能：DS-007 / macOS 设置界面、DDC 可靠性与 v2-only 收敛
-- 分支：`codex/macos-ds-007-settings-ui`
-- PR 基线：`codex/coord-ds-007-v2-only@06dc0ff9488afbe6edd7b03e5bf9fe1993110c08`
-- 主实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
-- 18 条 v2-only 向量收尾提交：`8bafa57db6ef1835f00dd0c2652a778bdc2e4e9a`
-- 本地完整验证 HEAD：`50424156013f523b31132971e72daa403952dac8`
-- 已验证 PR HEAD：`54455afef0435baf9af81397fc5459dc61e62426`
-- PR：[#36 DS-007 macOS: unify settings, DDC writes, and v2-only runtime](https://github.com/maizihk/DisplaySwitch/pull/36)，base 为 `codex/coord-ds-007-v2-only`
-- GitHub Actions：macOS run [33188061911](https://github.com/maizihk/DisplaySwitch/actions/runs/33188061911) 在上述 PR HEAD 通过
+- 功能：DS-008 / macOS 本机 USB 双向切换
+- 共享基线：`codex/coord-ds-008-usb-local-switch@35c2d156d2c2259fd604f3e305d0b09e234aec2b`
+- 分支：`codex/macos-ds-008-usb-local-switch`
+- 实现提交：`559d285aa194e5e7a0cf0ccd9bff90bd8abbafea`
+- PR：[#41 DS-008 macOS: independent local USB switching](https://github.com/maizihk/DisplaySwitch/pull/41)，base 为 `codex/coord-ds-008-usb-local-switch`
+- GitHub Actions：按任务约束不要求中间云端 CI；以下记录为当前实现提交的本地完整验证。
 
 ## 完成内容
 
-- 网络入口收敛为 v2-only：删除 v1 解析器、状态机、发送、心跳、探测回退及固定平台角色路径；只有整数 `version = 2` 才进入正式解析器。
-- v1、缺失版本、浮点/字符串版本和未知版本均零回复、零在线刷新、零 USB、零唤醒和零 DDC。
-- 本机配置升级到 `schemaVersion = 4`；v3 及更早配置先保留原值和本机备份，再生成协同、USB 自动化与全部 DDC 开关关闭的 v4 默认配置。
-- v4 写入使用 staging、回读校验和最后有效值恢复；编码、写入或回读失败持久进入四类副作用全部关闭的安全状态。
-- 设置页保持 Swift/AppKit，标签统一为“常规、USB 切换、协同、显示器、关于”；移除全局保存/取消，开关、选择器、配置增删排序和 endpoint 确认即时原子保存，文本字段在提交时保存。
-- 保存或校验失败恢复最后有效值，并在窗口内显示文字错误；普通设置页不展示 VCP 编号、endpointID、schemaVersion、后端类名或原始显示器标识。
-- 协同检测和在线状态按配置独立维护，覆盖未启用、配置不完整、尚未检测、正在检测、无响应、v2 可用、已连接及 6 秒后连接断开。
-- 手动配置入口只走已确认的 v2 路由；未确认时不再绕过协议直接写输入源。
-- 显示器页仅保留控制通道、联动开关、检测/刷新入口，以及每台显示器的亮度、对比度、音量功能/托盘开关、滑杆和值。
-- 新显示器六个 DDC 开关默认关闭；菜单栏控制只为 `enabled = true && showInTray = true` 的项目生成。
-- 连续 DDC 写入按“稳定显示器 ID + 控制项” latest-wins 合并，同一显示器通道串行且不阻塞主线程；原生句柄失败后失效、重发现并只重试一次，再按控制通道决定是否回退。
-- 配置变化、显示器重检、取消和安全闸门关闭会清空待写值；迟到结果不能更新缓存或 UI，自动读取不会覆盖写入中的项目。
-- 标题使用非透明 AppKit 原生标题栏并随标签同步；内容、滚动区和关于页使用动态系统语义背景色。
-- 关于页继续只读取公开 Bundle/静态信息，展示产品、版本/构建、平台/架构、协议 v2、GitHub、许可证和测试构建提示。
+- USB 监听仅使用独立 `usbSwitch` 配置中用户明确学习的单个本机设备，不再从 endpoint 路由或协同 profile 收集触发设备。
+- 首次 USB 状态只建立基线；接入→离开立即按稳定显示器 ID 异步提交 DDC 输入源切换，不等待网络、心跳、回复、防抖或超时。
+- 离开→接入只请求本机显示器唤醒，不执行 DDC。重复状态通知不重复执行。
+- 联动协同默认关闭；关闭时 USB 路径不读取协同路由并且零网络调用。开启时只向明确选中、完整、已确认 endpoint 的 v2 配置发送一次认证 `wake_display`；发送失败只报告，不阻断、推迟或回滚 DDC。
+- 接收合法 `wake_display` 时只请求本机显示器唤醒，不回复、不执行 DDC、不改变手动交接状态。网络唤醒和 USB 接入共用 2 秒合并器。
+- 配置升级到 `schemaVersion = 5`；v4 先在本机备份，再使用 staging、回读校验和原子替换迁移。保留非 USB 设置和协同配置，不猜测旧 profile 中的 USB 设备或输入映射，新 USB 功能和联动均默认关闭。
+- 迁移或写入失败保留旧值并持久进入 USB、DDC、唤醒和网络全部关闭的安全状态。
+- AppKit USB 设置页改为单设备学习、每显示器目标输入源、USB 开关、联动开关和联动目标配置；普通 UI 只显示中性设备名称，不显示 VID/PID、序列号、路径或本机引用。
+- 已删除 `input_present`、`input_handover`、USB 网络防抖/发现及输入返回取消的 macOS 死代码，保留 v2 手动协同、HMAC、endpoint 路由、重放保护、重发和超时语义。
 
 ## 本地自动验证
 
-- 本机选定的 Xcode 27 Beta 6：
-  - Debug：通过。
-  - Release：通过。
-  - 完整 XCTest：47 项通过，0 失败，0 跳过。
-- 公共 v2 消息：20 条全部通过；NFC 规范化 1 条、认证 4 条全部通过。
-- 当前 v2-only 状态机：直接执行合同中的 18 条公共向量，全部通过；不再过滤历史 v1 向量。
-- DDC 自动测试覆盖 100 次快速滑杆合并、两项交错串行、取消/迟到结果、句柄恢复单次重试、回退选择、失败后下次恢复和缓存保护。
-- `./macOS/scripts/build-app.sh`：成功，生成忽略的 App 和当前架构 ZIP。
-- `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过；文件同步扩展属性出现时清理忽略产物后复验通过。
-- `contracts/protocol-v2/validate.py`：4 个 schema、1 条规范化、4 条认证、20 条消息和 18 条状态机数据合同校验通过。
+- 本机选定的 Xcode 27 Beta 6：Debug 构建通过，Release 构建通过。
+- 完整 XCTest：49 项通过，0 失败，0 跳过。
+- `contracts/usb-switch-v1/validate.py`：USB-001～USB-016 全部通过，配置 schemaVersion 5。
+- `contracts/protocol-v2/validate.py`：4 个 schema、1 条 NFC、4 条认证、20 条消息和 6 条状态机向量通过。
+- USB 纯测试覆盖全部 16 条公共向量、单设备精确匹配和 UI 设备名称脱敏。
+- v4→v5 测试覆盖保留非 USB 数据、新 USB 默认关闭、不猜测旧绑定，以及写入失败保留原数据并阻断四类副作用。
+- `./macOS/scripts/build-app.sh`：通过，生成 Git 忽略的 App 和当前架构 ZIP。
+- `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：清理忽略产物的 Finder/File Provider 扩展属性后通过。
 - `git diff --check`：通过。
-- GitHub Actions run 33188061911：Debug、XCTest、Release 打包、产物检查、严格签名验证和 artifact 上传全部通过。
-- 未启动 App；自动测试使用模拟网络、时间、DDC、USB、唤醒和输入源接口。
+- 未启动 App；自动测试全部使用模拟 USB、网络、时钟、DDC 和唤醒接口。
 
 ## 尚未执行
 
-- 五个设置页的真实 GUI、浅色/深色外观、窄窗口、标题视觉居中、键盘焦点和辅助功能检查。
-- 真实 macOS/Windows v2 UDP 探测、认证、在线过期、手动和自动交接。
-- 真实 DDC 读取/连续拖动、原生句柄恢复、m1ddc 回退和多显示器失败隔离。
-- 真实 USB/蓝牙 presence、显示器唤醒和输入源切换。
+- USB 设置页的真实 GUI、学习、单设备匹配、取消和 30 秒超时交互。
+- 真实 USB 插拔与双向状态转换。
+- 真实 DDC 输入源切换、单台失败隔离和后端恢复。
+- 真实本机显示器唤醒和 2 秒唤醒合并。
+- 真实 macOS/Windows 认证 `wake_display` 发送、失败降级和重放拒绝。
 
 ## 安全与边界
 
-- 平台收尾只修改 `macOS/` 和 `handoffs/macos.md`；共享文件变化仅来自普通合并指定协调基线 `06dc0ff`。
-- 未手工修改 Windows、`PROTOCOL.md`、`AGENTS.md`、根 README、coordination、specs、contracts、GitHub Actions、版本、tag 或 Release。
+- 实现只修改 `macOS/`；本交接提交只另外修改 `handoffs/macos.md`。
+- 未修改 Windows、`PROTOCOL.md`、`AGENTS.md`、根 README、coordination、specs、contracts、GitHub Actions、版本、tag 或 Release。
+- 未执行真实 USB、DDC、显示器唤醒、输入源切换或局域网交互。
 - 未记录真实 IP、配对码、USB/显示器标识、本机绝对路径或个人硬件信息。
 - `macOS/.build/` 和 `macOS/outputs/` 保持 Git 忽略。
 
 ## 回滚
 
-- 回退本 PR 可恢复协调基线代码；v4 首次读取旧配置时生成的本机备份仍保留，回滚后需由用户明确选择是否人工恢复旧配置。
+- 回退 PR #41 可恢复 DS-008 共享基线的 macOS 实现。
+- 本机 v4 备份不得删除；回滚后 USB 自动切换应保持关闭，避免旧网络 USB 语义重新触发硬件。
