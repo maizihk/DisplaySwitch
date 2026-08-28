@@ -8,7 +8,7 @@
 - PR base：`codex/coord-ds-008-usb-local-switch`
 - 共享基线：`35c2d156d2c2259fd604f3e305d0b09e234aec2b`
 - 实现提交：`43683d6973e2088ba3e4832a622102cffd081633`
-- PR：待创建，禁止自动合并
+- PR：[#42](https://github.com/maizihk/DisplaySwitch/pull/42)，目标为协调分支，保持开放且禁止自动合并
 
 ## 完成内容
 
