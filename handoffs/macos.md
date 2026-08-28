@@ -9,8 +9,9 @@
 - 主实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
 - 18 条 v2-only 向量收尾提交：`8bafa57db6ef1835f00dd0c2652a778bdc2e4e9a`
 - 本地完整验证 HEAD：`50424156013f523b31132971e72daa403952dac8`
+- 已验证 PR HEAD：`54455afef0435baf9af81397fc5459dc61e62426`
 - PR：[#36 DS-007 macOS: unify settings, DDC writes, and v2-only runtime](https://github.com/maizihk/DisplaySwitch/pull/36)，base 为 `codex/coord-ds-007-v2-only`
-- GitHub Actions：等待本次 push 后的 PR #36 最新 macOS run
+- GitHub Actions：macOS run [33188061911](https://github.com/maizihk/DisplaySwitch/actions/runs/33188061911) 在上述 PR HEAD 通过
 
 ## 完成内容
 
@@ -42,7 +43,7 @@
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过；文件同步扩展属性出现时清理忽略产物后复验通过。
 - `contracts/protocol-v2/validate.py`：4 个 schema、1 条规范化、4 条认证、20 条消息和 18 条状态机数据合同校验通过。
 - `git diff --check`：通过。
-- 最新 GitHub Actions：等待本次 push 后验证。
+- GitHub Actions run 33188061911：Debug、XCTest、Release 打包、产物检查、严格签名验证和 artifact 上传全部通过。
 - 未启动 App；自动测试使用模拟网络、时间、DDC、USB、唤醒和输入源接口。
 
 ## 尚未执行
