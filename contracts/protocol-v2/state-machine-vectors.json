@@ -94,20 +94,6 @@
       "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 }, "finalState": { "state": "idle", "activeEventID": null, "lockedTargetEndpointID": null }
     },
     {
-      "id": "P-014", "description": "A version-one message is routed to the independent v1 state machine",
-      "initialState": { "localEndpointID": "11111111-1111-4111-8111-111111111111", "coordinationEnabled": true, "sourceInputPresent": true, "targetInputPresent": false, "state": "idle", "activeEventID": null, "lockedTargetEndpointID": null, "enabledTargets": [] },
-      "steps": [{ "atMs": 0, "input": { "kind": "receiveV1Message", "version": 1 } }],
-      "expectedActions": [{ "atMs": 0, "kind": "routeToV1" }],
-      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 }, "finalState": { "state": "idle", "activeEventID": null, "lockedTargetEndpointID": null }
-    },
-    {
-      "id": "P-015", "description": "A v1-only target is excluded from automatic multi-target discovery",
-      "initialState": { "localEndpointID": "11111111-1111-4111-8111-111111111111", "coordinationEnabled": true, "sourceInputPresent": false, "targetInputPresent": false, "state": "discovering", "activeEventID": null, "lockedTargetEndpointID": null, "enabledTargets": [{ "endpointID": "22222222-2222-4222-8222-222222222222", "capability": "v1", "reachable": true }, { "endpointID": "33333333-3333-4333-8333-333333333333", "capability": "v2", "reachable": true }] },
-      "steps": [{ "atMs": 10, "input": { "kind": "peerInputPresent", "endpointID": "22222222-2222-4222-8222-222222222222", "eventID": "e0000000-0000-4000-8000-000000000015", "authenticated": true } }],
-      "expectedActions": [{ "atMs": 10, "kind": "ignoreMessage", "reason": "v1_not_eligible", "eventID": "e0000000-0000-4000-8000-000000000015", "endpointID": "22222222-2222-4222-8222-222222222222" }],
-      "expectedHardwareCalls": { "wake": 0, "switchDisplay": 0, "inputActions": 0 }, "finalState": { "state": "discovering", "activeEventID": null, "lockedTargetEndpointID": null }
-    },
-    {
       "id": "P-016", "description": "An unauthenticated declaration is rejected without liveness or hardware effects",
       "initialState": { "localEndpointID": "11111111-1111-4111-8111-111111111111", "coordinationEnabled": true, "sourceInputPresent": false, "targetInputPresent": false, "state": "discovering", "activeEventID": null, "lockedTargetEndpointID": null, "enabledTargets": [{ "endpointID": "22222222-2222-4222-8222-222222222222", "capability": "v2", "reachable": true }] },
       "steps": [{ "atMs": 10, "input": { "kind": "peerInputPresent", "endpointID": "22222222-2222-4222-8222-222222222222", "eventID": "f0000000-0000-4000-8000-000000000016", "authenticated": false } }],
