@@ -104,17 +104,31 @@ struct CollaborationProfile: Codable, Equatable {
     var triggerDevices: [CollaborationTriggerDevice]
 }
 
-struct DisplayConfigurationStoreV4Document: Codable, Equatable {
+struct USBDisplayInputMapping: Codable, Equatable {
+    let displayID: String
+    var targetInput: Int
+}
+
+struct USBSwitchConfiguration: Codable, Equatable {
+    var enabled: Bool = false
+    var triggerDevice: CollaborationTriggerDevice?
+    var collaborationWakeEnabled: Bool = false
+    var collaborationProfileID: String?
+    var displayInputs: [USBDisplayInputMapping] = []
+
+    static let disabled = USBSwitchConfiguration()
+}
+
+struct DisplayConfigurationStoreV5Document: Codable, Equatable {
     let schemaVersion: Int
     let localEndpointID: String
     var localDeviceName: String
     var listenPort: Int
     var controlChannel: DDCControlChannel
     var linkAllDisplays: Bool
-    var usbAutomationEnabled: Bool = false
-    var usbSwitchDisplaysOnArrival: Bool = false
     var displays: [DisplayConfigurationV4Display]
     var collaborationProfiles: [CollaborationProfile]
+    var usbSwitch: USBSwitchConfiguration = .disabled
 }
 
 enum DisplayConfigurationStoreError: Error, Equatable, LocalizedError {
@@ -145,7 +159,7 @@ enum DisplayConfigurationSafetyState: Equatable {
 struct DisplayConfigurationLoadResult: Equatable {
     let configurations: [DisplayConfiguration]
     let collaborationProfiles: [CollaborationProfile]
-    let document: DisplayConfigurationStoreV4Document
+    let document: DisplayConfigurationStoreV5Document
     let safetyState: DisplayConfigurationSafetyState
 }
 
@@ -202,65 +216,6 @@ struct LocalProfileInspection: Equatable {
     var isComplete: Bool { issues.isEmpty && ddcUnavailableDisplayIDs.isEmpty }
 }
 
-struct USBProfileLearningSession {
-    enum CandidateResult: Equatable {
-        case ignored
-        case timedOut
-        case awaitingSelection(count: Int)
-    }
-
-    static let timeoutSeconds: TimeInterval = 30
-    private(set) var pendingProfileID: String?
-    private(set) var candidates: [CollaborationTriggerDevice] = []
-
-    var blocksAutomaticSideEffects: Bool { pendingProfileID != nil }
-
-    mutating func begin(profileID: String) {
-        pendingProfileID = profileID
-        candidates = []
-    }
-
-    mutating func cancel() {
-        pendingProfileID = nil
-        candidates = []
-    }
-
-    mutating func receiveCandidates(
-        _ received: [CollaborationTriggerDevice],
-        availableProfileIDs: Set<String>
-    ) -> CandidateResult {
-        guard let profileID = pendingProfileID else { return .ignored }
-        guard availableProfileIDs.contains(profileID) else {
-            cancel()
-            return .ignored
-        }
-        guard !received.isEmpty else {
-            cancel()
-            return .timedOut
-        }
-        candidates = received
-        return .awaitingSelection(count: received.count)
-    }
-
-    mutating func applyCandidate(
-        at index: Int,
-        to profiles: [CollaborationProfile]
-    ) -> [CollaborationProfile] {
-        guard candidates.indices.contains(index) else { return profiles }
-        let candidate = candidates[index]
-        return apply(candidate, to: profiles)
-    }
-
-    mutating func apply(_ trigger: CollaborationTriggerDevice,
-                        to profiles: [CollaborationProfile]) -> [CollaborationProfile] {
-        guard let profileID = pendingProfileID else { return profiles }
-        pendingProfileID = nil
-        candidates = []
-        guard profiles.contains(where: { $0.id == profileID }) else { return profiles }
-        return DisplayConfigurationStore.replacingUSBTrigger(trigger, profileID: profileID, in: profiles)
-    }
-}
-
 final class USBLearningSafetyGate {
     private let lock = NSLock()
     private var active = false
@@ -302,16 +257,30 @@ enum PeerIdentityCheck: Equatable {
 }
 
 enum DisplayConfigurationStore {
-    static let storageKey = "Displays.Configuration.v4"
+    static let storageKey = "Displays.Configuration.v5"
+    static let legacyV4StorageKey = "Displays.Configuration.v4"
     static let legacyV3StorageKey = "Displays.Configuration.v3"
-    static let legacyBackupStorageKey = "Displays.Configuration.pre-v4.backup"
+    static let legacyBackupStorageKey = "Displays.Configuration.pre-v5.backup"
     static let legacyDocumentStorageKey = "Displays.Configuration.v2"
     static let legacyArrayStorageKey = "Displays.Configuration.v1"
     static let requiresReviewKey = "Displays.Configuration.RequiresReview"
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
-    typealias DocumentEncoder = (DisplayConfigurationStoreV4Document) throws -> Data
-    typealias DocumentDecoder = (Data) throws -> DisplayConfigurationStoreV4Document
+    typealias DocumentEncoder = (DisplayConfigurationStoreV5Document) throws -> Data
+    typealias DocumentDecoder = (Data) throws -> DisplayConfigurationStoreV5Document
+
+    private struct LegacyV4Document: Codable {
+        let schemaVersion: Int
+        let localEndpointID: String
+        var localDeviceName: String
+        var listenPort: Int
+        var controlChannel: DDCControlChannel
+        var linkAllDisplays: Bool
+        var usbAutomationEnabled: Bool
+        var usbSwitchDisplaysOnArrival: Bool
+        var displays: [DisplayConfigurationV4Display]
+        var collaborationProfiles: [CollaborationProfile]
+    }
 
     private static let defaultPort = 49731
     private static let profileNameLimit = 32
@@ -324,7 +293,7 @@ enum DisplayConfigurationStore {
     }
 
     static func load(storage: DisplayConfigurationStorage,
-                     decodeDocument: DocumentDecoder = { try JSONDecoder().decode(DisplayConfigurationStoreV4Document.self, from: $0) },
+                     decodeDocument: DocumentDecoder = { try JSONDecoder().decode(DisplayConfigurationStoreV5Document.self, from: $0) },
                      encodeDocument: DocumentEncoder = { try JSONEncoder().encode($0) }) -> DisplayConfigurationLoadResult {
         let priorFailure = storage.bool(forKey: requiresReviewKey)
         if let data = storage.data(forKey: storageKey) {
@@ -335,6 +304,10 @@ enum DisplayConfigurationStore {
                 return result(document, priorFailure ? .requiresUserReview(.previousFailureRequiresReview) : .ready)
             } catch let error as DisplayConfigurationStoreError { return failed(error, storage: storage) }
             catch { return failed(.corruptedData, storage: storage) }
+        }
+        if let data = storage.data(forKey: legacyV4StorageKey) {
+            return migrateV4Configuration(data: data, storage: storage, encoder: encodeDocument,
+                                          priorFailure: priorFailure)
         }
         if let legacyData = firstLegacyDocument(in: storage) {
             return replaceLegacyConfiguration(
@@ -383,23 +356,21 @@ enum DisplayConfigurationStore {
         let current = load(storage: storage)
         let displays = try convert(configurations, preserving: current.document.displays)
         let profiles = collaborationProfiles ?? current.collaborationProfiles
-        let document = DisplayConfigurationStoreV4Document(schemaVersion: currentSchemaVersion,
+        let document = DisplayConfigurationStoreV5Document(schemaVersion: currentSchemaVersion,
             localEndpointID: current.document.localEndpointID, localDeviceName: current.document.localDeviceName,
             listenPort: current.document.listenPort, controlChannel: current.document.controlChannel,
             linkAllDisplays: current.document.linkAllDisplays,
-            usbAutomationEnabled: current.document.usbAutomationEnabled,
-            usbSwitchDisplaysOnArrival: current.document.usbSwitchDisplaysOnArrival,
-            displays: displays, collaborationProfiles: profiles)
+            displays: displays, collaborationProfiles: profiles, usbSwitch: current.document.usbSwitch)
         try saveDocument(document, storage: storage, clearSafetyMarker: clearSafetyMarker, encodeDocument: encodeDocument)
     }
 
-    static func saveDocument(_ document: DisplayConfigurationStoreV4Document,
+    static func saveDocument(_ document: DisplayConfigurationStoreV5Document,
                              defaults: UserDefaults = .standard,
                              clearSafetyMarker: Bool = true) throws {
         try saveDocument(document, storage: UserDefaultsDisplayConfigurationStorage(defaults: defaults), clearSafetyMarker: clearSafetyMarker)
     }
 
-    static func saveDocument(_ document: DisplayConfigurationStoreV4Document,
+    static func saveDocument(_ document: DisplayConfigurationStoreV5Document,
                              storage: DisplayConfigurationStorage,
                              clearSafetyMarker: Bool = true,
                              encodeDocument: DocumentEncoder = { try JSONEncoder().encode($0) }) throws {
@@ -458,23 +429,12 @@ enum DisplayConfigurationStore {
         return LocalProfileInspection(issues: issues.sorted { $0.rawValue < $1.rawValue }, ddcUnavailableDisplayIDs: unavailable)
     }
 
-    static func menuEligibleProfiles(in document: DisplayConfigurationStoreV4Document) -> [CollaborationProfile] {
+    static func menuEligibleProfiles(in document: DisplayConfigurationStoreV5Document) -> [CollaborationProfile] {
         let knownDisplayIDs = Set(document.displays.map { $0.id.lowercased() })
         return document.collaborationProfiles.filter { profile in
             profile.coordinationEnabled
                 && inspectProfile(profile, displays: document.displays,
                                   ddcAvailableDisplayIDs: knownDisplayIDs).issues.isEmpty
-        }
-    }
-
-    static func replacingUSBTrigger(_ trigger: CollaborationTriggerDevice?, profileID: String,
-                                    in profiles: [CollaborationProfile]) -> [CollaborationProfile] {
-        profiles.map { profile in
-            guard profile.id == profileID else { return profile }
-            var updated = profile
-            updated.triggerDevices.removeAll { $0.kind.caseInsensitiveCompare("usb") == .orderedSame }
-            if let trigger { updated.triggerDevices.append(trigger) }
-            return updated
         }
     }
 
@@ -486,6 +446,59 @@ enum DisplayConfigurationStore {
         guard let old = uuid(previous) else { return .invalid }
         if old.caseInsensitiveCompare(candidate) == .orderedSame && profile.peerProtocolVersion == protocolVersion { return .unchanged }
         return .changeConfirmationRequired(previousEndpointID: old, endpointID: candidate, protocolVersion: protocolVersion)
+    }
+
+    static func isCompleteUSBConfiguration(_ usbSwitch: USBSwitchConfiguration,
+                                           displays: [DisplayConfigurationV4Display]) -> Bool {
+        guard usbSwitch.triggerDevice?.kind.caseInsensitiveCompare("usb") == .orderedSame else { return false }
+        let known = Set(displays.map { $0.id.lowercased() })
+        return usbSwitch.displayInputs.contains {
+            known.contains($0.displayID.lowercased()) && (0...65535).contains($0.targetInput)
+        }
+    }
+
+    static func isValidCollaborationWakeSelection(_ usbSwitch: USBSwitchConfiguration,
+                                                  document: DisplayConfigurationStoreV5Document) -> Bool {
+        guard usbSwitch.collaborationWakeEnabled,
+              let profileID = usbSwitch.collaborationProfileID,
+              let profile = document.collaborationProfiles.first(where: {
+                  $0.id.caseInsensitiveCompare(profileID) == .orderedSame
+              }), profile.coordinationEnabled,
+              profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID) != nil,
+              profile.peerProtocolVersion == 2 else { return false }
+        let known = Set(document.displays.map { $0.id.lowercased() })
+        return inspectProfile(profile, displays: document.displays,
+                              ddcAvailableDisplayIDs: known).issues.isEmpty
+    }
+
+    private static func migrateV4Configuration(data: Data, storage: DisplayConfigurationStorage,
+                                               encoder: DocumentEncoder, priorFailure: Bool) -> DisplayConfigurationLoadResult {
+        do {
+            let version = try JSONDecoder().decode(VersionProbe.self, from: data).schemaVersion
+            guard version == 4 else { throw DisplayConfigurationStoreError.unsupportedSchemaVersion(version) }
+            let legacy = try JSONDecoder().decode(LegacyV4Document.self, from: data)
+            if storage.data(forKey: legacyBackupStorageKey) == nil {
+                storage.set(data, forKey: legacyBackupStorageKey)
+                guard storage.data(forKey: legacyBackupStorageKey) == data else {
+                    throw DisplayConfigurationStoreError.writeFailed
+                }
+            }
+            let document = DisplayConfigurationStoreV5Document(
+                schemaVersion: currentSchemaVersion,
+                localEndpointID: legacy.localEndpointID,
+                localDeviceName: legacy.localDeviceName,
+                listenPort: legacy.listenPort,
+                controlChannel: legacy.controlChannel,
+                linkAllDisplays: legacy.linkAllDisplays,
+                displays: legacy.displays,
+                collaborationProfiles: legacy.collaborationProfiles,
+                usbSwitch: .disabled
+            )
+            let validated = try validate(document)
+            try persist(validated, storage: storage, encoder: encoder)
+            return result(validated, priorFailure ? .requiresUserReview(.previousFailureRequiresReview) : .ready)
+        } catch let error as DisplayConfigurationStoreError { return failed(error, storage: storage) }
+        catch { return failed(.corruptedData, storage: storage) }
     }
 
     private static func replaceLegacyConfiguration(
@@ -508,7 +521,7 @@ enum DisplayConfigurationStore {
         catch { return failed(.writeFailed, storage: storage) }
     }
 
-    private static func persist(_ document: DisplayConfigurationStoreV4Document,
+    private static func persist(_ document: DisplayConfigurationStoreV5Document,
                                 storage: DisplayConfigurationStorage, encoder: DocumentEncoder) throws {
         let data: Data
         do { data = try encoder(document) }
@@ -540,17 +553,16 @@ enum DisplayConfigurationStore {
         return result(freshDocument(), .requiresUserReview(error))
     }
 
-    private static func result(_ document: DisplayConfigurationStoreV4Document,
+    private static func result(_ document: DisplayConfigurationStoreV5Document,
                                _ state: DisplayConfigurationSafetyState) -> DisplayConfigurationLoadResult {
         DisplayConfigurationLoadResult(configurations: legacyView(document), collaborationProfiles: document.collaborationProfiles,
                                        document: document, safetyState: state)
     }
 
-    private static func freshDocument() -> DisplayConfigurationStoreV4Document {
-        DisplayConfigurationStoreV4Document(schemaVersion: currentSchemaVersion, localEndpointID: UUID().uuidString,
+    private static func freshDocument() -> DisplayConfigurationStoreV5Document {
+        DisplayConfigurationStoreV5Document(schemaVersion: currentSchemaVersion, localEndpointID: UUID().uuidString,
             localDeviceName: "本机", listenPort: defaultPort, controlChannel: .automatic,
-            linkAllDisplays: false, usbAutomationEnabled: false,
-            usbSwitchDisplaysOnArrival: false, displays: [], collaborationProfiles: [defaultProfile()])
+            linkAllDisplays: false, displays: [], collaborationProfiles: [defaultProfile()], usbSwitch: .disabled)
     }
 
     private static func defaultProfile(name: String = "配置 1") -> CollaborationProfile {
@@ -559,7 +571,7 @@ enum DisplayConfigurationStore {
             displayInputs: [], triggerDevices: [])
     }
 
-    private static func validate(_ document: DisplayConfigurationStoreV4Document) throws -> DisplayConfigurationStoreV4Document {
+    private static func validate(_ document: DisplayConfigurationStoreV5Document) throws -> DisplayConfigurationStoreV5Document {
         guard document.schemaVersion == currentSchemaVersion else { throw DisplayConfigurationStoreError.unsupportedSchemaVersion(document.schemaVersion) }
         guard let endpoint = uuid(document.localEndpointID), let deviceName = clean(document.localDeviceName, limit: 32),
               (1...65535).contains(document.listenPort), !document.collaborationProfiles.isEmpty else {
@@ -618,12 +630,48 @@ enum DisplayConfigurationStore {
                 peerProtocolVersion: profile.peerProtocolVersion, coordinationEnabled: profile.coordinationEnabled,
                 displayInputs: mappings, triggerDevices: triggers)
         }
-        return DisplayConfigurationStoreV4Document(schemaVersion: currentSchemaVersion, localEndpointID: endpoint,
+        return DisplayConfigurationStoreV5Document(schemaVersion: currentSchemaVersion, localEndpointID: endpoint,
             localDeviceName: deviceName, listenPort: document.listenPort, controlChannel: document.controlChannel,
             linkAllDisplays: document.linkAllDisplays,
-            usbAutomationEnabled: document.usbAutomationEnabled,
-            usbSwitchDisplaysOnArrival: document.usbSwitchDisplaysOnArrival,
-            displays: displays, collaborationProfiles: profiles)
+            displays: displays, collaborationProfiles: profiles,
+            usbSwitch: try validateUSBSwitch(document.usbSwitch))
+    }
+
+    private static func validateUSBSwitch(_ value: USBSwitchConfiguration) throws -> USBSwitchConfiguration {
+        let trigger: CollaborationTriggerDevice?
+        if let item = value.triggerDevice {
+            guard item.kind.caseInsensitiveCompare("usb") == .orderedSame,
+                  let reference = clean(item.localReference, limit: textLimit) else {
+                throw DisplayConfigurationStoreError.invalidConfiguration
+            }
+            let displayName = item.displayName.isEmpty ? "" : (clean(item.displayName, limit: displayNameLimit) ?? "")
+            if !item.displayName.isEmpty && displayName.isEmpty { throw DisplayConfigurationStoreError.invalidConfiguration }
+            trigger = CollaborationTriggerDevice(kind: "usb", localReference: reference, displayName: displayName)
+        } else {
+            trigger = nil
+        }
+        var mappingIDs = Set<String>()
+        let mappings = try value.displayInputs.map { item -> USBDisplayInputMapping in
+            guard let displayID = uuid(item.displayID),
+                  mappingIDs.insert(displayID.lowercased()).inserted,
+                  let input = validInput(item.targetInput) else {
+                throw DisplayConfigurationStoreError.invalidConfiguration
+            }
+            return USBDisplayInputMapping(displayID: displayID, targetInput: input)
+        }
+        let profileID = value.collaborationProfileID.flatMap(uuid)
+        if value.collaborationProfileID != nil, profileID == nil {
+            throw DisplayConfigurationStoreError.invalidConfiguration
+        }
+        if value.enabled, (trigger == nil || mappings.isEmpty) {
+            throw DisplayConfigurationStoreError.invalidConfiguration
+        }
+        if value.collaborationWakeEnabled, profileID == nil {
+            throw DisplayConfigurationStoreError.invalidConfiguration
+        }
+        return USBSwitchConfiguration(enabled: value.enabled, triggerDevice: trigger,
+            collaborationWakeEnabled: value.collaborationWakeEnabled,
+            collaborationProfileID: profileID, displayInputs: mappings)
     }
 
     private static func convert(_ configurations: [DisplayConfiguration],
@@ -648,7 +696,7 @@ enum DisplayConfigurationStore {
         }
     }
 
-    private static func legacyView(_ document: DisplayConfigurationStoreV4Document) -> [DisplayConfiguration] {
+    private static func legacyView(_ document: DisplayConfigurationStoreV5Document) -> [DisplayConfiguration] {
         return document.displays.enumerated().map { index, display in
             DisplayConfiguration(id: display.id, index: index + 1, name: display.name, selector: display.selector,
                 localInput: display.localInput, targetInput: nil, readEnabled: display.readEnabled)

@@ -166,7 +166,7 @@ private final class PendingPeerCapabilityInspection {
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HandoffScheduler, HandoffEventIDSource, V2HandoffActionSink {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, HandoffScheduler, HandoffEventIDSource, V2HandoffActionSink, LocalUSBSwitchActionSink {
     private lazy var statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private var instanceLockFD: Int32 = -1
     private var ownsPrimaryInstance = false
@@ -188,10 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         )
     )
     private let usbMonitor = USBMonitor()
+    private lazy var localUSBSwitchCoordinator = LocalUSBSwitchCoordinator(
+        configuration: localUSBRuntimeConfiguration(),
+        sink: self,
+        nowMs: { [weak self] in self?.currentTimeMs() ?? 0 }
+    )
     private let peerTransport = PeerTransport()
     private let configurationSafetyGate = ConfigurationSafetyGate()
     private let usbLearningSafetyGate = USBLearningSafetyGate()
-    private var pendingUSBSwitch: DispatchWorkItem?
     private var pendingSchedulerItems: [String: DispatchWorkItem] = [:]
     private lazy var handoffV2StateMachine = HandoffV2StateMachine(
         localEndpointID: AppPreferences.localConfiguration.localEndpointID,
@@ -225,8 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.onConfigurationSaveFailure = { [weak self] error in
             self?.enterConfigurationSafetyState(error)
         }
-        controller.onLearnUSB = { [weak self] profileID in
-            self?.startUSBLearning(profileID: profileID)
+        controller.onLearnUSB = { [weak self] in
+            self?.startUSBLearning()
         }
         controller.onCancelUSBLearning = { [weak self] in
             self?.cancelUSBLearning()
@@ -351,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             self?.handleUSBPresenceChange(isPresent)
         }
         usbMonitor.onInitialPresenceObserved = { [weak self] isPresent in
-            self?.recordInitialInputPresence(isPresent)
+            _ = self?.localUSBSwitchCoordinator.observeUSB(present: isPresent)
         }
         peerTransport.onDatagram = { [weak self] data, reply in
             self?.handlePeerDatagram(data, reply: reply)
@@ -673,7 +677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private static func ddcTarget(
         for configuration: DisplayConfiguration,
-        document: DisplayConfigurationStoreV4Document
+        document: DisplayConfigurationStoreV5Document
     ) -> DDCDisplayTarget {
         let stableID = configuration.id ?? configuration.selector
         let stored = document.displays.first { $0.id.caseInsensitiveCompare(stableID) == .orderedSame }
@@ -728,25 +732,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
+    private func localUSBRuntimeConfiguration(
+        document: DisplayConfigurationStoreV5Document = AppPreferences.localConfiguration,
+        learning: Bool? = nil
+    ) -> LocalUSBSwitchRuntimeConfiguration {
+        let mappings = Dictionary(uniqueKeysWithValues: document.usbSwitch.displayInputs.map {
+            ($0.displayID.lowercased(), $0.targetInput)
+        })
+        let availableIDs = Set(configurations.values.compactMap { ($0.id ?? $0.selector).lowercased() })
+        let displays = document.displays.map {
+            LocalUSBSwitchDisplay(
+                displayID: $0.id,
+                targetInput: mappings[$0.id.lowercased()],
+                available: availableIDs.contains($0.id.lowercased())
+            )
+        }
+        let collaborationValid = document.usbSwitch.collaborationWakeEnabled
+            ? DisplayConfigurationStore.isValidCollaborationWakeSelection(document.usbSwitch, document: document)
+            : false
+        return LocalUSBSwitchRuntimeConfiguration(
+            enabled: document.usbSwitch.enabled,
+            learning: learning ?? !usbLearningSafetyGate.allows(.usb),
+            safeState: configurationSafetyGate.state != .ready,
+            collaborationWakeEnabled: document.usbSwitch.collaborationWakeEnabled,
+            collaborationProfileValid: collaborationValid,
+            displays: displays
+        )
+    }
+
     private func configureUSBMonitor() {
         usbMonitor.stop()
         guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
         let document = AppPreferences.localConfiguration
-        let routingTable = V2EndpointRoutingTable.build(from: document)
-        let v2Profiles = routingTable.routesByEndpointID.values.compactMap { route in
-            document.collaborationProfiles.first { $0.id == route.profileID }
-        }
-        let v2USBReferences = Set(v2Profiles.flatMap { profile in
-            profile.triggerDevices.compactMap { trigger in
-                trigger.kind.caseInsensitiveCompare("usb") == .orderedSame ? trigger.localReference : nil
-            }
-        })
-        if AppPreferences.usbAutomationEnabled, v2USBReferences.count == 1,
-           let value = v2USBReferences.first, let reference = USBDeviceReference(localReference: value) {
+        localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration(document: document))
+        if document.usbSwitch.enabled,
+           let value = document.usbSwitch.triggerDevice?.localReference,
+           let reference = USBDeviceReference(localReference: value) {
             usbMonitor.start(triggerReference: reference)
-            return
         }
-        usbMonitor.start(triggerDevice: nil)
     }
 
     private func configurePeerTransport() {
@@ -779,8 +802,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         handoffV2StateMachine.configure(
             localEndpointID: document.localEndpointID,
             coordinationEnabled: v2Enabled,
-            sourceInputPresent: false,
-            targetInputPresent: false,
             enabledTargets: v2RoutingTable.routesByEndpointID.values.map {
                 V2HandoffTarget(
                     endpointID: $0.endpointID,
@@ -796,18 +817,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         if v2Enabled { scheduleV2StatusProbes() }
     }
 
-    private func startUSBLearning(profileID: String) {
+    private func startUSBLearning() {
         guard configurationSafetyGate.allows(.usb) else { return }
         usbLearningSafetyGate.begin()
         refreshDDCOperationAccess()
-        pendingUSBSwitch?.cancel()
-        pendingUSBSwitch = nil
+        localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration(learning: true))
         configurePeerTransport()
         usbMonitor.stop()
         usbMonitor.start(triggerDevice: nil)
         usbMonitor.beginLearning { [weak self] devices in
             guard let self else { return }
-            _ = self.settingsWindowController.presentDetectedUSBDevices(devices, learningProfileID: profileID)
+            _ = self.settingsWindowController.presentDetectedUSBDevices(devices)
         }
     }
 
@@ -819,26 +839,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func finishUSBLearning() {
         guard usbLearningSafetyGate.end() else { return }
         refreshDDCOperationAccess()
+        localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration())
         configureUSBMonitor()
         configurePeerTransport()
     }
 
     private func handleUSBPresenceChange(_ isPresent: Bool) {
         guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
-        if !v2RoutingTable.routesByEndpointID.isEmpty, AppPreferences.usbAutomationEnabled {
-            handoffV2StateMachine.handleLocalInputPresenceChanged(
-                isPresent,
-                announceUnsolicitedArrival: AppPreferences.usbSwitchDisplaysOnArrival
-            )
-            return
-        }
-    }
-
-    private func recordInitialInputPresence(_ isPresent: Bool) {
-        guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
-        if !v2RoutingTable.routesByEndpointID.isEmpty, AppPreferences.usbAutomationEnabled {
-            handoffV2StateMachine.recordInitialLocalInputPresence(isPresent)
-        }
+        _ = localUSBSwitchCoordinator.observeUSB(present: isPresent)
     }
 
     private func beginPeerCapabilityInspection(
@@ -994,8 +1002,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             )
         case .statusResponse:
             handoffV2StateMachine.handleStatusResponse(endpointID: sourceEndpointID, authenticated: true)
-        case .inputPresent:
-            handoffV2StateMachine.handlePeerInputPresent(
+        case .wakeDisplay:
+            handoffV2StateMachine.handleWakeDisplay(
                 endpointID: sourceEndpointID,
                 eventID: message.eventID,
                 authenticated: true
@@ -1035,7 +1043,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func handleUnboundV2StatusProbe(
         _ data: Data,
-        document: DisplayConfigurationStoreV4Document,
+        document: DisplayConfigurationStoreV5Document,
         reply: @escaping PeerTransport.DataReply
     ) {
         guard let nonce = try? V2Crypto.makeNonce(),
@@ -1288,9 +1296,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    func requestV2Wake(eventID: String) {
+    func requestV2Wake(eventID: String, completionRequired: Bool) {
         guard configurationSafetyGate.allows(.wake), usbLearningSafetyGate.allows(.wake) else { return }
-        handoffV2StateMachine.handleWakeCompleted(eventID: eventID, success: wakeMacDisplay())
+        if completionRequired {
+            handoffV2StateMachine.handleWakeCompleted(eventID: eventID, success: wakeMacDisplay())
+        } else {
+            localUSBSwitchCoordinator.receiveAuthenticatedWakeDisplay()
+        }
+    }
+
+    func switchUSBDisplay(displayID: String, targetInput: Int, completion: @escaping (Bool) -> Void) {
+        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc),
+              let configuration = configurations.values.first(where: {
+                  ($0.id ?? $0.selector).caseInsensitiveCompare(displayID) == .orderedSame
+              }) else {
+            completion(false)
+            return
+        }
+        workerQueue.async { [weak self] in
+            guard let self, self.configurationSafetyGate.allows(.ddc),
+                  self.usbLearningSafetyGate.allows(.ddc) else {
+                DispatchQueue.main.async { completion(false) }
+                return
+            }
+            var succeeded = false
+            for _ in 0..<2 {
+                do {
+                    try self.ddcController.write(
+                        stableID: configuration.id ?? configuration.selector,
+                        selector: configuration.selector,
+                        command: .input,
+                        value: targetInput
+                    )
+                    succeeded = true
+                    break
+                } catch {
+                    continue
+                }
+            }
+            DispatchQueue.main.async { completion(succeeded) }
+        }
+    }
+
+    func wakeUSBDisplay() {
+        guard configurationSafetyGate.allows(.wake), usbLearningSafetyGate.allows(.wake) else { return }
+        _ = wakeMacDisplay()
+    }
+
+    func sendCollaborationWakeDisplay() -> Bool {
+        guard configurationSafetyGate.allows(.network), usbLearningSafetyGate.allows(.network) else { return false }
+        let document = AppPreferences.localConfiguration
+        guard document.usbSwitch.collaborationWakeEnabled,
+              let profileID = document.usbSwitch.collaborationProfileID,
+              let profile = document.collaborationProfiles.first(where: {
+                  $0.id.caseInsensitiveCompare(profileID) == .orderedSame
+              }),
+              DisplayConfigurationStore.isValidCollaborationWakeSelection(document.usbSwitch, document: document),
+              let endpointID = profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID),
+              v2RoutingTable.route(for: endpointID)?.profileID == profile.id else { return false }
+        sendV2Message(
+            type: .wakeDisplay,
+            eventID: nextEventID(),
+            endpointID: endpointID,
+            intent: nil,
+            wakeSucceeded: nil,
+            switchSucceeded: nil,
+            reason: nil
+        )
+        return true
+    }
+
+    func reportUSBSwitch(displayID: String?, reason: LocalUSBSwitchReportReason) {
+        _ = displayID
+        let message: String
+        switch reason {
+        case .missingMapping: message = "部分显示器未配置 USB 目标输入源"
+        case .displayUnavailable: message = "部分显示器当前不可用"
+        case .ddcFailed: message = "部分显示器切换失败"
+        case .wakeNotSent: message = "本机切换已继续，协同唤醒未发送"
+        }
+        settingsWindowController.updateUSBSwitchStatus(message, isError: true)
     }
 
     func requestV2Switch(eventID: String, endpointID: String) {
@@ -1349,9 +1434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func enterConfigurationSafetyState(_ error: DisplayConfigurationStoreError) {
         configurationSafetyGate.requireUserReview(error)
+        localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration())
         refreshDDCOperationAccess()
-        pendingUSBSwitch?.cancel()
-        pendingUSBSwitch = nil
         usbMonitor.stop()
         peerTransport.stop()
         for (_, item) in pendingSchedulerItems {
@@ -1365,8 +1449,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         handoffV2StateMachine.configure(
             localEndpointID: AppPreferences.localConfiguration.localEndpointID,
             coordinationEnabled: false,
-            sourceInputPresent: false,
-            targetInputPresent: false,
             enabledTargets: []
         )
         v2ReplayCache.reset()

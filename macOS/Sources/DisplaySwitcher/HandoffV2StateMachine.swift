@@ -21,9 +21,6 @@ struct V2HandoffTarget: Equatable {
 
 enum V2HandoffState: String, Codable {
     case idle
-    case debouncing
-    case discovering
-    case awaitingInput = "awaiting_input"
     case awaitingReady = "awaiting_ready"
     case awaitingCommit = "awaiting_commit"
     case switching
@@ -32,14 +29,11 @@ enum V2HandoffState: String, Codable {
 }
 
 enum V2HandoffIgnoreReason: String {
-    case lateTarget = "late_target"
     case duplicate
     case authenticationFailed = "authentication_failed"
     case endpointChanged = "endpoint_changed"
     case noPendingEvent = "no_pending_event"
-    case sourceInputReturned = "source_input_returned"
     case configurationChanged = "configuration_changed"
-    case discoveryTimeout = "discovery_timeout"
 }
 
 enum V2HandoffAction: Equatable {
@@ -55,8 +49,6 @@ enum V2HandoffAction: Equatable {
     case requestWake(eventID: String)
     case requestSwitch(eventID: String, endpointID: String)
     case lockTarget(endpointID: String)
-    case startDiscovery
-    case promptManualSelection(reason: V2HandoffIgnoreReason)
     case ignoreMessage(reason: V2HandoffIgnoreReason, eventID: String?, endpointID: String?)
     case clearEvent(reason: V2HandoffIgnoreReason?)
     case setPeerReachable(Bool)
@@ -72,25 +64,19 @@ protocol V2HandoffActionSink: AnyObject {
         switchSucceeded: Bool?,
         reason: V2CancellationReason?
     )
-    func requestV2Wake(eventID: String)
+    func requestV2Wake(eventID: String, completionRequired: Bool)
     func requestV2Switch(eventID: String, endpointID: String)
-    func promptV2ManualSelection()
     func updateV2PeerReachable(_ reachable: Bool, endpointID: String)
 }
 
 struct V2HandoffSnapshot {
     let coordinationEnabled: Bool
-    let sourceInputPresent: Bool
-    let targetInputPresent: Bool
     let state: V2HandoffState
     let activeEventID: String?
     let lockedTargetEndpointID: String?
 }
 
 final class HandoffV2StateMachine {
-    private enum EventRole { case source, target }
-    private static let debounceMs: Int64 = 150
-    private static let discoveryMs: Int64 = 3_000
     private static let retryMs: Int64 = 150
     private static let fallbackMs: Int64 = 600
     private static let retryCount = 4
@@ -102,18 +88,14 @@ final class HandoffV2StateMachine {
 
     private(set) var localEndpointID: String
     private(set) var coordinationEnabled = false
-    private(set) var sourceInputPresent = false
-    private(set) var targetInputPresent = false
     private(set) var state: V2HandoffState = .idle
     private(set) var activeEventID: String?
     private(set) var lockedTargetEndpointID: String?
     private(set) var enabledTargets: [V2HandoffTarget] = []
 
-    private var pendingSourceEventID: String?
     private var activeIntent: V2HandoverIntent?
     private var wakeResult: Bool?
     private var switchRequested = false
-    private var eventRole: EventRole?
     private var seenMessages = Set<String>()
     private var timerKeys = Set<String>()
 
@@ -134,8 +116,6 @@ final class HandoffV2StateMachine {
     func configure(
         localEndpointID: String,
         coordinationEnabled: Bool,
-        sourceInputPresent: Bool,
-        targetInputPresent: Bool,
         state: V2HandoffState = .idle,
         activeEventID: String? = nil,
         lockedTargetEndpointID: String? = nil,
@@ -144,27 +124,21 @@ final class HandoffV2StateMachine {
         cancelAllTimers()
         self.localEndpointID = localEndpointID.lowercased()
         self.coordinationEnabled = coordinationEnabled
-        self.sourceInputPresent = sourceInputPresent
-        self.targetInputPresent = targetInputPresent
         self.state = state
         self.activeEventID = activeEventID?.lowercased()
         self.lockedTargetEndpointID = lockedTargetEndpointID?.lowercased()
         self.enabledTargets = enabledTargets.map {
             V2HandoffTarget(endpointID: $0.endpointID.lowercased(), capability: $0.capability, reachable: $0.reachable)
         }
-        pendingSourceEventID = nil
         activeIntent = nil
         wakeResult = nil
         switchRequested = state == .switching
-        eventRole = activeEventID == nil ? nil : .source
         seenMessages.removeAll(keepingCapacity: true)
     }
 
     func snapshot() -> V2HandoffSnapshot {
         V2HandoffSnapshot(
             coordinationEnabled: coordinationEnabled,
-            sourceInputPresent: sourceInputPresent,
-            targetInputPresent: targetInputPresent,
             state: state,
             activeEventID: activeEventID,
             lockedTargetEndpointID: lockedTargetEndpointID
@@ -203,101 +177,27 @@ final class HandoffV2StateMachine {
         clearInternalEvent(finalState: .idle)
         activeEventID = eventID.lowercased()
         activeIntent = .manual
-        eventRole = .source
         lock(endpointID)
         beginDirectedRequest(target: target, eventID: eventID, intent: .manual)
     }
 
-    func handleSourceInputPresenceChanged(_ present: Bool, eventID: String? = nil) {
-        guard coordinationEnabled, sourceInputPresent != present else { return }
-        sourceInputPresent = present
-        if present {
-            scheduler.cancel("v2-debounce")
-            timerKeys.remove("v2-debounce")
-            guard state == .debouncing || state == .discovering || state == .awaitingReady else { return }
-            if let activeEventID, let endpointID = lockedTargetEndpointID {
-                send(
-                    type: .cancelled,
-                    eventID: activeEventID,
-                    endpointID: endpointID,
-                    reason: .sourceInputReturned
-                )
-            }
-            clearEvent(reason: .sourceInputReturned, finalState: .cancelled)
-            return
-        }
-
-        clearInternalEvent(finalState: .debouncing)
-        eventRole = .source
-        pendingSourceEventID = eventID?.lowercased()
-        schedule("v2-debounce", after: Self.debounceMs) { [weak self] in
-            self?.finishSourceDebounce()
-        }
-    }
-
-    func handleTargetInputPresenceChanged(_ present: Bool, eventID: String? = nil) {
-        guard coordinationEnabled, targetInputPresent != present else { return }
-        targetInputPresent = present
-        guard present else { return }
-
-        if activeIntent == .inputHandover, activeEventID != nil {
-            sendReadyIfPossible()
-            return
-        }
-
-        let announcementID = (eventID ?? eventIDSource.nextEventID()).lowercased()
-        for target in enabledTargets where target.capability == .v2 {
-            send(type: .inputPresent, eventID: announcementID, endpointID: target.endpointID)
-        }
-    }
-
-    func recordInitialLocalInputPresence(_ present: Bool) {
-        sourceInputPresent = present
-        targetInputPresent = present
-    }
-
-    func handleLocalInputPresenceChanged(_ present: Bool, eventID: String? = nil,
-                                         announceUnsolicitedArrival: Bool = true) {
-        if present {
-            if eventRole == .source {
-                handleSourceInputPresenceChanged(true, eventID: eventID)
-            } else if activeIntent == .inputHandover, activeEventID != nil {
-                handleTargetInputPresenceChanged(true, eventID: eventID)
-                sourceInputPresent = true
-            } else if announceUnsolicitedArrival {
-                handleTargetInputPresenceChanged(true, eventID: eventID)
-                sourceInputPresent = true
-            } else {
-                targetInputPresent = true
-                sourceInputPresent = true
-            }
-        } else {
-            targetInputPresent = false
-            handleSourceInputPresenceChanged(false, eventID: eventID)
-        }
-    }
-
-    func handlePeerInputPresent(endpointID: String, eventID: String, authenticated: Bool) {
+    func handleWakeDisplay(endpointID: String, eventID: String, authenticated: Bool) {
         guard coordinationEnabled else { return }
         guard authenticated else {
             ignore(.authenticationFailed, eventID: eventID, endpointID: endpointID)
             return
         }
-        guard let candidate = target(endpointID) else {
+        guard target(endpointID)?.capability == .v2 else {
             ignore(.endpointChanged, eventID: eventID, endpointID: endpointID)
             return
         }
-        guard state == .discovering, lockedTargetEndpointID == nil else {
-            ignore(.lateTarget, eventID: eventID, endpointID: endpointID)
+        let key = replayKey(type: .wakeDisplay, eventID: eventID, endpointID: endpointID)
+        guard seenMessages.insert(key).inserted else {
+            ignore(.duplicate, eventID: eventID, endpointID: nil)
             return
         }
-
-        scheduler.cancel("v2-discovery-timeout")
-        timerKeys.remove("v2-discovery-timeout")
-        activeEventID = eventID.lowercased()
-        activeIntent = .inputHandover
-        lock(endpointID)
-        beginDirectedRequest(target: candidate, eventID: eventID, intent: .inputHandover)
+        log(.requestWake(eventID: eventID.lowercased()))
+        sink.requestV2Wake(eventID: eventID.lowercased(), completionRequired: false)
     }
 
     func handleHandoverRequest(
@@ -321,14 +221,13 @@ final class HandoffV2StateMachine {
             return
         }
 
-        clearInternalEvent(finalState: intent == .manual ? .awaitingReady : .awaitingInput, keepSeen: true)
+        clearInternalEvent(finalState: .awaitingReady, keepSeen: true)
         activeEventID = eventID.lowercased()
         lockedTargetEndpointID = endpointID.lowercased()
         activeIntent = intent
-        eventRole = .target
         wakeResult = nil
         log(.requestWake(eventID: eventID.lowercased()))
-        sink.requestV2Wake(eventID: eventID.lowercased())
+        sink.requestV2Wake(eventID: eventID.lowercased(), completionRequired: true)
     }
 
     func handleTargetReady(
@@ -405,41 +304,13 @@ final class HandoffV2StateMachine {
             }
         }
         if let coordinationEnabled { self.coordinationEnabled = coordinationEnabled }
-        if activeEventID != nil || state == .discovering || state == .debouncing {
+        if activeEventID != nil {
             clearEvent(reason: .configurationChanged, finalState: .cancelled)
         }
         if self.coordinationEnabled == false { clearInternalEvent(finalState: .cancelled) }
     }
 
     func handleAdvanceTime() {}
-
-    private func finishSourceDebounce() {
-        timerKeys.remove("v2-debounce")
-        guard coordinationEnabled, !sourceInputPresent else { return }
-        if enabledTargets.count == 1, let target = enabledTargets.first {
-            let eventID = (pendingSourceEventID ?? eventIDSource.nextEventID()).lowercased()
-            activeEventID = eventID
-            activeIntent = .inputHandover
-            lock(target.endpointID)
-            beginDirectedRequest(target: target, eventID: eventID, intent: .inputHandover)
-        } else if enabledTargets.count > 1 {
-            state = .discovering
-            log(.startDiscovery)
-            schedule("v2-discovery-timeout", after: Self.discoveryMs) { [weak self] in
-                self?.finishDiscoveryTimeout()
-            }
-        } else {
-            clearInternalEvent(finalState: .cancelled)
-        }
-    }
-
-    private func finishDiscoveryTimeout() {
-        timerKeys.remove("v2-discovery-timeout")
-        guard state == .discovering, lockedTargetEndpointID == nil else { return }
-        log(.promptManualSelection(reason: .discoveryTimeout))
-        sink.promptV2ManualSelection()
-        clearEvent(reason: nil, finalState: .cancelled)
-    }
 
     private func beginDirectedRequest(target: V2HandoffTarget, eventID: String, intent: V2HandoverIntent) {
         state = .awaitingReady
@@ -463,7 +334,6 @@ final class HandoffV2StateMachine {
     private func sendReadyIfPossible() {
         guard let eventID = activeEventID, let endpointID = lockedTargetEndpointID,
               let wakeResult, activeIntent != nil else { return }
-        if activeIntent == .inputHandover, !targetInputPresent { return }
         send(type: .targetReady, eventID: eventID, endpointID: endpointID, wakeSucceeded: wakeResult)
         state = .awaitingCommit
     }
@@ -543,11 +413,9 @@ final class HandoffV2StateMachine {
         cancelAllTimers()
         activeEventID = nil
         lockedTargetEndpointID = nil
-        pendingSourceEventID = nil
         activeIntent = nil
         wakeResult = nil
         switchRequested = false
-        eventRole = nil
         state = finalState
         if !keepSeen { seenMessages.removeAll(keepingCapacity: true) }
     }

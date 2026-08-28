@@ -8,11 +8,11 @@ struct USBDevice: Codable, Hashable {
     let serialNumber: String?
 
     var displayName: String {
-        let ids = String(format: "%04X:%04X", vendorID, productID)
-        if let serialNumber, !serialNumber.isEmpty {
-            return "\(name)（\(ids)，序列号 \(serialNumber)）"
-        }
-        return "\(name)（\(ids)）"
+        name
+    }
+
+    var localReference: String {
+        (try? JSONEncoder().encode(self).base64EncodedString()) ?? ""
     }
 
     func matches(_ other: USBDevice) -> Bool {
@@ -27,21 +27,32 @@ struct USBDevice: Codable, Hashable {
 struct USBDeviceReference: Equatable {
     let vendorID: Int
     let productID: Int
+    let exactDevice: USBDevice?
 
     init?(localReference: String) {
+        if let data = Data(base64Encoded: localReference),
+           let device = try? JSONDecoder().decode(USBDevice.self, from: data) {
+            vendorID = device.vendorID
+            productID = device.productID
+            exactDevice = device
+            return
+        }
         let parts = localReference.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2, let vendorID = Int(parts[0]), let productID = Int(parts[1]),
               (0...65_535).contains(vendorID), (0...65_535).contains(productID) else { return nil }
         self.vendorID = vendorID
         self.productID = productID
+        exactDevice = nil
     }
 
     func matches(_ device: USBDevice) -> Bool {
-        device.vendorID == vendorID && device.productID == productID
+        if let exactDevice { return exactDevice.matches(device) }
+        return device.vendorID == vendorID && device.productID == productID
     }
 }
 
 final class USBMonitor {
+    static let learningTimeoutSeconds: TimeInterval = 30
     var onPresenceChanged: ((Bool) -> Void)?
     var onInitialPresenceObserved: ((Bool) -> Void)?
 
@@ -122,7 +133,7 @@ final class USBMonitor {
                 DispatchQueue.main.async { handler([]) }
             }
             self.learningTimeout = timeout
-            self.queue.asyncAfter(deadline: .now() + USBProfileLearningSession.timeoutSeconds, execute: timeout)
+            self.queue.asyncAfter(deadline: .now() + Self.learningTimeoutSeconds, execute: timeout)
         }
     }
 
