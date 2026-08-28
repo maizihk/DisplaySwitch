@@ -2,14 +2,15 @@
 
 ## 当前任务
 
-- 日期：2026-08-28
+- 日期：2026-08-29
 - 功能：DS-007 / macOS 设置界面、DDC 可靠性与 v2-only 收敛
 - 分支：`codex/macos-ds-007-settings-ui`
-- PR 基线：`codex/coord-ds-007-v2-only@da90d0c598ef683c53b243b804526e09ab0cce4f`
-- 实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
-- 已验证 PR HEAD：`e396001813d61cb2e7865927099d89b462ba270e`
+- PR 基线：`codex/coord-ds-007-v2-only@06dc0ff9488afbe6edd7b03e5bf9fe1993110c08`
+- 主实现提交：`55fec44f7d877f0f3c186b0cf69f0466a9d505f3`
+- 18 条 v2-only 向量收尾提交：`8bafa57db6ef1835f00dd0c2652a778bdc2e4e9a`
+- 本地完整验证 HEAD：`50424156013f523b31132971e72daa403952dac8`
 - PR：[#36 DS-007 macOS: unify settings, DDC writes, and v2-only runtime](https://github.com/maizihk/DisplaySwitch/pull/36)，base 为 `codex/coord-ds-007-v2-only`
-- GitHub Actions：macOS run [33183544250](https://github.com/maizihk/DisplaySwitch/actions/runs/33183544250) 在上述 HEAD 通过
+- GitHub Actions：等待本次 push 后的 PR #36 最新 macOS run
 
 ## 完成内容
 
@@ -35,20 +36,14 @@
   - Release：通过。
   - 完整 XCTest：47 项通过，0 失败，0 跳过。
 - 公共 v2 消息：20 条全部通过；NFC 规范化 1 条、认证 4 条全部通过。
-- 当前 v2-only 状态机：18 条公共向量全部通过。
+- 当前 v2-only 状态机：直接执行合同中的 18 条公共向量，全部通过；不再过滤历史 v1 向量。
 - DDC 自动测试覆盖 100 次快速滑杆合并、两项交错串行、取消/迟到结果、句柄恢复单次重试、回退选择、失败后下次恢复和缓存保护。
 - `./macOS/scripts/build-app.sh`：成功，生成忽略的 App 和当前架构 ZIP。
 - `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app`：通过；文件同步扩展属性出现时清理忽略产物后复验通过。
-- `contracts/protocol-v2/validate.py`：4 个 schema、1 条规范化、4 条认证、20 条消息和 20 条状态机数据合同校验通过。
+- `contracts/protocol-v2/validate.py`：4 个 schema、1 条规范化、4 条认证、20 条消息和 18 条状态机数据合同校验通过。
 - `git diff --check`：通过。
-- GitHub Actions run 33183544250：Debug、XCTest、Release 打包、产物检查、严格签名验证和 artifact 上传全部通过。
+- 最新 GitHub Actions：等待本次 push 后验证。
 - 未启动 App；自动测试使用模拟网络、时间、DDC、USB、唤醒和输入源接口。
-
-## 共享合同差异
-
-- `contracts/protocol-v2/state-machine-vectors.json` 仍包含 DS-005 的 P-014/P-015 v1 兼容向量。
-- 这两条与当前 `PROTOCOL.md`、DS-007 提案和本任务明确要求的 v2-only 行为冲突。
-- macOS 没有为通过旧向量而保留已禁止的 v1 路由；平台测试执行其余 18 条 v2-only 状态机向量。共享文件不在本任务权限内，需由协调任务校准。
 
 ## 尚未执行
 
@@ -59,8 +54,8 @@
 
 ## 安全与边界
 
-- 只修改 `macOS/` 和 `handoffs/macos.md`。
-- 未修改 Windows、`PROTOCOL.md`、`AGENTS.md`、根 README、coordination、specs、contracts、GitHub Actions、版本、tag 或 Release。
+- 平台收尾只修改 `macOS/` 和 `handoffs/macos.md`；共享文件变化仅来自普通合并指定协调基线 `06dc0ff`。
+- 未手工修改 Windows、`PROTOCOL.md`、`AGENTS.md`、根 README、coordination、specs、contracts、GitHub Actions、版本、tag 或 Release。
 - 未记录真实 IP、配对码、USB/显示器标识、本机绝对路径或个人硬件信息。
 - `macOS/.build/` 和 `macOS/outputs/` 保持 Git 忽略。
 
