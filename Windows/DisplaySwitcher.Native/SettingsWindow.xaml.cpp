@@ -92,6 +92,29 @@ namespace
         return row;
     }
 
+    Grid UsbDeviceRow(ComboBox const& devices, Button const& learn, TextBlock const& status)
+    {
+        devices.Header(nullptr); devices.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(devices, L"USB 触发设备");
+        learn.VerticalAlignment(VerticalAlignment::Center);
+        status.VerticalAlignment(VerticalAlignment::Center); status.TextWrapping(TextWrapping::NoWrap);
+
+        auto row = Grid(); row.ColumnSpacing(12);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        row.ColumnDefinitions().Append(labelColumn);
+        auto devicesColumn = ColumnDefinition(); devicesColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto learnColumn = ColumnDefinition(); learnColumn.Width(GridLengthHelper::Auto());
+        auto statusColumn = ColumnDefinition(); statusColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(learnColumn);
+        row.ColumnDefinitions().Append(statusColumn);
+
+        auto label = TextBlock(); label.Text(L"USB 触发设备"); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(devices, 1); Grid::SetColumn(learn, 2); Grid::SetColumn(status, 3);
+        row.Children().Append(label); row.Children().Append(devices);
+        row.Children().Append(learn); row.Children().Append(status);
+        return row;
+    }
+
     std::wstring Trim(std::wstring value)
     {
         auto whitespace = [](wchar_t c) { return iswspace(c) != 0; };
@@ -249,9 +272,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         auto usbMappingTitle = CreateSubheading(L"USB 离开后切到的输入源");
-        usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
+        usbTab.Content(CreatePage({ CreateSection(L"USB 切换", {
             LabeledToggleRow(L"USB 自动切换", usbAutomation_),
-            usbDevices_, learnCurrentUsb, usbDeviceStatus_,
+            UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_),
             LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_),
             usbMappingTitle, usbMappingsPanel_, usbHint }) }));
 
@@ -973,8 +996,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 if (_wcsicmp(devices_[index].LearningDevice().localReference.c_str(), selectedUsbLocalReference_.c_str()) == 0)
                 { selected = static_cast<int>(index); break; }
         usbDevices_.SelectedIndex(selected); loading_ = wasLoading;
-        usbDeviceStatus_.Text(selectedUsbLocalReference_.empty() ? L"尚未选择 USB 设备" :
-            (selected >= 0 ? L"已选择的 USB 设备当前已连接" : L"已选择的 USB 设备当前未连接；绑定仍保留"));
+        usbDeviceStatus_.Text(selectedUsbLocalReference_.empty() ? L"（未选择）" :
+            (selected >= 0 ? L"（已连接）" : L"（未连接）"));
     }
 
     void SettingsWindow::RemoveProfile(std::wstring const& id)
