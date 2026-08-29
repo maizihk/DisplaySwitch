@@ -64,3 +64,22 @@ struct ManualSwitchMenuEntry: Equatable {
         }
     }
 }
+
+enum DDCValuePresentationEntryPoint: CaseIterable {
+    case startup
+    case trayOpen
+    case displayDetection
+    case configurationReload
+    case settingsReadButton
+}
+
+enum DDCValuePresentationSource: Equatable {
+    case cache
+    case hardware
+}
+
+enum DDCValuePresentationPolicy {
+    static func source(for entryPoint: DDCValuePresentationEntryPoint) -> DDCValuePresentationSource {
+        entryPoint == .settingsReadButton ? .hardware : .cache
+    }
+}

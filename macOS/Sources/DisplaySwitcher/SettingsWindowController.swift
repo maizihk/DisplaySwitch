@@ -18,6 +18,40 @@ private extension NSColor {
     }
 }
 
+private final class DisplayInputMappingRowView: NSStackView {
+    let inputField = NSTextField()
+    private let titleLabel = NSTextField(wrappingLabelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        titleLabel.font = .systemFont(ofSize: 12)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.maximumNumberOfLines = 0
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        inputField.placeholderString = "0–65535"
+        inputField.widthAnchor.constraint(equalToConstant: 108).isActive = true
+        inputField.setContentHuggingPriority(.required, for: .horizontal)
+        inputField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        setViews([titleLabel, inputField], in: .center)
+        orientation = .horizontal
+        alignment = .firstBaseline
+        spacing = 10
+        distribution = .fill
+        widthAnchor.constraint(equalToConstant: 590).isActive = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func update(title: String, value: String, delegate: NSTextFieldDelegate) {
+        titleLabel.stringValue = title
+        inputField.stringValue = value
+        inputField.delegate = delegate
+    }
+}
+
 private final class HoverTrackingView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
@@ -229,7 +263,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onReadDDC: ((String) -> Void)?
     var onWriteDDC: ((String, DDCCommand, Int) -> Void)?
     var onRefreshDisplays: (() -> Void)?
+    var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
+    var cachedDDCValue: ((String, DDCCommand) -> Int?)?
+
+    var isSettingsVisible: Bool { window?.isVisible == true }
 
     private let linkedCheckbox = NSSwitch()
     private let controlChannelPopup = NSPopUpButton()
@@ -255,7 +293,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
     private let usbMappingStack = NSStackView()
     private lazy var learnUSBButton = NSButton(title: "学习 USB 设备…", target: self, action: #selector(learnUSBDevice))
-    private var inputFields: [Int: NSTextField] = [:]
+    private var inputFields: [String: NSTextField] = [:]
+    private var profileMappingRows: [String: DisplayInputMappingRowView] = [:]
     private var displayFeatureSwitches: [Int: [DDCCommand: NSSwitch]] = [:]
     private var displayTraySwitches: [Int: [DDCCommand: NSSwitch]] = [:]
     private var displaySliders: [Int: [DDCCommand: NSSlider]] = [:]
@@ -263,7 +302,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var displayStatusLabels: [Int: NSTextField] = [:]
     private let displayStack = NSStackView()
     private var usbLearningPending = false
-    private var usbInputFields: [Int: NSTextField] = [:]
+    private var usbInputFields: [String: NSTextField] = [:]
+    private var usbMappingRows: [String: DisplayInputMappingRowView] = [:]
     private var configurationDocument: DisplayConfigurationStoreV5Document?
     private var editingProfiles: [CollaborationProfile] = []
     private var selectedProfileIndex = 0
@@ -314,7 +354,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         updatePeerConnectionStatus(state.text, connected: state.connected)
     }
 
-    func updateDDCValues(stableID: String, values: [DDCCommand: DDCResolvedReading]) {
+    func updateDDCValues(stableID: String, values: [DDCCommand: DDCResolvedReading],
+                         diagnostic: NativeDDCDiagnosticSnapshot? = nil,
+                         skipReason: DDCReadSkipReason? = nil) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
         }) else { return }
@@ -325,19 +367,36 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             displayValueLabels[index]?[command]?.stringValue = resolved.estimated
                 ? "≈\(resolved.reading.current)" : "\(resolved.reading.current)"
         }
-        displayStatusLabels[index]?.stringValue = values.isEmpty ? "读取失败" : "已读取"
+        let estimatedCount = values.values.filter(\.estimated).count
+        let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
+        if let skipReason {
+            displayStatusLabels[index]?.stringValue = skipReason.userFacingDescription
+        } else if diagnostic?.operationCategory == .readChecksumEstimated {
+            displayStatusLabels[index]?.stringValue = "已读取（弱校验）\(diagnosticSuffix)"
+        } else if values.isEmpty {
+            displayStatusLabels[index]?.stringValue = "原生读取失败\(diagnosticSuffix)"
+        } else if estimatedCount == values.count {
+            displayStatusLabels[index]?.stringValue = "原生读取失败，显示上次可信值\(diagnosticSuffix)"
+        } else if estimatedCount > 0 {
+            displayStatusLabels[index]?.stringValue = "部分读取失败\(diagnosticSuffix)"
+        } else {
+            displayStatusLabels[index]?.stringValue = "已读取\(diagnosticSuffix)"
+        }
     }
 
-    func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?) {
+    func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?,
+                              diagnostic: NativeDDCDiagnosticSnapshot? = nil) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
         }) else { return }
         let index = offset + 1
+        let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if let value {
             displayValueLabels[index]?[command]?.stringValue = "\(value)"
-            displayStatusLabels[index]?.stringValue = "已应用"
+            displayStatusLabels[index]?.stringValue = "已应用\(diagnosticSuffix)"
         } else {
-            displayStatusLabels[index]?.stringValue = error == nil ? "已取消" : "写入失败"
+            displayStatusLabels[index]?.stringValue = (error == nil ? "已取消" : "写入失败")
+                + diagnosticSuffix
         }
     }
 
@@ -600,9 +659,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        controlChannelPopup.addItems(withTitles: ["自动", "原生 DDC", "m1ddc 回退"])
-        controlChannelPopup.target = self
-        controlChannelPopup.action = #selector(controlChannelChanged(_:))
+        controlChannelPopup.addItem(withTitle: "Apple Silicon 原生 DDC")
+        controlChannelPopup.isEnabled = false
         refreshDisplaysButton.setAccessibilityLabel("检测并刷新显示器")
         let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制通道"), controlChannelPopup, refreshDisplaysButton])
         channelRow.orientation = .horizontal
@@ -765,8 +823,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
             displayStack.addArrangedSubview(module(
-                title: "显示器 \(configuration.index)",
-                views: [displayForm(index: configuration.index)]
+                title: configuration.name,
+                views: [displayForm(index: configuration.index, name: configuration.name)]
             ))
         }
 
@@ -858,18 +916,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func displayForm(index: Int) -> NSView {
+    private func displayForm(index: Int, name: String) -> NSView {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         readButton.tag = index
-        readButton.setAccessibilityLabel("读取显示器 \(index) DDC 参数")
-        let status = NSTextField(labelWithString: "尚未读取")
+        readButton.setAccessibilityLabel("读取\(name) DDC 参数")
+        let status = NSTextField(wrappingLabelWithString: "尚未读取")
         status.textColor = .secondaryLabelColor
         status.font = .systemFont(ofSize: 11)
+        status.maximumNumberOfLines = DisplayDiagnosticLayout.maximumNumberOfLines
+        status.lineBreakMode = DisplayDiagnosticLayout.wraps ? .byWordWrapping : .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         displayStatusLabels[index] = status
         let toolbar = NSStackView(views: [readButton, status])
         toolbar.orientation = .horizontal
-        toolbar.alignment = .centerY
+        toolbar.alignment = .top
         toolbar.spacing = 10
+        status.widthAnchor.constraint(lessThanOrEqualToConstant: 460).isActive = true
 
         let headings = NSStackView(views: [
             fixedLabel("", width: 64), fixedLabel("功能", width: 44),
@@ -979,12 +1041,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    @objc private func controlChannelChanged(_ sender: NSPopUpButton) {
-        let values = DDCControlChannel.allCases
-        guard values.indices.contains(sender.indexOfSelectedItem) else { return }
-        persistDocument { $0.controlChannel = values[sender.indexOfSelectedItem] }
-    }
-
     @objc private func displaySettingChanged(_ sender: NSSwitch) {
         if sender === linkedCheckbox {
             persistDocument { $0.linkAllDisplays = sender.state == .on }
@@ -1052,8 +1108,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func persistUSBDisplayMappings() {
         persistDocument { document in
-            document.usbSwitch.displayInputs = document.displays.enumerated().compactMap { offset, display in
-                guard let field = self.usbInputFields[offset + 1],
+            document.usbSwitch.displayInputs = document.displays.compactMap { display in
+                guard let field = self.usbInputFields[display.id.lowercased()],
                       let value = Int(field.stringValue), (0...65535).contains(value) else { return nil }
                 return USBDisplayInputMapping(displayID: display.id, targetInput: value)
             }
@@ -1079,8 +1135,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profile.peerPort = peerPortField.integerValue
         profile.pairingCode = pairingCodeField.stringValue.precomposedStringWithCanonicalMapping
         if let requestedEnabled { profile.coordinationEnabled = requestedEnabled }
-        let mapping = document.displays.enumerated().compactMap { offset, display -> DisplayInputMapping? in
-            guard let field = inputFields[offset + 1], let value = Int(field.stringValue),
+        let mapping = document.displays.compactMap { display -> DisplayInputMapping? in
+            guard let field = inputFields[display.id.lowercased()], let value = Int(field.stringValue),
                   (0...65535).contains(value) else { return nil }
             return DisplayInputMapping(displayID: display.id, peerInput: value)
         }
@@ -1111,7 +1167,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             editingProfiles = document.collaborationProfiles
             clearValidationError()
             onSave?()
-            reloadValues()
+            reloadValues(rebuildDisplayForms: false)
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
@@ -1141,7 +1197,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         launchAtLoginCheckbox.state = (status == .enabled || status == .requiresApproval) ? .on : .off
     }
 
-    private func reloadValues() {
+    private func reloadValues(rebuildDisplayForms shouldRebuildDisplayForms: Bool = true) {
         learnUSBButton.isEnabled = true
         let loaded = AppPreferences.loadDisplayConfigurations()
         configurationDocument = loaded.document
@@ -1157,7 +1213,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbLearningPending = false
         reloadProfilePopup()
         linkedCheckbox.state = loaded.document.linkAllDisplays ? .on : .off
-        controlChannelPopup.selectItem(at: DDCControlChannel.allCases.firstIndex(of: loaded.document.controlChannel) ?? 0)
+        controlChannelPopup.selectItem(at: 0)
         usbAutomationCheckbox.state = loaded.document.usbSwitch.enabled ? .on : .off
         usbArrivalSwitchCheckbox.state = loaded.document.usbSwitch.collaborationWakeEnabled ? .on : .off
         usbStatusLabel.stringValue = loaded.document.usbSwitch.enabled ? "等待设备状态" : "USB 切换未启用"
@@ -1165,7 +1221,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         reloadUSBControls(document: loaded.document)
         refreshSelectedCollaborationStatus()
         let configurations = loaded.configurations
-        rebuildDisplayForms(configurations)
+        if shouldRebuildDisplayForms {
+            rebuildDisplayForms(configurations)
+        }
         for configuration in configurations {
             let index = configuration.index
             guard let stored = loaded.document.displays[safe: index - 1] else { continue }
@@ -1181,6 +1239,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 displaySliders[index]?[command]?.isEnabled = enabled
             }
         }
+        restoreCachedDDCValues(in: loaded.document)
         loadSelectedProfileFields()
         refreshSelectedCollaborationStatus()
 
@@ -1191,6 +1250,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             launchAtLoginCheckbox.state = .off
             launchAtLoginCheckbox.isEnabled = false
             launchAtLoginCheckbox.toolTip = "需要 macOS 13 或更高版本"
+        }
+    }
+
+    private func restoreCachedDDCValues(in document: DisplayConfigurationStoreV5Document) {
+        guard let cachedDDCValue else { return }
+        let entries = DisplayCachedValuePresentation.entries(
+            displays: document.displays,
+            cachedValue: cachedDDCValue
+        )
+        let indexByStableID = Dictionary(uniqueKeysWithValues: document.displays.enumerated().map {
+            ($0.element.id.lowercased(), $0.offset + 1)
+        })
+        for entry in entries {
+            guard let index = indexByStableID[entry.stableID] else { continue }
+            displaySliders[index]?[entry.command]?.integerValue = entry.value
+            displayValueLabels[index]?[entry.command]?.stringValue = entry.label
         }
     }
 
@@ -1222,25 +1297,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         usbCollaborationProfilePopup.isEnabled = true
 
-        usbMappingStack.arrangedSubviews.forEach {
-            usbMappingStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-        usbInputFields.removeAll()
         let mappings = Dictionary(uniqueKeysWithValues: document.usbSwitch.displayInputs.map {
             ($0.displayID.lowercased(), $0.targetInput)
         })
-        for (offset, display) in document.displays.enumerated() {
-            let field = NSTextField()
-            field.placeholderString = "0–65535"
-            field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
-            field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 120).isActive = true
-            usbInputFields[offset + 1] = field
-            usbMappingStack.addArrangedSubview(formRow(
-                title: "显示器 \(offset + 1) 离开后输入源", control: field
-            ))
+        let descriptors = DisplayInputMappingPresentation.rows(
+            displays: document.displays, context: .usb
+        )
+        var reconciled: [String: DisplayInputMappingRowView] = [:]
+        for descriptor in descriptors {
+            let row = usbMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
+            row.update(
+                title: descriptor.title,
+                value: mappings[descriptor.displayID].map(String.init) ?? "",
+                delegate: self
+            )
+            reconciled[descriptor.displayID] = row
         }
+        replaceMappingRows(in: usbMappingStack, rows: descriptors.compactMap {
+            reconciled[$0.displayID]
+        })
+        usbMappingRows = reconciled
+        usbInputFields = reconciled.mapValues(\.inputField)
     }
 
     private func loadSelectedProfileFields() {
@@ -1255,33 +1332,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func rebuildProfileMappings(profile: CollaborationProfile) {
-        profileMappingStack.arrangedSubviews.forEach {
-            profileMappingStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
         profileMappingStack.orientation = .vertical
         profileMappingStack.alignment = .leading
         profileMappingStack.spacing = 6
-        inputFields.removeAll()
         let mappings = Dictionary(uniqueKeysWithValues: profile.displayInputs.map {
             ($0.displayID.lowercased(), $0.peerInput)
         })
-        for (offset, display) in (configurationDocument?.displays ?? []).enumerated() {
-            let index = offset + 1
-            let field = NSTextField()
-            field.placeholderString = "0–65535"
-            field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
-            field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 120).isActive = true
-            inputFields[index] = field
-            let row = NSStackView(views: [
-                fixedLabel("显示器 \(index) 输入源", width: 130), field
-            ])
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 8
-            profileMappingStack.addArrangedSubview(row)
+        let descriptors = DisplayInputMappingPresentation.rows(
+            displays: configurationDocument?.displays ?? [], context: .collaboration
+        )
+        var reconciled: [String: DisplayInputMappingRowView] = [:]
+        for descriptor in descriptors {
+            let row = profileMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
+            row.update(
+                title: descriptor.title,
+                value: mappings[descriptor.displayID].map(String.init) ?? "",
+                delegate: self
+            )
+            reconciled[descriptor.displayID] = row
         }
+        replaceMappingRows(in: profileMappingStack, rows: descriptors.compactMap {
+            reconciled[$0.displayID]
+        })
+        profileMappingRows = reconciled
+        inputFields = reconciled.mapValues(\.inputField)
+    }
+
+    private func replaceMappingRows(in stack: NSStackView, rows: [DisplayInputMappingRowView]) {
+        let desired = Set(rows.map(ObjectIdentifier.init))
+        for view in stack.arrangedSubviews where !desired.contains(ObjectIdentifier(view)) {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        stack.setViews(rows, in: .center)
     }
 
     @objc private func profileSelectionChanged(_ sender: NSPopUpButton) {
@@ -1480,5 +1563,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbLearningPending = false
         learnUSBButton.isEnabled = true
         onCancelUSBLearning?()
+        onWindowClosed?()
     }
 }

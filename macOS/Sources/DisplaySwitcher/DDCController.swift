@@ -1,27 +1,5 @@
 import Foundation
 
-final class UserDefaultsDDCValueCache: DDCValueCache {
-    private let defaults: UserDefaults
-
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
-    }
-
-    func value(stableID: String, command: DDCCommand) -> Int? {
-        let key = cacheKey(stableID: stableID, command: command)
-        guard defaults.object(forKey: key) != nil else { return nil }
-        return defaults.integer(forKey: key)
-    }
-
-    func setValue(_ value: Int, stableID: String, command: DDCCommand) {
-        defaults.set(value, forKey: cacheKey(stableID: stableID, command: command))
-    }
-
-    private func cacheKey(stableID: String, command: DDCCommand) -> String {
-        "LastValue.stable.\(stableID.lowercased()).\(command.m1ddcName)"
-    }
-}
-
 final class M1DDCBackend: DDCBackend {
     let identifier = "m1ddc"
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
@@ -144,9 +122,8 @@ final class DDCController {
 
     init() {
         let native = NativeDDCBackend(knownDisplays: [])
-        let fallback = M1DDCBackend()
         service = DDCControlService(
-            router: DDCBackendRouter(backends: [native, fallback]),
+            router: DDCBackendRouter(backends: [native]),
             cache: UserDefaultsDDCValueCache()
         )
     }
@@ -156,19 +133,15 @@ final class DDCController {
 #if arch(arm64)
         return true
 #else
-        return M1DDCBackend.detectedExecutablePath != nil
+        return false
 #endif
     }
 
     static var backendSummaryWithoutHardwareAccess: String {
 #if arch(arm64)
-        return M1DDCBackend.detectedExecutablePath == nil
-            ? "Apple Silicon 原生硬件 DDC 可用；未检测到 m1ddc 回退。"
-            : "Apple Silicon 原生硬件 DDC 可用；m1ddc 作为失败回退。"
+        return "Apple Silicon 原生硬件 DDC；本版本不启用 m1ddc 回退。"
 #else
-        return M1DDCBackend.detectedExecutablePath == nil
-            ? "Intel Mac 没有内置原生硬件 DDC 后端，且未检测到 m1ddc；不使用软件调光替代。"
-            : "Intel Mac 使用 m1ddc 硬件 DDC 后端；不使用软件调光替代。"
+        return "Intel Mac 不支持本版本的 Apple Silicon 原生硬件 DDC；不使用软件调光或 m1ddc 伪装。"
 #endif
     }
 
@@ -187,6 +160,9 @@ final class DDCController {
         let known = Self.knownDisplays(from: existingConfigurations)
         service.updateKnownDisplays(known)
         let detected = try service.enumerateDisplays()
+        let presentationNames = DisplayPresentationNameResolver.names(
+            for: detected, knownDisplays: known
+        )
         let rank = Dictionary(uniqueKeysWithValues: known.enumerated().map {
             ($0.element.stableID.lowercased(), $0.offset)
         })
@@ -196,7 +172,11 @@ final class DDCController {
             return lhsRank < rhsRank
         }.map(\.element)
         return ordered.enumerated().map { offset, display in
-            DetectedDisplay(index: offset + 1, name: display.name, systemUUID: display.selector.uppercased())
+            DetectedDisplay(
+                index: offset + 1,
+                name: presentationNames[display.stableID.lowercased()] ?? display.name,
+                systemUUID: display.selector.uppercased()
+            )
         }
     }
 
@@ -208,7 +188,7 @@ final class DDCController {
         service.setControlChannel(channel)
     }
 
-    func read(targets: [DDCDisplayTarget]) -> [String: [DDCCommand: DDCResolvedReading]] {
+    func read(targets: [DDCDisplayTarget]) -> DDCReadBatchResult {
         service.read(targets)
     }
 
@@ -217,7 +197,7 @@ final class DDCController {
     }
 
     func write(stableID: String, selector: String, command: DDCCommand, value: Int) throws {
-        let target = DDCDisplayTarget(stableID: stableID, selector: selector, readEnabled: true,
+        let target = DDCDisplayTarget(stableID: stableID, selector: selector,
                                       enabledCommands: [command])
         if let error = service.write(command: command, value: value, targets: [target])[stableID] {
             throw error
@@ -226,6 +206,10 @@ final class DDCController {
 
     func cachedValue(stableID: String, command: DDCCommand) -> Int? {
         service.cachedValue(stableID: stableID, command: command)
+    }
+
+    func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
+        service.diagnostic(selector: selector)
     }
 
     private static func knownDisplays(from configurations: [DisplayConfiguration]) -> [DDCKnownDisplay] {
@@ -250,13 +234,13 @@ enum DDCError: LocalizedError {
             let suffix = detail.map { "\n\n\($0)" } ?? ""
             return "命令执行失败（退出码 \(status)）：\n\(command)\(suffix)"
         case .detectionFailed:
-            return "原生 DDC 和 m1ddc 都没有返回可用的外接显示器。"
+            return "Apple Silicon 原生 DDC 没有返回可用的外接显示器。"
         case let .invalidValue(value):
             return "DDC 数值超出有效范围：\(value)"
         case let .inputNotConfigured(displayName):
             return "\(displayName) 尚未配置输入源，未执行切屏。"
         case .m1ddcUnavailable:
-            return "原生 DDC 不可用，且未安装 m1ddc 回退后端。"
+            return "Apple Silicon 原生 DDC 不可用；本版本不启用 m1ddc 回退。"
         case let .nativeWriteFailed(command, value):
             return "原生 DDC 写入失败：VCP 0x\(String(format: "%02X", command.rawValue)) = \(value)。"
         }
