@@ -45,6 +45,8 @@ namespace DisplaySwitcher::Native
         CollaborationProfile* FindCollaborationProfile(std::wstring const& profileId) noexcept;
         std::vector<CollaborationProfile> ReadonlyEnabledProfiles() const;
         std::vector<CollaborationProfile> EnabledCompleteProfiles() const;
+        std::vector<CollaborationProfile> UnboundBootstrapProfiles() const;
+        std::optional<int> V2ListenerPort() const;
         std::vector<std::wstring> OrderedDisplayIds() const;
         bool IsProfileDisplayMappingComplete(std::wstring const& profileId) const noexcept;
         int PeerInputForDisplay(std::wstring const& profileId, std::wstring const& displayId, int fallback = -1) const noexcept;

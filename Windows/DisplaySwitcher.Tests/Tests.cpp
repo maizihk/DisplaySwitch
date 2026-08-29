@@ -1099,11 +1099,35 @@ namespace
         auto senderEndpoint = GenerateIdentifier();
         auto receiverEndpoint = GenerateIdentifier();
         std::wstring senderSavedPeerEndpoint;
-        auto receiverProfile = Profile(L"首次接收端", true);
+        auto receiverConfig = ConfigWithDisplays(1);
+        auto receiverProfile = receiverConfig.collaborationProfiles.front();
+        receiverProfile.name = L"首次接收端";
         receiverProfile.peerHost = L"simulated-peer";
         receiverProfile.peerPort = 49152;
         receiverProfile.peerEndpointId.clear();
         receiverProfile.peerProtocolVersion.reset();
+        receiverProfile.coordinationEnabled = false;
+        receiverConfig.collaborationProfiles = { receiverProfile };
+        receiverConfig.listenPort = 49321;
+        auto bootstrapCandidates = receiverConfig.UnboundBootstrapProfiles();
+        Check(receiverConfig.EnabledCompleteProfiles().empty() && bootstrapCandidates.size() == 1 &&
+            receiverConfig.V2ListenerPort() == receiverConfig.listenPort,
+            L"首次 endpoint：合法未绑定配置不得进入正常协同，但必须监听配置的本机端口");
+        auto invalidBootstrap = receiverConfig;
+        invalidBootstrap.collaborationProfiles[0].peerHost.clear();
+        Check(invalidBootstrap.UnboundBootstrapProfiles().empty() && !invalidBootstrap.V2ListenerPort(),
+            L"首次 endpoint：基础配置不完整时不得成为 bootstrap 候选或启动监听");
+        auto unknownBootstrap = receiverConfig;
+        unknownBootstrap.collaborationProfiles[0].peerProtocolVersion = 3;
+        Check(unknownBootstrap.UnboundBootstrapProfiles().empty() && !unknownBootstrap.V2ListenerPort(),
+            L"首次 endpoint：未知协议版本不得成为 bootstrap 候选或启动监听");
+        auto boundConfig = receiverConfig;
+        boundConfig.collaborationProfiles[0].coordinationEnabled = true;
+        boundConfig.collaborationProfiles[0].peerEndpointId = GenerateIdentifier();
+        boundConfig.collaborationProfiles[0].peerProtocolVersion = 2;
+        Check(boundConfig.UnboundBootstrapProfiles().empty() && boundConfig.EnabledCompleteProfiles().size() == 1 &&
+            boundConfig.V2ListenerPort() == boundConfig.listenPort,
+            L"首次 endpoint：已绑定配置必须继续只走正常定向协同路径");
         V2Message probe;
         probe.type = L"status_probe"; probe.eventId = GenerateIdentifier();
         probe.sourceEndpointId = senderEndpoint; probe.targetEndpointId.reset();
@@ -1114,11 +1138,24 @@ namespace
         auto hostMatcher = [](CollaborationProfile const& profile, DatagramSource const& source)
         { return profile.peerHost == L"simulated-peer" && profile.peerPort == source.port && source.address == L"simulated-address"; };
         V2ReplayCache unboundReplay;
-        auto unbound = MatchUnboundStatusProbe({ receiverProfile }, receiverEndpoint, simulatedSource,
+        auto noCandidate = MatchUnboundStatusProbe({}, receiverEndpoint, simulatedSource,
+            probe, 5000, 900, hostMatcher);
+        Check(noCandidate.status == UnboundProbeMatchStatus::NoMatch,
+            L"首次 endpoint：零候选必须安全拒绝");
+        auto wrongPortSource = simulatedSource; ++wrongPortSource.port;
+        auto wrongPort = MatchUnboundStatusProbe(bootstrapCandidates, receiverEndpoint, wrongPortSource,
+            probe, 5000, 950, hostMatcher);
+        Check(wrongPort.status == UnboundProbeMatchStatus::NoMatch,
+            L"首次 endpoint：来源端口不匹配必须安全拒绝");
+        auto unbound = MatchUnboundStatusProbe(bootstrapCandidates, receiverEndpoint, simulatedSource,
             probe, 5000, 1000, hostMatcher, &unboundReplay);
         Check(senderSavedPeerEndpoint.empty() && receiverProfile.peerEndpointId.empty() &&
             unbound.status == UnboundProbeMatchStatus::Matched && unbound.profileIndex == 0,
             L"首次 endpoint：双方 peerEndpointID 为空时必须按 host/port、配对凭据和唯一规则匹配");
+        auto repeated = MatchUnboundStatusProbe(bootstrapCandidates, receiverEndpoint, simulatedSource,
+            probe, 5000, 1050, hostMatcher, &unboundReplay);
+        Check(repeated.status == UnboundProbeMatchStatus::Matched && repeated.duplicate,
+            L"首次 endpoint：完全相同的重复探测必须可重发缓存响应且不得重复产生副作用");
         auto response = CreateUnboundStatusResponse(probe, receiverEndpoint, 5000,
             GenerateV2Nonce(), receiverProfile.pairingCode);
         auto responseKey = DeriveV2AuthenticationKey(probeSecret, receiverEndpoint);
@@ -1148,8 +1185,11 @@ namespace
             simulatedSource, probe, 5000, 1300, hostMatcher);
         Check(conflict.status == UnboundProbeMatchStatus::EndpointConflict,
             L"首次 endpoint：本机已有相同 endpoint 绑定时必须拒绝空目标探测");
-        Check(noHardware(first) && first.usbCalls == 0 && first.bluetoothCalls == 0 &&
-            first.wakeCalls == 0 && first.ddcCalls == 0,
+        auto bootstrapNetworkReplies = static_cast<int>(unbound.status == UnboundProbeMatchStatus::Matched) +
+            static_cast<int>(repeated.status == UnboundProbeMatchStatus::Matched);
+        int bootstrapUsbCalls{}, bootstrapBluetoothCalls{}, bootstrapWakeCalls{}, bootstrapDdcCalls{};
+        Check(bootstrapNetworkReplies == 2 && bootstrapUsbCalls == 0 && bootstrapBluetoothCalls == 0 &&
+            bootstrapWakeCalls == 0 && bootstrapDdcCalls == 0 && noHardware(first),
             L"首次 endpoint：匹配、拒绝和回复过程必须保持零硬件副作用");
     }
 }

@@ -123,6 +123,7 @@ namespace DisplaySwitcher::Native
             config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.productId : -1,
             config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.deviceLocalReference : L"");
         auto completeProfiles = config.EnabledCompleteProfiles();
+        auto bootstrapProfiles = config.UnboundBootstrapProfiles();
         std::vector<V2Target> v2Targets;
         for (auto const& profile : completeProfiles)
             if (profile.peerProtocolVersion == 2 && IsValidDisplayId(profile.peerEndpointId) && !EqualId(profile.peerEndpointId, config.localEndpointId) &&
@@ -130,8 +131,7 @@ namespace DisplaySwitcher::Native
                 { return candidate.peerProtocolVersion == 2 && EqualId(candidate.peerEndpointId, profile.peerEndpointId); }) == 1)
                 v2Targets.push_back({ profile.peerEndpointId, 2, false });
         auto hasV2 = std::any_of(v2Targets.begin(), v2Targets.end(), [](auto const& target) { return target.protocolVersion == 2; });
-        auto hasUnboundV2 = std::any_of(completeProfiles.begin(), completeProfiles.end(), [](auto const& profile)
-        { return profile.peerEndpointId.empty() && (!profile.peerProtocolVersion || *profile.peerProtocolVersion == 2); });
+        auto hasUnboundV2 = !bootstrapProfiles.empty();
         v2StateMachine_ = std::make_unique<V2StateMachine>(V2StateInitial{
             config.localEndpointId, hasV2, V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
         bool collaborationValid{};
@@ -153,7 +153,7 @@ namespace DisplaySwitcher::Native
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
         v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
-        if (hasV2 || hasUnboundV2) peer_->Start(config.listenPort);
+        if (auto listenerPort = config.V2ListenerPort()) peer_->Start(*listenerPort);
         else SetPeerConnectionStatus(!config.ReadonlyEnabledProfiles().empty() ? L"协同配置不完整" : L"协同未启用", false);
         if (hasUnboundV2 && !hasV2) SetPeerConnectionStatus(L"等待首次检测", false);
         if (hasV2) StartPeerHealthCheck();
@@ -469,7 +469,9 @@ namespace DisplaySwitcher::Native
     bool Controller::HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source)
     {
         auto config = Config();
-        std::vector<CollaborationProfile> candidates = config.EnabledCompleteProfiles();
+        std::vector<CollaborationProfile> candidates = config.UnboundBootstrapProfiles();
+        for (auto const& profile : config.collaborationProfiles)
+            if (!profile.peerEndpointId.empty()) candidates.push_back(profile);
         if (profileDetection_)
         {
             auto const& draft = profileDetection_->profile;

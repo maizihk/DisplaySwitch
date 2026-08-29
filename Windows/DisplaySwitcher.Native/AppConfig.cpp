@@ -591,6 +591,25 @@ namespace DisplaySwitcher::Native
         return result;
     }
 
+    std::vector<CollaborationProfile> AppConfig::UnboundBootstrapProfiles() const
+    {
+        std::vector<CollaborationProfile> result;
+        if (displayConfigurationSafeMode || !IsValidDisplayId(localEndpointId)) return result;
+        for (auto const& profile : collaborationProfiles)
+            if (profile.peerEndpointId.empty() &&
+                (!profile.peerProtocolVersion || *profile.peerProtocolVersion == 2) &&
+                InspectProfile(profile.id).complete)
+                result.push_back(profile);
+        return result;
+    }
+
+    std::optional<int> AppConfig::V2ListenerPort() const
+    {
+        if (displayConfigurationSafeMode || listenPort < 1 || listenPort > 65535) return std::nullopt;
+        if (EnabledCompleteProfiles().empty() && UnboundBootstrapProfiles().empty()) return std::nullopt;
+        return listenPort;
+    }
+
     std::vector<std::wstring> AppConfig::OrderedDisplayIds() const
     {
         std::vector<std::wstring> result;
