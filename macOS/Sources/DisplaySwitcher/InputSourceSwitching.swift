@@ -308,49 +308,76 @@ final class InputSourceTransportLeaseRetainer {
     }
 }
 
-/// Serializes native I2C access while allowing a waiting input switch to run before queued control work.
+/// Serializes native I2C access per display while allowing a waiting input switch to run before
+/// queued control work for that same display. Independent displays use independent lanes.
 final class NativeI2CHardwareArbiter {
     static let shared = NativeI2CHardwareArbiter()
 
-    private let condition = NSCondition()
-    private var active = false
-    private var waitingInputSwitches = 0
+    private final class Lane {
+        let condition = NSCondition()
+        var active = false
+        var waitingInputSwitches = 0
+    }
+
+    private let lanesLock = NSLock()
+    private var lanes: [String: Lane] = [:]
 
     var waitingInputSwitchCount: Int {
-        condition.lock()
-        defer { condition.unlock() }
-        return waitingInputSwitches
+        lanesLock.lock()
+        let snapshot = Array(lanes.values)
+        lanesLock.unlock()
+        return snapshot.reduce(0) { partialResult, lane in
+            lane.condition.lock()
+            defer { lane.condition.unlock() }
+            return partialResult + lane.waitingInputSwitches
+        }
     }
 
-    func withControlOperation<T>(_ operation: () throws -> T) rethrows -> T {
-        condition.lock()
-        while active || waitingInputSwitches > 0 {
-            condition.wait()
+    func withControlOperation<T>(displayKey: String = "global",
+                                 _ operation: () throws -> T) rethrows -> T {
+        let lane = lane(for: displayKey)
+        lane.condition.lock()
+        while lane.active || lane.waitingInputSwitches > 0 {
+            lane.condition.wait()
         }
-        active = true
-        condition.unlock()
-        defer { release() }
+        lane.active = true
+        lane.condition.unlock()
+        defer { release(lane) }
         return try operation()
     }
 
-    func withInputSwitch<T>(_ operation: () throws -> T) rethrows -> T {
-        condition.lock()
-        waitingInputSwitches += 1
-        while active {
-            condition.wait()
+    func withInputSwitch<T>(displayKey: String = "global",
+                            _ operation: () throws -> T) rethrows -> T {
+        let lane = lane(for: displayKey)
+        lane.condition.lock()
+        lane.waitingInputSwitches += 1
+        while lane.active {
+            lane.condition.wait()
         }
-        waitingInputSwitches -= 1
-        active = true
-        condition.unlock()
-        defer { release() }
+        lane.waitingInputSwitches -= 1
+        lane.active = true
+        lane.condition.unlock()
+        defer { release(lane) }
         return try operation()
     }
 
-    private func release() {
-        condition.lock()
-        active = false
-        condition.broadcast()
-        condition.unlock()
+    private func lane(for displayKey: String) -> Lane {
+        let normalizedKey = displayKey.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        lanesLock.lock()
+        defer { lanesLock.unlock() }
+        if let existing = lanes[normalizedKey] {
+            return existing
+        }
+        let lane = Lane()
+        lanes[normalizedKey] = lane
+        return lane
+    }
+
+    private func release(_ lane: Lane) {
+        lane.condition.lock()
+        lane.active = false
+        lane.condition.broadcast()
+        lane.condition.unlock()
     }
 }
 
@@ -360,101 +387,166 @@ final class InputSourceSwitchService {
     private let hardwareArbiter: NativeI2CHardwareArbiter
     private let leaseRetainer: InputSourceTransportLeaseRetainer
     private let diagnostics: InputSourceDiagnosticRecording
+    private let executionQueue: DispatchQueue
 
     init(resolver: InputSourceTransportResolving,
          hardwareArbiter: NativeI2CHardwareArbiter = .shared,
          leaseRetainer: InputSourceTransportLeaseRetainer = InputSourceTransportLeaseRetainer(),
-         diagnostics: InputSourceDiagnosticRecording = InputSourceDiagnosticStore.shared) {
+         diagnostics: InputSourceDiagnosticRecording = InputSourceDiagnosticStore.shared,
+         executionQueue: DispatchQueue = DispatchQueue(
+             label: "DisplaySwitcher.input-source.targets", qos: .userInitiated,
+             attributes: .concurrent
+         )) {
         self.resolver = resolver
         self.hardwareArbiter = hardwareArbiter
         self.leaseRetainer = leaseRetainer
         self.diagnostics = diagnostics
+        self.executionQueue = executionQueue
     }
 
     func switchInputs(
         _ targets: [InputSourceSwitchTarget],
         origin: InputSourceSwitchOrigin = .unspecified,
-        operationsAllowed: () -> Bool = { true }
+        operationsAllowed: @escaping () -> Bool = { true }
     ) -> InputSourceSwitchBatchResult {
-        var outcomes: [InputSourceSwitchOutcome] = []
-        outcomes.reserveCapacity(targets.count)
+        guard !targets.isEmpty else { return InputSourceSwitchBatchResult(outcomes: []) }
+        let outcomesLock = NSLock()
+        var outcomes = Array<InputSourceSwitchOutcome?>(repeating: nil, count: targets.count)
+        var firstIndexByDisplayKey: [String: Int] = [:]
+        var duplicateSourceIndex: [Int: Int] = [:]
+        let group = DispatchGroup()
 
-        for target in targets {
+        for (index, target) in targets.enumerated() {
             guard operationsAllowed() else {
-                outcomes.append(InputSourceSwitchOutcome(
+                outcomes[index] = InputSourceSwitchOutcome(
                     stableID: target.stableID,
                     failure: .blocked(stableID: target.stableID)
-                ))
+                )
                 continue
             }
             guard let targetInput = target.targetInput else {
-                outcomes.append(InputSourceSwitchOutcome(
+                outcomes[index] = InputSourceSwitchOutcome(
                     stableID: target.stableID,
                     failure: .missingInput(stableID: target.stableID)
-                ))
+                )
                 continue
             }
             guard let nativeValue = UInt16(exactly: targetInput) else {
-                outcomes.append(InputSourceSwitchOutcome(
+                outcomes[index] = InputSourceSwitchOutcome(
                     stableID: target.stableID,
                     failure: .invalidInput(stableID: target.stableID, value: targetInput)
-                ))
+                )
                 continue
             }
+            let displayKey = normalizedDisplayKey(for: target)
+            if let firstIndex = firstIndexByDisplayKey[displayKey] {
+                duplicateSourceIndex[index] = firstIndex
+                continue
+            }
+            firstIndexByDisplayKey[displayKey] = index
             let alternateValue = target.alternateInput.flatMap(UInt16.init(exactly:))
-            let context = diagnostics.beginTarget(
-                origin: origin,
-                stableID: target.stableID,
-                targetValue: nativeValue,
-                alternateValue: alternateValue
-            )
-
-            do {
-                let succeeded = try hardwareArbiter.withInputSwitch {
-                    guard operationsAllowed() else {
-                        throw InputSourceSwitchFailure.blocked(stableID: target.stableID)
-                    }
-                    diagnostics.record(.resolverStarted, context: context)
-                    let transport = try resolver.resolve(selector: target.selector, context: context)
-                    diagnostics.record(.writeAdapterReached, context: context)
-                    let succeeded = transport.writeInput(nativeValue, context: context)
-                    leaseRetainer.retain(transport)
-                    return succeeded
-                }
-                diagnostics.record(
-                    .writeTransportResult(acceptedByTransport: succeeded), context: context
+            group.enter()
+            executionQueue.async { [self] in
+                let outcome = switchInput(
+                    target: target,
+                    nativeValue: nativeValue,
+                    alternateValue: alternateValue,
+                    origin: origin,
+                    operationsAllowed: operationsAllowed
                 )
-                outcomes.append(InputSourceSwitchOutcome(
-                    stableID: target.stableID,
-                    failure: succeeded ? nil : .writeFailed(stableID: target.stableID)
-                ))
-            } catch let failure as InputSourceSwitchFailure {
-                diagnostics.record(.failed(reason: "input-service-error"), context: context)
-                let normalizedFailure: InputSourceSwitchFailure
-                switch failure {
-                case .displayUnavailable:
-                    normalizedFailure = .displayUnavailable(stableID: target.stableID)
-                case .writeFailed:
-                    normalizedFailure = .writeFailed(stableID: target.stableID)
-                case .blocked:
-                    normalizedFailure = .blocked(stableID: target.stableID)
-                case .missingInput:
-                    normalizedFailure = .missingInput(stableID: target.stableID)
-                case let .invalidInput(_, value):
-                    normalizedFailure = .invalidInput(stableID: target.stableID, value: value)
-                }
-                outcomes.append(InputSourceSwitchOutcome(
-                    stableID: target.stableID, failure: normalizedFailure
-                ))
-            } catch {
-                diagnostics.record(.failed(reason: "resolver-error"), context: context)
-                outcomes.append(InputSourceSwitchOutcome(
-                    stableID: target.stableID,
-                    failure: .displayUnavailable(stableID: target.stableID)
-                ))
+                outcomesLock.lock()
+                outcomes[index] = outcome
+                outcomesLock.unlock()
+                group.leave()
             }
         }
+        group.wait()
+        for (duplicateIndex, sourceIndex) in duplicateSourceIndex {
+            guard let sourceOutcome = outcomes[sourceIndex] else { continue }
+            outcomes[duplicateIndex] = sourceOutcome.replacingStableID(targets[duplicateIndex].stableID)
+        }
 
-        return InputSourceSwitchBatchResult(outcomes: outcomes)
+        return InputSourceSwitchBatchResult(outcomes: outcomes.compactMap { $0 })
+    }
+
+    private func normalizedDisplayKey(for target: InputSourceSwitchTarget) -> String {
+        let selector = target.selector.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (selector.isEmpty ? target.stableID : selector).uppercased()
+    }
+
+    private func switchInput(
+        target: InputSourceSwitchTarget,
+        nativeValue: UInt16,
+        alternateValue: UInt16?,
+        origin: InputSourceSwitchOrigin,
+        operationsAllowed: @escaping () -> Bool
+    ) -> InputSourceSwitchOutcome {
+        let context = diagnostics.beginTarget(
+            origin: origin,
+            stableID: target.stableID,
+            targetValue: nativeValue,
+            alternateValue: alternateValue
+        )
+        do {
+            let succeeded = try hardwareArbiter.withInputSwitch(displayKey: target.selector) {
+                guard operationsAllowed() else {
+                    throw InputSourceSwitchFailure.blocked(stableID: target.stableID)
+                }
+                diagnostics.record(.resolverStarted, context: context)
+                let transport = try resolver.resolve(selector: target.selector, context: context)
+                diagnostics.record(.writeAdapterReached, context: context)
+                let succeeded = transport.writeInput(nativeValue, context: context)
+                leaseRetainer.retain(transport)
+                return succeeded
+            }
+            diagnostics.record(.writeTransportResult(acceptedByTransport: succeeded), context: context)
+            return InputSourceSwitchOutcome(
+                stableID: target.stableID,
+                failure: succeeded ? nil : .writeFailed(stableID: target.stableID)
+            )
+        } catch let failure as InputSourceSwitchFailure {
+            diagnostics.record(.failed(reason: "input-service-error"), context: context)
+            let normalizedFailure: InputSourceSwitchFailure
+            switch failure {
+            case .displayUnavailable:
+                normalizedFailure = .displayUnavailable(stableID: target.stableID)
+            case .writeFailed:
+                normalizedFailure = .writeFailed(stableID: target.stableID)
+            case .blocked:
+                normalizedFailure = .blocked(stableID: target.stableID)
+            case .missingInput:
+                normalizedFailure = .missingInput(stableID: target.stableID)
+            case let .invalidInput(_, value):
+                normalizedFailure = .invalidInput(stableID: target.stableID, value: value)
+            }
+            return InputSourceSwitchOutcome(stableID: target.stableID, failure: normalizedFailure)
+        } catch {
+            diagnostics.record(.failed(reason: "resolver-error"), context: context)
+            return InputSourceSwitchOutcome(
+                stableID: target.stableID,
+                failure: .displayUnavailable(stableID: target.stableID)
+            )
+        }
+    }
+}
+
+private extension InputSourceSwitchOutcome {
+    func replacingStableID(_ stableID: String) -> InputSourceSwitchOutcome {
+        let normalizedFailure: InputSourceSwitchFailure?
+        switch failure {
+        case .none:
+            normalizedFailure = nil
+        case .blocked:
+            normalizedFailure = .blocked(stableID: stableID)
+        case .missingInput:
+            normalizedFailure = .missingInput(stableID: stableID)
+        case let .invalidInput(_, value):
+            normalizedFailure = .invalidInput(stableID: stableID, value: value)
+        case .displayUnavailable:
+            normalizedFailure = .displayUnavailable(stableID: stableID)
+        case .writeFailed:
+            normalizedFailure = .writeFailed(stableID: stableID)
+        }
+        return InputSourceSwitchOutcome(stableID: stableID, failure: normalizedFailure)
     }
 }

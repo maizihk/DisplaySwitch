@@ -120,7 +120,7 @@ final class NativeDDCBackend: DDCBackend {
                                  category: .serviceUnmatched)
                 throw DDCBackendError.displayUnavailable(stableID: stableID)
             }
-            let readOutcome = hardwareArbiter.withControlOperation {
+            let readOutcome = hardwareArbiter.withControlOperation(displayKey: selector) {
                 Self.read(
                     service: service,
                     chipAddress: display.chipAddress,
@@ -185,7 +185,7 @@ final class NativeDDCBackend: DDCBackend {
                                  category: .serviceUnmatched)
                 throw DDCBackendError.displayUnavailable(stableID: stableID)
             }
-            let writeSucceeded = hardwareArbiter.withControlOperation {
+            let writeSucceeded = hardwareArbiter.withControlOperation(displayKey: selector) {
                 Self.write(
                     service: service, chipAddress: display.chipAddress,
                     command: command.rawValue, value: nativeValue,

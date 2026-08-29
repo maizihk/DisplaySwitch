@@ -9,6 +9,8 @@ private final class InputSourceSwitchRecorder {
     var failedSelectors = Set<String>()
     var unavailableSelectors = Set<String>()
     var readCount = 0
+    var onWriteStarted: ((String) -> Void)?
+    var waitBeforeWriteReturns: ((String) -> Void)?
 
     func recordResolve(_ selector: String) {
         lock.lock()
@@ -23,7 +25,12 @@ private final class InputSourceSwitchRecorder {
         writes.append((selector, value))
         let shouldFail = failedSelectors.contains(selector)
         lock.unlock()
-        Thread.sleep(forTimeInterval: 0.001)
+        onWriteStarted?(selector)
+        if let waitBeforeWriteReturns {
+            waitBeforeWriteReturns(selector)
+        } else {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
         lock.lock()
         activeWrites -= 1
         lock.unlock()
@@ -48,7 +55,14 @@ private final class RecordingInputSourceTransport: InputSourceTransport {
 private final class RecordingInputSourceResolver: InputSourceTransportResolving {
     let recorder: InputSourceSwitchRecorder
     weak var lastResolvedTransport: RecordingInputSourceTransport?
-    private(set) var resolvedTransportIDs: [ObjectIdentifier] = []
+    private let lock = NSLock()
+    private var resolvedTransportIDStorage: [ObjectIdentifier] = []
+
+    var resolvedTransportIDs: [ObjectIdentifier] {
+        lock.lock()
+        defer { lock.unlock() }
+        return resolvedTransportIDStorage
+    }
 
     init(recorder: InputSourceSwitchRecorder) {
         self.recorder = recorder
@@ -61,7 +75,9 @@ private final class RecordingInputSourceResolver: InputSourceTransportResolving 
         }
         let transport = RecordingInputSourceTransport(selector: selector, recorder: recorder)
         lastResolvedTransport = transport
-        resolvedTransportIDs.append(ObjectIdentifier(transport))
+        lock.lock()
+        resolvedTransportIDStorage.append(ObjectIdentifier(transport))
+        lock.unlock()
         return transport
     }
 }
@@ -140,29 +156,116 @@ final class InputSourceSwitchingTests: XCTestCase {
         XCTAssertEqual(retainer.activeLeaseCount, 0)
     }
 
-    func testThreeDisplaysSwitchSeriallyAndFailureDoesNotSkipRemainingTargets() {
+    func testDifferentDisplaysStartConcurrentlyAndFailureDoesNotCancelOtherTargets() {
         let recorder = InputSourceSwitchRecorder()
         recorder.failedSelectors = ["selector-b"]
+        let bothStarted = expectation(description: "both displays started")
+        bothStarted.expectedFulfillmentCount = 2
+        let releases: [String: DispatchSemaphore] = [
+            "selector-a": DispatchSemaphore(value: 0),
+            "selector-b": DispatchSemaphore(value: 0)
+        ]
+        recorder.onWriteStarted = { _ in bothStarted.fulfill() }
+        recorder.waitBeforeWriteReturns = { selector in releases[selector]?.wait() }
         let service = InputSourceSwitchService(
             resolver: RecordingInputSourceResolver(recorder: recorder),
             hardwareArbiter: NativeI2CHardwareArbiter()
         )
         let targets = [
             InputSourceSwitchTarget(stableID: "display-a", selector: "selector-a", targetInput: 17),
-            InputSourceSwitchTarget(stableID: "display-b", selector: "selector-b", targetInput: 18),
-            InputSourceSwitchTarget(stableID: "display-c", selector: "selector-c", targetInput: 19)
+            InputSourceSwitchTarget(stableID: "display-b", selector: "selector-b", targetInput: 18)
         ]
 
-        let result = service.switchInputs(targets)
+        let completed = expectation(description: "batch completed")
+        let resultLock = NSLock()
+        var capturedResult: InputSourceSwitchBatchResult?
+        DispatchQueue.global().async {
+            let result = service.switchInputs(targets)
+            resultLock.lock()
+            capturedResult = result
+            resultLock.unlock()
+            completed.fulfill()
+        }
+        wait(for: [bothStarted], timeout: 1)
+        XCTAssertEqual(recorder.maximumConcurrentWrites, 2)
+        releases.values.forEach { $0.signal() }
+        wait(for: [completed], timeout: 1)
+        resultLock.lock()
+        let result = capturedResult
+        resultLock.unlock()
 
-        XCTAssertFalse(result.allSucceeded)
+        XCTAssertFalse(result?.allSucceeded ?? true)
+        XCTAssertEqual(Set(recorder.resolvedSelectors), Set(["selector-a", "selector-b"]))
+        XCTAssertEqual(Set(recorder.writes.map(\.selector)), Set(["selector-a", "selector-b"]))
+        XCTAssertEqual(result?.outcomes, [
+            InputSourceSwitchOutcome(stableID: "display-a", failure: nil),
+            InputSourceSwitchOutcome(stableID: "display-b", failure: .writeFailed(stableID: "display-b"))
+        ])
+    }
+
+    func testSameDisplayNeverWritesConcurrently() {
+        let recorder = InputSourceSwitchRecorder()
+        let firstStarted = expectation(description: "first write started")
+        let secondStarted = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let countLock = NSLock()
+        var startedCount = 0
+        recorder.onWriteStarted = { _ in
+            countLock.lock()
+            startedCount += 1
+            let count = startedCount
+            countLock.unlock()
+            if count == 1 { firstStarted.fulfill() }
+            if count == 2 { secondStarted.signal() }
+        }
+        recorder.waitBeforeWriteReturns = { _ in release.wait() }
+        let service = InputSourceSwitchService(
+            resolver: RecordingInputSourceResolver(recorder: recorder),
+            hardwareArbiter: NativeI2CHardwareArbiter()
+        )
+        let completed = expectation(description: "same display operations completed")
+        completed.expectedFulfillmentCount = 2
+        let target = InputSourceSwitchTarget(
+            stableID: "display-a", selector: "selector-a", targetInput: 17
+        )
+        DispatchQueue.global().async {
+            _ = service.switchInputs([target])
+            completed.fulfill()
+        }
+        DispatchQueue.global().async {
+            _ = service.switchInputs([target])
+            completed.fulfill()
+        }
+
+        wait(for: [firstStarted], timeout: 1)
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 0.05), .timedOut)
+        release.signal()
+        XCTAssertEqual(secondStarted.wait(timeout: .now() + 1), .success)
+        release.signal()
+        wait(for: [completed], timeout: 1)
         XCTAssertEqual(recorder.maximumConcurrentWrites, 1)
-        XCTAssertEqual(recorder.resolvedSelectors, ["selector-a", "selector-b", "selector-c"])
-        XCTAssertEqual(recorder.writes.map(\.selector), ["selector-a", "selector-b", "selector-c"])
+    }
+
+    func testDuplicateDisplayInOneBatchWritesOnceAndPreservesOutcomes() {
+        let recorder = InputSourceSwitchRecorder()
+        let service = InputSourceSwitchService(
+            resolver: RecordingInputSourceResolver(recorder: recorder),
+            hardwareArbiter: NativeI2CHardwareArbiter()
+        )
+
+        let result = service.switchInputs([
+            InputSourceSwitchTarget(
+                stableID: "display-a", selector: "selector-a", targetInput: 17
+            ),
+            InputSourceSwitchTarget(
+                stableID: "display-a-copy", selector: "SELECTOR-A", targetInput: 17
+            )
+        ])
+
+        XCTAssertEqual(recorder.writes.count, 1)
         XCTAssertEqual(result.outcomes, [
             InputSourceSwitchOutcome(stableID: "display-a", failure: nil),
-            InputSourceSwitchOutcome(stableID: "display-b", failure: .writeFailed(stableID: "display-b")),
-            InputSourceSwitchOutcome(stableID: "display-c", failure: nil)
+            InputSourceSwitchOutcome(stableID: "display-a-copy", failure: nil)
         ])
     }
 
@@ -228,7 +331,7 @@ final class InputSourceSwitchingTests: XCTestCase {
         var order: [String] = []
 
         queue.async {
-            arbiter.withControlOperation {
+            arbiter.withControlOperation(displayKey: "selector-a") {
                 firstControlEntered.fulfill()
                 releaseFirstControl.wait()
                 orderLock.lock(); order.append("control-1"); orderLock.unlock()
@@ -238,7 +341,7 @@ final class InputSourceSwitchingTests: XCTestCase {
         wait(for: [firstControlEntered], timeout: 1)
 
         queue.async {
-            arbiter.withInputSwitch {
+            arbiter.withInputSwitch(displayKey: "selector-a") {
                 orderLock.lock(); order.append("input"); orderLock.unlock()
             }
             finished.fulfill()
@@ -250,7 +353,7 @@ final class InputSourceSwitchingTests: XCTestCase {
         XCTAssertEqual(arbiter.waitingInputSwitchCount, 1)
 
         queue.async {
-            arbiter.withControlOperation {
+            arbiter.withControlOperation(displayKey: "selector-a") {
                 orderLock.lock(); order.append("control-2"); orderLock.unlock()
             }
             finished.fulfill()
@@ -258,6 +361,30 @@ final class InputSourceSwitchingTests: XCTestCase {
         releaseFirstControl.signal()
         wait(for: [finished], timeout: 2)
         XCTAssertEqual(order, ["control-1", "input", "control-2"])
+    }
+
+    func testControlOnOneDisplayDoesNotBlockInputSwitchOnAnotherDisplay() {
+        let arbiter = NativeI2CHardwareArbiter()
+        let queue = DispatchQueue(label: "InputSourceSwitchingTests.display-lanes", attributes: .concurrent)
+        let controlEntered = expectation(description: "display A control entered")
+        let inputEntered = expectation(description: "display B input entered")
+        let releaseControl = DispatchSemaphore(value: 0)
+
+        queue.async {
+            arbiter.withControlOperation(displayKey: "selector-a") {
+                controlEntered.fulfill()
+                releaseControl.wait()
+            }
+        }
+        wait(for: [controlEntered], timeout: 1)
+        queue.async {
+            arbiter.withInputSwitch(displayKey: "selector-b") {
+                inputEntered.fulfill()
+            }
+        }
+
+        wait(for: [inputEntered], timeout: 1)
+        releaseControl.signal()
     }
 
     func testBlockedMissingAndInvalidTargetsPerformNoResolveOrWrite() {
