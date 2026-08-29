@@ -688,10 +688,23 @@ namespace
         Check(pollPolicy.FollowupPollsRemaining() == UsbPresencePollPolicy::NotificationFollowupPollCount &&
             pollPolicy.NextWaitMilliseconds(true) == UsbPresencePollPolicy::NotificationFollowupIntervalMilliseconds,
             L"USB 稳定性：设备通知后必须进入短周期复查窗口");
-        for (int index = 0; index < UsbPresencePollPolicy::NotificationFollowupPollCount; ++index)
+        for (int index = 0; index < UsbPresencePollPolicy::NotificationFastPollCount; ++index)
+            pollPolicy.WaitTimedOut();
+        Check(pollPolicy.NextWaitMilliseconds(true) == UsbPresencePollPolicy::NotificationSettlingIntervalMilliseconds,
+            L"USB 稳定性：快速复查后必须以 250 ms 继续确认，不得出现 2 秒空档");
+        for (int index = 0; index < UsbPresencePollPolicy::NotificationSettlingPollCount; ++index)
             pollPolicy.WaitTimedOut();
         Check(pollPolicy.FollowupPollsRemaining() == 0 && pollPolicy.NextWaitMilliseconds(true) == 2000,
             L"USB 稳定性：复查窗口结束后必须恢复低频轮询");
+        Check(TargetUsbPresenceFromNotification(UsbDeviceNotificationKind::Removed,
+            L"usb:pnp:USB\\VID_1234&PID_5678\\SELECTED", L"usb\\vid_1234&pid_5678\\selected") == false,
+            L"USB 稳定性：所选设备的明确移除通知必须立即确认离开");
+        Check(TargetUsbPresenceFromNotification(UsbDeviceNotificationKind::Present,
+            L"usb:pnp:USB\\VID_1234&PID_5678\\SELECTED", L"USB\\VID_1234&PID_5678\\SELECTED") == true,
+            L"USB 稳定性：所选设备的明确接入通知必须立即确认接入");
+        Check(!TargetUsbPresenceFromNotification(UsbDeviceNotificationKind::Removed,
+            L"usb:pnp:USB\\VID_1234&PID_5678\\SELECTED", L"USB\\VID_1234&PID_5678\\OTHER"),
+            L"USB 稳定性：无关设备通知不得触发所选设备状态变化");
     }
 
     void TestDdcControls()

@@ -214,8 +214,8 @@ namespace DisplaySwitcher::Native
     void Controller::OnUsbPresenceChanged(bool present)
     {
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
-        WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
         if (usbSwitchCoordinator_) ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present));
+        WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
     }
 
     void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions)
