@@ -72,12 +72,13 @@ namespace
     }
 
     Grid LabeledControlToggleRow(std::wstring const& text, FrameworkElement const& control,
-        ToggleSwitch const& toggle)
+        ToggleSwitch const& toggle, std::wstring const& toggleAutomationName)
     {
-        if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
+        else if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
         control.HorizontalAlignment(HorizontalAlignment::Stretch);
         AutomationProperties::SetName(control, text);
-        ConfigureCompactToggle(toggle, L"联动协同");
+        ConfigureCompactToggle(toggle, toggleAutomationName);
 
         auto row = Grid(); row.ColumnSpacing(16);
         auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
@@ -89,6 +90,44 @@ namespace
         auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
         Grid::SetColumn(control, 1); Grid::SetColumn(toggle, 2);
         row.Children().Append(label); row.Children().Append(control); row.Children().Append(toggle);
+        return row;
+    }
+
+    Grid LabeledWideControlRow(std::wstring const& text, Control const& control)
+    {
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
+        else if (auto passwordBox = control.try_as<PasswordBox>()) passwordBox.Header(nullptr);
+        control.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(control, text);
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 1, GridUnitType::Star });
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(control, 1); row.Children().Append(label); row.Children().Append(control);
+        return row;
+    }
+
+    Grid PeerAddressRow(TextBox const& host, TextBox const& port)
+    {
+        host.Header(nullptr); port.Header(nullptr);
+        host.HorizontalAlignment(HorizontalAlignment::Stretch); port.Width(120);
+        AutomationProperties::SetName(host, L"对端地址"); AutomationProperties::SetName(port, L"对端端口");
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto addressLabelColumn = ColumnDefinition(); addressLabelColumn.Width(GridLength{ 200 });
+        auto hostColumn = ColumnDefinition(); hostColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto portLabelColumn = ColumnDefinition(); portLabelColumn.Width(GridLengthHelper::Auto());
+        auto portColumn = ColumnDefinition(); portColumn.Width(GridLength{ 120 });
+        row.ColumnDefinitions().Append(addressLabelColumn); row.ColumnDefinitions().Append(hostColumn);
+        row.ColumnDefinitions().Append(portLabelColumn); row.ColumnDefinitions().Append(portColumn);
+
+        auto addressLabel = TextBlock(); addressLabel.Text(L"对端地址"); addressLabel.VerticalAlignment(VerticalAlignment::Center);
+        auto portLabel = TextBlock(); portLabel.Text(L"端口"); portLabel.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(host, 1); Grid::SetColumn(portLabel, 2); Grid::SetColumn(port, 3);
+        row.Children().Append(addressLabel); row.Children().Append(host);
+        row.Children().Append(portLabel); row.Children().Append(port);
         return row;
     }
 
@@ -277,7 +316,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             LabeledToggleRow(L"自动切换", usbAutomation_),
             UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_),
             usbMappingTitle, usbMappingsPanel_,
-            LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_),
+            LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同"),
             usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -908,11 +947,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             commitOnReturn(controls.peerPort); commitOnReturn(controls.pairingCode);
 
             auto fields = StackPanel(); fields.Spacing(12);
-            fields.Children().Append(controls.name);
-            fields.Children().Append(LabeledToggleRow(L"启用此协同配置", controls.enabled));
-            fields.Children().Append(CreateTwoColumn(controls.peerHost, controls.peerPort, 160));
-            fields.Children().Append(controls.pairingCode);
-            fields.Children().Append(CreateSubheading(L"显示器输入映射"));
+            fields.Children().Append(LabeledControlToggleRow(
+                L"配置名称", controls.name, controls.enabled, L"启用此协同配置"));
+            fields.Children().Append(PeerAddressRow(controls.peerHost, controls.peerPort));
+            fields.Children().Append(LabeledWideControlRow(L"配对码", controls.pairingCode));
+            fields.Children().Append(CreateSubheading(L"对端输入源"));
 
             auto addMapping = [&](std::wstring const& displayId, std::wstring const& label, bool unavailable)
             {
@@ -923,13 +962,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 if (existing != profile.displayInputs.end()) mapping.peerInput.Text(std::to_wstring(existing->peerInput));
                 if (unavailable) mapping.peerInput.Description(box_value(L"该显示器已移除；映射保留但不会自动绑定到其他显示器。"));
                 mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-                fields.Children().Append(mapping.peerInput); controls.mappings.push_back(std::move(mapping));
+                fields.Children().Append(LabeledControlRow(label, mapping.peerInput));
+                controls.mappings.push_back(std::move(mapping));
             };
-            for (auto const& display : workingDisplays_) addMapping(display.id, display.name + L" · 对端输入源", false);
+            for (auto const& display : workingDisplays_) addMapping(display.id, display.name, false);
             for (auto const& mapping : profile.displayInputs)
                 if (std::none_of(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
                 { return _wcsicmp(display.id.c_str(), mapping.displayId.c_str()) == 0; }))
-                    addMapping(mapping.displayId, L"已移除显示器 · 对端输入源", true);
+                    addMapping(mapping.displayId, L"已移除显示器", true);
             if (workingDisplays_.empty() && profile.displayInputs.empty())
             {
                 auto empty = TextBlock(); empty.Text(L"尚未添加显示器。此配置不会执行显示器写入。"); empty.Opacity(0.72);
