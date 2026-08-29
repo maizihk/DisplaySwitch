@@ -329,6 +329,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto peerHint = TextBlock(); peerHint.Text(L"可保存多个目标配置并同时开启。检测只发送 v2 状态探测，不执行 USB、唤醒或显示器操作。");
         peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
         auto addProfile = Button(); addProfile.Content(box_value(L"添加配置"));
+        addProfile.VerticalAlignment(VerticalAlignment::Bottom);
         addProfile.Click([this](auto const&, auto const&)
         {
             CaptureProfileEditors();
