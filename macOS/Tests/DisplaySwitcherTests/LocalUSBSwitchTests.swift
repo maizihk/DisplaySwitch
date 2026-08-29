@@ -71,6 +71,79 @@ final class LocalUSBSwitchTests: XCTestCase {
         XCTAssertFalse(device.displayName.contains("2222"))
         XCTAssertFalse(device.displayName.contains("local-serial"))
     }
+
+    func testUSBDepartureEntersDifferentDisplayWritesBeforeEitherCompletes() {
+        let firstStarted = expectation(description: "first display write entered")
+        let secondStarted = expectation(description: "second display write entered")
+        let completed = expectation(description: "USB departure batch completed")
+        let releaseWrites = DispatchSemaphore(value: 0)
+        let resolver = USBEntryResolver { selector in
+            USBEntryTransport(succeeds: selector != "selector-a") {
+                (selector == "selector-a" ? firstStarted : secondStarted).fulfill()
+                releaseWrites.wait()
+            }
+        }
+        let sink = USBEntryBatchSink(resolver: resolver) { outcomes in
+            XCTAssertEqual(outcomes, [
+                LocalUSBDisplaySwitchOutcome(displayID: "selector-a", succeeded: false),
+                LocalUSBDisplaySwitchOutcome(displayID: "selector-b", succeeded: true)
+            ])
+            completed.fulfill()
+        }
+        let coordinator = makeDepartureCoordinator(
+            displayIDs: ["selector-a", "selector-b"], sink: sink
+        )
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = coordinator.observeUSB(present: false)
+        }
+
+        wait(for: [firstStarted, secondStarted], timeout: 1)
+        releaseWrites.signal()
+        releaseWrites.signal()
+        wait(for: [completed], timeout: 1)
+        XCTAssertEqual(Set(resolver.resolvedSelectors), Set(["selector-a", "selector-b"]))
+        XCTAssertEqual(sink.reportedFailures, ["selector-a"])
+    }
+
+    func testUSBDepartureDeduplicatesSameDisplayInsideOneBatch() {
+        let resolver = USBEntryResolver { _ in USBEntryTransport(succeeds: true) {} }
+        let completed = expectation(description: "duplicate USB batch completed")
+        let sink = USBEntryBatchSink(resolver: resolver) { outcomes in
+            XCTAssertEqual(outcomes.count, 2)
+            XCTAssertTrue(outcomes.allSatisfy(\.succeeded))
+            completed.fulfill()
+        }
+        let coordinator = makeDepartureCoordinator(
+            displayIDs: ["selector-a", "SELECTOR-A"], sink: sink
+        )
+
+        _ = coordinator.observeUSB(present: false)
+
+        wait(for: [completed], timeout: 1)
+        XCTAssertEqual(resolver.resolvedSelectors, ["selector-a"])
+    }
+
+    private func makeDepartureCoordinator(
+        displayIDs: [String],
+        sink: LocalUSBSwitchActionSink
+    ) -> LocalUSBSwitchCoordinator {
+        LocalUSBSwitchCoordinator(
+            configuration: LocalUSBSwitchRuntimeConfiguration(
+                enabled: true,
+                learning: false,
+                safeState: false,
+                collaborationWakeEnabled: false,
+                collaborationProfileValid: false,
+                displays: displayIDs.map {
+                    LocalUSBSwitchDisplay(displayID: $0, targetInput: 17, available: true)
+                }
+            ),
+            baselinePresence: true,
+            sink: sink,
+            nowMs: { 0 }
+        )
+    }
 }
 
 private struct USBVectorFile: Decodable {
@@ -163,12 +236,17 @@ private final class USBVectorSink: LocalUSBSwitchActionSink {
         self.mappings = Dictionary(uniqueKeysWithValues: mappings.map { ($0.displayID, $0) })
     }
 
-    func switchUSBDisplay(displayID: String, targetInput: Int, completion: @escaping (Bool) -> Void) {
-        let success = mappings[displayID]?.switchSucceeds ?? false
-        actions.append(USBTimedAction(atMs: Int(clock.nowMs), kind: "switchDisplay",
-                                      displayID: displayID, targetInput: targetInput,
-                                      succeeded: success, reason: nil))
-        completion(success)
+    func switchUSBDisplays(
+        _ requests: [LocalUSBDisplaySwitchRequest],
+        completion: @escaping (LocalUSBDisplaySwitchOutcome) -> Void
+    ) {
+        for request in requests {
+            let success = mappings[request.displayID]?.switchSucceeds ?? false
+            actions.append(USBTimedAction(atMs: Int(clock.nowMs), kind: "switchDisplay",
+                                          displayID: request.displayID, targetInput: request.targetInput,
+                                          succeeded: success, reason: nil))
+            completion(LocalUSBDisplaySwitchOutcome(displayID: request.displayID, succeeded: success))
+        }
     }
 
     func wakeUSBDisplay() {
@@ -184,5 +262,81 @@ private final class USBVectorSink: LocalUSBSwitchActionSink {
         actions.append(USBTimedAction(atMs: Int(clock.nowMs), kind: "report",
                                       displayID: displayID, targetInput: nil,
                                       succeeded: nil, reason: reason.rawValue))
+    }
+}
+
+private final class USBEntryTransport: InputSourceTransport {
+    private let succeeds: Bool
+    private let beforeWrite: () -> Void
+
+    init(succeeds: Bool, beforeWrite: @escaping () -> Void) {
+        self.succeeds = succeeds
+        self.beforeWrite = beforeWrite
+    }
+
+    func writeInput(_ value: UInt16, context: InputSourceDiagnosticContext) -> Bool {
+        beforeWrite()
+        return succeeds
+    }
+}
+
+private final class USBEntryResolver: InputSourceTransportResolving {
+    private let lock = NSLock()
+    private let makeTransport: (String) -> InputSourceTransport
+    private(set) var resolvedSelectors: [String] = []
+
+    init(makeTransport: @escaping (String) -> InputSourceTransport) {
+        self.makeTransport = makeTransport
+    }
+
+    func resolve(selector: String, context: InputSourceDiagnosticContext) throws -> InputSourceTransport {
+        lock.lock()
+        resolvedSelectors.append(selector)
+        lock.unlock()
+        return makeTransport(selector)
+    }
+}
+
+private final class USBEntryBatchSink: LocalUSBSwitchActionSink {
+    private let service: InputSourceSwitchService
+    private let completionObserver: ([LocalUSBDisplaySwitchOutcome]) -> Void
+    private(set) var reportedFailures: [String] = []
+
+    init(
+        resolver: InputSourceTransportResolving,
+        completionObserver: @escaping ([LocalUSBDisplaySwitchOutcome]) -> Void
+    ) {
+        service = InputSourceSwitchService(
+            resolver: resolver,
+            hardwareArbiter: NativeI2CHardwareArbiter()
+        )
+        self.completionObserver = completionObserver
+    }
+
+    func switchUSBDisplays(
+        _ requests: [LocalUSBDisplaySwitchRequest],
+        completion: @escaping (LocalUSBDisplaySwitchOutcome) -> Void
+    ) {
+        let result = service.switchInputs(requests.map {
+            InputSourceSwitchTarget(
+                stableID: $0.displayID,
+                selector: $0.displayID,
+                targetInput: $0.targetInput
+            )
+        }, origin: .usb)
+        let outcomes = zip(requests, result.outcomes).map {
+            LocalUSBDisplaySwitchOutcome(displayID: $0.0.displayID, succeeded: $0.1.succeeded)
+        }
+        outcomes.forEach(completion)
+        completionObserver(outcomes)
+    }
+
+    func wakeUSBDisplay() {}
+    func sendCollaborationWakeDisplay() -> Bool { true }
+
+    func reportUSBSwitch(displayID: String?, reason: LocalUSBSwitchReportReason) {
+        if reason == .ddcFailed, let displayID {
+            reportedFailures.append(displayID)
+        }
     }
 }

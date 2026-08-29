@@ -1176,34 +1176,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    func switchUSBDisplay(displayID: String, targetInput: Int, completion: @escaping (Bool) -> Void) {
-        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc),
-              let configuration = configurations.values.first(where: {
-                  ($0.id ?? $0.selector).caseInsensitiveCompare(displayID) == .orderedSame
-              }) else {
-            completion(false)
+    func switchUSBDisplays(
+        _ requests: [LocalUSBDisplaySwitchRequest],
+        completion: @escaping (LocalUSBDisplaySwitchOutcome) -> Void
+    ) {
+        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else {
+            requests.map {
+                LocalUSBDisplaySwitchOutcome(displayID: $0.displayID, succeeded: false)
+            }.forEach(completion)
             return
         }
-        let target = InputSourceSwitchTarget(
-            stableID: configuration.id ?? configuration.selector,
-            selector: configuration.selector,
-            targetInput: targetInput,
-            alternateInput: targetInput == configuration.localInput
-                ? configuration.targetInput
-                : configuration.localInput
-        )
+        let resolved = requests.compactMap { request -> (LocalUSBDisplaySwitchRequest, InputSourceSwitchTarget)? in
+            guard let configuration = configurations.values.first(where: {
+                ($0.id ?? $0.selector).caseInsensitiveCompare(request.displayID) == .orderedSame
+            }) else { return nil }
+            return (request, InputSourceSwitchTarget(
+                stableID: configuration.id ?? configuration.selector,
+                selector: configuration.selector,
+                targetInput: request.targetInput,
+                alternateInput: request.targetInput == configuration.localInput
+                    ? configuration.targetInput
+                    : configuration.localInput
+            ))
+        }
+        guard !resolved.isEmpty else {
+            requests.map {
+                LocalUSBDisplaySwitchOutcome(displayID: $0.displayID, succeeded: false)
+            }.forEach(completion)
+            return
+        }
         let inputSourceSwitchService = inputSourceSwitchService
         inputSwitchQueue.async { [weak self] in
             guard let self, self.configurationSafetyGate.allows(.ddc),
                   self.usbLearningSafetyGate.allows(.ddc) else {
-                DispatchQueue.main.async { completion(false) }
+                DispatchQueue.main.async {
+                    requests.map {
+                        LocalUSBDisplaySwitchOutcome(displayID: $0.displayID, succeeded: false)
+                    }.forEach(completion)
+                }
                 return
             }
-            let result = inputSourceSwitchService.switchInputs([target], origin: .usb) { [weak self] in
+            let result = inputSourceSwitchService.switchInputs(resolved.map(\.1), origin: .usb) { [weak self] in
                 self?.configurationSafetyGate.allows(.ddc) == true
                     && self?.usbLearningSafetyGate.allows(.ddc) == true
             }
-            DispatchQueue.main.async { completion(result.allSucceeded) }
+            var succeededByDisplay: [String: Bool] = [:]
+            for (resolvedTarget, outcome) in zip(resolved, result.outcomes) {
+                succeededByDisplay[resolvedTarget.0.displayID.uppercased()] = outcome.succeeded
+            }
+            let outcomes = requests.map {
+                LocalUSBDisplaySwitchOutcome(
+                    displayID: $0.displayID,
+                    succeeded: succeededByDisplay[$0.displayID.uppercased()] ?? false
+                )
+            }
+            DispatchQueue.main.async { outcomes.forEach(completion) }
         }
     }
 
