@@ -630,7 +630,7 @@ namespace DisplaySwitcher::Native
         if (!VisibleText(profile->name, 1, 32)) result.problems.push_back(L"名称无效");
         if (profile->peerHost.empty()) result.problems.push_back(L"未填写对端主机");
         if (profile->peerPort < 1 || profile->peerPort > 65535) result.problems.push_back(L"端口无效");
-        if (!IsValidPairingCode(profile->pairingCode)) result.problems.push_back(L"配对码无效");
+        if (!IsValidPairingCode(profile->pairingCode)) result.problems.push_back(L"配对密码无效");
         if (profile->displayInputs.empty()) result.problems.push_back(L"未配置显示器输入映射");
         for (auto const& mapping : profile->displayInputs)
             if (!FindDisplayById(displays, mapping.displayId)) result.problems.push_back(L"显示器映射已不可用");

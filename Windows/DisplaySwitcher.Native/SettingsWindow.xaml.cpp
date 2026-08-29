@@ -930,7 +930,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.enabled = ToggleSwitch(); controls.enabled.IsOn(profile.coordinationEnabled);
             controls.peerHost = TextBox(); Header(controls.peerHost, L"对端 IP 或主机名"); controls.peerHost.Text(profile.peerHost); controls.peerHost.MaxLength(253);
             controls.peerPort = TextBox(); Header(controls.peerPort, L"对端端口"); controls.peerPort.Text(std::to_wstring(profile.peerPort)); controls.peerPort.MaxLength(5);
-            controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对码"); controls.pairingCode.Password(profile.pairingCode);
+            controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对密码"); controls.pairingCode.Password(profile.pairingCode);
             controls.pairingCode.PlaceholderText(L"NFC 后 8–128 个 UTF-8 字节");
             controls.enabled.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
             controls.name.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
@@ -950,7 +950,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             fields.Children().Append(LabeledControlToggleRow(
                 L"配置名称", controls.name, controls.enabled, L"启用此协同配置"));
             fields.Children().Append(PeerAddressRow(controls.peerHost, controls.peerPort));
-            fields.Children().Append(LabeledWideControlRow(L"配对码", controls.pairingCode));
+            fields.Children().Append(LabeledWideControlRow(L"配对密码", controls.pairingCode));
             fields.Children().Append(CreateSubheading(L"对端输入源"));
 
             auto addMapping = [&](std::wstring const& displayId, std::wstring const& label, bool unavailable)
@@ -1103,7 +1103,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         if (result.outcome == Outcome::AuthenticationFailed)
         {
-            SetConnectionStatus(L"认证失败", false); ShowValidationError(L"v2 对端已响应，但认证失败。请检查配对码。"); return;
+            SetConnectionStatus(L"认证失败", false); ShowValidationError(L"v2 对端已响应，但认证失败。请检查配对密码。"); return;
         }
         if (result.outcome == Outcome::NoResponse)
         {
@@ -1286,7 +1286,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (profile.peerPort < 1 || profile.peerPort > 65535)
             { reject(2, profile.name + L"的对端端口必须为 1–65535。"); return false; }
             if (!profile.pairingCode.empty() && !::DisplaySwitcher::Native::AppConfig::IsValidPairingCode(profile.pairingCode))
-            { reject(2, profile.name + L"的配对码在 NFC 规范化后必须为 8–128 个 UTF-8 字节。"); return false; }
+            { reject(2, profile.name + L"的配对密码在 NFC 规范化后必须为 8–128 个 UTF-8 字节。"); return false; }
             profile.pairingCode = ::DisplaySwitcher::Native::AppConfig::NormalizeNfc(profile.pairingCode);
             for (auto const& mapping : profile.displayInputs)
                 if (mapping.peerInput < 0 || mapping.peerInput > 65535)
