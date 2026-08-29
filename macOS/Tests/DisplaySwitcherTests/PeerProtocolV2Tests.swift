@@ -373,6 +373,143 @@ final class PeerProtocolV2Tests: XCTestCase {
         let hardwareCalls = (usb: 0, bluetooth: 0, wake: 0, ddc: 0)
         XCTAssertEqual(hardwareCalls.usb + hardwareCalls.bluetooth + hardwareCalls.wake + hardwareCalls.ddc, 0)
     }
+
+    func testCapabilityInspectionDetailedRejectionReasonsRemainDistinct() throws {
+        let localEndpoint = "11111111-1111-4111-8111-111111111111"
+        let peerEndpoint = "22222222-2222-4222-8222-222222222222"
+        let eventID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let now: Int64 = 1_788_000_000
+        let profile = inspectionProfile(peerEndpointID: peerEndpoint, peerProtocolVersion: 2)
+
+        func response(
+            source: String = peerEndpoint,
+            target: String? = localEndpoint,
+            event: String = eventID,
+            pairingCode: String = "sample-code",
+            timestamp: Int64 = now
+        ) throws -> Data {
+            var message = V2Message(
+                type: .statusResponse, eventID: event, sourceEndpointID: source,
+                targetEndpointID: target, sourcePlatform: .windows, timestamp: timestamp,
+                nonce: "ICEiIyQlJicoKSorLC0uLw"
+            )
+            let key = try V2Crypto.deriveKey(pairingCode: pairingCode, sourceEndpointID: source)
+            message.authTag = V2Crypto.authenticationTag(for: message, key: key)
+            return try JSONEncoder().encode(message)
+        }
+
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponseDetailed(
+            data: try response(event: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected(.eventIDMismatch))
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponseDetailed(
+            data: try response(source: "33333333-3333-4333-8333-333333333333"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected(.sourceEndpointMismatch))
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponseDetailed(
+            data: try response(pairingCode: "wrong-code"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .authenticationFailed)
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponseDetailed(
+            data: try response(timestamp: now - 11),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected(.validation(.timestampOutOfWindow)))
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponseDetailed(
+            data: try response(target: "33333333-3333-4333-8333-333333333333"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected(.validation(.wrongTarget)))
+    }
+
+    func testInspectionDiagnosticSeparatesTransportReceiveValidationAndTimeoutWithoutSecrets() {
+        var now: Int64 = 1_000
+        let store = PeerInspectionDiagnosticStore(nowMs: { now })
+        let context = store.begin(
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            targetHost: "peer.example",
+            targetPort: 49_731
+        )
+        store.record(
+            .listener(result: .success, requestedPort: 49_731, actualPort: 49_731),
+            context: context
+        )
+        store.record(.sendStarted(listeningPort: 49_731), context: context)
+        now += 4
+        store.record(.sendFinished(.success), context: context)
+        now += 6
+        store.record(.datagramReceived(
+            sourceHost: "198.51.100.25", sourcePort: 49_732,
+            version: 2, type: "status_response", eventIDMatches: true
+        ), context: context)
+        store.record(.responseRejected("source-port-mismatch"), context: context)
+        now = 2_000
+        store.record(
+            .timeout(receivedDatagrams: store.receivedDatagramCount(for: context)),
+            context: context
+        )
+
+        let text = store.exportText()
+        for expected in [
+            "inspection=I1", "stage=listener", "actual-port=49731", "stage=send-finished result=success",
+            "stage=datagram-received", "source-port=49732", "source-port-match=false",
+            "version=2", "type=status_response", "event-match=true",
+            "reason=source-port-mismatch", "stage=timeout timeout-ms=1000 received-datagrams=1"
+        ] {
+            XCTAssertTrue(text.contains(expected), expected)
+        }
+        for privateValue in [
+            "peer.example", "198.51.100.25", "sample-code",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        ] {
+            XCTAssertFalse(text.contains(privateValue), privateValue)
+        }
+    }
+
+    func testInspectionEventTrackerDistinguishesActiveLateAndUnrelatedResponses() {
+        let context = PeerInspectionDiagnosticContext(
+            diagnosticID: "I1",
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            targetHostToken: "H1",
+            targetPort: 49_731,
+            startedAtMs: 1_000
+        )
+        var tracker = PeerInspectionEventTracker(maximumCompletedCount: 2)
+        tracker.register(eventID: context.eventID, inspectionID: "inspection-a")
+        XCTAssertEqual(
+            tracker.disposition(for: context.eventID),
+            .active(inspectionID: "inspection-a")
+        )
+        tracker.complete(eventID: context.eventID, context: context)
+        XCTAssertEqual(tracker.disposition(for: context.eventID), .late(context))
+        XCTAssertEqual(
+            tracker.disposition(for: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"), .unrelated
+        )
+    }
+
+    func testInspectionSourcePortAndEnvelopeProjectionAreExplicit() throws {
+        XCTAssertNil(PeerInspectionDatagramSourceValidator.rejectionReason(
+            sourcePort: 49_731, expectedPort: 49_731
+        ))
+        XCTAssertEqual(PeerInspectionDatagramSourceValidator.rejectionReason(
+            sourcePort: 50_001, expectedPort: 49_731
+        ), "source-port-mismatch")
+
+        let message = try signedStatusProbe(
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            sourceEndpointID: "22222222-2222-4222-8222-222222222222",
+            targetEndpointID: nil,
+            pairingCode: "sample-code",
+            timestamp: 1_788_000_000
+        )
+        XCTAssertEqual(PeerInspectionEnvelopeProjection.summary(message), PeerInspectionEnvelopeSummary(
+            version: 2,
+            type: "status_probe",
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        ))
+        XCTAssertEqual(
+            PeerInspectionEnvelopeProjection.summary(Data(#"{"version":"2"}"#.utf8)).version,
+            nil
+        )
+    }
 }
 
 private func inspectionProfile(peerEndpointID: String?, peerProtocolVersion: Int?) -> CollaborationProfile {
