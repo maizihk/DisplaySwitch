@@ -23,7 +23,7 @@ namespace DisplaySwitcher::Native
         DdcBackendSet backends(config); DdcCancellationSource cancellation;
         auto backend = backends.Lookup(L"native_ddc");
         return backend ? backend->Enumerate(cancellation.Begin()) :
-            DdcEnumerationResult{ false, DdcErrorKind::BackendUnavailable, L"Windows 原生 DDC 后端不可用", {} };
+            DdcEnumerationResult{ false, DdcErrorKind::BackendUnavailable, L"Windows 原生 DDC 后端不可用", {}, false };
     }
 
     ActionResult SwitchDisplaysToMac(AppConfig const& config)

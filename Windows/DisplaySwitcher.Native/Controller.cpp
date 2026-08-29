@@ -86,9 +86,9 @@ namespace DisplaySwitcher::Native
             try
             {
                 auto enumeration = EnumerateDdcMonitors();
-                if (enumeration.success)
+                if (enumeration.IsTrustedNonEmptySnapshot())
                 {
-                    auto reconciled = ReconcileDisplayConfigurations(config.displays, enumeration.monitors);
+                    auto reconciled = ReconcileDisplayConfigurations(config.displays, enumeration.monitors, true);
                     config.displays = std::move(reconciled.displays);
                     auto mappingsChanged = RemoveOrphanedDisplayMappings(
                         config.displays, config.collaborationProfiles, config.usbSwitch);

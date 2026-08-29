@@ -175,15 +175,15 @@ namespace
 
         DdcEnumerationResult Enumerate(DdcCancellationToken const& cancellation) override
         {
-            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {} };
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {}, false };
             std::scoped_lock lock(nativeDdcMutex);
             auto native = EnumerateNativeMonitors();
-            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {} };
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {}, false };
             if (!native.success || (native.partialFailure && native.monitors.empty())) return { false, DdcErrorKind::BackendUnavailable,
-                L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(native.error), {} };
+                L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(native.error), {}, false };
             auto monitors = PublicMonitorInfo(native.monitors);
             return { true, DdcErrorKind::None, native.partialFailure ? L"部分显示器无法通过 Windows 原生接口枚举" : L"",
-                std::move(monitors) };
+                std::move(monitors), !native.partialFailure };
         }
 
         DdcCapabilities Capabilities(std::wstring const& monitorId,
@@ -253,7 +253,7 @@ namespace
                 : DdcBackendStatus{ DdcAvailability::TemporarilyUnavailable, L"ControlMyMonitor 程序当前不可用" };
         }
         DdcEnumerationResult Enumerate(DdcCancellationToken const&) override
-        { return { false, DdcErrorKind::Unsupported, L"本轮不使用 ControlMyMonitor 枚举", {} }; }
+        { return { false, DdcErrorKind::Unsupported, L"本轮不使用 ControlMyMonitor 枚举", {}, false }; }
         DdcCapabilities Capabilities(std::wstring const& monitorId, DdcCancellationToken const& cancellation) override
         {
             auto status = Status();

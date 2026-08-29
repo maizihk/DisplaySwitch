@@ -86,10 +86,21 @@ namespace DisplaySwitcher::Native
     }
 
     DisplayReconciliationResult ReconcileDisplayConfigurations(
-        std::vector<DisplayConfig> const& existing, std::vector<DdcMonitorInfo> const& connected)
+        std::vector<DisplayConfig> const& existing, std::vector<DdcMonitorInfo> const& connected,
+        bool trustedCompleteEnumeration)
     {
         DisplayReconciliationResult result;
+        if (!trustedCompleteEnumeration || connected.empty())
+        {
+            result.displays = existing;
+            return result;
+        }
         auto monitors = NormalizeDdcMonitorCollection(connected);
+        if (monitors.empty())
+        {
+            result.displays = existing;
+            return result;
+        }
         result.displays.reserve(monitors.size());
         std::vector<bool> used(existing.size());
         for (auto const& monitor : monitors)

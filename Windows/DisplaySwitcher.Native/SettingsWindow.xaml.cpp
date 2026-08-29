@@ -571,6 +571,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 ShowValidationError(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message);
                 return;
             }
+            if (!enumeration.IsTrustedNonEmptySnapshot())
+            {
+                ShowValidationError(enumeration.monitors.empty()
+                    ? L"暂未检测到显示器；已保留现有设置和映射，显示器可能处于休眠或短暂断开状态。"
+                    : L"显示器枚举结果不完整；已保留现有设置和映射。");
+                return;
+            }
             ddcMonitors_ = std::move(enumeration.monitors);
             // Old ControlMyMonitor paths often start with the GDI device name. Use that only once
             // when no stable native ID has been saved; later matching is always by native ID.
@@ -588,7 +595,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                     legacyAssociationChanged = true;
                 }
             }
-            auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(workingDisplays_, ddcMonitors_);
+            auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
+                workingDisplays_, ddcMonitors_, true);
             workingDisplays_ = std::move(reconciled.displays);
             auto usbSwitch = original_.usbSwitch;
             auto mappingsChanged = ::DisplaySwitcher::Native::RemoveOrphanedDisplayMappings(

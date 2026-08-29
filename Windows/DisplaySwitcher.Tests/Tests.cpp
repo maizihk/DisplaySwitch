@@ -82,7 +82,7 @@ namespace
         std::wstring DisplayName() const override { return L"模拟硬件 DDC/CI"; }
         DdcBackendStatus Status() const override { return status; }
         DdcEnumerationResult Enumerate(DdcCancellationToken const&) override
-        { return { true, DdcErrorKind::None, {}, {} }; }
+        { return { true, DdcErrorKind::None, {}, {}, true }; }
         DdcCapabilities Capabilities(std::wstring const&, DdcCancellationToken const&) override
         {
             return { status, false, {}, {} };
@@ -532,7 +532,7 @@ namespace
             && differentModels[1].displayName == L"型号乙",
             L"W-009: 不同型号显示器必须直接使用系统友好名称而不添加无意义序号");
 
-        auto reconciled = ReconcileDisplayConfigurations({ first, second }, duplicated);
+        auto reconciled = ReconcileDisplayConfigurations({ first, second }, duplicated, true);
         auto preservedFirst = std::find_if(reconciled.displays.begin(), reconciled.displays.end(), [&](auto const& display)
             { return display.id == firstLogicalId; });
         auto preservedSecond = std::find_if(reconciled.displays.begin(), reconciled.displays.end(), [&](auto const& display)
@@ -548,8 +548,51 @@ namespace
         Check(trayNames.size() == 1 && trayNames[0].displayName == L"工作主屏",
             L"W-009: 托盘 DDC 项必须使用保留的用户名称或系统友好名称");
 
+        preservedFirst->localInput = 27;
+        preservedFirst->contrastEnabled = true;
+        preservedFirst->contrastShowInTray = true;
+        preservedFirst->volumeEnabled = true;
+        preservedFirst->volumeShowInTray = true;
+        CollaborationProfile preservedProfile = Profile(L"保留的协同配置");
+        preservedProfile.displayInputs = { { firstLogicalId, 31 }, { secondLogicalId, 32 } };
+        UsbSwitchConfig preservedUsb;
+        preservedUsb.displayInputs = { { firstLogicalId, 33 }, { secondLogicalId, 34 } };
+
+        DdcEnumerationResult partialSnapshot{ true, DdcErrorKind::None, L"部分枚举",
+            { { L"device-b", L"相同型号", L"DISPLAY9" } }, false };
+        auto partial = ReconcileDisplayConfigurations(reconciled.displays, partialSnapshot.monitors,
+            partialSnapshot.IsTrustedNonEmptySnapshot());
+        Check(!partial.changed && partial.removed == 0 && partial.displays.size() == 2
+            && preservedProfile.displayInputs.size() == 2 && preservedUsb.displayInputs.size() == 2,
+            L"W-009: 部分失败的枚举必须原样保留显示器、USB 映射和协同映射");
+
+        DdcEnumerationResult sleepingSnapshot{ true, DdcErrorKind::None, {}, {}, true };
+        auto sleeping = ReconcileDisplayConfigurations(partial.displays, sleepingSnapshot.monitors,
+            sleepingSnapshot.IsTrustedNonEmptySnapshot());
+        auto sleepingFirst = std::find_if(sleeping.displays.begin(), sleeping.displays.end(), [&](auto const& display)
+            { return display.id == firstLogicalId; });
+        Check(!sleeping.changed && sleeping.removed == 0 && sleeping.displays.size() == 2
+            && sleepingFirst != sleeping.displays.end() && sleepingFirst->name == L"工作主屏"
+            && sleepingFirst->localInput == 27 && sleepingFirst->brightnessEnabled
+            && sleepingFirst->brightnessShowInTray && sleepingFirst->contrastEnabled
+            && sleepingFirst->contrastShowInTray && sleepingFirst->volumeEnabled
+            && sleepingFirst->volumeShowInTray && preservedProfile.displayInputs.size() == 2
+            && preservedUsb.displayInputs.size() == 2,
+            L"W-009: 空集合和显示器休眠不得丢失名称、DDC/托盘开关、输入源或映射");
+
+        auto recovered = ReconcileDisplayConfigurations(sleeping.displays,
+            { { L"device-b", L"相同型号", L"DISPLAY2" },
+              { L"device-a", L"相同型号", L"DISPLAY1" } }, true);
+        auto recoveredFirst = std::find_if(recovered.displays.begin(), recovered.displays.end(), [&](auto const& display)
+            { return display.id == firstLogicalId; });
+        Check(!recovered.changed && recovered.removed == 0 && recovered.displays.size() == 2
+            && recoveredFirst != recovered.displays.end() && recoveredFirst->name == L"工作主屏"
+            && recoveredFirst->localInput == 27 && recoveredFirst->brightnessEnabled
+            && recoveredFirst->contrastEnabled && recoveredFirst->volumeEnabled,
+            L"W-009: 显示器休眠恢复并重排后必须按稳定 ID 恢复原用户设置");
+
         auto disconnected = ReconcileDisplayConfigurations(reconciled.displays,
-            { { L"device-b", L"相同型号", L"DISPLAY9" } });
+            { { L"device-b", L"相同型号", L"DISPLAY9" } }, true);
         Check(disconnected.displays.size() == 1 && disconnected.removed == 1
             && disconnected.displays[0].id == secondLogicalId,
             L"W-009: 已断开或失效显示器必须从实时集合清理，仍存在显示器保持逻辑 ID");
@@ -564,7 +607,7 @@ namespace
             L"W-009: 显示器清理必须同步移除孤立映射且不污染仍连接显示器");
 
         auto reconnected = ReconcileDisplayConfigurations(disconnected.displays,
-            { { L"device-a", L"另一型号", L"DISPLAY4" }, { L"device-b", L"相同型号", L"DISPLAY9" } });
+            { { L"device-a", L"另一型号", L"DISPLAY4" }, { L"device-b", L"相同型号", L"DISPLAY9" } }, true);
         auto newFirst = std::find_if(reconnected.displays.begin(), reconnected.displays.end(), [&](auto const& display)
             { return _wcsicmp(display.nativeMonitorId.c_str(), L"device-a") == 0; });
         Check(reconnected.added == 1 && newFirst != reconnected.displays.end()

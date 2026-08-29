@@ -70,6 +70,12 @@ namespace DisplaySwitcher::Native
         DdcErrorKind error{ DdcErrorKind::None };
         std::wstring message;
         std::vector<DdcMonitorInfo> monitors;
+        bool complete{};
+
+        bool IsTrustedNonEmptySnapshot() const noexcept
+        {
+            return success && complete && !monitors.empty();
+        }
     };
 
     struct DdcCancellationState
