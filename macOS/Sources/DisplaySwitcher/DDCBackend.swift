@@ -63,8 +63,18 @@ enum NativeDDCTransportPath: String, Equatable, Hashable {
 }
 
 enum NativeTransportPathClassifier {
-    static func classify(epicProviderClass: String?, transportDescription: String?)
+    static func classify(endpointToken: String? = nil,
+                         epicProviderClass: String?, transportDescription: String?)
         -> NativeDDCTransportPath {
+        let endpoint = endpointToken?.lowercased() ?? ""
+        if endpoint == "dispexte" {
+            return .builtinHDMIConverter
+        }
+        if endpoint.hasPrefix("dispext"),
+           !endpoint.dropFirst("dispext".count).isEmpty,
+           endpoint.dropFirst("dispext".count).allSatisfy(\.isNumber) {
+            return .typeCDPAlt
+        }
         let provider = epicProviderClass?.uppercased() ?? ""
         let transport = transportDescription?.uppercased() ?? ""
         if provider.contains("MCDP") || transport.contains("HDMI") {
@@ -75,6 +85,22 @@ enum NativeTransportPathClassifier {
             return .typeCDPAlt
         }
         return .unknownExternal
+    }
+}
+
+enum NativeDisplayEndpointToken {
+    static func extract(from values: [String]) -> String? {
+        let expression = try? NSRegularExpression(
+            pattern: "(?i)(?:^|[^a-z0-9])(dispext(?:e|[0-9]+))(?=$|[^a-z0-9])"
+        )
+        for value in values {
+            let range = NSRange(value.startIndex..<value.endIndex, in: value)
+            guard let match = expression?.firstMatch(in: value, range: range),
+                  let tokenRange = Range(match.range(at: 1), in: value) else { continue }
+            let token = String(value[tokenRange]).lowercased()
+            return token == "dispexte" ? "dispextE" : token
+        }
+        return nil
     }
 }
 
@@ -95,10 +121,41 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let serviceMatched: Bool
     let operationCategory: NativeDDCOperationCategory
     let rebuildCount: Int
+    let replyIssue: NativeDDCReplyIssue?
+    let readDataAddress: UInt8?
+    let readAttemptCount: Int?
+
+    init(transportPath: NativeDDCTransportPath, serviceMatched: Bool,
+         operationCategory: NativeDDCOperationCategory, rebuildCount: Int,
+         replyIssue: NativeDDCReplyIssue? = nil, readDataAddress: UInt8? = nil,
+         readAttemptCount: Int? = nil) {
+        self.transportPath = transportPath
+        self.serviceMatched = serviceMatched
+        self.operationCategory = operationCategory
+        self.rebuildCount = rebuildCount
+        self.replyIssue = replyIssue
+        self.readDataAddress = readDataAddress
+        self.readAttemptCount = readAttemptCount
+    }
 
     var userFacingDescription: String {
-        "\(transportPath.rawValue) · service \(serviceMatched ? "matched" : "unmatched") · "
-            + "\(operationCategory.rawValue) · rebuild \(rebuildCount)"
+        var operation = operationCategory.rawValue
+        if operationCategory == .readReplyRejected, let replyIssue {
+            operation += "/\(replyIssue.diagnosticCode)"
+        }
+        var parts = [
+            transportPath.rawValue,
+            "service \(serviceMatched ? "matched" : "unmatched")",
+            operation
+        ]
+        if let readDataAddress {
+            parts.append(readDataAddress == 0 ? "offset 0" : String(format: "offset 0x%02X", readDataAddress))
+        }
+        if let readAttemptCount {
+            parts.append("attempts \(readAttemptCount)")
+        }
+        parts.append("rebuild \(rebuildCount)")
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -152,6 +209,21 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .wrongOpcode: return "回复类型不匹配"
         case .monitorRejected: return "显示器拒绝该 VCP 请求"
         case .wrongCommand: return "回复的 VCP 项不匹配"
+        }
+    }
+
+    var diagnosticCode: String {
+        switch self {
+        case .requestWriteFailed: return "request-write-failed"
+        case .responseTimeout: return "response-timeout"
+        case .responseReadFailed: return "response-read-failed"
+        case .wrongLength: return "wrong-length"
+        case .badChecksum: return "bad-checksum"
+        case .wrongSource: return "wrong-source"
+        case .wrongPayloadLength: return "wrong-payload-length"
+        case .wrongOpcode: return "wrong-opcode"
+        case .monitorRejected: return "monitor-rejected"
+        case .wrongCommand: return "wrong-command"
         }
     }
 }

@@ -324,6 +324,28 @@ final class DDCBackendTests: XCTestCase {
 
     func testNativeTransportPathClassificationIsDeterministicAndSanitized() {
         XCTAssertEqual(
+            NativeDisplayEndpointToken.extract(from: ["synthetic/dispextE:/proxy"]),
+            "dispextE"
+        )
+        XCTAssertEqual(
+            NativeTransportPathClassifier.classify(
+                endpointToken: "dispextE", epicProviderClass: nil, transportDescription: nil
+            ),
+            .builtinHDMIConverter
+        )
+        for endpoint in ["dispext0", "dispext1"] {
+            XCTAssertEqual(
+                NativeDisplayEndpointToken.extract(from: ["synthetic/\(endpoint):/proxy"]),
+                endpoint
+            )
+            XCTAssertEqual(
+                NativeTransportPathClassifier.classify(
+                    endpointToken: endpoint, epicProviderClass: nil, transportDescription: nil
+                ),
+                .typeCDPAlt
+            )
+        }
+        XCTAssertEqual(
             NativeTransportPathClassifier.classify(
                 epicProviderClass: "AppleDCPMCDP29XX", transportDescription: nil
             ),
@@ -337,10 +359,15 @@ final class DDCBackendTests: XCTestCase {
         )
         XCTAssertEqual(
             NativeTransportPathClassifier.classify(
+                endpointToken: "future-endpoint",
                 epicProviderClass: "FutureProvider", transportDescription: nil
             ),
             .unknownExternal
         )
+
+        let parameters = NativeDDCTransportParameters.appleSiliconDDCCompatible
+        XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0)
+        XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
     }
 
     func testNativeDiagnosticsExposeOnlySanitizedTransportState() {
@@ -348,15 +375,47 @@ final class DDCBackendTests: XCTestCase {
             transportPath: .builtinHDMIConverter,
             serviceMatched: true,
             operationCategory: .readResponseTimeout,
-            rebuildCount: 1
+            rebuildCount: 1,
+            replyIssue: .responseTimeout,
+            readDataAddress: 0,
+            readAttemptCount: 5
         )
 
         XCTAssertEqual(
             snapshot.userFacingDescription,
-            "builtin-hdmi-converter · service matched · read-response-timeout · rebuild 1"
+            "builtin-hdmi-converter · service matched · read-response-timeout · offset 0 · attempts 5 · rebuild 1"
         )
         XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
         XCTAssertFalse(snapshot.userFacingDescription.contains("/"))
+    }
+
+    func testEveryRejectedReplyReasonHasSanitizedDiagnosticProjection() {
+        let issues: [(NativeDDCReplyIssue, String)] = [
+            (.badChecksum, "bad-checksum"),
+            (.wrongSource, "wrong-source"),
+            (.wrongLength, "wrong-length"),
+            (.wrongPayloadLength, "wrong-payload-length"),
+            (.wrongOpcode, "wrong-opcode"),
+            (.monitorRejected, "monitor-rejected"),
+            (.wrongCommand, "wrong-command")
+        ]
+
+        for (issue, code) in issues {
+            let snapshot = NativeDDCDiagnosticSnapshot(
+                transportPath: .typeCDPAlt,
+                serviceMatched: true,
+                operationCategory: .readReplyRejected,
+                rebuildCount: 1,
+                replyIssue: issue,
+                readDataAddress: 0x51,
+                readAttemptCount: 5
+            )
+            XCTAssertTrue(snapshot.userFacingDescription.contains("read-reply-rejected/\(code)"))
+            XCTAssertTrue(snapshot.userFacingDescription.contains("offset 0x51"))
+            XCTAssertTrue(snapshot.userFacingDescription.contains("attempts 5"))
+            XCTAssertFalse(snapshot.userFacingDescription.contains("UUID"))
+            XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
+        }
     }
 
     func testCancellationAndLateReadCannotCommitCacheOrResult() {
