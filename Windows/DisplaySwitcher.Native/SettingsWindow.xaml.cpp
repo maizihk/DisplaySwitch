@@ -34,6 +34,7 @@ namespace
         AutomationProperties::SetName(toggle, text);
 
         auto row = Grid();
+        row.HorizontalAlignment(HorizontalAlignment::Stretch);
         auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 1, GridUnitType::Star });
         auto toggleColumn = ColumnDefinition(); toggleColumn.Width(GridLengthHelper::Auto());
         row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(toggleColumn);
@@ -305,6 +306,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
     {
         auto panel = StackPanel(); panel.Spacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
+        panel.HorizontalAlignment(HorizontalAlignment::Stretch);
         auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
         heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
         for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
@@ -313,6 +315,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
     Border SettingsWindow::CreateCard(UIElement const& child)
     {
         auto border = Border(); border.Child(child); border.Padding(Thickness{ 20, 20, 20, 20 });
+        border.HorizontalAlignment(HorizontalAlignment::Stretch);
+        if (auto element = child.try_as<FrameworkElement>()) element.HorizontalAlignment(HorizontalAlignment::Stretch);
         border.CornerRadius(CornerRadius{ 8, 8, 8, 8 });
         border.BorderThickness(Thickness{ 1, 1, 1, 1 });
         border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
