@@ -15,6 +15,17 @@ private final class RecordingAboutMetadata: AboutBundleMetadataSource {
 }
 
 final class PublicPresentationModelsTests: XCTestCase {
+    func testOnlyExplicitSettingsReadUsesHardware() {
+        let automaticEntryPoints: [DDCValuePresentationEntryPoint] = [
+            .startup, .trayOpen, .displayDetection, .configurationReload
+        ]
+
+        for entryPoint in automaticEntryPoints {
+            XCTAssertEqual(DDCValuePresentationPolicy.source(for: entryPoint), .cache)
+        }
+        XCTAssertEqual(DDCValuePresentationPolicy.source(for: .settingsReadButton), .hardware)
+    }
+
     func testDisplayDiagnosticLayoutWrapsInsteadOfTruncatingTransportDetails() {
         XCTAssertTrue(DisplayDiagnosticLayout.wraps)
         XCTAssertEqual(DisplayDiagnosticLayout.maximumNumberOfLines, 0)

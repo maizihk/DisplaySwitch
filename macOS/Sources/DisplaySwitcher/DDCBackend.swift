@@ -157,7 +157,6 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let chipAddress: UInt32?
     let readDataAddress: UInt8?
     let readAttemptCount: Int?
-    let discardedRequestEchoCount: Int?
     let checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection?
     let checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence?
 
@@ -166,7 +165,6 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
          replyIssue: NativeDDCReplyIssue? = nil, chipAddress: UInt32? = nil,
          readDataAddress: UInt8? = nil,
          readAttemptCount: Int? = nil,
-         discardedRequestEchoCount: Int? = nil,
          checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
          checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil) {
         self.transportPath = transportPath
@@ -177,7 +175,6 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         self.chipAddress = chipAddress
         self.readDataAddress = readDataAddress
         self.readAttemptCount = readAttemptCount
-        self.discardedRequestEchoCount = discardedRequestEchoCount
         self.checksumCompatibilityRejection = checksumCompatibilityRejection
         self.checksumCompatibilityEvidence = checksumCompatibilityEvidence
     }
@@ -199,10 +196,7 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
             parts.append(readDataAddress == 0 ? "offset 0" : String(format: "offset 0x%02X", readDataAddress))
         }
         if let readAttemptCount {
-            parts.append("polls \(readAttemptCount)")
-        }
-        if let discardedRequestEchoCount, discardedRequestEchoCount > 0 {
-            parts.append("echoes-discarded \(discardedRequestEchoCount)")
+            parts.append("attempts \(readAttemptCount)")
         }
         if let checksumCompatibilityRejection {
             parts.append("compatibility \(checksumCompatibilityRejection.diagnosticDescription)")
@@ -245,7 +239,6 @@ enum NativeDDCReplyIssue: Error, Equatable {
     case requestWriteFailed
     case responseTimeout
     case responseReadFailed
-    case requestEcho
     case wrongLength
     case badChecksum
     case wrongSource
@@ -259,7 +252,6 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .requestWriteFailed: return "读取请求写入失败"
         case .responseTimeout: return "读取回复超时"
         case .responseReadFailed: return "读取回复 I2C 失败"
-        case .requestEcho: return "仅收到读取请求回显"
         case .wrongLength: return "回复长度无效"
         case .badChecksum: return "回复校验失败"
         case .wrongSource: return "回复来源无效"
@@ -275,7 +267,6 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .requestWriteFailed: return "request-write-failed"
         case .responseTimeout: return "response-timeout"
         case .responseReadFailed: return "response-read-failed"
-        case .requestEcho: return "request-echo"
         case .wrongLength: return "wrong-length"
         case .badChecksum: return "bad-checksum"
         case .wrongSource: return "wrong-source"
@@ -292,191 +283,56 @@ enum NativeDDCReplyIssue: Error, Equatable {
 }
 
 enum NativeDDCReadStrategyOutcome: Equatable {
-    case success(DDCReading, dataAddress: UInt8, attempts: Int, discardedRequestEchoes: Int)
+    case success(DDCReading, dataAddress: UInt8, attempts: Int)
     case failure(
         NativeDDCReplyIssue,
         dataAddress: UInt8,
         attempts: Int,
-        discardedRequestEchoes: Int,
         onlyObservedIssueWasBadChecksum: Bool,
         checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
         checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil
     )
 }
 
-enum NativeDDCGetVCPPollStatus: Equatable {
-    case reply
-    case timeout
-    case readFailed
-}
-
-enum NativeDDCGetVCPTransactionOutcome: Equatable {
-    case reply([UInt8], polls: Int, discardedRequestEchoes: Int)
-    case failure(NativeDDCReplyIssue, polls: Int, discardedRequestEchoes: Int)
-    case cancelled(polls: Int, discardedRequestEchoes: Int)
-}
-
-enum NativeDDCRequestPacket {
-    static func getVCP(chipAddress: UInt32, command: DDCCommand) -> [UInt8] {
-        var packet = [UInt8(0x82), UInt8(0x01), command.rawValue, UInt8(0)]
-        let initial = UInt8(truncatingIfNeeded: chipAddress << 1)
-        packet[packet.count - 1] = packet.dropLast().reduce(initial, ^)
-        return packet
-    }
-}
-
-enum NativeDDCRequestEchoKind: Equatable {
-    case zeroPrefixed
-    case direct
-}
-
-enum NativeDDCRequestEchoClassifier {
-    static func classify(response: [UInt8], requestPacket: [UInt8]) -> NativeDDCRequestEchoKind? {
-        guard !requestPacket.isEmpty else { return nil }
-        if response.count >= requestPacket.count + 1,
-           response[0] == 0,
-           Array(response[1...requestPacket.count]) == requestPacket,
-           response.dropFirst(requestPacket.count + 1).allSatisfy({ $0 == 0 }) {
-            return .zeroPrefixed
-        }
-        if response.count >= requestPacket.count,
-           Array(response.prefix(requestPacket.count)) == requestPacket,
-           response.dropFirst(requestPacket.count).allSatisfy({ $0 == 0 }) {
-            return .direct
-        }
-        return nil
-    }
-}
-
-enum DDCTrayOpenPolicy {
-    static func presentCachedValues(
-        _ presentation: () -> Void,
-        hardwareRead _: () -> Void = {}
-    ) {
-        presentation()
-    }
-}
-
-enum NativeDDCWriteServicePolicy {
-    static func requiresFreshResolution(for command: DDCCommand) -> Bool {
-        command == .input
-    }
-}
-
-enum NativeDDCSelectedServiceMap {
-    static func replacingSelected<Value>(
-        selector: String,
-        with value: Value?,
-        in current: [String: Value]
-    ) -> [String: Value] {
-        let key = selector.uppercased()
-        var result = current
-        if let value {
-            result[key] = value
-        } else {
-            result.removeValue(forKey: key)
-        }
-        return result
-    }
-}
-
-enum NativeDDCGetVCPTransactionRunner {
-    static func run(
-        requestPacket: [UInt8],
-        responseLength: Int = 11,
-        pollCount: Int,
-        shouldContinue: () -> Bool = { true },
-        writeRequest: () -> Bool,
-        readReply: (Int, inout [UInt8]) -> NativeDDCGetVCPPollStatus
-    ) -> NativeDDCGetVCPTransactionOutcome {
-        guard shouldContinue() else {
-            return .cancelled(polls: 0, discardedRequestEchoes: 0)
-        }
-        guard writeRequest() else {
-            return .failure(.requestWriteFailed, polls: 0, discardedRequestEchoes: 0)
-        }
-        var discardedEchoes = 0
-        var polls = 0
-        for index in 0..<max(pollCount, 1) {
-            guard shouldContinue() else {
-                return .cancelled(polls: polls, discardedRequestEchoes: discardedEchoes)
-            }
-            polls += 1
-            var response = [UInt8](repeating: 0, count: responseLength)
-            switch readReply(index, &response) {
-            case .reply:
-                if NativeDDCRequestEchoClassifier.classify(
-                    response: response, requestPacket: requestPacket
-                ) != nil {
-                    discardedEchoes += 1
-                    continue
-                }
-                return .reply(response, polls: polls, discardedRequestEchoes: discardedEchoes)
-            case .timeout:
-                continue
-            case .readFailed:
-                return .failure(
-                    .responseReadFailed, polls: polls,
-                    discardedRequestEchoes: discardedEchoes
-                )
-            }
-        }
-        return .failure(
-            discardedEchoes > 0 ? .requestEcho : .responseTimeout,
-            polls: polls, discardedRequestEchoes: discardedEchoes
-        )
-    }
-}
-
-struct NativeDDCReadExchangeOutcome: Equatable {
-    let result: Result<DDCReading, NativeDDCReplyIssue>
-    let polls: Int
-    let discardedRequestEchoes: Int
-}
-
 enum NativeDDCReadStrategyRunner {
     static func run(
         primaryDataAddress: UInt8,
         alternateDataAddress: UInt8?,
-        exchange: (UInt8) -> NativeDDCReadExchangeOutcome
+        attemptsPerStrategy: Int,
+        responseLength: Int = 11,
+        exchange: (UInt8, inout [UInt8]) -> Result<DDCReading, NativeDDCReplyIssue>
     ) -> NativeDDCReadStrategyOutcome {
+        let attemptLimit = max(attemptsPerStrategy, 1)
         var totalAttempts = 0
-        var totalDiscardedEchoes = 0
         var lastIssue = NativeDDCReplyIssue.responseReadFailed
         var observedIssues: [NativeDDCReplyIssue] = []
         func runStrategy(_ address: UInt8) -> DDCReading? {
-            let outcome = exchange(address)
-            totalAttempts += outcome.polls
-            totalDiscardedEchoes += outcome.discardedRequestEchoes
-            switch outcome.result {
-            case .success(let reading):
-                return reading
-            case .failure(let issue):
-                lastIssue = issue
-                observedIssues.append(issue)
-                return nil
+            for _ in 0..<attemptLimit {
+                totalAttempts += 1
+                var response = [UInt8](repeating: 0, count: responseLength)
+                switch exchange(address, &response) {
+                case .success(let reading):
+                    return reading
+                case .failure(let issue):
+                    lastIssue = issue
+                    observedIssues.append(issue)
+                }
             }
+            return nil
         }
 
         if let reading = runStrategy(primaryDataAddress) {
-            return .success(
-                reading, dataAddress: primaryDataAddress, attempts: totalAttempts,
-                discardedRequestEchoes: totalDiscardedEchoes
-            )
+            return .success(reading, dataAddress: primaryDataAddress, attempts: totalAttempts)
         }
         if lastIssue.permitsAlternateReadOffset,
            let alternateDataAddress, alternateDataAddress != primaryDataAddress {
             if let reading = runStrategy(alternateDataAddress) {
-                return .success(
-                    reading, dataAddress: alternateDataAddress, attempts: totalAttempts,
-                    discardedRequestEchoes: totalDiscardedEchoes
-                )
+                return .success(reading, dataAddress: alternateDataAddress, attempts: totalAttempts)
             }
             return .failure(
                 lastIssue,
                 dataAddress: alternateDataAddress,
                 attempts: totalAttempts,
-                discardedRequestEchoes: totalDiscardedEchoes,
                 onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
                 checksumCompatibilityRejection: nil,
                 checksumCompatibilityEvidence: nil
@@ -486,7 +342,6 @@ enum NativeDDCReadStrategyRunner {
             lastIssue,
             dataAddress: primaryDataAddress,
             attempts: totalAttempts,
-            discardedRequestEchoes: totalDiscardedEchoes,
             onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
             checksumCompatibilityRejection: nil,
             checksumCompatibilityEvidence: nil
@@ -540,12 +395,6 @@ struct NativeDDCTransportParameters: Equatable {
         path == .builtinHDMIConverter ? builtinHDMIReadAttempts : typeCDPReadAttempts
     }
 
-    func readPollDelaysMicroseconds(for path: NativeDDCTransportPath) -> [UInt32] {
-        let count = max(readAttempts(for: path), 1)
-        return [readSleepMicroseconds(for: path)]
-            + Array(repeating: retrySleepMicroseconds, count: max(count - 1, 0))
-    }
-
     static let appleSiliconDDCCompatible = NativeDDCTransportParameters(
         writeDataAddress: 0x51,
         typeCDPReadDataAddress: 0x51,
@@ -578,12 +427,12 @@ enum NativeDDCWriteCyclePolicy {
 enum NativeDDCReplyValidator {
     static func reading(from reply: [UInt8], command: DDCCommand) -> Result<DDCReading, NativeDDCReplyIssue> {
         guard reply.count == 11 else { return .failure(.wrongLength) }
+        guard reply.dropLast().reduce(UInt8(0x50), ^) == reply.last else { return .failure(.badChecksum) }
         guard reply[0] == 0x6E else { return .failure(.wrongSource) }
         guard reply[1] & 0x7F == 8 else { return .failure(.wrongPayloadLength) }
         guard reply[2] == 0x02 else { return .failure(.wrongOpcode) }
         guard reply[3] == 0 else { return .failure(.monitorRejected) }
         guard reply[4] == command.rawValue else { return .failure(.wrongCommand) }
-        guard reply.dropLast().reduce(UInt8(0x50), ^) == reply.last else { return .failure(.badChecksum) }
         return .success(DDCReading(
             current: Int(UInt16(reply[8]) << 8 | UInt16(reply[9])),
             maximum: Int(UInt16(reply[6]) << 8 | UInt16(reply[7]))
@@ -1120,18 +969,11 @@ final class UserDefaultsDDCValueCache: DDCValueCache {
 }
 
 final class DDCControlService {
-    private enum OperationKind {
-        case enumeration
-        case read
-        case write
-    }
-
     private let router: DDCBackendRouter
     private let cache: DDCValueCache
     private let stateLock = NSLock()
     private var operationsAllowed = true
     private var activeTokens: [UUID: DDCCancellationToken] = [:]
-    private var activeReadTokenIDs = Set<UUID>()
 
     init(router: DDCBackendRouter, cache: DDCValueCache) {
         self.router = router
@@ -1160,13 +1002,6 @@ final class DDCControlService {
         router.cancelAll()
     }
 
-    func cancelReads() {
-        stateLock.lock()
-        let tokens = activeReadTokenIDs.compactMap { activeTokens[$0] }
-        stateLock.unlock()
-        tokens.forEach { $0.cancel() }
-    }
-
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
         router.updateKnownDisplays(displays)
     }
@@ -1176,7 +1011,7 @@ final class DDCControlService {
     }
 
     func enumerateDisplays() throws -> [DDCBackendDisplay] {
-        let operation = try beginOperation(kind: .enumeration)
+        let operation = try beginOperation()
         defer { endOperation(operation.id) }
         let displays = try router.enumerateDisplays(token: operation.token)
         try ensureCanCommit(operation.token)
@@ -1184,7 +1019,7 @@ final class DDCControlService {
     }
 
     func read(_ targets: [DDCDisplayTarget]) -> DDCReadBatchResult {
-        guard let operation = try? beginOperation(kind: .read) else { return DDCReadBatchResult() }
+        guard let operation = try? beginOperation() else { return DDCReadBatchResult() }
         defer { endOperation(operation.id) }
         var output = DDCReadBatchResult()
 
@@ -1229,7 +1064,7 @@ final class DDCControlService {
     }
 
     func write(command: DDCCommand, value: Int, targets: [DDCDisplayTarget]) -> [String: Error] {
-        guard let operation = try? beginOperation(kind: .write) else {
+        guard let operation = try? beginOperation() else {
             return Dictionary(uniqueKeysWithValues: targets.map { ($0.stableID, DDCBackendError.cancelled) })
         }
         defer { endOperation(operation.id) }
@@ -1259,21 +1094,19 @@ final class DDCControlService {
         router.diagnostic(selector: selector)
     }
 
-    private func beginOperation(kind: OperationKind) throws -> (id: UUID, token: DDCCancellationToken) {
+    private func beginOperation() throws -> (id: UUID, token: DDCCancellationToken) {
         stateLock.lock()
         defer { stateLock.unlock() }
         guard operationsAllowed else { throw DDCBackendError.cancelled }
         let id = UUID()
         let token = DDCCancellationToken()
         activeTokens[id] = token
-        if kind == .read { activeReadTokenIDs.insert(id) }
         return (id, token)
     }
 
     private func endOperation(_ id: UUID) {
         stateLock.lock()
         activeTokens.removeValue(forKey: id)
-        activeReadTokenIDs.remove(id)
         stateLock.unlock()
     }
 

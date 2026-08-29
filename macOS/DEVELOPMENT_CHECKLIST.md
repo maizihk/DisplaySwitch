@@ -198,7 +198,7 @@
 - [x] 同型号显示器使用稳定逻辑 ID 的本机顺序生成中性序号；枚举重排不改变对应关系，也不展示或记录原始 UUID、IORegistry 路径。
 - [x] 当前运行时只选择 Apple Silicon 原生 CoreDisplay/IOAVService 后端；原生枚举、读取或写入失败均明确失败，不调用 `m1ddc`，Intel Mac 明确显示不支持。
 - [x] 已知原生写入正常，保留现有 `0x51`、五次尝试和双写语义；只由现有 latest-wins 协调器合并高频滑杆值，并以模拟回归防止读取修复破坏写入。
-- [x] Get VCP 每个 offset 策略只写入一次请求，随后以清零新 buffer 进行有界读取轮询；请求回显会被丢弃且不进入弱校验缓存，Type-C/DP 的 `0x51`/`0` 策略仍保持显式有界。
+- [x] 读取恢复为五次有限尝试，每次清空 response buffer；Type-C/DP Alt 固定使用 `0x51`，确认为内置 HDMI converter 时固定使用 `0`，不在同一操作中盲探多套策略。
 - [x] 本机脱敏诊断区分 `typec-dp-alt` / `builtin-hdmi-converter` / `unknown-external`、service 匹配、读写阶段返回类别和重建次数；不显示 UUID、IORegistry 路径或序列号。
 - [x] 按 IODisplayLocation 高权重、产品名和序列信息建立一对一显示器/service 匹配，同时识别 `AppleCLCD2`、`IOMobileFramebufferShim` 和兼容 framebuffer；未绑定通信 service 的在线身份可枚举但不可读写。
 - [x] Get VCP 回复校验覆盖长度、XOR checksum、来源、载荷长度、回复 opcode、结果码和 VCP command echo，拒绝迟到或错误回复。
@@ -217,8 +217,7 @@
 - [x] 已绑定 v2 配置的手动检测定向已确认 peer endpoint；只有首次未绑定检测使用空 target，且响应必须同时匹配 source、target、event 和 HMAC。
 - [x] 坏校验和兼容读取最终失败时，设置页可脱敏区分回复不足、两次语义不一致、字段非法、范围非法和传输错误；不记录原始帧或硬件标识。
 - [x] 兼容读取被拒绝时只投影两次回复的 DDC/CI 公共语义字段，可区分 source `0x6F`、`0x02`、`0x00` 和其他值并提示疑似帧移位；不自动扫描、重排或接受 `wrong-source`。
-- [x] 托盘菜单打开只投影持久缓存，零 DDC I/O；硬件读取只由设置页“读取 DDC 参数”显式触发。
-- [x] 输入源切换前取消排队/正在轮询的读取，丢弃迟到结果；只按目标显示器稳定 selector 重解析当前 service，单显示器读取失败不替换其他健康 service 引用。
+- [x] 止损回退将 Native DDC 读写与 service 管理恢复到 `e2d0dd7`；启动、托盘打开、显示器重检和配置重载只恢复缓存，仅设置页“读取 DDC 参数”可发起硬件读取。
 - [ ] 真实 Apple Silicon 多显示器枚举、同型号物理位置对应、连续拖动、读写失败恢复和系统升级兼容性尚未授权验证。
 
 ### M-203 Bonjour/mDNS 自动发现
@@ -243,4 +242,4 @@
 | 2026-08-28 | DS-007 设置、DDC 可靠性与 v2-only | 自动验证完成，GUI/实机待验 | 55fec44 | 47 项 XCTest、20 条 v2 消息向量、18 条 v2-only 状态机向量、Debug/Release、打包、严格验签和 v2 合同校验通过 |
 | 2026-08-29 | DS-008 本机 USB 双向切换 | 自动验证完成，GUI/实机待验 | 本任务提交 | 49 项 XCTest、USB-001～016、20 条 v2 消息向量、6 条 v2 状态机向量、Debug/Release、打包、严格验签和两组合同校验通过 |
 | 2026-08-29 | DS-008 macOS UDP 固定源端口 | 自动验证完成，双机实测待验 | 本任务提交 | 5 项传输资源测试、loopback 源/目标端口与回包验证、两组合同校验通过；完整 Xcode 验证见交接记录 |
-| 2026-08-29 | DS-009 Apple Silicon 原生显示控制 | 自动验证完成，实机待验 | `154f40d`、`3007d26`、`1e4fa31`、`57ea705`、`57a2f5c`、本任务提交 | 100 项 XCTest（含 46 项 DDC）通过；Get VCP 单写多读、请求回显拒绝、托盘零 DDC I/O、输入源写优先和按显示器 service 恢复均有纯模拟回归 |
+| 2026-08-29 | DS-009 Apple Silicon 原生显示控制 | 止损回退完成，实机待验 | 本任务提交 | Native DDC 读写/service 管理恢复 `e2d0dd7`；92 项 XCTest、全新 Debug 测试构建、Release 打包和严格验签通过；四个自动入口零 DDC 读，只保留设置页显式读取 |

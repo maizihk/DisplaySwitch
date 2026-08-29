@@ -1,85 +1,6 @@
 import XCTest
 
 final class DDCBackendTests: XCTestCase {
-    func testOpeningTrayPresentsCacheWithZeroDDCIO() {
-        var cachePresentationCount = 0
-        var hardwareReadCount = 0
-
-        DDCTrayOpenPolicy.presentCachedValues(
-            { cachePresentationCount += 1 },
-            hardwareRead: { hardwareReadCount += 1 }
-        )
-
-        XCTAssertEqual(cachePresentationCount, 1)
-        XCTAssertEqual(hardwareReadCount, 0)
-    }
-
-    func testInputWritesAlwaysResolveSelectedServiceFresh() {
-        XCTAssertTrue(NativeDDCWriteServicePolicy.requiresFreshResolution(for: .input))
-        XCTAssertFalse(NativeDDCWriteServicePolicy.requiresFreshResolution(for: .luminance))
-    }
-
-    func testSelectedServiceReplacementPreservesEveryOtherDisplay() {
-        let initial = ["MI": "mi-service-v1", "DELL": "dell-service-v1"]
-        let afterDellRecovery = NativeDDCSelectedServiceMap.replacingSelected(
-            selector: "dell", with: "dell-service-v2", in: initial
-        )
-        XCTAssertEqual(afterDellRecovery["MI"], "mi-service-v1")
-        XCTAssertEqual(afterDellRecovery["DELL"], "dell-service-v2")
-
-        let beforeInputSwitch = NativeDDCSelectedServiceMap.replacingSelected(
-            selector: "mi", with: "mi-service-current", in: afterDellRecovery
-        )
-        XCTAssertEqual(beforeInputSwitch["MI"], "mi-service-current")
-        XCTAssertEqual(beforeInputSwitch["DELL"], "dell-service-v2")
-    }
-
-    func testFailedDisplayReadCancellationDoesNotDelayOtherDisplayInputOrCommitLateCache() {
-        let backend = MockDDCBackend()
-        backend.readings = [
-            "dell": [.luminance: DDCReading(current: 88, maximum: 100)]
-        ]
-        let cache = MockDDCCache(values: ["dell": [.luminance: 55]])
-        let service = makeService(backends: [backend], cache: cache)
-        let readStarted = DispatchSemaphore(value: 0)
-        let releaseRead = DispatchSemaphore(value: 0)
-        let readFinished = expectation(description: "cancelled read finishes")
-        var lateReadResult: DDCReadBatchResult?
-        backend.onRead = {
-            readStarted.signal()
-            _ = releaseRead.wait(timeout: .now() + 2)
-        }
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            lateReadResult = service.read([
-                self.target(id: "dell", commands: [.luminance])
-            ])
-            readFinished.fulfill()
-        }
-        XCTAssertEqual(readStarted.wait(timeout: .now() + 1), .success)
-        service.cancelReads()
-
-        let inputWriteFinished = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            _ = service.write(
-                command: .input, value: 17,
-                targets: [self.target(id: "mi", commands: [.input])]
-            )
-            inputWriteFinished.signal()
-        }
-        XCTAssertEqual(
-            inputWriteFinished.wait(timeout: .now() + 1), .success,
-            "A failed display read must not delay another display's input write"
-        )
-        releaseRead.signal()
-        wait(for: [readFinished], timeout: 2)
-
-        XCTAssertTrue(lateReadResult?.readings.isEmpty == true)
-        XCTAssertEqual(cache.values["dell"]?[.luminance], 55)
-        XCTAssertEqual(cache.values["mi"]?[.input], 17)
-        XCTAssertEqual(backend.writeCalls.map(\.0), ["mi"])
-    }
-
     func testNativeWriteKeepsEarlierAcceptedCycleWhenTypeCPathDrops() {
         var results = [true, false]
         var calls = 0
@@ -501,10 +422,6 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 50_000)
         XCTAssertEqual(parameters.readAttempts(for: .typeCDPAlt), 5)
         XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 5)
-        XCTAssertEqual(
-            parameters.readPollDelaysMicroseconds(for: .typeCDPAlt),
-            [50_000, 20_000, 20_000, 20_000, 20_000]
-        )
         XCTAssertEqual(parameters.writeCycles, 2)
         XCTAssertEqual(parameters.writeAttempts, 5)
     }
@@ -584,32 +501,29 @@ final class DDCBackendTests: XCTestCase {
         )
     }
 
-    func testTypeCReadFallsBackFromBadChecksumUsingBoundedTransactions() {
+    func testTypeCReadFallsBackFromBadChecksumUsingFreshBoundedBuffers() {
         var addresses: [UInt8] = []
+        var buffersWereFresh: [Bool] = []
 
         let outcome = NativeDDCReadStrategyRunner.run(
             primaryDataAddress: 0x51,
-            alternateDataAddress: 0
-        ) { address in
+            alternateDataAddress: 0,
+            attemptsPerStrategy: 5
+        ) { address, response in
             addresses.append(address)
+            buffersWereFresh.append(response.allSatisfy { $0 == 0 })
+            response[0] = 0xFF
             if address == 0 {
-                return NativeDDCReadExchangeOutcome(
-                    result: .success(DDCReading(current: 42, maximum: 100)),
-                    polls: 2, discardedRequestEchoes: 1
-                )
+                return .success(DDCReading(current: 42, maximum: 100))
             }
-            return NativeDDCReadExchangeOutcome(
-                result: .failure(.badChecksum), polls: 5, discardedRequestEchoes: 0
-            )
+            return .failure(.badChecksum)
         }
 
-        XCTAssertEqual(addresses, [0x51, 0])
+        XCTAssertEqual(addresses, [0x51, 0x51, 0x51, 0x51, 0x51, 0])
+        XCTAssertTrue(buffersWereFresh.allSatisfy { $0 })
         XCTAssertEqual(
             outcome,
-            .success(
-                DDCReading(current: 42, maximum: 100), dataAddress: 0,
-                attempts: 7, discardedRequestEchoes: 1
-            )
+            .success(DDCReading(current: 42, maximum: 100), dataAddress: 0, attempts: 6)
         )
     }
 
@@ -617,23 +531,22 @@ final class DDCBackendTests: XCTestCase {
         var addresses: [UInt8] = []
         let outcome = NativeDDCReadStrategyRunner.run(
             primaryDataAddress: 0x51,
-            alternateDataAddress: 0
-        ) { address in
+            alternateDataAddress: 0,
+            attemptsPerStrategy: 5
+        ) { address, _ in
             addresses.append(address)
-            return NativeDDCReadExchangeOutcome(
-                result: .failure(address == 0x51 ? .responseTimeout : .wrongCommand),
-                polls: 5, discardedRequestEchoes: 0
-            )
+            return .failure(address == 0x51 ? .responseTimeout : .wrongCommand)
         }
 
-        XCTAssertEqual(addresses, [0x51, 0])
+        XCTAssertEqual(addresses.count, 10)
+        XCTAssertEqual(Array(addresses.prefix(5)), Array(repeating: 0x51, count: 5))
+        XCTAssertEqual(Array(addresses.suffix(5)), Array(repeating: 0, count: 5))
         XCTAssertEqual(
             outcome,
             .failure(
                 .wrongCommand,
                 dataAddress: 0,
                 attempts: 10,
-                discardedRequestEchoes: 0,
                 onlyObservedIssueWasBadChecksum: false,
                 checksumCompatibilityRejection: nil
             )
@@ -644,139 +557,24 @@ final class DDCBackendTests: XCTestCase {
         var addresses: [UInt8] = []
         let outcome = NativeDDCReadStrategyRunner.run(
             primaryDataAddress: 0x51,
-            alternateDataAddress: 0
-        ) { address in
+            alternateDataAddress: 0,
+            attemptsPerStrategy: 5
+        ) { address, _ in
             addresses.append(address)
-            return NativeDDCReadExchangeOutcome(
-                result: .failure(.requestWriteFailed), polls: 0,
-                discardedRequestEchoes: 0
-            )
+            return .failure(.requestWriteFailed)
         }
 
-        XCTAssertEqual(addresses, [0x51])
+        XCTAssertEqual(addresses, Array(repeating: 0x51, count: 5))
         XCTAssertEqual(
             outcome,
             .failure(
                 .requestWriteFailed,
                 dataAddress: 0x51,
-                attempts: 0,
-                discardedRequestEchoes: 0,
+                attempts: 5,
                 onlyObservedIssueWasBadChecksum: false,
                 checksumCompatibilityRejection: nil
             )
         )
-    }
-
-    func testGetVCPRequestPacketMatchesObservedBrightnessTransaction() {
-        XCTAssertEqual(
-            NativeDDCRequestPacket.getVCP(chipAddress: 0x37, command: .luminance),
-            [0x82, 0x01, 0x10, 0xFD]
-        )
-    }
-
-    func testGetVCPDiscardsOneOrMoreEchoesThenReturnsValidReply() {
-        let request = NativeDDCRequestPacket.getVCP(chipAddress: 0x37, command: .luminance)
-        var writes = 0
-        var reads = 0
-        var buffersWereFresh: [Bool] = []
-        let reply = validReply(current: 42, maximum: 100)
-
-        let outcome = NativeDDCGetVCPTransactionRunner.run(
-            requestPacket: request, pollCount: 5,
-            writeRequest: { writes += 1; return true },
-            readReply: { _, response in
-                reads += 1
-                buffersWereFresh.append(response.allSatisfy { $0 == 0 })
-                if reads <= 2 {
-                    response.replaceSubrange(0...request.count, with: [0] + request)
-                } else {
-                    response = reply
-                }
-                return .reply
-            }
-        )
-
-        XCTAssertEqual(
-            outcome,
-            .reply(reply, polls: 3, discardedRequestEchoes: 2)
-        )
-        XCTAssertEqual(writes, 1, "A GetVCP transaction must send exactly one request")
-        XCTAssertEqual(reads, 3)
-        XCTAssertTrue(buffersWereFresh.allSatisfy { $0 })
-    }
-
-    func testGetVCPAllEchoesFailWithoutEnteringChecksumCompatibility() {
-        let request = NativeDDCRequestPacket.getVCP(chipAddress: 0x37, command: .luminance)
-        var writes = 0
-        var reads = 0
-        let outcome = NativeDDCGetVCPTransactionRunner.run(
-            requestPacket: request, pollCount: 3,
-            writeRequest: { writes += 1; return true },
-            readReply: { _, response in
-                reads += 1
-                response.replaceSubrange(0...request.count, with: [0] + request)
-                return .reply
-            }
-        )
-
-        XCTAssertEqual(
-            outcome,
-            .failure(.requestEcho, polls: 3, discardedRequestEchoes: 3)
-        )
-        XCTAssertEqual(writes, 1)
-        XCTAssertEqual(reads, 3)
-        var paddedEcho = [UInt8](repeating: 0, count: 11)
-        paddedEcho.replaceSubrange(0...request.count, with: [0] + request)
-        XCTAssertEqual(
-            NativeDDCReplyValidator.reading(from: paddedEcho, command: .luminance),
-            .failure(.wrongSource)
-        )
-        guard case .rejected(.invalidField(.wrongSource), _) =
-            NativeDDCChecksumCompatibilityValidator.reading(
-                from: [paddedEcho, paddedEcho], command: .luminance
-            ) else {
-            return XCTFail("Request echoes must never become compatibility readings")
-        }
-    }
-
-    func testGetVCPPollsTimeoutsWithoutRewritingRequest() {
-        let request = NativeDDCRequestPacket.getVCP(chipAddress: 0x37, command: .contrast)
-        var writes = 0
-        var reads = 0
-        let outcome = NativeDDCGetVCPTransactionRunner.run(
-            requestPacket: request, pollCount: 5,
-            writeRequest: { writes += 1; return true },
-            readReply: { _, _ in reads += 1; return .timeout }
-        )
-
-        XCTAssertEqual(
-            outcome,
-            .failure(.responseTimeout, polls: 5, discardedRequestEchoes: 0)
-        )
-        XCTAssertEqual(writes, 1)
-        XCTAssertEqual(reads, 5)
-    }
-
-    func testGetVCPCancellationStopsFurtherPollsAndCannotPublishEcho() {
-        let request = NativeDDCRequestPacket.getVCP(chipAddress: 0x37, command: .luminance)
-        var active = true
-        var writes = 0
-        var reads = 0
-        let outcome = NativeDDCGetVCPTransactionRunner.run(
-            requestPacket: request, pollCount: 5,
-            shouldContinue: { active },
-            writeRequest: { writes += 1; return true },
-            readReply: { _, response in
-                reads += 1
-                response.replaceSubrange(0...request.count, with: [0] + request)
-                active = false
-                return .reply
-            }
-        )
-
-        XCTAssertEqual(outcome, .cancelled(polls: 1, discardedRequestEchoes: 1))
-        XCTAssertEqual(writes, 1)
-        XCTAssertEqual(reads, 1)
     }
 
     func testReadOffsetPreferenceIsPerDisplayAndInvalidatedWithService() {
@@ -794,21 +592,20 @@ final class DDCBackendTests: XCTestCase {
         let snapshot = NativeDDCDiagnosticSnapshot(
             transportPath: .builtinHDMIConverter,
             serviceMatched: true,
-            operationCategory: .readReplyRejected,
+            operationCategory: .readResponseTimeout,
             rebuildCount: 1,
-            replyIssue: .requestEcho,
+            replyIssue: .responseTimeout,
             chipAddress: 0x37,
             readDataAddress: 0,
-            readAttemptCount: 5,
-            discardedRequestEchoCount: 2
+            readAttemptCount: 5
         )
 
         XCTAssertEqual(
             snapshot.userFacingDescription,
-            "builtin-hdmi-converter · service matched · read-reply-rejected/request-echo · chip 0x37 · offset 0 · polls 5 · echoes-discarded 2 · rebuild 1"
+            "builtin-hdmi-converter · service matched · read-response-timeout · chip 0x37 · offset 0 · attempts 5 · rebuild 1"
         )
         XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
-        XCTAssertFalse(snapshot.userFacingDescription.contains("IORegistry"))
+        XCTAssertFalse(snapshot.userFacingDescription.contains("/"))
     }
 
     func testEveryRejectedReplyReasonHasSanitizedDiagnosticProjection() {
@@ -819,8 +616,7 @@ final class DDCBackendTests: XCTestCase {
             (.wrongPayloadLength, "wrong-payload-length"),
             (.wrongOpcode, "wrong-opcode"),
             (.monitorRejected, "monitor-rejected"),
-            (.wrongCommand, "wrong-command"),
-            (.requestEcho, "request-echo")
+            (.wrongCommand, "wrong-command")
         ]
 
         for (issue, code) in issues {
@@ -836,7 +632,7 @@ final class DDCBackendTests: XCTestCase {
             )
             XCTAssertTrue(snapshot.userFacingDescription.contains("read-reply-rejected/\(code)"))
             XCTAssertTrue(snapshot.userFacingDescription.contains("offset 0x51"))
-            XCTAssertTrue(snapshot.userFacingDescription.contains("polls 5"))
+            XCTAssertTrue(snapshot.userFacingDescription.contains("attempts 5"))
             XCTAssertTrue(snapshot.userFacingDescription.contains("chip 0x37"))
             XCTAssertFalse(snapshot.userFacingDescription.contains("UUID"))
             XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
@@ -1024,12 +820,6 @@ final class DDCBackendTests: XCTestCase {
             UInt8((current >> 8) & 0xFF), UInt8(current & 0xFF), 0
         ]
         reply[10] = reply.dropLast().reduce(UInt8(0x50), ^) ^ 0xFF
-        return reply
-    }
-
-    private func validReply(current: Int, maximum: Int) -> [UInt8] {
-        var reply = badChecksumReply(current: current, maximum: maximum)
-        reply[10] = reply.dropLast().reduce(UInt8(0x50), ^)
         return reply
     }
 }

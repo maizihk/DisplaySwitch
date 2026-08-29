@@ -171,10 +171,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var instanceLockFD: Int32 = -1
     private var ownsPrimaryInstance = false
     private let workerQueue = DispatchQueue(label: "DisplaySwitcher.ddc")
-    private let ddcReadQueue = DispatchQueue(label: "DisplaySwitcher.ddc.read")
-    private let inputSwitchQueue = DispatchQueue(label: "DisplaySwitcher.ddc.input", qos: .userInitiated)
-    private let ddcReadGenerationLock = NSLock()
-    private var ddcReadGeneration: UInt64 = 0
     private let ddcController = DDCController()
     private lazy var ddcWriteCoordinator = DDCLatestWinsCoordinator(
         executor: DDCControllerWriteExecutor(
@@ -358,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         statusItem.menu = menu
         rebuildDisplayMenuItems()
         updateConfigurationSafetyUI()
-        restoreCachedValues()
+        presentDDCValues(for: .startup)
 
         usbMonitor.onPresenceChanged = { [weak self] isPresent in
             self?.handleUSBPresenceChange(isPresent)
@@ -378,9 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        DDCTrayOpenPolicy.presentCachedValues { [weak self] in
-            self?.restoreCachedValues()
-        }
+        presentDDCValues(for: .trayOpen)
     }
 
     @objc private func switchToProfile(_ sender: NSMenuItem) {
@@ -417,11 +411,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         profileSwitchItems.forEach { $0.isEnabled = false }
-        cancelReadsForInputSwitch()
         let currentConfigurations = targetConfigurations
         let ddcController = ddcController
 
-        inputSwitchQueue.async { [weak self] in
+        workerQueue.async { [weak self] in
             let firstError = LockedFirstError()
             let group = DispatchGroup()
             for displayID in targetDisplayIDs {
@@ -526,7 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         })
                         ddcController.updateConfigurations(merged)
                         self.rebuildDisplayMenuItems()
-                        self.restoreCachedValues()
+                        self.presentDDCValues(for: .displayDetection)
                         self.finishDetection()
                     } catch let error as DisplayConfigurationStoreError {
                         self.finishDetection()
@@ -577,21 +570,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func readDDCForSettings(stableID: String) {
+        guard DDCValuePresentationPolicy.source(for: .settingsReadButton) == .hardware else { return }
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc),
               let configuration = configurations.values.first(where: {
                   ($0.id ?? $0.selector).caseInsensitiveCompare(stableID) == .orderedSame
               }) else { return }
         let target = Self.ddcTarget(for: configuration, document: AppPreferences.localConfiguration)
-        let generation = currentDDCReadGeneration()
-        ddcReadQueue.async { [weak self] in
-            guard let self, self.isCurrentDDCReadGeneration(generation) else { return }
+        workerQueue.async { [weak self] in
+            guard let self else { return }
             let batch = self.ddcController.read(targets: [target])
             let result = batch[target.stableID] ?? [:]
             let skipReason = batch.skipped[target.stableID]
             let diagnostic = self.ddcController.diagnostic(selector: target.selector)
             DispatchQueue.main.async {
-                guard self.isCurrentDDCReadGeneration(generation),
-                      self.settingsWindowController.isSettingsVisible else { return }
+                guard self.settingsWindowController.isSettingsVisible else { return }
                 self.settingsWindowController.updateDDCValues(
                     stableID: target.stableID, values: result, diagnostic: diagnostic,
                     skipReason: skipReason
@@ -636,23 +628,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    private func currentDDCReadGeneration() -> UInt64 {
-        ddcReadGenerationLock.lock()
-        defer { ddcReadGenerationLock.unlock() }
-        return ddcReadGeneration
-    }
-
-    private func isCurrentDDCReadGeneration(_ value: UInt64) -> Bool {
-        ddcReadGenerationLock.lock()
-        defer { ddcReadGenerationLock.unlock() }
-        return value == ddcReadGeneration
-    }
-
-    private func cancelReadsForInputSwitch() {
-        ddcReadGenerationLock.lock()
-        ddcReadGeneration &+= 1
-        ddcReadGenerationLock.unlock()
-        ddcController.cancelReads()
+    private func presentDDCValues(for entryPoint: DDCValuePresentationEntryPoint) {
+        guard DDCValuePresentationPolicy.source(for: entryPoint) == .cache else { return }
+        restoreCachedValues()
     }
 
     private func finishSwitch(message: String, activeMenuItem: NSMenuItem? = nil) {
@@ -1076,7 +1054,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         configureUSBMonitor()
         configurePeerTransport()
         updateConfigurationSafetyUI()
-        restoreCachedValues()
+        presentDDCValues(for: .configurationReload)
     }
 
     private func rebuildDisplayMenuItems() {
@@ -1232,8 +1210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             completion(false)
             return
         }
-        cancelReadsForInputSwitch()
-        inputSwitchQueue.async { [weak self] in
+        workerQueue.async { [weak self] in
             guard let self, self.configurationSafetyGate.allows(.ddc),
                   self.usbLearningSafetyGate.allows(.ddc) else {
                 DispatchQueue.main.async { completion(false) }
