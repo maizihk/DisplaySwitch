@@ -462,6 +462,38 @@ enum V2PeerCapabilityInspectionResponse: Equatable {
     case rejected
 }
 
+enum V2PeerCapabilityInspectionRejectionReason: Equatable {
+    case invalidExpectedEventID
+    case missingEventID
+    case eventIDMismatch
+    case missingSourceEndpoint
+    case sourceEndpointMismatch
+    case keyDerivationFailed
+    case validation(V2MessageValidationReason)
+    case wrongMessageType
+    case wrongTarget
+
+    var diagnosticCode: String {
+        switch self {
+        case .invalidExpectedEventID: return "invalid-expected-event-id"
+        case .missingEventID: return "missing-event-id"
+        case .eventIDMismatch: return "event-id-mismatch"
+        case .missingSourceEndpoint: return "missing-source-endpoint"
+        case .sourceEndpointMismatch: return "source-endpoint-mismatch"
+        case .keyDerivationFailed: return "key-derivation-failed"
+        case .validation(let reason): return "validation-\(reason.rawValue.replacingOccurrences(of: "_", with: "-"))"
+        case .wrongMessageType: return "wrong-message-type"
+        case .wrongTarget: return "wrong-target-endpoint"
+        }
+    }
+}
+
+enum V2PeerCapabilityInspectionDetailedResponse: Equatable {
+    case accepted(endpointID: String)
+    case authenticationFailed
+    case rejected(V2PeerCapabilityInspectionRejectionReason)
+}
+
 enum V2PeerCapabilityInspection {
     static func statusProbe(
         eventID: String,
@@ -500,22 +532,49 @@ enum V2PeerCapabilityInspection {
         localEndpointID: String,
         now: Int64
     ) -> V2PeerCapabilityInspectionResponse {
-        guard let expectedEventID = V2Crypto.normalizedUUID(eventID),
-              V2MessageEnvelope.eventID(in: data) == expectedEventID,
-              let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data) else {
-            return .rejected
+        switch validateResponseDetailed(
+            data: data,
+            profile: profile,
+            eventID: eventID,
+            localEndpointID: localEndpointID,
+            now: now
+        ) {
+        case .accepted(let endpointID): return .accepted(endpointID: endpointID)
+        case .authenticationFailed: return .authenticationFailed
+        case .rejected: return .rejected
+        }
+    }
+
+    static func validateResponseDetailed(
+        data: Data,
+        profile: CollaborationProfile,
+        eventID: String,
+        localEndpointID: String,
+        now: Int64
+    ) -> V2PeerCapabilityInspectionDetailedResponse {
+        guard let expectedEventID = V2Crypto.normalizedUUID(eventID) else {
+            return .rejected(.invalidExpectedEventID)
+        }
+        guard let receivedEventID = V2MessageEnvelope.eventID(in: data) else {
+            return .rejected(.missingEventID)
+        }
+        guard receivedEventID == expectedEventID else {
+            return .rejected(.eventIDMismatch)
+        }
+        guard let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data) else {
+            return .rejected(.missingSourceEndpoint)
         }
 
         if profile.peerProtocolVersion == 2,
            let expectedPeerEndpointID = profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID),
            sourceEndpointID != expectedPeerEndpointID {
-            return .rejected
+            return .rejected(.sourceEndpointMismatch)
         }
 
         guard let key = try? V2Crypto.deriveKey(
             pairingCode: profile.pairingCode,
             sourceEndpointID: sourceEndpointID
-        ) else { return .rejected }
+        ) else { return .rejected(.keyDerivationFailed) }
         let validation = V2MessageValidator.validate(
             data: data,
             context: V2MessageValidationContext(
@@ -526,13 +585,225 @@ enum V2PeerCapabilityInspection {
             )
         )
         if validation.reason == .authenticationFailed { return .authenticationFailed }
-        guard validation.accepted,
-              let message = validation.message,
-              message.type == .statusResponse,
-              message.targetEndpointID == V2Crypto.normalizedUUID(localEndpointID) else {
-            return .rejected
+        guard validation.accepted, let message = validation.message else {
+            return .rejected(.validation(validation.reason))
+        }
+        guard message.type == .statusResponse else { return .rejected(.wrongMessageType) }
+        guard message.targetEndpointID == V2Crypto.normalizedUUID(localEndpointID) else {
+            return .rejected(.wrongTarget)
         }
         return .accepted(endpointID: sourceEndpointID)
+    }
+}
+
+struct PeerInspectionDiagnosticContext: Equatable {
+    let diagnosticID: String
+    let eventID: String
+    let targetHostToken: String
+    let targetPort: Int
+    let startedAtMs: Int64
+}
+
+struct PeerInspectionEnvelopeSummary: Equatable {
+    let version: Int?
+    let type: String?
+    let eventID: String?
+}
+
+enum PeerInspectionEnvelopeProjection {
+    static func summary(_ data: Data) -> PeerInspectionEnvelopeSummary {
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else {
+            return PeerInspectionEnvelopeSummary(version: nil, type: nil, eventID: nil)
+        }
+        let version: Int?
+        if let number = dictionary["version"] as? NSNumber,
+           CFGetTypeID(number) != CFBooleanGetTypeID(),
+           !CFNumberIsFloatType(number) {
+            version = number.intValue
+        } else {
+            version = nil
+        }
+        return PeerInspectionEnvelopeSummary(
+            version: version,
+            type: dictionary["type"] as? String,
+            eventID: (dictionary["eventID"] as? String).flatMap(V2Crypto.normalizedUUID)
+        )
+    }
+}
+
+enum PeerInspectionEventDisposition: Equatable {
+    case active(inspectionID: String)
+    case late(PeerInspectionDiagnosticContext)
+    case unrelated
+}
+
+struct PeerInspectionEventTracker {
+    private var activeInspectionIDs: [String: String] = [:]
+    private var completedContexts: [String: PeerInspectionDiagnosticContext] = [:]
+    private let maximumCompletedCount: Int
+
+    init(maximumCompletedCount: Int = 128) {
+        self.maximumCompletedCount = max(1, maximumCompletedCount)
+    }
+
+    mutating func register(eventID: String, inspectionID: String) {
+        activeInspectionIDs[eventID.lowercased()] = inspectionID
+    }
+
+    mutating func complete(eventID: String, context: PeerInspectionDiagnosticContext) {
+        let normalized = eventID.lowercased()
+        activeInspectionIDs.removeValue(forKey: normalized)
+        if completedContexts.count >= maximumCompletedCount {
+            completedContexts.removeAll(keepingCapacity: true)
+        }
+        completedContexts[normalized] = context
+    }
+
+    func disposition(for eventID: String) -> PeerInspectionEventDisposition {
+        let normalized = eventID.lowercased()
+        if let inspectionID = activeInspectionIDs[normalized] {
+            return .active(inspectionID: inspectionID)
+        }
+        if let context = completedContexts[normalized] { return .late(context) }
+        return .unrelated
+    }
+}
+
+enum PeerInspectionDatagramSourceValidator {
+    static func rejectionReason(sourcePort: Int, expectedPort: Int) -> String? {
+        sourcePort == expectedPort ? nil : "source-port-mismatch"
+    }
+}
+
+enum PeerInspectionDiagnosticEvent: Equatable {
+    case listener(result: PeerTransportOperationResult, requestedPort: Int, actualPort: Int?)
+    case sendStarted(listeningPort: Int?)
+    case sendFinished(PeerTransportOperationResult)
+    case datagramReceived(
+        sourceHost: String, sourcePort: Int, version: Int?, type: String?, eventIDMatches: Bool
+    )
+    case responseAccepted
+    case responseRejected(String)
+    case timeout(receivedDatagrams: Int)
+    case completed(String)
+}
+
+final class PeerInspectionDiagnosticStore {
+    static let shared = PeerInspectionDiagnosticStore()
+
+    private let lock = NSLock()
+    private let maximumLineCount: Int
+    private let nowMs: () -> Int64
+    private var nextInspectionIndex = 1
+    private var nextHostIndex = 1
+    private var hostTokens: [String: String] = [:]
+    private var receivedCountByInspectionID: [String: Int] = [:]
+    private var lines: [String] = []
+
+    init(
+        maximumLineCount: Int = 1_000,
+        nowMs: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+    ) {
+        self.maximumLineCount = max(100, maximumLineCount)
+        self.nowMs = nowMs
+    }
+
+    func begin(eventID: String, targetHost: String, targetPort: Int) -> PeerInspectionDiagnosticContext {
+        lock.lock()
+        let diagnosticID = "I\(nextInspectionIndex)"
+        nextInspectionIndex += 1
+        let targetToken = hostTokenLocked(for: targetHost)
+        let context = PeerInspectionDiagnosticContext(
+            diagnosticID: diagnosticID,
+            eventID: eventID.lowercased(),
+            targetHostToken: targetToken,
+            targetPort: targetPort,
+            startedAtMs: nowMs()
+        )
+        receivedCountByInspectionID[diagnosticID] = 0
+        appendLocked(
+            "inspection=\(diagnosticID) elapsed-ms=0 stage=begin target=\(targetToken) target-port=\(targetPort) timeout-ms=1000"
+        )
+        lock.unlock()
+        return context
+    }
+
+    func record(_ event: PeerInspectionDiagnosticEvent, context: PeerInspectionDiagnosticContext) {
+        lock.lock()
+        let elapsed = max(0, nowMs() - context.startedAtMs)
+        let prefix = "inspection=\(context.diagnosticID) elapsed-ms=\(elapsed)"
+        let detail: String
+        switch event {
+        case let .listener(result, requestedPort, actualPort):
+            detail = "stage=listener requested-port=\(requestedPort) actual-port=\(actualPort.map(String.init) ?? "none") result=\(result.safeDescription)"
+        case let .sendStarted(listeningPort):
+            detail = "stage=send-started target=\(context.targetHostToken) target-port=\(context.targetPort) listening-port=\(listeningPort.map(String.init) ?? "none")"
+        case let .sendFinished(result):
+            detail = "stage=send-finished result=\(result.safeDescription)"
+        case let .datagramReceived(sourceHost, sourcePort, version, type, eventIDMatches):
+            receivedCountByInspectionID[context.diagnosticID, default: 0] += 1
+            detail = "stage=datagram-received source=\(hostTokenLocked(for: sourceHost)) source-port=\(sourcePort) version=\(version.map(String.init) ?? "invalid") type=\(Self.safeType(type)) event-match=\(eventIDMatches) source-port-match=\(sourcePort == context.targetPort)"
+        case .responseAccepted:
+            detail = "stage=response-validation result=accepted"
+        case let .responseRejected(reason):
+            detail = "stage=response-validation result=rejected reason=\(Self.safeReason(reason))"
+        case let .timeout(receivedDatagrams):
+            detail = "stage=timeout timeout-ms=1000 received-datagrams=\(receivedDatagrams)"
+        case let .completed(result):
+            detail = "stage=completed result=\(Self.safeReason(result))"
+        }
+        appendLocked(prefix + " " + detail)
+        lock.unlock()
+    }
+
+    func receivedDatagramCount(for context: PeerInspectionDiagnosticContext) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return receivedCountByInspectionID[context.diagnosticID, default: 0]
+    }
+
+    func exportText() -> String {
+        lock.lock()
+        let snapshot = lines
+        lock.unlock()
+        return ([
+            "DisplaySwitcher collaboration inspection diagnostic",
+            "Session-only anonymized data; no IP, pairing code, auth tag, endpoint ID, or hardware identifier."
+        ] + snapshot).joined(separator: "\n")
+    }
+
+    private func hostTokenLocked(for host: String) -> String {
+        let normalized = host.lowercased()
+        if let existing = hostTokens[normalized] { return existing }
+        let token = "H\(nextHostIndex)"
+        nextHostIndex += 1
+        hostTokens[normalized] = token
+        return token
+    }
+
+    private func appendLocked(_ line: String) {
+        lines.append(line)
+        if lines.count > maximumLineCount { lines.removeFirst(lines.count - maximumLineCount) }
+    }
+
+    private static func safeType(_ value: String?) -> String {
+        guard let value, V2MessageType(rawValue: value) != nil else { return value == nil ? "invalid" : "unknown" }
+        return value
+    }
+
+    private static func safeReason(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_=")
+        return String(value.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "-" })
+    }
+}
+
+private extension PeerTransportOperationResult {
+    var safeDescription: String {
+        switch self {
+        case .success: return "success"
+        case .failure(let category): return "failure-\(category.rawValue)"
+        }
     }
 }
 

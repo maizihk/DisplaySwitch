@@ -1,7 +1,38 @@
+import Darwin
 import Foundation
 import XCTest
 
 final class PeerTransportTests: XCTestCase {
+    func testListenerBindFailureIsReportedPrecisely() {
+        let factory = MockPeerTransportSocketFactory()
+        factory.onSocketCreated = { socket in
+            socket.startError = PeerTransportError.socketOperation("绑定", EADDRINUSE)
+        }
+        let transport = PeerTransport(factory: factory, callbackQueue: .main)
+
+        XCTAssertEqual(transport.start(port: 49_731), .failure(.socketBind))
+        XCTAssertNil(transport.listeningPort)
+        XCTAssertTrue(factory.sockets[0].stopped)
+    }
+
+    func testSendCompletionReportsBoundListenerAndAdapterResult() {
+        let factory = MockPeerTransportSocketFactory()
+        let transport = PeerTransport(factory: factory, callbackQueue: .main)
+        let completed = expectation(description: "send completion")
+
+        XCTAssertEqual(transport.start(port: 49_731), .success)
+        factory.sockets[0].onSend = { _, _, completion in completion(nil) }
+        transport.send(Data("probe".utf8), host: "peer.example", port: 50_001) { result in
+            XCTAssertEqual(result, .success)
+            XCTAssertEqual(transport.listeningPort, 49_731)
+            completed.fulfill()
+        }
+
+        wait(for: [completed], timeout: 1)
+        XCTAssertEqual(factory.sockets[0].startedPorts, [49_731])
+        XCTAssertEqual(factory.sockets[0].sent.map(\.endpoint.port), [50_001])
+    }
+
     func testAllActiveRequestsUseOneBoundSocketAndConfiguredDestination() {
         let factory = MockPeerTransportSocketFactory()
         let transport = PeerTransport(factory: factory, callbackQueue: .main)
@@ -37,7 +68,8 @@ final class PeerTransportTests: XCTestCase {
                 replySent.fulfill()
             }
         }
-        transport.onDatagram = { data, reply in
+        transport.onDatagram = { data, endpoint, reply in
+            XCTAssertEqual(endpoint, source)
             XCTAssertTrue(String(decoding: data, as: UTF8.self).contains(eventID))
             reply(Data("status_response:\(eventID)".utf8))
         }
@@ -71,7 +103,7 @@ final class PeerTransportTests: XCTestCase {
         let transport = PeerTransport(factory: factory, callbackQueue: .main)
         let replies = expectation(description: "source-specific replies")
         replies.expectedFulfillmentCount = 2
-        transport.onDatagram = { data, reply in reply(data) }
+        transport.onDatagram = { data, _, reply in reply(data) }
         transport.start(port: 49_731)
         factory.sockets[0].onSend = { _, _, completion in completion(nil); replies.fulfill() }
 
@@ -178,11 +210,15 @@ private final class MockPeerDatagramSocket: PeerTransportDatagramSocket {
     var onDatagram: ((Data, PeerTransportEndpoint) -> Void)?
     var onReceiveError: ((Error) -> Void)?
     var onSend: ((Data, PeerTransportEndpoint, @escaping (Error?) -> Void) -> Void)?
+    var startError: Error?
     private(set) var startedPorts: [Int] = []
     private(set) var sent: [SentDatagram] = []
     private(set) var stopped = false
 
-    func start(port: Int, queue: DispatchQueue) throws { startedPorts.append(port) }
+    func start(port: Int, queue: DispatchQueue) throws {
+        if let startError { throw startError }
+        startedPorts.append(port)
+    }
 
     func send(_ data: Data, to endpoint: PeerTransportEndpoint, completion: @escaping (Error?) -> Void) {
         sent.append(SentDatagram(data: data, endpoint: endpoint))

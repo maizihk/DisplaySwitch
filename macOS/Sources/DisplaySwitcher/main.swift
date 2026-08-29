@@ -131,13 +131,16 @@ private final class PendingPeerCapabilityInspection {
     let id: String
     let profile: CollaborationProfile
     let v2EventID: String
+    let diagnosticContext: PeerInspectionDiagnosticContext
     let completion: (PeerCapabilityInspectionResult) -> Void
 
     init(id: String, profile: CollaborationProfile, v2EventID: String,
+         diagnosticContext: PeerInspectionDiagnosticContext,
          completion: @escaping (PeerCapabilityInspectionResult) -> Void) {
         self.id = id
         self.profile = profile
         self.v2EventID = v2EventID
+        self.diagnosticContext = diagnosticContext
         self.completion = completion
     }
 }
@@ -178,6 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         nowMs: { [weak self] in self?.currentTimeMs() ?? 0 }
     )
     private let peerTransport = PeerTransport()
+    private let peerInspectionDiagnostics = PeerInspectionDiagnosticStore.shared
     private let configurationSafetyGate = ConfigurationSafetyGate()
     private let usbLearningSafetyGate = USBLearningSafetyGate()
     private var pendingSchedulerItems: [String: DispatchWorkItem] = [:]
@@ -196,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var v2DatagramReplies: [String: PeerTransport.DataReply] = [:]
     private var v2UnboundProbeResponses: [String: Data] = [:]
     private var pendingPeerInspections: [String: PendingPeerCapabilityInspection] = [:]
-    private var inspectionIDByEventID: [String: String] = [:]
+    private var inspectionEventTracker = PeerInspectionEventTracker()
     private var displayControls: [Int: DisplayControls] = [:]
     private var displayMenuItems: [Int: NSMenuItem] = [:]
     private var profileSwitchItems: [NSMenuItem] = []
@@ -340,6 +344,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         copyInputDiagnosticItem.target = self
         menu.addItem(copyInputDiagnosticItem)
 
+        let copyPeerDiagnosticItem = NSMenuItem(
+            title: "复制协同检测诊断",
+            action: #selector(copyPeerInspectionDiagnostics),
+            keyEquivalent: ""
+        )
+        copyPeerDiagnosticItem.target = self
+        menu.addItem(copyPeerDiagnosticItem)
+
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -354,8 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         usbMonitor.onInitialPresenceObserved = { [weak self] isPresent in
             _ = self?.localUSBSwitchCoordinator.observeUSB(present: isPresent)
         }
-        peerTransport.onDatagram = { [weak self] data, reply in
-            self?.handlePeerDatagram(data, reply: reply)
+        peerTransport.onDatagram = { [weak self] data, endpoint, reply in
+            self?.handlePeerDatagram(data, from: endpoint, reply: reply)
         }
         peerTransport.onError = { message in
             NSLog("DisplaySwitcher: %@", message)
@@ -739,24 +751,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         let inspectionID = UUID().uuidString.lowercased()
         let eventID = nextEventID().lowercased()
+        let diagnosticContext = peerInspectionDiagnostics.begin(
+            eventID: eventID,
+            targetHost: profile.peerHost,
+            targetPort: profile.peerPort
+        )
         let pending = PendingPeerCapabilityInspection(
             id: inspectionID,
             profile: profile,
             v2EventID: eventID,
+            diagnosticContext: diagnosticContext,
             completion: completion
         )
         pendingPeerInspections[inspectionID] = pending
         collaborationStatusStore.beginCheck(profileID: profile.id)
         settingsWindowController.refreshSelectedCollaborationStatus()
-        inspectionIDByEventID[eventID] = inspectionID
-        peerTransport.start(port: AppPreferences.localConfiguration.listenPort)
+        inspectionEventTracker.register(eventID: eventID, inspectionID: inspectionID)
+        let listenPort = AppPreferences.localConfiguration.listenPort
+        let startResult = peerTransport.start(port: listenPort)
+        peerInspectionDiagnostics.record(
+            .listener(result: startResult, requestedPort: listenPort, actualPort: peerTransport.listeningPort),
+            context: diagnosticContext
+        )
         guard let data = makeV2StatusProbe(eventID: eventID, profile: profile) else {
+            peerInspectionDiagnostics.record(
+                .responseRejected("probe-construction-failed"), context: diagnosticContext
+            )
             completePeerCapabilityInspection(inspectionID, result: .authenticationFailed)
             return
         }
-        peerTransport.send(data, host: profile.peerHost, port: profile.peerPort)
+        peerInspectionDiagnostics.record(
+            .sendStarted(listeningPort: peerTransport.listeningPort), context: diagnosticContext
+        )
+        peerTransport.send(data, host: profile.peerHost, port: profile.peerPort) {
+            [weak self] result in
+            self?.peerInspectionDiagnostics.record(.sendFinished(result), context: diagnosticContext)
+        }
         schedule("v2-inspection-\(inspectionID)", after: 1_000) { [weak self] in
-            self?.completePeerCapabilityInspection(inspectionID, result: .noResponse)
+            guard let self, let pending = self.pendingPeerInspections[inspectionID] else { return }
+            self.peerInspectionDiagnostics.record(
+                .timeout(receivedDatagrams: self.peerInspectionDiagnostics.receivedDatagramCount(
+                    for: pending.diagnosticContext
+                )),
+                context: pending.diagnosticContext
+            )
+            self.completePeerCapabilityInspection(inspectionID, result: .noResponse)
         }
     }
 
@@ -779,22 +818,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     ) {
         guard let pending = pendingPeerInspections.removeValue(forKey: inspectionID) else { return }
         cancel("v2-inspection-\(inspectionID)")
-        inspectionIDByEventID.removeValue(forKey: pending.v2EventID)
+        inspectionEventTracker.complete(
+            eventID: pending.v2EventID, context: pending.diagnosticContext
+        )
         if case .v2 = result {
             collaborationStatusStore.finishCheck(profileID: pending.profile.id, responded: true)
         } else {
             collaborationStatusStore.finishCheck(profileID: pending.profile.id, responded: false)
         }
+        let diagnosticResult: String
+        switch result {
+        case .v2: diagnosticResult = "v2-available"
+        case .authenticationFailed: diagnosticResult = "authentication-failed"
+        case .noResponse: diagnosticResult = "no-response"
+        }
+        peerInspectionDiagnostics.record(
+            .completed(diagnosticResult), context: pending.diagnosticContext
+        )
         pending.completion(result)
         settingsWindowController.refreshSelectedCollaborationStatus()
     }
 
-    private func handlePendingV2Inspection(_ data: Data) -> Bool {
-        guard let eventID = V2MessageEnvelope.eventID(in: data),
-              let inspectionID = inspectionIDByEventID[eventID],
+    private func handlePendingV2Inspection(
+        _ data: Data,
+        from endpoint: PeerTransportEndpoint
+    ) -> Bool {
+        let eventID = V2MessageEnvelope.eventID(in: data)
+        guard let eventID,
+              case .active(let inspectionID) = inspectionEventTracker.disposition(for: eventID),
               let pending = pendingPeerInspections[inspectionID],
-              eventID == pending.v2EventID else { return false }
-        switch V2PeerCapabilityInspection.validateResponse(
+              eventID == pending.v2EventID else {
+            if let eventID,
+               case .late(let completedContext) = inspectionEventTracker.disposition(for: eventID) {
+                let summary = PeerInspectionEnvelopeProjection.summary(data)
+                peerInspectionDiagnostics.record(
+                    .datagramReceived(
+                        sourceHost: endpoint.host,
+                        sourcePort: endpoint.port,
+                        version: summary.version,
+                        type: summary.type,
+                        eventIDMatches: true
+                    ),
+                    context: completedContext
+                )
+                peerInspectionDiagnostics.record(
+                    .responseRejected("late-response"), context: completedContext
+                )
+                return true
+            }
+            if pendingPeerInspections.count == 1,
+               let pending = pendingPeerInspections.values.first,
+               PeerInspectionEnvelopeProjection.summary(data).type == V2MessageType.statusResponse.rawValue {
+                recordInspectionDatagram(
+                    data, from: endpoint, pending: pending, eventIDMatches: false
+                )
+                peerInspectionDiagnostics.record(
+                    .responseRejected("event-id-mismatch"), context: pending.diagnosticContext
+                )
+                return true
+            }
+            return false
+        }
+        recordInspectionDatagram(data, from: endpoint, pending: pending, eventIDMatches: true)
+        if let rejection = PeerInspectionDatagramSourceValidator.rejectionReason(
+            sourcePort: endpoint.port, expectedPort: pending.profile.peerPort
+        ) {
+            peerInspectionDiagnostics.record(
+                .responseRejected(rejection), context: pending.diagnosticContext
+            )
+            return true
+        }
+        switch V2PeerCapabilityInspection.validateResponseDetailed(
             data: data,
             profile: pending.profile,
             eventID: pending.v2EventID,
@@ -802,20 +896,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             now: Int64(Date().timeIntervalSince1970)
         ) {
         case .accepted(let endpointID):
+            guard let message = try? JSONDecoder().decode(V2Message.self, from: data) else {
+                peerInspectionDiagnostics.record(
+                    .responseRejected("validated-response-decode-failed"),
+                    context: pending.diagnosticContext
+                )
+                return true
+            }
+            switch v2ReplayCache.classify(message, nowMs: currentTimeMs()) {
+            case .nonceReuse:
+                peerInspectionDiagnostics.record(
+                    .responseRejected("nonce-reuse"), context: pending.diagnosticContext
+                )
+                return true
+            case .duplicate:
+                peerInspectionDiagnostics.record(
+                    .responseRejected("duplicate-response"), context: pending.diagnosticContext
+                )
+                return true
+            case .new:
+                break
+            }
+            peerInspectionDiagnostics.record(.responseAccepted, context: pending.diagnosticContext)
             completePeerCapabilityInspection(inspectionID, result: .v2(endpointID: endpointID))
         case .authenticationFailed:
+            peerInspectionDiagnostics.record(
+                .responseRejected("authentication-failed"), context: pending.diagnosticContext
+            )
             completePeerCapabilityInspection(inspectionID, result: .authenticationFailed)
-        case .rejected:
-            break
+        case .rejected(let reason):
+            peerInspectionDiagnostics.record(
+                .responseRejected(reason.diagnosticCode), context: pending.diagnosticContext
+            )
         }
         return true
     }
 
-    private func handlePeerDatagram(_ data: Data, reply: @escaping PeerTransport.DataReply) {
+    private func recordInspectionDatagram(
+        _ data: Data,
+        from endpoint: PeerTransportEndpoint,
+        pending: PendingPeerCapabilityInspection,
+        eventIDMatches: Bool
+    ) {
+        let summary = PeerInspectionEnvelopeProjection.summary(data)
+        peerInspectionDiagnostics.record(
+            .datagramReceived(
+                sourceHost: endpoint.host,
+                sourcePort: endpoint.port,
+                version: summary.version,
+                type: summary.type,
+                eventIDMatches: eventIDMatches
+            ),
+            context: pending.diagnosticContext
+        )
+    }
+
+    private func handlePeerDatagram(
+        _ data: Data,
+        from endpoint: PeerTransportEndpoint,
+        reply: @escaping PeerTransport.DataReply
+    ) {
         guard configurationSafetyGate.allows(.network), usbLearningSafetyGate.allows(.network) else { return }
+        if handlePendingV2Inspection(data, from: endpoint) { return }
         switch PeerProtocolVersionDispatcher.version(in: data) {
         case .v2:
-            if handlePendingV2Inspection(data) { return }
             handleV2Datagram(data, reply: reply)
         case .unsupported, nil:
             return
@@ -1011,6 +1155,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(inputSourceDiagnostics.exportText(), forType: .string)
+    }
+
+    @objc private func copyPeerInspectionDiagnostics() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(peerInspectionDiagnostics.exportText(), forType: .string)
     }
 
     private func reloadSettings() {

@@ -6,6 +6,24 @@ struct PeerTransportEndpoint: Equatable {
     let port: Int
 }
 
+enum PeerTransportFailureCategory: String, Equatable {
+    case invalidPort = "invalid-port"
+    case invalidDestination = "invalid-destination"
+    case notStarted = "listener-not-started"
+    case socketCreate = "socket-create-failed"
+    case socketConfigure = "socket-configure-failed"
+    case socketBind = "socket-bind-failed"
+    case addressResolution = "address-resolution-failed"
+    case send = "send-failed"
+    case receive = "receive-failed"
+    case unknown = "unknown-error"
+}
+
+enum PeerTransportOperationResult: Equatable {
+    case success
+    case failure(PeerTransportFailureCategory)
+}
+
 protocol PeerTransportDatagramSocket: AnyObject {
     var onDatagram: ((Data, PeerTransportEndpoint) -> Void)? { get set }
     var onReceiveError: ((Error) -> Void)? { get set }
@@ -18,7 +36,7 @@ protocol PeerTransportSocketFactory {
     func makeSocket() -> PeerTransportDatagramSocket
 }
 
-private enum PeerTransportError: LocalizedError {
+enum PeerTransportError: LocalizedError {
     case invalidPort(Int)
     case notStarted
     case socketOperation(String, Int32)
@@ -32,6 +50,23 @@ private enum PeerTransportError: LocalizedError {
             return "UDP \(operation)失败（系统错误 \(code)）"
         case .addressResolution(let code):
             return "UDP 目标地址解析失败（系统错误 \(code)）"
+        }
+    }
+
+    var diagnosticCategory: PeerTransportFailureCategory {
+        switch self {
+        case .invalidPort: return .invalidPort
+        case .notStarted: return .notStarted
+        case .socketOperation(let operation, _):
+            switch operation {
+            case "创建": return .socketCreate
+            case "配置": return .socketConfigure
+            case "绑定": return .socketBind
+            case "发送": return .send
+            case "接收": return .receive
+            default: return .unknown
+            }
+        case .addressResolution: return .addressResolution
         }
     }
 }
@@ -176,7 +211,7 @@ private final class BSDPeerDatagramSocket: PeerTransportDatagramSocket {
 final class PeerTransport {
     typealias DataReply = (Data) -> Void
 
-    var onDatagram: ((Data, @escaping DataReply) -> Void)?
+    var onDatagram: ((Data, PeerTransportEndpoint, @escaping DataReply) -> Void)?
     var onError: ((String) -> Void)?
 
     private let queue: DispatchQueue
@@ -200,9 +235,14 @@ final class PeerTransport {
 
     deinit { performSync { stopLocked() } }
 
-    func start(port: Int) {
+    @discardableResult
+    func start(port: Int) -> PeerTransportOperationResult {
+        var result: PeerTransportOperationResult = .failure(.unknown)
         performSync {
-            if socket != nil, listeningPort == port { return }
+            if socket != nil, listeningPort == port {
+                result = .success
+                return
+            }
             stopLocked()
             let candidate = factory.makeSocket()
             generation += 1
@@ -228,26 +268,42 @@ final class PeerTransport {
                 try candidate.start(port: port, queue: queue)
                 socket = candidate
                 listeningPort = port
+                result = .success
             } catch {
                 candidate.stop()
                 reportError("无法监听端口 \(port)：\(error.localizedDescription)")
+                result = .failure((error as? PeerTransportError)?.diagnosticCategory ?? .unknown)
             }
         }
+        return result
     }
 
     func stop() { performSync { stopLocked() } }
 
-    func send(_ data: Data, host: String, port: Int) {
-        guard !host.isEmpty, (1...65_535).contains(port) else { return }
+    func send(
+        _ data: Data,
+        host: String,
+        port: Int,
+        completion: ((PeerTransportOperationResult) -> Void)? = nil
+    ) {
+        guard !host.isEmpty else {
+            callbackQueue.async { completion?(.failure(.invalidDestination)) }
+            return
+        }
+        guard (1...65_535).contains(port) else {
+            callbackQueue.async { completion?(.failure(.invalidPort)) }
+            return
+        }
         performAsync { [weak self] in
             guard let self else { return }
             guard let socket = self.socket, self.listeningPort != nil else {
                 self.reportError(PeerTransportError.notStarted.localizedDescription)
+                self.callbackQueue.async { completion?(.failure(.notStarted)) }
                 return
             }
             self.sendLocked(
                 data, to: PeerTransportEndpoint(host: host, port: port),
-                on: socket, isReply: false
+                on: socket, isReply: false, completion: completion
             )
         }
     }
@@ -275,19 +331,26 @@ final class PeerTransport {
                 self.sendLocked(response, to: endpoint, on: socket, isReply: true)
             }
         }
-        callbackQueue.async { onDatagram(data, reply) }
+        callbackQueue.async { onDatagram(data, endpoint, reply) }
     }
 
     private func sendLocked(
         _ data: Data,
         to endpoint: PeerTransportEndpoint,
         on socket: PeerTransportDatagramSocket,
-        isReply: Bool
+        isReply: Bool,
+        completion: ((PeerTransportOperationResult) -> Void)? = nil
     ) {
         socket.send(data, to: endpoint) { [weak self] error in
-            guard let self, let error else { return }
+            guard let self else { return }
+            guard let error else {
+                self.callbackQueue.async { completion?(.success) }
+                return
+            }
             let operation = isReply ? "UDP 回复失败" : "UDP 发送失败"
             self.reportError("\(operation)：\(error.localizedDescription)")
+            let category = (error as? PeerTransportError)?.diagnosticCategory ?? .send
+            self.callbackQueue.async { completion?(.failure(category)) }
         }
     }
 
