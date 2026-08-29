@@ -321,7 +321,10 @@ final class NativeDDCBackend: DDCBackend {
     }
 
     fileprivate static func discoverDisplays(
-        knownDisplays: [DDCKnownDisplay]
+        knownDisplays: [DDCKnownDisplay],
+        diagnosticSelector: String? = nil,
+        diagnosticContext: InputSourceDiagnosticContext? = nil,
+        diagnostics: InputSourceDiagnosticRecording? = nil
     ) -> [NativeDDCDisplay] {
         let identities = onlineExternalDisplayIDs().compactMap(displayInfo(for:))
         let transports = registryTransports()
@@ -343,6 +346,44 @@ final class NativeDDCBackend: DDCBackend {
         let knownBySelector = Dictionary(uniqueKeysWithValues: knownDisplays.map {
             ($0.selector.uppercased(), $0)
         })
+        if let diagnosticSelector, let diagnosticContext, let diagnostics {
+            let identity = identities.first {
+                $0.systemUUID.caseInsensitiveCompare(diagnosticSelector) == .orderedSame
+            }.map {
+                NativeDisplayIdentity(
+                    stableID: $0.systemUUID,
+                    ioDisplayLocation: $0.ioLocation,
+                    productName: $0.productName,
+                    serialNumber: $0.serialNumber,
+                    edidSearchKeys: $0.edidSearchKeys
+                )
+            }
+            let selectedLocation = identity.flatMap { matches[$0.stableID] }
+            let evidence = NativeInputCandidateDiagnosticProjection.evidence(
+                identity: identity,
+                candidates: transports.map(\.metadata),
+                selectedServiceLocation: selectedLocation,
+                anonymousServiceID: diagnostics.anonymousServiceID(for:)
+            )
+            diagnostics.record(.candidates(evidence), context: diagnosticContext)
+            if let selected = evidence.first(where: \.selected) {
+                let reason = "matcher-score-\(selected.score)"
+                    + "-location-\(selected.locationMatched)"
+                    + "-name-\(selected.productNameMatched)"
+                    + "-serial-\(selected.serialMatched)"
+                    + "-edid-\(selected.edidMatchCount)"
+                diagnostics.record(
+                    .serviceSelected(
+                        anonymousID: selected.anonymousID,
+                        reason: reason,
+                        transportType: selected.transportType
+                    ),
+                    context: diagnosticContext
+                )
+            } else {
+                diagnostics.record(.failed(reason: "service-unmatched"), context: diagnosticContext)
+            }
+        }
         return identities.map { identity in
             let transport = matches[identity.systemUUID].flatMap { transportByLocation[$0] }
             let savedName = knownBySelector[identity.systemUUID.uppercased()]?.name ?? ""
@@ -619,7 +660,9 @@ final class NativeDDCBackend: DDCBackend {
         chipAddress: UInt32,
         command: UInt8,
         value: UInt16,
-        parameters: NativeDDCTransportParameters
+        parameters: NativeDDCTransportParameters,
+        diagnosticContext: InputSourceDiagnosticContext? = nil,
+        diagnostics: InputSourceDiagnosticRecording? = nil
     ) -> Bool {
         var request: [UInt8] = [command, UInt8(value >> 8), UInt8(value & 0xff)]
         var response: [UInt8] = []
@@ -631,10 +674,50 @@ final class NativeDDCBackend: DDCBackend {
             attempts: parameters.writeAttempts,
             readDataAddress: nil,
             readSleepMicroseconds: nil,
-            parameters: parameters
+            parameters: parameters,
+            diagnosticContext: diagnosticContext,
+            diagnostics: diagnostics
         ) {
         case .success: return true
         case .failure: return false
+        }
+    }
+
+    fileprivate static func inputFeedback(
+        service: IOAVService,
+        chipAddress: UInt32,
+        transportPath: NativeDDCTransportPath,
+        targetValue: UInt16,
+        alternateValue: UInt16?,
+        parameters: NativeDDCTransportParameters
+    ) -> InputSourceDeviceFeedback {
+        let primaryAddress = parameters.readDataAddress(for: transportPath)
+        switch read(
+            service: service,
+            chipAddress: chipAddress,
+            command: .input,
+            transportPath: transportPath,
+            primaryDataAddress: primaryAddress,
+            parameters: parameters
+        ) {
+        case let .success(reading, _, _):
+            if reading.current == Int(targetValue) {
+                return .targetValue(
+                    value: reading.current, maximum: reading.maximum, estimated: reading.estimated
+                )
+            }
+            if let alternateValue, reading.current == Int(alternateValue) {
+                return .alternateValue(
+                    value: reading.current, maximum: reading.maximum, estimated: reading.estimated
+                )
+            }
+            return .otherValue(
+                value: reading.current, maximum: reading.maximum, estimated: reading.estimated
+            )
+        case let .failure(issue, dataAddress, attempts, _, _, _):
+            return .unavailable(
+                issue: issue.diagnosticCode, attempts: attempts, offset: dataAddress
+            )
         }
     }
 
@@ -646,7 +729,9 @@ final class NativeDDCBackend: DDCBackend {
         attempts: Int,
         readDataAddress: UInt8?,
         readSleepMicroseconds: UInt32?,
-        parameters: NativeDDCTransportParameters
+        parameters: NativeDDCTransportParameters,
+        diagnosticContext: InputSourceDiagnosticContext? = nil,
+        diagnostics: InputSourceDiagnosticRecording? = nil
     ) -> Result<Void, NativeDDCReplyIssue> {
         let dataAddress = parameters.writeDataAddress
         var packet = [UInt8(0x80 | (request.count + 1)), UInt8(request.count)] + request + [0]
@@ -655,18 +740,42 @@ final class NativeDDCBackend: DDCBackend {
             bytes: packet.dropLast()
         )
 
-        for _ in 0..<attempts {
+        for attemptIndex in 0..<attempts {
+            var cycleIndex = 0
             let writeSucceeded = NativeDDCWriteCyclePolicy.perform(
                 cycles: parameters.writeCycles
             ) {
+                cycleIndex += 1
                 usleep(parameters.writeSleepMicroseconds)
-                return IOAVServiceWriteI2C(
+                let startedAt = Date()
+                let startedNanos = DispatchTime.now().uptimeNanoseconds
+                let result = IOAVServiceWriteI2C(
                     service,
                     chipAddress,
                     UInt32(dataAddress),
                     &packet,
                     UInt32(packet.count)
-                ) == KERN_SUCCESS
+                )
+                let endedNanos = DispatchTime.now().uptimeNanoseconds
+                let endedAt = Date()
+                if let diagnosticContext, let diagnostics, request.first == DDCCommand.input.rawValue {
+                    diagnostics.record(
+                        .writeCall(
+                            attempt: attemptIndex + 1,
+                            cycle: cycleIndex,
+                            frameHex: packet.map { String(format: "%02X", $0) }.joined(separator: " "),
+                            chip: chipAddress,
+                            address: dataAddress,
+                            offset: dataAddress,
+                            startedAt: startedAt,
+                            endedAt: endedAt,
+                            returnCode: result,
+                            durationMicroseconds: (endedNanos - startedNanos) / 1_000
+                        ),
+                        context: diagnosticContext
+                    )
+                }
+                return result == KERN_SUCCESS
             }
 
             if writeSucceeded, !response.isEmpty {
@@ -697,14 +806,24 @@ final class NativeDDCBackend: DDCBackend {
 
 final class NativeInputSourceTransportResolver: InputSourceTransportResolving {
     private let transportParameters: NativeDDCTransportParameters
+    private let diagnostics: InputSourceDiagnosticRecording
 
-    init(transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible) {
+    init(
+        transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible,
+        diagnostics: InputSourceDiagnosticRecording = InputSourceDiagnosticStore.shared
+    ) {
         self.transportParameters = transportParameters
+        self.diagnostics = diagnostics
     }
 
-    func resolve(selector: String) throws -> InputSourceTransport {
+    func resolve(selector: String, context: InputSourceDiagnosticContext) throws -> InputSourceTransport {
 #if arch(arm64)
-        guard let display = NativeDDCBackend.discoverDisplays(knownDisplays: []).first(where: {
+        guard let display = NativeDDCBackend.discoverDisplays(
+            knownDisplays: [],
+            diagnosticSelector: selector,
+            diagnosticContext: context,
+            diagnostics: diagnostics
+        ).first(where: {
             $0.systemUUID.caseInsensitiveCompare(selector) == .orderedSame
         }), display.isOnline, let service = display.service else {
             throw InputSourceSwitchFailure.displayUnavailable(stableID: selector)
@@ -712,7 +831,9 @@ final class NativeInputSourceTransportResolver: InputSourceTransportResolving {
         return NativeResolvedInputSourceTransport(
             service: service,
             chipAddress: display.chipAddress,
-            transportParameters: transportParameters
+            transportPath: display.transportPath,
+            transportParameters: transportParameters,
+            diagnostics: diagnostics
         )
 #else
         throw InputSourceSwitchFailure.displayUnavailable(stableID: selector)
@@ -723,22 +844,39 @@ final class NativeInputSourceTransportResolver: InputSourceTransportResolving {
 private final class NativeResolvedInputSourceTransport: InputSourceTransport {
     private let service: IOAVService
     private let chipAddress: UInt32
+    private let transportPath: NativeDDCTransportPath
     private let transportParameters: NativeDDCTransportParameters
+    private let diagnostics: InputSourceDiagnosticRecording
 
-    init(service: IOAVService, chipAddress: UInt32,
-         transportParameters: NativeDDCTransportParameters) {
+    init(service: IOAVService, chipAddress: UInt32, transportPath: NativeDDCTransportPath,
+         transportParameters: NativeDDCTransportParameters,
+         diagnostics: InputSourceDiagnosticRecording) {
         self.service = service
         self.chipAddress = chipAddress
+        self.transportPath = transportPath
         self.transportParameters = transportParameters
+        self.diagnostics = diagnostics
     }
 
-    func writeInput(_ value: UInt16) -> Bool {
-        NativeDDCBackend.write(
+    func writeInput(_ value: UInt16, context: InputSourceDiagnosticContext) -> Bool {
+        let acceptedByTransport = NativeDDCBackend.write(
             service: service,
             chipAddress: chipAddress,
             command: DDCCommand.input.rawValue,
             value: value,
+            parameters: transportParameters,
+            diagnosticContext: context,
+            diagnostics: diagnostics
+        )
+        let feedback = NativeDDCBackend.inputFeedback(
+            service: service,
+            chipAddress: chipAddress,
+            transportPath: transportPath,
+            targetValue: context.targetValue,
+            alternateValue: context.alternateValue,
             parameters: transportParameters
         )
+        diagnostics.record(.deviceFeedback(feedback), context: context)
+        return acceptedByTransport
     }
 }

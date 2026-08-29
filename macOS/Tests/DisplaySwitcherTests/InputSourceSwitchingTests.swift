@@ -40,7 +40,7 @@ private final class RecordingInputSourceTransport: InputSourceTransport {
         self.recorder = recorder
     }
 
-    func writeInput(_ value: UInt16) -> Bool {
+    func writeInput(_ value: UInt16, context: InputSourceDiagnosticContext) -> Bool {
         recorder.write(selector: selector, value: value)
     }
 }
@@ -54,7 +54,7 @@ private final class RecordingInputSourceResolver: InputSourceTransportResolving 
         self.recorder = recorder
     }
 
-    func resolve(selector: String) throws -> InputSourceTransport {
+    func resolve(selector: String, context: InputSourceDiagnosticContext) throws -> InputSourceTransport {
         recorder.recordResolve(selector)
         if recorder.unavailableSelectors.contains(selector) {
             throw InputSourceSwitchFailure.displayUnavailable(stableID: selector)
@@ -281,5 +281,157 @@ final class InputSourceSwitchingTests: XCTestCase {
         XCTAssertEqual(blockedResult.firstFailure, .blocked(stableID: "blocked"))
         XCTAssertTrue(recorder.resolvedSelectors.isEmpty)
         XCTAssertTrue(recorder.writes.isEmpty)
+    }
+
+    func testDiagnosticChainReachesWriteAdapterAndSeparatesTransportFromDeviceFeedback() {
+        let recorder = InputSourceSwitchRecorder()
+        let diagnostics = InputSourceDiagnosticStore()
+        let service = InputSourceSwitchService(
+            resolver: RecordingInputSourceResolver(recorder: recorder),
+            hardwareArbiter: NativeI2CHardwareArbiter(),
+            diagnostics: diagnostics
+        )
+
+        let result = service.switchInputs([
+            InputSourceSwitchTarget(
+                stableID: "private-display-id",
+                selector: "selector-a",
+                targetInput: 17,
+                alternateInput: 15
+            )
+        ], origin: .usb)
+
+        XCTAssertTrue(result.allSucceeded)
+        XCTAssertEqual(recorder.writes.map(\.value), [17])
+        let text = diagnostics.exportText()
+        XCTAssertTrue(text.contains("stage=target-queued origin=usb vcp=0x60 value=17"))
+        XCTAssertTrue(text.contains("stage=resolver-started"))
+        XCTAssertTrue(text.contains("stage=write-adapter-reached vcp=0x60"))
+        XCTAssertTrue(text.contains("kern-success-observed=true device-executed=unknown"))
+        XCTAssertFalse(text.contains("private-display-id"))
+    }
+
+    func testCandidateEvidenceRecordsSelectionWithoutPrivateIdentity() {
+        let identity = NativeDisplayIdentity(
+            stableID: "private-uuid",
+            ioDisplayLocation: "private-registry-location",
+            productName: "private-product-name",
+            serialNumber: 987_654,
+            edidSearchKeys: [NativeEDIDSearchKey(value: "ABCD", offset: 0)]
+        )
+        let candidates = [
+            NativeTransportCandidate(
+                serviceLocation: 11,
+                ioDisplayLocation: "private-registry-location",
+                productName: "private-product-name",
+                serialNumber: 987_654,
+                edidUUID: "ABCD0000",
+                transportPath: .typeCDPAlt
+            ),
+            NativeTransportCandidate(
+                serviceLocation: 12,
+                ioDisplayLocation: "other-private-location",
+                productName: "other-private-name",
+                serialNumber: 123_456,
+                edidUUID: "FFFF0000",
+                transportPath: .unknownExternal
+            )
+        ]
+
+        let evidence = NativeInputCandidateDiagnosticProjection.evidence(
+            identity: identity,
+            candidates: candidates,
+            selectedServiceLocation: 11,
+            anonymousServiceID: { location in location == 11 ? "S1" : "S2" }
+        )
+
+        XCTAssertEqual(evidence.count, 2)
+        XCTAssertEqual(evidence.map(\.anonymousID), ["S1", "S2"])
+        XCTAssertEqual(evidence.filter(\.selected).map(\.anonymousID), ["S1"])
+        XCTAssertGreaterThan(evidence[0].score, evidence[1].score)
+        let description = evidence.map(\.safeDescription).joined(separator: " ")
+        for secret in [
+            "private-uuid", "private-registry-location", "private-product-name",
+            "987654", "other-private-location", "other-private-name"
+        ] {
+            XCTAssertFalse(description.contains(secret))
+        }
+    }
+
+    func testServiceAnonymousIDsRemainStableWhenCandidateEnumerationReorders() {
+        let diagnostics = InputSourceDiagnosticStore()
+        XCTAssertEqual(diagnostics.anonymousServiceID(for: 91), "S1")
+        XCTAssertEqual(diagnostics.anonymousServiceID(for: 42), "S2")
+        XCTAssertEqual(diagnostics.anonymousServiceID(for: 42), "S2")
+        XCTAssertEqual(diagnostics.anonymousServiceID(for: 91), "S1")
+    }
+
+    func testMultipleCandidateDiagnosticsDoNotCauseWritesToAlternateCandidates() {
+        let recorder = InputSourceSwitchRecorder()
+        let diagnostics = InputSourceDiagnosticStore()
+        let service = InputSourceSwitchService(
+            resolver: RecordingInputSourceResolver(recorder: recorder),
+            hardwareArbiter: NativeI2CHardwareArbiter(),
+            diagnostics: diagnostics
+        )
+        let context = diagnostics.beginTarget(
+            origin: .manualOrCollaboration,
+            stableID: "display-a",
+            targetValue: 17,
+            alternateValue: nil
+        )
+        diagnostics.record(.candidates([
+            InputSourceCandidateEvidence(
+                anonymousID: "S1", transportType: "typec-dp-alt",
+                locationMatched: true, productNameMatched: true, serialMatched: false,
+                edidMatchCount: 1, score: 12, selected: true
+            ),
+            InputSourceCandidateEvidence(
+                anonymousID: "S2", transportType: "unknown-external",
+                locationMatched: false, productNameMatched: true, serialMatched: false,
+                edidMatchCount: 1, score: 2, selected: false
+            )
+        ]), context: context)
+
+        XCTAssertTrue(service.switchInputs([
+            InputSourceSwitchTarget(stableID: "display-a", selector: "selector-a", targetInput: 17)
+        ]).allSucceeded)
+        XCTAssertEqual(recorder.resolvedSelectors, ["selector-a"])
+        XCTAssertEqual(recorder.writes.count, 1)
+        XCTAssertTrue(diagnostics.exportText().contains("stage=candidates count=2"))
+    }
+
+    func testDiagnosticWriteCallAndFeedbackRemainDistinctAndSanitized() {
+        let diagnostics = InputSourceDiagnosticStore()
+        let context = diagnostics.beginTarget(
+            origin: .manualOrCollaboration,
+            stableID: "private-display-uuid",
+            targetValue: 17,
+            alternateValue: 15
+        )
+        let started = Date(timeIntervalSince1970: 1)
+        diagnostics.record(.writeCall(
+            attempt: 1,
+            cycle: 2,
+            frameHex: "84 03 60 00 11 AA",
+            chip: 0x37,
+            address: 0x51,
+            offset: 0x51,
+            startedAt: started,
+            endedAt: started.addingTimeInterval(0.001),
+            returnCode: 0,
+            durationMicroseconds: 1_000
+        ), context: context)
+        diagnostics.record(.writeTransportResult(acceptedByTransport: true), context: context)
+        diagnostics.record(.deviceFeedback(.alternateValue(
+            value: 15, maximum: 255, estimated: false
+        )), context: context)
+
+        let text = diagnostics.exportText()
+        XCTAssertTrue(text.contains("stage=write-i2c attempt=1 cycle=2 vcp=0x60"))
+        XCTAssertTrue(text.contains("frame=84 03 60 00 11 AA chip=0x37"))
+        XCTAssertTrue(text.contains("kern-success-observed=true device-executed=unknown"))
+        XCTAssertTrue(text.contains("stage=device-feedback alternate-value current=15"))
+        XCTAssertFalse(text.contains("private-display-uuid"))
     }
 }

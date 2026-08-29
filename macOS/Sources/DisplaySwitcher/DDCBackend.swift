@@ -716,6 +716,48 @@ enum NativeDisplayMatcher {
     }
 }
 
+enum NativeInputCandidateDiagnosticProjection {
+    static func evidence(
+        identity: NativeDisplayIdentity?,
+        candidates: [NativeTransportCandidate],
+        selectedServiceLocation: Int?,
+        anonymousServiceID: (Int) -> String = { "S\($0)" }
+    ) -> [InputSourceCandidateEvidence] {
+        candidates.map { candidate in
+            let locationMatched = identity.map {
+                !$0.ioDisplayLocation.isEmpty && $0.ioDisplayLocation == candidate.ioDisplayLocation
+            } ?? false
+            let productNameMatched = identity.map {
+                !$0.productName.isEmpty
+                    && $0.productName.caseInsensitiveCompare(candidate.productName) == .orderedSame
+            } ?? false
+            let serialMatched = identity.map {
+                $0.serialNumber != 0 && $0.serialNumber == candidate.serialNumber
+            } ?? false
+            let candidateEDID = candidate.edidUUID.uppercased()
+            let edidMatches = identity?.edidSearchKeys.filter { key in
+                !key.value.isEmpty && key.value != "0000" && key.offset >= 0
+                    && candidateEDID.count >= key.offset + key.value.count
+                    && String(candidateEDID.dropFirst(key.offset).prefix(key.value.count)) == key.value
+            }.count ?? 0
+            let score = (locationMatched ? 10 : 0)
+                + (productNameMatched ? 1 : 0)
+                + (serialMatched ? 4 : 0)
+                + edidMatches
+            return InputSourceCandidateEvidence(
+                anonymousID: anonymousServiceID(candidate.serviceLocation),
+                transportType: candidate.transportPath.rawValue,
+                locationMatched: locationMatched,
+                productNameMatched: productNameMatched,
+                serialMatched: serialMatched,
+                edidMatchCount: edidMatches,
+                score: score,
+                selected: candidate.serviceLocation == selectedServiceLocation
+            )
+        }
+    }
+}
+
 enum DDCSingleRetry {
     static func perform(operation: () throws -> Void, recover: () throws -> Void) throws {
         do {

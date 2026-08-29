@@ -151,8 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         label: "DisplaySwitcher.input-source", qos: .userInitiated
     )
     private let ddcController = DDCController()
-    private let inputSourceSwitchService = InputSourceSwitchService(
-        resolver: NativeInputSourceTransportResolver()
+    private let inputSourceDiagnostics = InputSourceDiagnosticStore.shared
+    private lazy var inputSourceSwitchService = InputSourceSwitchService(
+        resolver: NativeInputSourceTransportResolver(diagnostics: inputSourceDiagnostics),
+        diagnostics: inputSourceDiagnostics
     )
     private lazy var ddcWriteCoordinator = DDCLatestWinsCoordinator(
         executor: DDCControllerWriteExecutor(
@@ -330,6 +332,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         settingsItem.target = self
         menu.addItem(settingsItem)
 
+        let copyInputDiagnosticItem = NSMenuItem(
+            title: "复制输入切换诊断",
+            action: #selector(copyInputSwitchDiagnostics),
+            keyEquivalent: ""
+        )
+        copyInputDiagnosticItem.target = self
+        menu.addItem(copyInputDiagnosticItem)
+
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -398,13 +408,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return InputSourceSwitchTarget(
                 stableID: configuration.id ?? configuration.selector,
                 selector: configuration.selector,
-                targetInput: configuration.targetInput
+                targetInput: configuration.targetInput,
+                alternateInput: configuration.localInput
             )
         }
         let inputSourceSwitchService = inputSourceSwitchService
 
         inputSwitchQueue.async { [weak self] in
-            let result = inputSourceSwitchService.switchInputs(targets) { [weak self] in
+            let result = inputSourceSwitchService.switchInputs(
+                targets,
+                origin: .manualOrCollaboration
+            ) { [weak self] in
                 self?.configurationSafetyGate.allows(.ddc) == true
                     && self?.usbLearningSafetyGate.allows(.ddc) == true
             }
@@ -993,6 +1007,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
+    @objc private func copyInputSwitchDiagnostics() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(inputSourceDiagnostics.exportText(), forType: .string)
+    }
+
     private func reloadSettings() {
         ddcWriteCoordinator.cancelAll()
         let result = AppPreferences.loadDisplayConfigurations()
@@ -1167,7 +1187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let target = InputSourceSwitchTarget(
             stableID: configuration.id ?? configuration.selector,
             selector: configuration.selector,
-            targetInput: targetInput
+            targetInput: targetInput,
+            alternateInput: targetInput == configuration.localInput
+                ? configuration.targetInput
+                : configuration.localInput
         )
         let inputSourceSwitchService = inputSourceSwitchService
         inputSwitchQueue.async { [weak self] in
@@ -1176,7 +1199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 DispatchQueue.main.async { completion(false) }
                 return
             }
-            let result = inputSourceSwitchService.switchInputs([target]) { [weak self] in
+            let result = inputSourceSwitchService.switchInputs([target], origin: .usb) { [weak self] in
                 self?.configurationSafetyGate.allows(.ddc) == true
                     && self?.usbLearningSafetyGate.allows(.ddc) == true
             }
