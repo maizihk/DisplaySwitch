@@ -139,12 +139,13 @@ final class NativeDDCBackend: DDCBackend {
                                  chipAddress: display.chipAddress,
                                  readDataAddress: dataAddress,
                                  readAttemptCount: attempts)
-            case .failure(let issue, let dataAddress, let attempts, _):
+            case .failure(let issue, let dataAddress, let attempts, _, let compatibilityRejection):
                 recordDiagnostic(
                     selector: selector, path: display.transportPath, serviceMatched: true,
                     category: diagnosticCategory(for: issue), replyIssue: issue,
                     chipAddress: display.chipAddress, readDataAddress: dataAddress,
-                    readAttemptCount: attempts
+                    readAttemptCount: attempts,
+                    checksumCompatibilityRejection: compatibilityRejection
                 )
                 throw DDCBackendError.invalidReply(command: command, issue: issue)
             }
@@ -213,7 +214,8 @@ final class NativeDDCBackend: DDCBackend {
                                   replyIssue: NativeDDCReplyIssue? = nil,
                                   chipAddress: UInt32? = nil,
                                   readDataAddress: UInt8? = nil,
-                                  readAttemptCount: Int? = nil) {
+                                  readAttemptCount: Int? = nil,
+                                  checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil) {
         let key = selector.uppercased()
         diagnosticsLock.lock()
         let rebuildCount = diagnosticsBySelector[key]?.rebuildCount ?? 0
@@ -222,7 +224,8 @@ final class NativeDDCBackend: DDCBackend {
             operationCategory: category, rebuildCount: rebuildCount,
             replyIssue: replyIssue, chipAddress: chipAddress,
             readDataAddress: readDataAddress,
-            readAttemptCount: readAttemptCount
+            readAttemptCount: readAttemptCount,
+            checksumCompatibilityRejection: checksumCompatibilityRejection
         )
         diagnosticsLock.unlock()
     }
@@ -239,7 +242,8 @@ final class NativeDDCBackend: DDCBackend {
             operationCategory: current.operationCategory, rebuildCount: current.rebuildCount + 1,
             replyIssue: current.replyIssue, chipAddress: current.chipAddress,
             readDataAddress: current.readDataAddress,
-            readAttemptCount: current.readAttemptCount
+            readAttemptCount: current.readAttemptCount,
+            checksumCompatibilityRejection: current.checksumCompatibilityRejection
         )
         diagnosticsLock.unlock()
     }
@@ -558,7 +562,8 @@ final class NativeDDCBackend: DDCBackend {
             .badChecksum,
             let dataAddress,
             let strictAttempts,
-            onlyObservedIssueWasBadChecksum: true
+            onlyObservedIssueWasBadChecksum: true,
+            checksumCompatibilityRejection: nil
         ) = strictOutcome else {
             return strictOutcome
         }
@@ -581,11 +586,12 @@ final class NativeDDCBackend: DDCBackend {
                 reading, dataAddress: dataAddress,
                 attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount
             )
-        case .rejected:
+        case .rejected(let rejection):
             return .failure(
                 .badChecksum, dataAddress: dataAddress,
                 attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount,
-                onlyObservedIssueWasBadChecksum: true
+                onlyObservedIssueWasBadChecksum: true,
+                checksumCompatibilityRejection: rejection
             )
         }
     }

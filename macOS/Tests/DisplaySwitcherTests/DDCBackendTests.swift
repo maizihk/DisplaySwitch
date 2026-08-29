@@ -339,6 +339,12 @@ final class DDCBackendTests: XCTestCase {
     }
 
     func testChecksumCompatibilityRejectsTwoDifferentReplies() {
+        let comparison = NativeDDCChecksumPayloadComparison(
+            commandMatches: true,
+            currentMatches: false,
+            maximumMatches: true,
+            payloadLengths: [8, 8]
+        )
         XCTAssertEqual(
             NativeDDCChecksumCompatibilityValidator.reading(
                 from: [
@@ -347,7 +353,7 @@ final class DDCBackendTests: XCTestCase {
                 ],
                 command: .luminance
             ),
-            .rejected(.inconsistentPayload)
+            .rejected(.inconsistentPayload(comparison))
         )
     }
 
@@ -364,8 +370,8 @@ final class DDCBackendTests: XCTestCase {
             (wrongSource, .invalidField(.wrongSource)),
             (wrongOpcode, .invalidField(.wrongOpcode)),
             (wrongCommand, .invalidField(.wrongCommand)),
-            (badChecksumReply(current: 1, maximum: 0), .invalidRange),
-            (badChecksumReply(current: 101, maximum: 100), .invalidRange)
+            (badChecksumReply(current: 1, maximum: 0), .invalidRange(current: 1, maximum: 0)),
+            (badChecksumReply(current: 101, maximum: 100), .invalidRange(current: 101, maximum: 100))
         ]
 
         for (reply, expected) in invalidCases {
@@ -529,7 +535,8 @@ final class DDCBackendTests: XCTestCase {
                 .wrongCommand,
                 dataAddress: 0,
                 attempts: 10,
-                onlyObservedIssueWasBadChecksum: false
+                onlyObservedIssueWasBadChecksum: false,
+                checksumCompatibilityRejection: nil
             )
         )
     }
@@ -552,7 +559,8 @@ final class DDCBackendTests: XCTestCase {
                 .requestWriteFailed,
                 dataAddress: 0x51,
                 attempts: 5,
-                onlyObservedIssueWasBadChecksum: false
+                onlyObservedIssueWasBadChecksum: false,
+                checksumCompatibilityRejection: nil
             )
         )
     }
@@ -617,6 +625,46 @@ final class DDCBackendTests: XCTestCase {
             XCTAssertFalse(snapshot.userFacingDescription.contains("UUID"))
             XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
         }
+    }
+
+    func testChecksumCompatibilityRejectionsHaveSanitizedDiagnostics() {
+        let cases: [(NativeDDCChecksumCompatibilityRejection, String)] = [
+            (.insufficientReplies, "insufficient-replies"),
+            (.inconsistentPayload(NativeDDCChecksumPayloadComparison(
+                commandMatches: true, currentMatches: false, maximumMatches: true,
+                payloadLengths: [8, 8]
+            )), "inconsistent-payload/command-match=true/current-same=false/max-same=true/payload-length=8,8"),
+            (.invalidField(.wrongCommand), "invalid-field/wrong-command"),
+            (.invalidRange(current: 101, maximum: 100), "invalid-range/current=101/max=100"),
+            (.transportError(.responseTimeout), "transport-error/response-timeout")
+        ]
+
+        for (rejection, expected) in cases {
+            let snapshot = NativeDDCDiagnosticSnapshot(
+                transportPath: .builtinHDMIConverter,
+                serviceMatched: true,
+                operationCategory: .readReplyRejected,
+                rebuildCount: 1,
+                replyIssue: .badChecksum,
+                chipAddress: 0x37,
+                readDataAddress: 0,
+                readAttemptCount: 7,
+                checksumCompatibilityRejection: rejection
+            )
+            XCTAssertTrue(snapshot.userFacingDescription.contains("compatibility \(expected)"))
+            XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
+            XCTAssertFalse(snapshot.userFacingDescription.contains("UUID"))
+            XCTAssertFalse(snapshot.userFacingDescription.contains("[0x"))
+        }
+    }
+
+    func testChecksumCompatibilityRunnerClassifiesTransportFailure() {
+        XCTAssertEqual(
+            NativeDDCChecksumCompatibilityRunner.run(command: .luminance) { _ in
+                .failure(.responseTimeout)
+            },
+            .rejected(.transportError(.responseTimeout))
+        )
     }
 
     func testCancellationAndLateReadCannotCommitCacheOrResult() {

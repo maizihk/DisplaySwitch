@@ -157,12 +157,14 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let chipAddress: UInt32?
     let readDataAddress: UInt8?
     let readAttemptCount: Int?
+    let checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection?
 
     init(transportPath: NativeDDCTransportPath, serviceMatched: Bool,
          operationCategory: NativeDDCOperationCategory, rebuildCount: Int,
          replyIssue: NativeDDCReplyIssue? = nil, chipAddress: UInt32? = nil,
          readDataAddress: UInt8? = nil,
-         readAttemptCount: Int? = nil) {
+         readAttemptCount: Int? = nil,
+         checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil) {
         self.transportPath = transportPath
         self.serviceMatched = serviceMatched
         self.operationCategory = operationCategory
@@ -171,6 +173,7 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         self.chipAddress = chipAddress
         self.readDataAddress = readDataAddress
         self.readAttemptCount = readAttemptCount
+        self.checksumCompatibilityRejection = checksumCompatibilityRejection
     }
 
     var userFacingDescription: String {
@@ -191,6 +194,9 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         }
         if let readAttemptCount {
             parts.append("attempts \(readAttemptCount)")
+        }
+        if let checksumCompatibilityRejection {
+            parts.append("compatibility \(checksumCompatibilityRejection.diagnosticDescription)")
         }
         parts.append("rebuild \(rebuildCount)")
         return parts.joined(separator: " · ")
@@ -276,7 +282,8 @@ enum NativeDDCReadStrategyOutcome: Equatable {
         NativeDDCReplyIssue,
         dataAddress: UInt8,
         attempts: Int,
-        onlyObservedIssueWasBadChecksum: Bool
+        onlyObservedIssueWasBadChecksum: Bool,
+        checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil
     )
 }
 
@@ -319,14 +326,16 @@ enum NativeDDCReadStrategyRunner {
                 lastIssue,
                 dataAddress: alternateDataAddress,
                 attempts: totalAttempts,
-                onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum }
+                onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
+                checksumCompatibilityRejection: nil
             )
         }
         return .failure(
             lastIssue,
             dataAddress: primaryDataAddress,
             attempts: totalAttempts,
-            onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum }
+            onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
+            checksumCompatibilityRejection: nil
         )
     }
 }
@@ -422,12 +431,44 @@ enum NativeDDCReplyValidator {
     }
 }
 
+struct NativeDDCChecksumPayloadComparison: Equatable {
+    let commandMatches: Bool
+    let currentMatches: Bool
+    let maximumMatches: Bool
+    let payloadLengths: [Int]
+
+    var diagnosticDescription: String {
+        "command-match=\(commandMatches)" +
+            "/current-same=\(currentMatches)" +
+            "/max-same=\(maximumMatches)" +
+            "/payload-length=\(payloadLengths.map(String.init).joined(separator: ","))"
+    }
+}
+
 enum NativeDDCChecksumCompatibilityRejection: Equatable {
     case insufficientReplies
     case checksumWasValid
-    case inconsistentPayload
+    case inconsistentPayload(NativeDDCChecksumPayloadComparison)
     case invalidField(NativeDDCReplyIssue)
-    case invalidRange
+    case invalidRange(current: Int, maximum: Int)
+    case transportError(NativeDDCReplyIssue)
+
+    var diagnosticDescription: String {
+        switch self {
+        case .insufficientReplies:
+            return "insufficient-replies"
+        case .checksumWasValid:
+            return "checksum-was-valid"
+        case .inconsistentPayload(let comparison):
+            return "inconsistent-payload/\(comparison.diagnosticDescription)"
+        case .invalidField(let issue):
+            return "invalid-field/\(issue.diagnosticCode)"
+        case .invalidRange(let current, let maximum):
+            return "invalid-range/current=\(current)/max=\(maximum)"
+        case .transportError(let issue):
+            return "transport-error/\(issue.diagnosticCode)"
+        }
+    }
 }
 
 enum NativeDDCChecksumCompatibilityResult: Equatable {
@@ -451,12 +492,22 @@ enum NativeDDCChecksumCompatibilityValidator {
             guard issue == .badChecksum else { return .rejected(.invalidField(issue)) }
         }
         guard compared.dropFirst().allSatisfy({ $0.dropLast() == compared[0].dropLast() }) else {
-            return .rejected(.inconsistentPayload)
+            let commands = compared.map { $0[4] }
+            let currents = compared.map { Int(UInt16($0[8]) << 8 | UInt16($0[9])) }
+            let maximums = compared.map { Int(UInt16($0[6]) << 8 | UInt16($0[7])) }
+            return .rejected(.inconsistentPayload(NativeDDCChecksumPayloadComparison(
+                commandMatches: commands.allSatisfy { $0 == command.rawValue },
+                currentMatches: Set(currents).count == 1,
+                maximumMatches: Set(maximums).count == 1,
+                payloadLengths: compared.map { Int($0[1] & 0x7F) }
+            )))
         }
         let reply = compared[0]
         let maximum = Int(UInt16(reply[6]) << 8 | UInt16(reply[7]))
         let current = Int(UInt16(reply[8]) << 8 | UInt16(reply[9]))
-        guard maximum > 0, current <= maximum else { return .rejected(.invalidRange) }
+        guard maximum > 0, current <= maximum else {
+            return .rejected(.invalidRange(current: current, maximum: maximum))
+        }
         return .accepted(DDCReading(current: current, maximum: maximum, estimated: true))
     }
 
@@ -489,7 +540,7 @@ enum NativeDDCChecksumCompatibilityRunner {
             }
         }
         guard transportIssue == nil else {
-            return .rejected(.invalidField(transportIssue ?? .responseReadFailed))
+            return .rejected(.transportError(transportIssue ?? .responseReadFailed))
         }
         return NativeDDCChecksumCompatibilityValidator.reading(from: replies, command: command)
     }
