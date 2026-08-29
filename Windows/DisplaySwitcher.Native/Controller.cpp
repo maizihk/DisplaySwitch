@@ -145,7 +145,10 @@ namespace DisplaySwitcher::Native
         for (auto const& display : config.displays)
             usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
                 !display.nativeMonitorId.empty(), true });
-        usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
+        usbInitial.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
+            std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
+        if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
+        else usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
         v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
@@ -198,6 +201,7 @@ namespace DisplaySwitcher::Native
     void Controller::EndUsbLearning()
     {
         if (!usbLearningActive_.exchange(false)) return;
+        if (usbSwitchCoordinator_) usbSwitchCoordinator_->ConfigurationChanged();
         ApplyConfiguration(false);
     }
 

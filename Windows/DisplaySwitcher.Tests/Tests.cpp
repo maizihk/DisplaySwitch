@@ -7,6 +7,8 @@
 #include "../DisplaySwitcher.Native/ProfileDetection.h"
 #include "../DisplaySwitcher.Native/UnboundProbeRouter.h"
 #include "../DisplaySwitcher.Native/UsbLearning.h"
+#include "../DisplaySwitcher.Native/UsbPresencePollPolicy.h"
+#include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -625,6 +627,70 @@ namespace
         Check(released == 2, L"W-009: 每个唯一物理监视器句柄必须在所有路径恰好释放一次");
     }
 
+    void TestUsbTriggerStability()
+    {
+        UsbSwitchInitialState initial;
+        initial.enabled = true;
+        initial.baselinePresence = true;
+        initial.collaborationWakeEnabled = false;
+        initial.collaborationProfileValid = true;
+        initial.bindingKey = L"synthetic-device-a";
+        initial.displayMappings.push_back({ L"display-a", 17, true, true });
+        UsbSwitchCoordinator coordinator(initial);
+
+        auto collaborationEnabled = initial;
+        collaborationEnabled.baselinePresence.reset();
+        collaborationEnabled.collaborationWakeEnabled = true;
+        coordinator.UpdateConfiguration(collaborationEnabled);
+        auto departure = coordinator.ObserveUsb(10, false);
+        Check(std::count_if(departure.begin(), departure.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SwitchDisplay; }) == 1 &&
+            std::count_if(departure.begin(), departure.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SendWakeDisplay; }) == 1,
+            L"USB 稳定性：相同设备只开启联动协同时必须保留存在基线，首次离开同时调度 DDC 和唤醒消息");
+
+        auto changedBinding = collaborationEnabled;
+        changedBinding.bindingKey = L"synthetic-device-b";
+        coordinator.UpdateConfiguration(changedBinding);
+        auto firstAfterBindingChange = coordinator.ObserveUsb(20, false);
+        Check(firstAfterBindingChange.size() == 1 &&
+            firstAfterBindingChange[0].kind == UsbSwitchAction::Kind::EstablishBaseline,
+            L"USB 稳定性：更换绑定设备后第一次状态仍只建立新基线");
+
+        auto disabled = changedBinding;
+        disabled.enabled = false;
+        coordinator.UpdateConfiguration(disabled);
+        auto enabledAgain = disabled;
+        enabledAgain.enabled = true;
+        coordinator.UpdateConfiguration(enabledAgain);
+        auto firstAfterEnable = coordinator.ObserveUsb(30, true);
+        Check(firstAfterEnable.size() == 1 && firstAfterEnable[0].kind == UsbSwitchAction::Kind::EstablishBaseline,
+            L"USB 稳定性：重新开启 USB 自动切换时必须重建基线");
+
+        auto invalidCollaboration = initial;
+        invalidCollaboration.collaborationWakeEnabled = true;
+        invalidCollaboration.collaborationProfileValid = false;
+        UsbSwitchCoordinator invalidCoordinator(invalidCollaboration);
+        auto networkUnavailable = invalidCoordinator.ObserveUsb(40, false);
+        Check(std::count_if(networkUnavailable.begin(), networkUnavailable.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SwitchDisplay; }) == 1 &&
+            std::count_if(networkUnavailable.begin(), networkUnavailable.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::Report && action.reason == L"wake_not_sent"; }) == 1,
+            L"USB 稳定性：联动协同不可用时仍必须调度本机 DDC");
+
+        UsbPresencePollPolicy pollPolicy;
+        Check(pollPolicy.NextWaitMilliseconds(true) == 2000,
+            L"USB 稳定性：稳定期保留低频后备轮询");
+        pollPolicy.NotificationReceived();
+        Check(pollPolicy.FollowupPollsRemaining() == UsbPresencePollPolicy::NotificationFollowupPollCount &&
+            pollPolicy.NextWaitMilliseconds(true) == UsbPresencePollPolicy::NotificationFollowupIntervalMilliseconds,
+            L"USB 稳定性：设备通知后必须进入短周期复查窗口");
+        for (int index = 0; index < UsbPresencePollPolicy::NotificationFollowupPollCount; ++index)
+            pollPolicy.WaitTimedOut();
+        Check(pollPolicy.FollowupPollsRemaining() == 0 && pollPolicy.NextWaitMilliseconds(true) == 2000,
+            L"USB 稳定性：复查窗口结束后必须恢复低频轮询");
+    }
+
     void TestDdcControls()
     {
         auto config = ConfigWithDisplays(2);
@@ -1091,6 +1157,7 @@ int wmain()
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
         TestNativeDisplayCollection();
+        TestUsbTriggerStability();
         TestDdcControls();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();
@@ -1099,6 +1166,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-004 passed C-021 through C-023 USB-learning and about scenarios\n";
         if (!failures) std::wcout << L"DS-005 network detection pending-event and zero-hardware scenarios passed\n";
         if (!failures) std::wcout << L"DS-007 Windows-applicable settings, v2-only, DDC and tray scenarios passed\n";
+        if (!failures) std::wcout << L"DS-009 USB trigger stability scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
         failures += RunUsbSwitchVectorTests();
     }

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Diagnostics.h"
+#include "UsbPresencePollPolicy.h"
 #include "UsbWatcher.h"
 
 namespace
@@ -104,6 +105,7 @@ namespace DisplaySwitcher::Native
     void UsbWatcher::Poll(std::stop_token token)
     {
         std::optional<bool> last;
+        UsbPresencePollPolicy pollPolicy;
         int lastVendor{}, lastProduct{};
         { std::scoped_lock lock(configurationMutex_); lastVendor = vendorId_; lastProduct = productId_; }
         std::wstring lastReference;
@@ -132,8 +134,10 @@ namespace DisplaySwitcher::Native
             catch (...) {}
             if (changeEvent_)
             {
-                auto fallbackMilliseconds = notificationsEnabled_.load() ? 2000 : 250;
-                WaitForSingleObject(changeEvent_, fallbackMilliseconds);
+                auto wait = WaitForSingleObject(changeEvent_,
+                    pollPolicy.NextWaitMilliseconds(notificationsEnabled_.load()));
+                if (wait == WAIT_OBJECT_0) pollPolicy.NotificationReceived();
+                else if (wait == WAIT_TIMEOUT) pollPolicy.WaitTimedOut();
             }
             else
             {

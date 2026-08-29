@@ -19,6 +19,7 @@ namespace DisplaySwitcher::Native
         bool collaborationWakeEnabled{};
         bool collaborationProfileValid{};
         std::vector<UsbSwitchDisplayState> displayMappings;
+        std::wstring bindingKey;
     };
 
     struct UsbSwitchAction
@@ -39,6 +40,7 @@ namespace DisplaySwitcher::Native
         explicit UsbSwitchCoordinator(UsbSwitchInitialState initial = {});
         std::vector<UsbSwitchAction> ObserveUsb(int64_t nowMilliseconds, bool present);
         std::vector<UsbSwitchAction> ReceiveWakeDisplay(int64_t nowMilliseconds);
+        void UpdateConfiguration(UsbSwitchInitialState initial) noexcept;
         void ConfigurationChanged() noexcept;
 
     private:

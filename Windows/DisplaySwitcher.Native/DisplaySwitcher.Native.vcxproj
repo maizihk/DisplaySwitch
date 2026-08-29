@@ -86,6 +86,7 @@
     <ClInclude Include="UnboundProbeRouter.h" />
     <ClInclude Include="UsbWatcher.h" />
     <ClInclude Include="UsbLearning.h" />
+    <ClInclude Include="UsbPresencePollPolicy.h" />
     <ClInclude Include="UsbSwitchCoordinator.h" />
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="SettingsWindow.xaml" />
