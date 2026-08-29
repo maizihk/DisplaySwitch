@@ -79,18 +79,27 @@ namespace
     }
 
     template<typename Action>
-    auto WithNativeMonitor(std::wstring const& monitorId, Action const& action)
+    auto WithNativeMonitor(std::wstring const& monitorId, Action const& action,
+        std::optional<NativeEnumeration>* cachedEnumeration = nullptr)
     {
         std::scoped_lock lock(nativeDdcMutex);
-        auto enumeration = EnumerateNativeMonitors();
+        NativeEnumeration current;
+        NativeEnumeration* enumeration = &current;
+        if (cachedEnumeration)
+        {
+            if (!*cachedEnumeration) cachedEnumeration->emplace(EnumerateNativeMonitors());
+            enumeration = &cachedEnumeration->value();
+        }
+        else current = EnumerateNativeMonitors();
         auto canonicalId = CanonicalDdcMonitorId(monitorId);
-        auto found = std::find_if(enumeration.monitors.begin(), enumeration.monitors.end(), [&](auto const& monitor)
+        auto found = std::find_if(enumeration->monitors.begin(), enumeration->monitors.end(), [&](auto const& monitor)
         { return _wcsicmp(monitor.info.id.c_str(), canonicalId.c_str()) == 0; });
-        if (!enumeration.success || found == enumeration.monitors.end() || found->handles.Handles().empty())
+        if (!enumeration->success || found == enumeration->monitors.end() || found->handles.Handles().empty())
         {
             using Result = decltype(action(HANDLE{}));
-            auto message = !enumeration.success ? L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(enumeration.error)
+            auto message = !enumeration->success ? L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(enumeration->error)
                 : L"找不到按稳定 ID 配置的原生 DDC/CI 显示器";
+            if (cachedEnumeration) cachedEnumeration->reset();
             if constexpr (std::is_same_v<Result, DdcValueResult>)
                 return Result{ false, 0, 0, DdcErrorKind::MonitorUnavailable, std::move(message) };
             else
@@ -103,6 +112,8 @@ namespace
             result = action(handle);
             if (result.success || result.error == DdcErrorKind::Canceled) break;
         }
+        if (cachedEnumeration && !result.success && result.error != DdcErrorKind::Canceled)
+            cachedEnumeration->reset();
         return result;
     }
 
@@ -218,7 +229,7 @@ namespace
                 if (!success) return DdcValueResult{ false, 0, 0, DdcErrorKind::ReadFailed,
                     L"原生硬件 DDC/CI 读取失败，错误 " + std::to_wstring(error) };
                 return DdcValueResult{ true, static_cast<int>(current), static_cast<int>(maximum), DdcErrorKind::None, {} };
-            });
+            }, &cachedEnumeration_);
         }
 
         DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
@@ -234,8 +245,11 @@ namespace
                 if (!success) return DdcWriteResult{ false, DdcErrorKind::WriteFailed,
                     L"原生硬件 DDC/CI 写入失败，错误 " + std::to_wstring(error) };
                 return DdcWriteResult{ true, DdcErrorKind::None, {} };
-            });
+            }, &cachedEnumeration_);
         }
+
+    private:
+        std::optional<NativeEnumeration> cachedEnumeration_;
     };
 
     class ControlMyMonitorBackend final : public IDdcBackend

@@ -28,6 +28,7 @@ namespace DisplaySwitcher::Native
 
     ActionResult SwitchDisplaysToMac(AppConfig const& config)
     {
+        auto started = GetTickCount64();
         if (!config.HasDisplayConfiguration())
             return { false, L"显示器配置不完整，未执行切换" };
         DdcBackendSet backends(config); DdcCancellationSource cancellation; auto token = cancellation.Begin();
@@ -47,7 +48,8 @@ namespace DisplaySwitcher::Native
             return ActionResult{ write.success, write.message };
         });
         WriteDiagnostic("display.switch_complete success=" + std::to_string(result.success ? 1 : 0)
-            + " count=" + std::to_string(config.displays.size()));
+            + " count=" + std::to_string(config.displays.size())
+            + " duration_ms=" + std::to_string(GetTickCount64() - started));
         return result;
     }
 }
