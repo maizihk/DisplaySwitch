@@ -57,6 +57,67 @@ protocol InputSourceTransportResolving {
     func resolve(selector: String) throws -> InputSourceTransport
 }
 
+protocol InputSourceLeaseScheduling {
+    func schedule(after delay: TimeInterval, _ operation: @escaping () -> Void)
+}
+
+private final class DispatchInputSourceLeaseScheduler: InputSourceLeaseScheduling {
+    private let queue = DispatchQueue(label: "DisplaySwitcher.input-source-lease")
+
+    func schedule(after delay: TimeInterval, _ operation: @escaping () -> Void) {
+        queue.asyncAfter(deadline: .now() + delay, execute: DispatchWorkItem(block: operation))
+    }
+}
+
+/// Keeps a completed one-shot transport alive briefly without making it reusable by later events.
+final class InputSourceTransportLeaseRetainer {
+    private let lock = NSLock()
+    private let scheduler: InputSourceLeaseScheduling
+    private let leaseDuration: TimeInterval
+    private let maximumLeaseCount: Int
+    private var leaseOrder: [UUID] = []
+    private var transportsByLeaseID: [UUID: InputSourceTransport] = [:]
+
+    init(
+        scheduler: InputSourceLeaseScheduling = DispatchInputSourceLeaseScheduler(),
+        leaseDuration: TimeInterval = 1,
+        maximumLeaseCount: Int = 32
+    ) {
+        self.scheduler = scheduler
+        self.leaseDuration = leaseDuration
+        self.maximumLeaseCount = max(1, maximumLeaseCount)
+    }
+
+    var activeLeaseCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return transportsByLeaseID.count
+    }
+
+    func retain(_ transport: InputSourceTransport) {
+        let leaseID = UUID()
+        lock.lock()
+        while leaseOrder.count >= maximumLeaseCount, let oldestLeaseID = leaseOrder.first {
+            leaseOrder.removeFirst()
+            transportsByLeaseID.removeValue(forKey: oldestLeaseID)
+        }
+        leaseOrder.append(leaseID)
+        transportsByLeaseID[leaseID] = transport
+        lock.unlock()
+
+        scheduler.schedule(after: leaseDuration) { [weak self] in
+            self?.release(leaseID)
+        }
+    }
+
+    private func release(_ leaseID: UUID) {
+        lock.lock()
+        transportsByLeaseID.removeValue(forKey: leaseID)
+        leaseOrder.removeAll { $0 == leaseID }
+        lock.unlock()
+    }
+}
+
 /// Serializes native I2C access while allowing a waiting input switch to run before queued control work.
 final class NativeI2CHardwareArbiter {
     static let shared = NativeI2CHardwareArbiter()
@@ -107,11 +168,14 @@ final class NativeI2CHardwareArbiter {
 final class InputSourceSwitchService {
     private let resolver: InputSourceTransportResolving
     private let hardwareArbiter: NativeI2CHardwareArbiter
+    private let leaseRetainer: InputSourceTransportLeaseRetainer
 
     init(resolver: InputSourceTransportResolving,
-         hardwareArbiter: NativeI2CHardwareArbiter = .shared) {
+         hardwareArbiter: NativeI2CHardwareArbiter = .shared,
+         leaseRetainer: InputSourceTransportLeaseRetainer = InputSourceTransportLeaseRetainer()) {
         self.resolver = resolver
         self.hardwareArbiter = hardwareArbiter
+        self.leaseRetainer = leaseRetainer
     }
 
     func switchInputs(
@@ -150,7 +214,9 @@ final class InputSourceSwitchService {
                         throw InputSourceSwitchFailure.blocked(stableID: target.stableID)
                     }
                     let transport = try resolver.resolve(selector: target.selector)
-                    return transport.writeInput(nativeValue)
+                    let succeeded = transport.writeInput(nativeValue)
+                    leaseRetainer.retain(transport)
+                    return succeeded
                 }
                 outcomes.append(InputSourceSwitchOutcome(
                     stableID: target.stableID,

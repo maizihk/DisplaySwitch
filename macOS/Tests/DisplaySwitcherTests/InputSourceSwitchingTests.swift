@@ -48,6 +48,7 @@ private final class RecordingInputSourceTransport: InputSourceTransport {
 private final class RecordingInputSourceResolver: InputSourceTransportResolving {
     let recorder: InputSourceSwitchRecorder
     weak var lastResolvedTransport: RecordingInputSourceTransport?
+    private(set) var resolvedTransportIDs: [ObjectIdentifier] = []
 
     init(recorder: InputSourceSwitchRecorder) {
         self.recorder = recorder
@@ -60,28 +61,83 @@ private final class RecordingInputSourceResolver: InputSourceTransportResolving 
         }
         let transport = RecordingInputSourceTransport(selector: selector, recorder: recorder)
         lastResolvedTransport = transport
+        resolvedTransportIDs.append(ObjectIdentifier(transport))
         return transport
     }
 }
 
+private final class ManualInputSourceLeaseScheduler: InputSourceLeaseScheduling {
+    private(set) var delays: [TimeInterval] = []
+    private var operations: [() -> Void] = []
+
+    func schedule(after delay: TimeInterval, _ operation: @escaping () -> Void) {
+        delays.append(delay)
+        operations.append(operation)
+    }
+
+    func runAll() {
+        let pending = operations
+        operations.removeAll()
+        pending.forEach { $0() }
+    }
+}
+
 final class InputSourceSwitchingTests: XCTestCase {
-    func testEveryEventResolvesFreshTransportAndDoesNotRetainIt() {
+    func testEveryEventResolvesFreshTransportAndLeaseReleasesAfterOneSecond() {
         let recorder = InputSourceSwitchRecorder()
         let resolver = RecordingInputSourceResolver(recorder: recorder)
+        let scheduler = ManualInputSourceLeaseScheduler()
+        let retainer = InputSourceTransportLeaseRetainer(scheduler: scheduler)
         let service = InputSourceSwitchService(
-            resolver: resolver, hardwareArbiter: NativeI2CHardwareArbiter()
+            resolver: resolver,
+            hardwareArbiter: NativeI2CHardwareArbiter(),
+            leaseRetainer: retainer
         )
         let target = InputSourceSwitchTarget(
             stableID: "display-a", selector: "selector-a", targetInput: 17
         )
 
         XCTAssertTrue(service.switchInputs([target]).allSucceeded)
-        XCTAssertNil(resolver.lastResolvedTransport)
+        XCTAssertNotNil(resolver.lastResolvedTransport)
+        XCTAssertEqual(retainer.activeLeaseCount, 1)
+        XCTAssertEqual(scheduler.delays, [1])
         XCTAssertTrue(service.switchInputs([target]).allSucceeded)
-        XCTAssertNil(resolver.lastResolvedTransport)
+        XCTAssertNotEqual(resolver.resolvedTransportIDs[0], resolver.resolvedTransportIDs[1])
+        XCTAssertEqual(retainer.activeLeaseCount, 2)
         XCTAssertEqual(recorder.resolvedSelectors, ["selector-a", "selector-a"])
         XCTAssertEqual(recorder.writes.map(\.value), [17, 17])
         XCTAssertEqual(recorder.readCount, 0)
+
+        scheduler.runAll()
+        XCTAssertNil(resolver.lastResolvedTransport)
+        XCTAssertEqual(retainer.activeLeaseCount, 0)
+    }
+
+    func testRapidSwitchesKeepLeaseCountBounded() {
+        let recorder = InputSourceSwitchRecorder()
+        let scheduler = ManualInputSourceLeaseScheduler()
+        let retainer = InputSourceTransportLeaseRetainer(
+            scheduler: scheduler, leaseDuration: 1, maximumLeaseCount: 4
+        )
+        let service = InputSourceSwitchService(
+            resolver: RecordingInputSourceResolver(recorder: recorder),
+            hardwareArbiter: NativeI2CHardwareArbiter(),
+            leaseRetainer: retainer
+        )
+        let target = InputSourceSwitchTarget(
+            stableID: "display-a", selector: "selector-a", targetInput: 17
+        )
+
+        for _ in 0..<100 {
+            XCTAssertTrue(service.switchInputs([target]).allSucceeded)
+            XCTAssertLessThanOrEqual(retainer.activeLeaseCount, 4)
+        }
+
+        XCTAssertEqual(recorder.resolvedSelectors.count, 100)
+        XCTAssertEqual(recorder.writes.count, 100)
+        XCTAssertEqual(retainer.activeLeaseCount, 4)
+        scheduler.runAll()
+        XCTAssertEqual(retainer.activeLeaseCount, 0)
     }
 
     func testThreeDisplaysSwitchSeriallyAndFailureDoesNotSkipRemainingTargets() {
