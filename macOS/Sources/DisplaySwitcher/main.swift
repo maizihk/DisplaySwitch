@@ -127,30 +127,6 @@ private final class DisplayControls {
     }
 }
 
-private final class LockedFirstError: @unchecked Sendable {
-    private let lock = NSLock()
-    private var error: Error?
-
-    func record(_ value: Error?) {
-        guard let value else { return }
-        lock.lock()
-        if error == nil { error = value }
-        lock.unlock()
-    }
-
-    var value: Error? {
-        lock.lock()
-        defer { lock.unlock() }
-        return error
-    }
-}
-
-private struct ConfigurationSafetyBlockedError: LocalizedError {
-    var errorDescription: String? {
-        "显示器配置需要用户检查，本次硬件操作已取消。"
-    }
-}
-
 private final class PendingPeerCapabilityInspection {
     let id: String
     let profile: CollaborationProfile
@@ -171,7 +147,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var instanceLockFD: Int32 = -1
     private var ownsPrimaryInstance = false
     private let workerQueue = DispatchQueue(label: "DisplaySwitcher.ddc")
+    private let inputSwitchQueue = DispatchQueue(
+        label: "DisplaySwitcher.input-source", qos: .userInitiated
+    )
     private let ddcController = DDCController()
+    private let inputSourceSwitchService = InputSourceSwitchService(
+        resolver: NativeInputSourceTransportResolver()
+    )
     private lazy var ddcWriteCoordinator = DDCLatestWinsCoordinator(
         executor: DDCControllerWriteExecutor(
             queue: workerQueue,
@@ -411,52 +393,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         profileSwitchItems.forEach { $0.isEnabled = false }
-        let currentConfigurations = targetConfigurations
-        let ddcController = ddcController
+        let targets = targetDisplayIDs.compactMap { displayID -> InputSourceSwitchTarget? in
+            guard let configuration = targetConfigurations[displayID] else { return nil }
+            return InputSourceSwitchTarget(
+                stableID: configuration.id ?? configuration.selector,
+                selector: configuration.selector,
+                targetInput: configuration.targetInput
+            )
+        }
+        let inputSourceSwitchService = inputSourceSwitchService
 
-        workerQueue.async { [weak self] in
-            let firstError = LockedFirstError()
-            let group = DispatchGroup()
-            for displayID in targetDisplayIDs {
-                guard let configuration = currentConfigurations[displayID] else { continue }
-                group.enter()
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    defer { group.leave() }
-                    guard self?.configurationSafetyGate.allows(.ddc) == true,
-                          self?.usbLearningSafetyGate.allows(.ddc) == true else {
-                        firstError.record(ConfigurationSafetyBlockedError())
-                        return
-                    }
-                    var succeeded = false
-                    var displayError: Error?
-                    for attempt in 0..<2 {
-                        do {
-                            guard let input = configuration.targetInput else {
-                                throw DDCError.inputNotConfigured(displayName: configuration.name)
-                            }
-                            try ddcController.write(
-                                stableID: configuration.id ?? configuration.selector,
-                                selector: configuration.selector,
-                                command: .input,
-                                value: input
-                            )
-                            succeeded = true
-                            break
-                        } catch {
-                            displayError = error
-                            if attempt == 0 { Thread.sleep(forTimeInterval: 0.15) }
-                        }
-                    }
-                    if !succeeded {
-                        firstError.record(displayError)
-                    }
-                }
+        inputSwitchQueue.async { [weak self] in
+            let result = inputSourceSwitchService.switchInputs(targets) { [weak self] in
+                self?.configurationSafetyGate.allows(.ddc) == true
+                    && self?.usbLearningSafetyGate.allows(.ddc) == true
             }
-            group.wait()
-
-            if let firstError = firstError.value {
+            if let firstFailure = result.firstFailure {
                 self?.finishSwitch(message: "部分切换失败", activeMenuItem: nil)
-                self?.showError(title: "显示器切换失败", error: firstError)
+                self?.showError(title: "显示器输入源切换失败", error: firstFailure)
                 DispatchQueue.main.async { completion?(false) }
             } else {
                 self?.finishSwitch(message: "切换完成", activeMenuItem: nil)
@@ -1210,28 +1164,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             completion(false)
             return
         }
-        workerQueue.async { [weak self] in
+        let target = InputSourceSwitchTarget(
+            stableID: configuration.id ?? configuration.selector,
+            selector: configuration.selector,
+            targetInput: targetInput
+        )
+        let inputSourceSwitchService = inputSourceSwitchService
+        inputSwitchQueue.async { [weak self] in
             guard let self, self.configurationSafetyGate.allows(.ddc),
                   self.usbLearningSafetyGate.allows(.ddc) else {
                 DispatchQueue.main.async { completion(false) }
                 return
             }
-            var succeeded = false
-            for _ in 0..<2 {
-                do {
-                    try self.ddcController.write(
-                        stableID: configuration.id ?? configuration.selector,
-                        selector: configuration.selector,
-                        command: .input,
-                        value: targetInput
-                    )
-                    succeeded = true
-                    break
-                } catch {
-                    continue
-                }
+            let result = inputSourceSwitchService.switchInputs([target]) { [weak self] in
+                self?.configurationSafetyGate.allows(.ddc) == true
+                    && self?.usbLearningSafetyGate.allows(.ddc) == true
             }
-            DispatchQueue.main.async { completion(succeeded) }
+            DispatchQueue.main.async { completion(result.allSucceeded) }
         }
     }
 

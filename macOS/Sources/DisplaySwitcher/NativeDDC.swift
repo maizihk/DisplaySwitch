@@ -38,11 +38,14 @@ final class NativeDDCBackend: DDCBackend {
     private var readPreferenceCache = NativeDDCReadPreferenceCache()
     private var diagnosticsBySelector: [String: NativeDDCDiagnosticSnapshot] = [:]
     private let transportParameters: NativeDDCTransportParameters
+    private let hardwareArbiter: NativeI2CHardwareArbiter
 
     init(knownDisplays: [DDCKnownDisplay] = [],
-         transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible) {
+         transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible,
+         hardwareArbiter: NativeI2CHardwareArbiter = .shared) {
         self.knownDisplays = knownDisplays
         self.transportParameters = transportParameters
+        self.hardwareArbiter = hardwareArbiter
     }
 
     var availability: DDCBackendAvailability {
@@ -117,16 +120,19 @@ final class NativeDDCBackend: DDCBackend {
                                  category: .serviceUnmatched)
                 throw DDCBackendError.displayUnavailable(stableID: stableID)
             }
-            switch Self.read(
-                service: service,
-                chipAddress: display.chipAddress,
-                command: command,
-                transportPath: display.transportPath,
-                primaryDataAddress: preferredReadDataAddress(
-                    selector: selector, path: display.transportPath
-                ),
-                parameters: transportParameters
-            ) {
+            let readOutcome = hardwareArbiter.withControlOperation {
+                Self.read(
+                    service: service,
+                    chipAddress: display.chipAddress,
+                    command: command,
+                    transportPath: display.transportPath,
+                    primaryDataAddress: preferredReadDataAddress(
+                        selector: selector, path: display.transportPath
+                    ),
+                    parameters: transportParameters
+                )
+            }
+            switch readOutcome {
             case .success(let reading, let dataAddress, let attempts):
                 try token.throwIfCancelled()
                 resolved = reading
@@ -179,11 +185,14 @@ final class NativeDDCBackend: DDCBackend {
                                  category: .serviceUnmatched)
                 throw DDCBackendError.displayUnavailable(stableID: stableID)
             }
-            guard Self.write(
-                service: service, chipAddress: display.chipAddress,
-                command: command.rawValue, value: nativeValue,
-                parameters: transportParameters
-            ) else {
+            let writeSucceeded = hardwareArbiter.withControlOperation {
+                Self.write(
+                    service: service, chipAddress: display.chipAddress,
+                    command: command.rawValue, value: nativeValue,
+                    parameters: transportParameters
+                )
+            }
+            guard writeSucceeded else {
                 recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
                                  category: .writeTransportFailed,
                                  chipAddress: display.chipAddress)
@@ -311,7 +320,7 @@ final class NativeDDCBackend: DDCBackend {
         return display
     }
 
-    private static func discoverDisplays(
+    fileprivate static func discoverDisplays(
         knownDisplays: [DDCKnownDisplay]
     ) -> [NativeDDCDisplay] {
         let identities = onlineExternalDisplayIDs().compactMap(displayInfo(for:))
@@ -605,7 +614,7 @@ final class NativeDDCBackend: DDCBackend {
         }
     }
 
-    private static func write(
+    fileprivate static func write(
         service: IOAVService,
         chipAddress: UInt32,
         command: UInt8,
@@ -683,5 +692,53 @@ final class NativeDDCBackend: DDCBackend {
 
     private static func checksum<S: Sequence>(initial: UInt8, bytes: S) -> UInt8 where S.Element == UInt8 {
         bytes.reduce(initial, ^)
+    }
+}
+
+final class NativeInputSourceTransportResolver: InputSourceTransportResolving {
+    private let transportParameters: NativeDDCTransportParameters
+
+    init(transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible) {
+        self.transportParameters = transportParameters
+    }
+
+    func resolve(selector: String) throws -> InputSourceTransport {
+#if arch(arm64)
+        guard let display = NativeDDCBackend.discoverDisplays(knownDisplays: []).first(where: {
+            $0.systemUUID.caseInsensitiveCompare(selector) == .orderedSame
+        }), display.isOnline, let service = display.service else {
+            throw InputSourceSwitchFailure.displayUnavailable(stableID: selector)
+        }
+        return NativeResolvedInputSourceTransport(
+            service: service,
+            chipAddress: display.chipAddress,
+            transportParameters: transportParameters
+        )
+#else
+        throw InputSourceSwitchFailure.displayUnavailable(stableID: selector)
+#endif
+    }
+}
+
+private final class NativeResolvedInputSourceTransport: InputSourceTransport {
+    private let service: IOAVService
+    private let chipAddress: UInt32
+    private let transportParameters: NativeDDCTransportParameters
+
+    init(service: IOAVService, chipAddress: UInt32,
+         transportParameters: NativeDDCTransportParameters) {
+        self.service = service
+        self.chipAddress = chipAddress
+        self.transportParameters = transportParameters
+    }
+
+    func writeInput(_ value: UInt16) -> Bool {
+        NativeDDCBackend.write(
+            service: service,
+            chipAddress: chipAddress,
+            command: DDCCommand.input.rawValue,
+            value: value,
+            parameters: transportParameters
+        )
     }
 }
