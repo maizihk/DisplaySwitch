@@ -192,22 +192,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
         commonTab.Content(CreatePage({ CreateSection(L"常规", {
             LabeledToggleRow(L"登录时启动", autoStart_), commonHint }) }));
 
-        auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
-        refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
         auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习 USB 设备…"));
+        learnCurrentUsb.HorizontalAlignment(HorizontalAlignment::Left);
         learnCurrentUsb.Click([this](auto const&, auto const&)
         {
             StartUsbLearning(L"usb-switch");
         });
-        auto clearCurrentUsb = Button(); clearCurrentUsb.Content(box_value(L"清除当前设备"));
-        clearCurrentUsb.Click([this](auto const&, auto const&)
-        {
-            selectedUsbLocalReference_.clear(); selectedUsbName_.clear();
-            selectedUsbVendorId_ = -1; selectedUsbProductId_ = -1;
-            usbDevices_.SelectedIndex(-1); SaveImmediately(); RefreshUsbDeviceSelection();
-        });
-        auto usbButtons = StackPanel(); usbButtons.Orientation(Orientation::Horizontal); usbButtons.Spacing(8);
-        usbButtons.Children().Append(learnCurrentUsb); usbButtons.Children().Append(clearCurrentUsb);
         auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
@@ -215,9 +205,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
             LabeledToggleRow(L"USB 自动切换", usbAutomation_),
+            usbDevices_, learnCurrentUsb, usbDeviceStatus_,
             LabeledToggleRow(L"联动协同", usbSwitchDisplaysOnArrival_),
-            usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
-            usbButtons, usbDeviceStatus_, usbMappingsPanel_, usbHint }) }));
+            usbProfileSelector_, usbMappingsPanel_, usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
