@@ -80,6 +80,16 @@ namespace DisplaySwitcher::Native
         return socket_ != INVALID_SOCKET;
     }
 
+    int UdpPeer::LocalPort() const
+    {
+        std::scoped_lock lock(mutex_);
+        if (socket_ == INVALID_SOCKET) return 0;
+        sockaddr_in address{};
+        int length = sizeof(address);
+        if (getsockname(socket_, reinterpret_cast<sockaddr*>(&address), &length) == SOCKET_ERROR) return 0;
+        return static_cast<int>(ntohs(address.sin_port));
+    }
+
     void UdpPeer::Receive(std::stop_token token, SOCKET socket)
     {
         while (!token.stop_requested())

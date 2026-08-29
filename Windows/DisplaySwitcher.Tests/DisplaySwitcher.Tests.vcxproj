@@ -40,7 +40,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>Ole32.lib;Shell32.lib;Dwmapi.lib;Version.lib;Bcrypt.lib;Normaliz.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Ole32.lib;Shell32.lib;Dwmapi.lib;Version.lib;Bcrypt.lib;Normaliz.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -50,8 +50,10 @@
     <ClCompile Include="..\DisplaySwitcher.Native\AboutInfo.cpp"><Link>Native\AboutInfo.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DisplayModel.cpp"><Link>Native\DisplayModel.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DdcControl.cpp"><Link>Native\DdcControl.cpp</Link></ClCompile>
+    <ClCompile Include="..\DisplaySwitcher.Native\Diagnostics.cpp"><Link>Native\Diagnostics.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\ProfileDetection.cpp"><Link>Native\ProfileDetection.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\UnboundProbeRouter.cpp"><Link>Native\UnboundProbeRouter.cpp</Link></ClCompile>
+    <ClCompile Include="..\DisplaySwitcher.Native\UdpPeer.cpp"><Link>Native\UdpPeer.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\V2Protocol.cpp"><Link>Native\V2Protocol.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\V2StateMachine.cpp"><Link>Native\V2StateMachine.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\UsbLearning.cpp"><Link>Native\UsbLearning.cpp</Link></ClCompile>

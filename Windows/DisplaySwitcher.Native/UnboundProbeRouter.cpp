@@ -19,26 +19,62 @@ namespace DisplaySwitcher::Native
         if (message.type != L"status_probe" || message.targetEndpointId) return {};
         if (!IsValidDisplayId(localEndpointId) || EqualId(message.sourceEndpointId, localEndpointId))
             return { UnboundProbeMatchStatus::EndpointConflict };
-        for (auto const& profile : candidates)
-            if (!profile.peerEndpointId.empty() && EqualId(profile.peerEndpointId, message.sourceEndpointId))
+
+        std::vector<size_t> exactBoundCandidates;
+        for (size_t index = 0; index < candidates.size(); ++index)
+            if (!candidates[index].peerEndpointId.empty() &&
+                EqualId(candidates[index].peerEndpointId, message.sourceEndpointId))
+                exactBoundCandidates.push_back(index);
+        if (exactBoundCandidates.size() > 1) return { UnboundProbeMatchStatus::EndpointConflict };
+
+        auto authenticates = [&](size_t index)
+        {
+            auto const& profile = candidates[index];
+            try
+            {
+                auto secret = NormalizeV2PairingSecret(profile.pairingCode);
+                auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
+                return ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
+                    nowUnixSeconds, nullptr, nowMilliseconds).accepted;
+            }
+            catch (...) { return false; }
+        };
+
+        if (exactBoundCandidates.size() == 1)
+        {
+            auto index = exactBoundCandidates.front();
+            auto const& profile = candidates[index];
+            if (profile.peerProtocolVersion != 2 || !hostMatches(profile, source))
+                return { UnboundProbeMatchStatus::NoMatch };
+            if (!authenticates(index)) return { UnboundProbeMatchStatus::AuthenticationFailed };
+            auto secret = NormalizeV2PairingSecret(profile.pairingCode);
+            auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
+            auto validation = ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
+                nowUnixSeconds, replayCache, nowMilliseconds);
+            if (!validation.accepted) return { UnboundProbeMatchStatus::NoMatch };
+            return { UnboundProbeMatchStatus::Matched, index, validation.duplicate };
+        }
+
+        // A correctly authenticated peer arriving from a bound profile's address but
+        // claiming a different endpoint is an identity change, not a new bootstrap.
+        for (size_t index = 0; index < candidates.size(); ++index)
+        {
+            auto const& profile = candidates[index];
+            if (!profile.peerEndpointId.empty() && profile.peerProtocolVersion == 2 &&
+                hostMatches(profile, source) && authenticates(index))
                 return { UnboundProbeMatchStatus::EndpointConflict };
+        }
 
         std::vector<size_t> hostCandidates;
         std::vector<size_t> authenticatedCandidates;
         for (size_t index = 0; index < candidates.size(); ++index)
         {
             auto const& profile = candidates[index];
-            if (!profile.peerEndpointId.empty() || profile.peerProtocolVersion == 1 || !hostMatches(profile, source)) continue;
+            if (!profile.peerEndpointId.empty() ||
+                (profile.peerProtocolVersion && *profile.peerProtocolVersion != 2) ||
+                !hostMatches(profile, source)) continue;
             hostCandidates.push_back(index);
-            try
-            {
-                auto secret = NormalizeV2PairingSecret(profile.pairingCode);
-                auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
-                if (ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
-                    nowUnixSeconds, nullptr, nowMilliseconds).accepted)
-                    authenticatedCandidates.push_back(index);
-            }
-            catch (...) {}
+            if (authenticates(index)) authenticatedCandidates.push_back(index);
         }
         if (authenticatedCandidates.empty())
             return { hostCandidates.empty() ? UnboundProbeMatchStatus::NoMatch : UnboundProbeMatchStatus::AuthenticationFailed };
