@@ -197,6 +197,20 @@ struct NativeDDCTransportParameters: Equatable {
     )
 }
 
+enum NativeDDCWriteCyclePolicy {
+    static func perform(cycles: Int, write: () -> Bool) -> Bool {
+        var anyCycleAccepted = false
+        for _ in 0..<max(cycles, 1) {
+            // Keep the bounded duplicate-write behavior, but never let a later
+            // transport loss erase an earlier accepted DDC command. Input-source
+            // writes can tear down the active Type-C path immediately.
+            let accepted = write()
+            anyCycleAccepted = anyCycleAccepted || accepted
+        }
+        return anyCycleAccepted
+    }
+}
+
 enum NativeDDCReplyValidator {
     static func reading(from reply: [UInt8], command: DDCCommand) -> Result<DDCReading, NativeDDCReplyIssue> {
         guard reply.count == 11 else { return .failure(.wrongLength) }

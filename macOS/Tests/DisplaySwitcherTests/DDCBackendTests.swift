@@ -1,6 +1,35 @@
 import XCTest
 
 final class DDCBackendTests: XCTestCase {
+    func testNativeWriteKeepsEarlierAcceptedCycleWhenTypeCPathDrops() {
+        var results = [true, false]
+        var calls = 0
+
+        let accepted = NativeDDCWriteCyclePolicy.perform(cycles: 2) {
+            calls += 1
+            return results.removeFirst()
+        }
+
+        XCTAssertTrue(accepted)
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testNativeWriteAcceptsLaterDuplicateCycle() {
+        var results = [false, true]
+        XCTAssertTrue(NativeDDCWriteCyclePolicy.perform(cycles: 2) {
+            results.removeFirst()
+        })
+    }
+
+    func testNativeWriteRejectsOnlyWhenEveryCycleFails() {
+        var calls = 0
+        XCTAssertFalse(NativeDDCWriteCyclePolicy.perform(cycles: 2) {
+            calls += 1
+            return false
+        })
+        XCTAssertEqual(calls, 2)
+    }
+
     func testC016ThreeControlsReadNormallyAndCommitByStableID() {
         let backend = MockDDCBackend()
         backend.readings = [

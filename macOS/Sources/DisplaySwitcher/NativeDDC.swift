@@ -540,10 +540,11 @@ final class NativeDDCBackend: DDCBackend {
         )
 
         for _ in 0..<attempts {
-            var writeSucceeded = false
-            for _ in 0..<parameters.writeCycles {
+            let writeSucceeded = NativeDDCWriteCyclePolicy.perform(
+                cycles: parameters.writeCycles
+            ) {
                 usleep(parameters.writeSleepMicroseconds)
-                writeSucceeded = IOAVServiceWriteI2C(
+                return IOAVServiceWriteI2C(
                     service,
                     chipAddress,
                     UInt32(dataAddress),
