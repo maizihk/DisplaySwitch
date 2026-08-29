@@ -6,9 +6,9 @@
 - 功能：DS-009 / macOS 非对称协同检测第一阶段诊断
 - 分支：`codex/macos-ds-009-collaboration-diagnostics`
 - 堆叠基线：`codex/macos-ds-009-hardware-acceptance@85c975b`
-- 本轮实现提交：本提交
+- 本轮实现提交：`21d24a3`
 - 前置验收记录：PR #49 保持开放
-- 本轮 PR：创建后补充，目标为 `codex/macos-ds-009-hardware-acceptance`
+- 本轮 PR：#50，目标为 `codex/macos-ds-009-hardware-acceptance`，保持开放
 
 ## 审计结论
 
