@@ -7,7 +7,7 @@
 - 协调基线：`codex/coord-ds-009-native-display-control@53c2397011323cd941afe315e3a6881fe772299e`
 - 基线确认：协调基线包含 `main@0bbfa9e0fad8350462b3b68083aace4ca9063dce`
 - 分支：`codex/macos-ds-009-native-display-control`
-- 本轮实现提交：`154f40d`（弱校验读取）、`3007d26`（缓存恢复）、本提交（单绑定 UDP socket 与交接记录）
+- 本轮实现提交：`154f40d`（弱校验读取）、`3007d26`（缓存恢复）、`1e4fa31`（单绑定 UDP socket）、`57ea705`（已绑定 v2 探测）、`57a2f5c`（脱敏 DDC 兼容拒绝诊断）
 - PR：[#46](https://github.com/maizihk/DisplaySwitch/pull/46)；base 为 `codex/coord-ds-009-native-display-control`
 
 ## 根因
@@ -29,6 +29,8 @@
 - 两台实测显示器的写入均成功，但读取稳定落在 `bad-checksum`；单次忽略 checksum 无法排除迟到帧或错误帧，因此兼容读取必须依赖多次独立请求的一致性和其余字段的完整校验。
 - DDC 缓存已经在成功读写后持久化，但设置页重建表单只恢复功能开关，滑杆和值标签仍停留在默认 50/“—”。
 - 原 `PeerTransport` 同时创建 `NWListener` 与绑定同一 `listenPort` 的出站 `NWConnection`，依赖端口复用；回复可能被分配给不等待该数据报的 socket，造成 macOS 主动检测无响应而 Windows 主动检测正常。
+- 单 socket 后仍无响应的确定根因在消息路由：Mac 对已绑定配置仍发送 `targetEndpointID = nil` 的未绑定探测，Windows 会因 source endpoint 已存在而按 endpoint conflict 拒绝。
+- Dell 的有界兼容读取确实已执行但仍只汇总成 `bad-checksum`，无法判断是回复不足、两次语义不一致、字段/范围非法还是传输失败；在没有这些证据前继续放宽校验会导致误接受。
 
 ## 完成内容
 
@@ -53,10 +55,14 @@
 - 严格原生读取保持首选；只有本轮全部严格尝试的唯一错误为 `bad-checksum` 时才执行两个全新、独立请求。两份回复必须除 checksum 外完全一致，且来源、长度、opcode、result、command、`max > 0`、`current <= max` 全部合法；接受值标记为 `≈` 和 `repeated-consistent/checksum-invalid`，不伪装为严格读取。
 - 设置页在首次打开和每次重建显示器表单后，按稳定显示器 ID 为已启用项目恢复持久缓存；无缓存不制造零值，成功写入仍由统一服务先提交缓存再更新 UI。
 - `PeerTransport` 改为单个绑定本机 `listenPort` 的 BSD UDP socket 同时 `recvfrom`/`sendto`；主动包和回复均来自该 socket，回复闭包固定使用收到数据报的来源地址与端口，重配或接收错误会关闭旧 socket 后再启动。
+- 已绑定且协议版本为 2 的配置，检测 `status_probe` 现在定向已确认 peer endpoint；仅首次未绑定检测保持 target 为空。已绑定响应必须同时匹配预期 source、本机 target、原 eventID 和 HMAC 才能标记可用。
+- 严格读取和两次兼容读取均失败时，最终脱敏诊断可区分 `insufficient-replies`、`inconsistent-payload`、`invalid-field/<code>`、`invalid-range` 和 `transport-error`；不展示完整帧、IORegistry 路径或硬件标识。
 
 ## 自动验证
 
-- 完整 XCTest：85 项通过。
+- 完整 XCTest：89 项通过。
+- 新增已绑定探测回归：未绑定 probe target 为空；已绑定 probe target 为预期 peer endpoint；合法 response 成功，错误 source/target/event/HMAC 不标在线，且全程零硬件副作用。
+- 新增兼容拒绝诊断回归：五类最终拒绝及传输失败均生成脱敏投影；两次不一致只展示 command 是否匹配、current/max 是否一致和 payload length。
 - 新增弱校验读取回归：严格成功不进入兼容路径；单次坏校验拒绝；两次独立一致回复接受为估算值；不一致、错误来源/长度/opcode/result/command 和非法范围全部拒绝；每次请求均使用清零新 buffer。
 - 新增设置缓存回归：两台同型号显示器按稳定 ID 分别恢复，窗口重开/表单重建和新缓存实例均保持值；禁用项、未知 ID 和已移除显示器不投影也不串值。
 - 新增单 socket UDP 回归：连续主动探测只创建一个绑定 socket；`status_response` 保持相同 eventID 并返回原来源端口；多来源回复不串线；监听重配、接收错误重启、发送错误和停止后发送均完成资源清理。全部使用模拟 socket，未绑定 localhost。
@@ -81,7 +87,8 @@
 - 未启动 App 验证设置页、菜单、显示器卡片和两类输入映射的真实 GUI 名称与换行布局。
 - 未验证真实 Apple Silicon CoreDisplay/IOAVService 枚举、同型号显示器本机序号对应、DDC 回读/写入、连续滑杆恢复或显示器断开重连。
 - 未执行真实 USB、UDP、网络、显示器唤醒或输入源切换。
-- 新单 socket UDP 传输尚需 Windows/macOS 双机实测确认双向检测、连续探测和重启监听。
+- 已绑定 endpoint 定向修复后尚需 Windows/macOS 双机实测确认双向检测、连续探测和重启监听。
+- Dell 兼容读取尚需下一次实机截图确认具体最终拒绝类别；本轮没有再放宽校验条件。
 - Intel Mac 不在本机自动验证范围，当前设计为明确不支持原生 DDC。
 - 内置 HDMI converter 的当前系统 IORegistry 结构和 service 匹配仍需授权实机只读验证；未经验证时不声称旧系统的 `AppleDCPMCDP29XX` 父节点规则仍完全适用。
 
