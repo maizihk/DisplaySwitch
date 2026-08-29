@@ -687,24 +687,35 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto read = Button(); read.Content(box_value(L"读取 DDC 参数"));
             AutomationProperties::SetName(read, L"读取 " + display.name + L" 的 DDC 参数");
             read.Click([this, id = display.id](auto const&, auto const&) { ReadDdc(id); });
-            auto appendControlColumns = [](Grid const& grid)
+            auto controlsGrid = Grid();
+            controlsGrid.ColumnSpacing(12); controlsGrid.RowSpacing(10);
+            controlsGrid.HorizontalAlignment(HorizontalAlignment::Stretch);
+            for (auto width : { 96.0, 132.0, 132.0 })
             {
-                grid.ColumnSpacing(12);
-                for (auto width : { 72.0, 132.0, 132.0 })
-                {
-                    auto column = ColumnDefinition(); column.Width(GridLength{ width });
-                    grid.ColumnDefinitions().Append(column);
-                }
-                auto sliderColumn = ColumnDefinition();
-                sliderColumn.Width(GridLength{ 1, GridUnitType::Star });
-                grid.ColumnDefinitions().Append(sliderColumn);
-                auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 44 });
-                grid.ColumnDefinitions().Append(valueColumn);
-            };
+                auto column = ColumnDefinition(); column.Width(GridLength{ width });
+                controlsGrid.ColumnDefinitions().Append(column);
+            }
+            auto sliderColumn = ColumnDefinition();
+            sliderColumn.Width(GridLength{ 1, GridUnitType::Star });
+            controlsGrid.ColumnDefinitions().Append(sliderColumn);
+            auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 44 });
+            controlsGrid.ColumnDefinitions().Append(valueColumn);
+            for (int rowIndex = 0; rowIndex < 4; ++rowIndex)
+            {
+                auto row = RowDefinition(); row.Height(GridLengthHelper::Auto());
+                controlsGrid.RowDefinitions().Append(row);
+            }
+
+            auto functionHeader = TextBlock(); functionHeader.Text(L"功能"); functionHeader.Opacity(0.66);
+            functionHeader.HorizontalAlignment(HorizontalAlignment::Left);
+            auto trayHeader = TextBlock(); trayHeader.Text(L"托盘"); trayHeader.Opacity(0.66);
+            trayHeader.HorizontalAlignment(HorizontalAlignment::Left);
+            Grid::SetColumn(functionHeader, 1); Grid::SetColumn(trayHeader, 2);
+            controlsGrid.Children().Append(functionHeader); controlsGrid.Children().Append(trayHeader);
+
             auto controlRow = [&](wchar_t const* name, ::DisplaySwitcher::Native::DdcVcpCode code, Slider const& slider,
-                ToggleSwitch const& enabled, ToggleSwitch const& showInTray)
+                ToggleSwitch const& enabled, ToggleSwitch const& showInTray, int rowIndex)
             {
-                auto row = Grid(); appendControlColumns(row);
                 auto label = TextBlock(); label.Text(name); label.VerticalAlignment(VerticalAlignment::Center);
                 auto value = TextBlock(); value.Text(std::to_wstring(static_cast<int>(std::lround(slider.Value())))); value.VerticalAlignment(VerticalAlignment::Center);
                 value.HorizontalAlignment(HorizontalAlignment::Right);
@@ -715,7 +726,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 AutomationProperties::SetName(showInTray, std::wstring(name) + L"在托盘显示");
                 AutomationProperties::SetName(slider, std::wstring(name) + L"调节");
                 Grid::SetColumn(enabled, 1); Grid::SetColumn(showInTray, 2); Grid::SetColumn(slider, 3); Grid::SetColumn(value, 4);
-                row.Children().Append(label); row.Children().Append(enabled); row.Children().Append(showInTray); row.Children().Append(slider); row.Children().Append(value);
+                for (auto const& element : { label.as<FrameworkElement>(), enabled.as<FrameworkElement>(),
+                    showInTray.as<FrameworkElement>(), slider.as<FrameworkElement>(), value.as<FrameworkElement>() })
+                    Grid::SetRow(element, rowIndex);
+                controlsGrid.Children().Append(label); controlsGrid.Children().Append(enabled);
+                controlsGrid.Children().Append(showInTray); controlsGrid.Children().Append(slider);
+                controlsGrid.Children().Append(value);
                 enabled.Toggled([this, slider, showInTray](auto const& sender, auto const&)
                 {
                     auto on = sender.template as<ToggleSwitch>().IsOn(); slider.IsEnabled(on);
@@ -730,27 +746,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
                     [this, id = display.id, code, slider](IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
                     { if (args.Key() == Windows::System::VirtualKey::Enter) WriteDdc(id, code, static_cast<int>(std::lround(slider.Value()))); }));
                 slider.IsEnabled(enabled.IsOn()); showInTray.IsEnabled(enabled.IsOn());
-                return row;
             };
-            auto brightnessRow = controlRow(L"亮度", ::DisplaySwitcher::Native::DdcVcpCode::Brightness,
-                controls.brightness, controls.brightnessEnabled, controls.brightnessShowInTray);
-            auto contrastRow = controlRow(L"对比度", ::DisplaySwitcher::Native::DdcVcpCode::Contrast,
-                controls.contrast, controls.contrastEnabled, controls.contrastShowInTray);
-            auto volumeRow = controlRow(L"音量", ::DisplaySwitcher::Native::DdcVcpCode::Volume,
-                controls.volume, controls.volumeEnabled, controls.volumeShowInTray);
+            controlRow(L"亮度", ::DisplaySwitcher::Native::DdcVcpCode::Brightness,
+                controls.brightness, controls.brightnessEnabled, controls.brightnessShowInTray, 1);
+            controlRow(L"对比度", ::DisplaySwitcher::Native::DdcVcpCode::Contrast,
+                controls.contrast, controls.contrastEnabled, controls.contrastShowInTray, 2);
+            controlRow(L"音量", ::DisplaySwitcher::Native::DdcVcpCode::Volume,
+                controls.volume, controls.volumeEnabled, controls.volumeShowInTray, 3);
 
             auto fields = StackPanel(); fields.Spacing(10);
             auto displayTitle = TextBlock(); displayTitle.Text(display.name);
             displayTitle.FontSize(18); displayTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-            auto columns = Grid(); appendControlColumns(columns);
-            auto functionHeader = TextBlock(); functionHeader.Text(L"功能"); functionHeader.Opacity(0.66);
-            functionHeader.HorizontalAlignment(HorizontalAlignment::Left);
-            auto trayHeader = TextBlock(); trayHeader.Text(L"托盘"); trayHeader.Opacity(0.66);
-            trayHeader.HorizontalAlignment(HorizontalAlignment::Left);
-            Grid::SetColumn(functionHeader, 1); Grid::SetColumn(trayHeader, 2);
-            columns.Children().Append(functionHeader); columns.Children().Append(trayHeader);
-            fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(columns);
-            fields.Children().Append(brightnessRow); fields.Children().Append(contrastRow); fields.Children().Append(volumeRow);
+            fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(controlsGrid);
             fields.Children().Append(controls.status);
             displayEditorsPanel_.Children().Append(CreateCard(fields));
             displayEditors_.push_back(std::move(controls));
