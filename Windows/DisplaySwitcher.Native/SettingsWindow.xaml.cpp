@@ -183,7 +183,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto tabStripFooterInset = Grid(); tabStripFooterInset.Width(12);
         tabs_.TabStripHeader(tabStripHeaderInset); tabs_.TabStripFooter(tabStripFooterInset);
 
-        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
@@ -206,7 +206,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         });
         auto usbButtons = StackPanel(); usbButtons.Orientation(Orientation::Horizontal); usbButtons.Spacing(8);
         usbButtons.Children().Append(learnCurrentUsb); usbButtons.Children().Append(clearCurrentUsb);
-        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
@@ -217,7 +217,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
             usbButtons, usbDeviceStatus_, usbMappingsPanel_, usbHint }) }));
 
-        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
         auto peerStatus = StackPanel(); peerStatus.Orientation(Orientation::Horizontal); peerStatus.Spacing(8);
         connectionDot_ = TextBlock(); connectionDot_.Text(L"●"); connectionDot_.FontSize(16);
@@ -255,7 +255,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         peerTab.Content(CreatePage({ CreateSection(L"协同配置", {
             peerStatus, peerHint, CreateTwoColumn(profileSelector_, addProfile), profileEditorsPanel_ }) }));
 
-        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
         auto displayHint = TextBlock(); displayHint.Text(L"新显示器的功能和托盘开关默认关闭。读取只访问亮度、对比度和音量。");
         displayHint.TextWrapping(TextWrapping::Wrap); displayHint.Opacity(0.72);
@@ -267,7 +267,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
-        auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         aboutTab.Header(CreateTabHeader(L"\uE946", L"关于"));
         auto info = ::DisplaySwitcher::Native::PublicAboutInfo();
         auto aboutIcon = Image(); aboutIcon.Width(72); aboutIcon.Height(72); aboutIcon.HorizontalAlignment(HorizontalAlignment::Center);
