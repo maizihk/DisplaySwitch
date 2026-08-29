@@ -315,12 +315,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                     self.displayControls[index]?.update(control, value: value)
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
-                        value: value, error: nil
+                        value: value, error: nil,
+                        diagnostic: self.ddcController.diagnostic(selector: request.selector)
                     )
                 case .failure(let error):
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
-                        value: nil, error: error
+                        value: nil, error: error,
+                        diagnostic: self.ddcController.diagnostic(selector: request.selector)
                     )
                     self.showError(title: "显示器调节失败", error: error)
                 }
@@ -652,9 +654,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         workerQueue.async { [weak self] in
             guard let self else { return }
             let result = self.ddcController.read(targets: [target])[target.stableID] ?? [:]
+            let diagnostic = self.ddcController.diagnostic(selector: target.selector)
             DispatchQueue.main.async {
                 guard self.settingsWindowController.isSettingsVisible else { return }
-                self.settingsWindowController.updateDDCValues(stableID: target.stableID, values: result)
+                self.settingsWindowController.updateDDCValues(
+                    stableID: target.stableID, values: result, diagnostic: diagnostic
+                )
             }
         }
     }

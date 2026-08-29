@@ -55,6 +55,53 @@ struct DDCKnownDisplay: Equatable {
     let selector: String
 }
 
+enum NativeDDCTransportPath: String, Equatable, Hashable {
+    case typeCDPAlt = "typec-dp-alt"
+    case builtinHDMIConverter = "builtin-hdmi-converter"
+    case unknownExternal = "unknown-external"
+    case unmatched = "unmatched"
+}
+
+enum NativeTransportPathClassifier {
+    static func classify(epicProviderClass: String?, transportDescription: String?)
+        -> NativeDDCTransportPath {
+        let provider = epicProviderClass?.uppercased() ?? ""
+        let transport = transportDescription?.uppercased() ?? ""
+        if provider.contains("MCDP") || transport.contains("HDMI") {
+            return .builtinHDMIConverter
+        }
+        if transport.contains("TYPEC") || transport.contains("USB-C")
+            || transport.contains("DISPLAYPORT") || transport == "DP" {
+            return .typeCDPAlt
+        }
+        return .unknownExternal
+    }
+}
+
+enum NativeDDCOperationCategory: String, Equatable {
+    case idle
+    case serviceUnmatched = "service-unmatched"
+    case readSucceeded = "read-succeeded"
+    case readRequestWriteFailed = "read-request-write-failed"
+    case readResponseTimeout = "read-response-timeout"
+    case readResponseFailed = "read-response-failed"
+    case readReplyRejected = "read-reply-rejected"
+    case writeSucceeded = "write-succeeded"
+    case writeTransportFailed = "write-transport-failed"
+}
+
+struct NativeDDCDiagnosticSnapshot: Equatable {
+    let transportPath: NativeDDCTransportPath
+    let serviceMatched: Bool
+    let operationCategory: NativeDDCOperationCategory
+    let rebuildCount: Int
+
+    var userFacingDescription: String {
+        "\(transportPath.rawValue) · service \(serviceMatched ? "matched" : "unmatched") · "
+            + "\(operationCategory.rawValue) · rebuild \(rebuildCount)"
+    }
+}
+
 enum DDCBackendError: Error, Equatable, LocalizedError {
     case unavailable(backend: String)
     case displayUnavailable(stableID: String)
@@ -82,7 +129,9 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
 }
 
 enum NativeDDCReplyIssue: Error, Equatable {
-    case transportFailure
+    case requestWriteFailed
+    case responseTimeout
+    case responseReadFailed
     case wrongLength
     case badChecksum
     case wrongSource
@@ -93,7 +142,9 @@ enum NativeDDCReplyIssue: Error, Equatable {
 
     var userFacingDescription: String {
         switch self {
-        case .transportFailure: return "原生传输失败"
+        case .requestWriteFailed: return "读取请求写入失败"
+        case .responseTimeout: return "读取回复超时"
+        case .responseReadFailed: return "读取回复 I2C 失败"
         case .wrongLength: return "回复长度无效"
         case .badChecksum: return "回复校验失败"
         case .wrongSource: return "回复来源无效"
@@ -107,21 +158,42 @@ enum NativeDDCReplyIssue: Error, Equatable {
 
 struct NativeDDCTransportParameters: Equatable {
     let writeDataAddress: UInt8
-    let readDataAddress: UInt8
+    let typeCDPReadDataAddress: UInt8
+    let builtinHDMIReadDataAddress: UInt8
     let writeSleepMicroseconds: UInt32
-    let readSleepMicroseconds: UInt32
+    let typeCDPReadSleepMicroseconds: UInt32
+    let builtinHDMIReadSleepMicroseconds: UInt32
     let retrySleepMicroseconds: UInt32
     let writeCycles: Int
-    let readAttempts: Int
+    let writeAttempts: Int
+    let typeCDPReadAttempts: Int
+    let builtinHDMIReadAttempts: Int
+
+    func readDataAddress(for path: NativeDDCTransportPath) -> UInt8 {
+        path == .builtinHDMIConverter ? builtinHDMIReadDataAddress : typeCDPReadDataAddress
+    }
+
+    func readSleepMicroseconds(for path: NativeDDCTransportPath) -> UInt32 {
+        path == .builtinHDMIConverter
+            ? builtinHDMIReadSleepMicroseconds : typeCDPReadSleepMicroseconds
+    }
+
+    func readAttempts(for path: NativeDDCTransportPath) -> Int {
+        path == .builtinHDMIConverter ? builtinHDMIReadAttempts : typeCDPReadAttempts
+    }
 
     static let appleSiliconDDCCompatible = NativeDDCTransportParameters(
         writeDataAddress: 0x51,
-        readDataAddress: 0x51,
+        typeCDPReadDataAddress: 0x51,
+        builtinHDMIReadDataAddress: 0x00,
         writeSleepMicroseconds: 10_000,
-        readSleepMicroseconds: 50_000,
+        typeCDPReadSleepMicroseconds: 50_000,
+        builtinHDMIReadSleepMicroseconds: 50_000,
         retrySleepMicroseconds: 20_000,
         writeCycles: 2,
-        readAttempts: 5
+        writeAttempts: 5,
+        typeCDPReadAttempts: 5,
+        builtinHDMIReadAttempts: 5
     )
 }
 
@@ -160,6 +232,18 @@ struct NativeTransportCandidate: Equatable {
     let productName: String
     let serialNumber: Int64
     let edidUUID: String
+    let transportPath: NativeDDCTransportPath
+
+    init(serviceLocation: Int, ioDisplayLocation: String, productName: String,
+         serialNumber: Int64, edidUUID: String,
+         transportPath: NativeDDCTransportPath = .typeCDPAlt) {
+        self.serviceLocation = serviceLocation
+        self.ioDisplayLocation = ioDisplayLocation
+        self.productName = productName
+        self.serialNumber = serialNumber
+        self.edidUUID = edidUUID
+        self.transportPath = transportPath
+    }
 }
 
 enum NativeDisplayMatcher {
@@ -246,11 +330,13 @@ protocol DDCBackend: AnyObject {
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
                token: DDCCancellationToken) throws
     func cancelAll()
+    func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot?
 }
 
 extension DDCBackend {
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {}
     func cancelAll() {}
+    func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? { nil }
 }
 
 final class DDCBackendRouter {
@@ -343,6 +429,10 @@ final class DDCBackendRouter {
 
     func cancelAll() {
         backends.forEach { $0.cancelAll() }
+    }
+
+    func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
+        selectedBackends.compactMap { $0.diagnostic(selector: selector) }.first
     }
 }
 
@@ -522,6 +612,10 @@ final class DDCControlService {
 
     func cachedValue(stableID: String, command: DDCCommand) -> Int? {
         cache.value(stableID: stableID, command: command)
+    }
+
+    func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
+        router.diagnostic(selector: selector)
     }
 
     private func beginOperation() throws -> (id: UUID, token: DDCCancellationToken) {

@@ -197,8 +197,9 @@
 - [x] 设置页、菜单和映射字段使用已保存名称或系统产品名称，不再把用户可见名称硬编码为“显示器 1/2/3”。
 - [x] 同型号显示器使用稳定逻辑 ID 的本机顺序生成中性序号；枚举重排不改变对应关系，也不展示或记录原始 UUID、IORegistry 路径。
 - [x] 当前运行时只选择 Apple Silicon 原生 CoreDisplay/IOAVService 后端；原生枚举、读取或写入失败均明确失败，不调用 `m1ddc`，Intel Mac 明确显示不支持。
-- [x] 修复单次原生写入即使首次成功仍重复发送，以及一次逻辑写入内部最多重复十次 I²C 请求的问题；现在首次成功立即结束，失败后使 service 缓存失效、重发现并只重试一次。
-- [x] 对齐上游读取默认五次尝试，并把写/读 offset、等待和次数收敛为可测试参数；当前保持 AppleSiliconDDC 的读取 offset `0x51`，与另一上游实现的差异留待授权实机核对。
+- [x] 已知原生写入正常，保留现有 `0x51`、五次尝试和双写语义；只由现有 latest-wins 协调器合并高频滑杆值，并以模拟回归防止读取修复破坏写入。
+- [x] 读取恢复为五次有限尝试，每次清空 response buffer；Type-C/DP Alt 固定使用 `0x51`，确认为内置 HDMI converter 时固定使用 `0`，不在同一操作中盲探多套策略。
+- [x] 本机脱敏诊断区分 `typec-dp-alt` / `builtin-hdmi-converter` / `unknown-external`、service 匹配、读写阶段返回类别和重建次数；不显示 UUID、IORegistry 路径或序列号。
 - [x] 按 IODisplayLocation 高权重、产品名和序列信息建立一对一显示器/service 匹配，同时识别 `AppleCLCD2`、`IOMobileFramebufferShim` 和兼容 framebuffer；未绑定通信 service 的在线身份可枚举但不可读写。
 - [x] Get VCP 回复校验覆盖长度、XOR checksum、来源、载荷长度、回复 opcode、结果码和 VCP command echo，拒绝迟到或错误回复。
 - [x] 同一显示器原生传输按 selector 串行，不同显示器互不阻塞；滑杆继续按稳定显示器 ID 与 DDC 项 latest-wins 合并。
@@ -229,4 +230,4 @@
 | 2026-08-28 | DS-007 设置、DDC 可靠性与 v2-only | 自动验证完成，GUI/实机待验 | 55fec44 | 47 项 XCTest、20 条 v2 消息向量、18 条 v2-only 状态机向量、Debug/Release、打包、严格验签和 v2 合同校验通过 |
 | 2026-08-29 | DS-008 本机 USB 双向切换 | 自动验证完成，GUI/实机待验 | 本任务提交 | 49 项 XCTest、USB-001～016、20 条 v2 消息向量、6 条 v2 状态机向量、Debug/Release、打包、严格验签和两组合同校验通过 |
 | 2026-08-29 | DS-008 macOS UDP 固定源端口 | 自动验证完成，双机实测待验 | 本任务提交 | 5 项传输资源测试、loopback 源/目标端口与回包验证、两组合同校验通过；完整 Xcode 验证见交接记录 |
-| 2026-08-29 | DS-009 Apple Silicon 原生显示控制 | 自动验证完成，实机待验 | 本任务提交 | 61 项 XCTest、Debug/Release、打包和严格验签；真实原生 DDC 未执行 |
+| 2026-08-29 | DS-009 Apple Silicon 原生显示控制 | 自动验证完成，实机待验 | 本任务提交 | 63 项 XCTest、Debug/Release、打包和严格验签；真实原生 DDC 未执行 |

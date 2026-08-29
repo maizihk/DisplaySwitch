@@ -230,6 +230,10 @@ final class DDCController {
         service.cachedValue(stableID: stableID, command: command)
     }
 
+    func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
+        service.diagnostic(selector: selector)
+    }
+
     private static func knownDisplays(from configurations: [DisplayConfiguration]) -> [DDCKnownDisplay] {
         configurations.map {
             DDCKnownDisplay(stableID: $0.id ?? $0.selector, name: $0.name, selector: $0.selector)

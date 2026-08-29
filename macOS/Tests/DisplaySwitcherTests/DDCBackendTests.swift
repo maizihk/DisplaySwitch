@@ -261,9 +261,51 @@ final class DDCBackendTests: XCTestCase {
     func testNativeReadTransportParametersAreExplicitAndTestable() {
         let parameters = NativeDDCTransportParameters.appleSiliconDDCCompatible
         XCTAssertEqual(parameters.writeDataAddress, 0x51)
-        XCTAssertEqual(parameters.readDataAddress, 0x51)
-        XCTAssertEqual(parameters.readAttempts, 5)
+        XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
+        XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0x00)
+        XCTAssertEqual(parameters.readSleepMicroseconds(for: .typeCDPAlt), 50_000)
+        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 50_000)
+        XCTAssertEqual(parameters.readAttempts(for: .typeCDPAlt), 5)
+        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 5)
         XCTAssertEqual(parameters.writeCycles, 2)
+        XCTAssertEqual(parameters.writeAttempts, 5)
+    }
+
+    func testNativeTransportPathClassificationIsDeterministicAndSanitized() {
+        XCTAssertEqual(
+            NativeTransportPathClassifier.classify(
+                epicProviderClass: "AppleDCPMCDP29XX", transportDescription: nil
+            ),
+            .builtinHDMIConverter
+        )
+        XCTAssertEqual(
+            NativeTransportPathClassifier.classify(
+                epicProviderClass: nil, transportDescription: "DisplayPort over USB-C"
+            ),
+            .typeCDPAlt
+        )
+        XCTAssertEqual(
+            NativeTransportPathClassifier.classify(
+                epicProviderClass: "FutureProvider", transportDescription: nil
+            ),
+            .unknownExternal
+        )
+    }
+
+    func testNativeDiagnosticsExposeOnlySanitizedTransportState() {
+        let snapshot = NativeDDCDiagnosticSnapshot(
+            transportPath: .builtinHDMIConverter,
+            serviceMatched: true,
+            operationCategory: .readResponseTimeout,
+            rebuildCount: 1
+        )
+
+        XCTAssertEqual(
+            snapshot.userFacingDescription,
+            "builtin-hdmi-converter · service matched · read-response-timeout · rebuild 1"
+        )
+        XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
+        XCTAssertFalse(snapshot.userFacingDescription.contains("/"))
     }
 
     func testCancellationAndLateReadCannotCommitCacheOrResult() {

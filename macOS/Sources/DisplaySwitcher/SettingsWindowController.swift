@@ -317,7 +317,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         updatePeerConnectionStatus(state.text, connected: state.connected)
     }
 
-    func updateDDCValues(stableID: String, values: [DDCCommand: DDCResolvedReading]) {
+    func updateDDCValues(stableID: String, values: [DDCCommand: DDCResolvedReading],
+                         diagnostic: NativeDDCDiagnosticSnapshot? = nil) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
         }) else { return }
@@ -329,27 +330,31 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 ? "≈\(resolved.reading.current)" : "\(resolved.reading.current)"
         }
         let estimatedCount = values.values.filter(\.estimated).count
+        let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if values.isEmpty {
-            displayStatusLabels[index]?.stringValue = "原生读取失败"
+            displayStatusLabels[index]?.stringValue = "原生读取失败\(diagnosticSuffix)"
         } else if estimatedCount == values.count {
-            displayStatusLabels[index]?.stringValue = "原生读取失败，显示上次可信值"
+            displayStatusLabels[index]?.stringValue = "原生读取失败，显示上次可信值\(diagnosticSuffix)"
         } else if estimatedCount > 0 {
-            displayStatusLabels[index]?.stringValue = "部分读取失败"
+            displayStatusLabels[index]?.stringValue = "部分读取失败\(diagnosticSuffix)"
         } else {
-            displayStatusLabels[index]?.stringValue = "已读取"
+            displayStatusLabels[index]?.stringValue = "已读取\(diagnosticSuffix)"
         }
     }
 
-    func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?) {
+    func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?,
+                              diagnostic: NativeDDCDiagnosticSnapshot? = nil) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
         }) else { return }
         let index = offset + 1
+        let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if let value {
             displayValueLabels[index]?[command]?.stringValue = "\(value)"
-            displayStatusLabels[index]?.stringValue = "已应用"
+            displayStatusLabels[index]?.stringValue = "已应用\(diagnosticSuffix)"
         } else {
-            displayStatusLabels[index]?.stringValue = error == nil ? "已取消" : "写入失败"
+            displayStatusLabels[index]?.stringValue = (error == nil ? "已取消" : "写入失败")
+                + diagnosticSuffix
         }
     }
 
