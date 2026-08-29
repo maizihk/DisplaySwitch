@@ -158,13 +158,15 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let readDataAddress: UInt8?
     let readAttemptCount: Int?
     let checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection?
+    let checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence?
 
     init(transportPath: NativeDDCTransportPath, serviceMatched: Bool,
          operationCategory: NativeDDCOperationCategory, rebuildCount: Int,
          replyIssue: NativeDDCReplyIssue? = nil, chipAddress: UInt32? = nil,
          readDataAddress: UInt8? = nil,
          readAttemptCount: Int? = nil,
-         checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil) {
+         checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
+         checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil) {
         self.transportPath = transportPath
         self.serviceMatched = serviceMatched
         self.operationCategory = operationCategory
@@ -174,6 +176,7 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         self.readDataAddress = readDataAddress
         self.readAttemptCount = readAttemptCount
         self.checksumCompatibilityRejection = checksumCompatibilityRejection
+        self.checksumCompatibilityEvidence = checksumCompatibilityEvidence
     }
 
     var userFacingDescription: String {
@@ -197,6 +200,9 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         }
         if let checksumCompatibilityRejection {
             parts.append("compatibility \(checksumCompatibilityRejection.diagnosticDescription)")
+        }
+        if let checksumCompatibilityEvidence {
+            parts.append(checksumCompatibilityEvidence.diagnosticDescription)
         }
         parts.append("rebuild \(rebuildCount)")
         return parts.joined(separator: " · ")
@@ -283,7 +289,8 @@ enum NativeDDCReadStrategyOutcome: Equatable {
         dataAddress: UInt8,
         attempts: Int,
         onlyObservedIssueWasBadChecksum: Bool,
-        checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil
+        checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
+        checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil
     )
 }
 
@@ -327,7 +334,8 @@ enum NativeDDCReadStrategyRunner {
                 dataAddress: alternateDataAddress,
                 attempts: totalAttempts,
                 onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
-                checksumCompatibilityRejection: nil
+                checksumCompatibilityRejection: nil,
+                checksumCompatibilityEvidence: nil
             )
         }
         return .failure(
@@ -335,7 +343,8 @@ enum NativeDDCReadStrategyRunner {
             dataAddress: primaryDataAddress,
             attempts: totalAttempts,
             onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
-            checksumCompatibilityRejection: nil
+            checksumCompatibilityRejection: nil,
+            checksumCompatibilityEvidence: nil
         )
     }
 }
@@ -445,6 +454,80 @@ struct NativeDDCChecksumPayloadComparison: Equatable {
     }
 }
 
+struct NativeDDCReplySemanticFields: Equatable {
+    let source: UInt8?
+    let payloadLength: UInt8?
+    let opcode: UInt8?
+    let result: UInt8?
+    let command: UInt8?
+    let current: Int?
+    let maximum: Int?
+
+    init(reply: [UInt8]) {
+        source = Self.byte(reply, at: 0)
+        payloadLength = Self.byte(reply, at: 1)
+        opcode = Self.byte(reply, at: 2)
+        result = Self.byte(reply, at: 3)
+        command = Self.byte(reply, at: 4)
+        maximum = Self.word(reply, high: 6, low: 7)
+        current = Self.word(reply, high: 8, low: 9)
+    }
+
+    var diagnosticDescription: String {
+        [
+            "source=\(Self.hex(source))\(sourceAssessment)",
+            "payload-length=\(Self.hex(payloadLength))",
+            "opcode=\(Self.hex(opcode))",
+            "result=\(Self.hex(result))",
+            "command=\(Self.hex(command))",
+            "current=\(current.map(String.init) ?? "n/a")",
+            "max=\(maximum.map(String.init) ?? "n/a")"
+        ].joined(separator: ",")
+    }
+
+    private var sourceAssessment: String {
+        switch source {
+        case 0x6E: return "(expected)"
+        case 0x6F: return "(alternate-source)"
+        case 0x02: return "(suspected-frame-shift/opcode-at-source)"
+        case 0x00: return "(suspected-frame-shift/zero-at-source)"
+        case .some: return "(unexpected-source)"
+        case nil: return "(missing)"
+        }
+    }
+
+    private static func byte(_ reply: [UInt8], at index: Int) -> UInt8? {
+        reply.indices.contains(index) ? reply[index] : nil
+    }
+
+    private static func word(_ reply: [UInt8], high: Int, low: Int) -> Int? {
+        guard let highByte = byte(reply, at: high), let lowByte = byte(reply, at: low) else { return nil }
+        return Int(UInt16(highByte) << 8 | UInt16(lowByte))
+    }
+
+    private static func hex(_ value: UInt8?) -> String {
+        value.map { String(format: "0x%02X", $0) } ?? "n/a"
+    }
+}
+
+struct NativeDDCChecksumCompatibilityEvidence: Equatable {
+    let replies: [NativeDDCReplySemanticFields]
+
+    init(replies: [[UInt8]]) {
+        self.replies = replies.map(NativeDDCReplySemanticFields.init(reply:))
+    }
+
+    var diagnosticDescription: String {
+        let replyDescriptions = replies.enumerated().map { index, reply in
+            "reply\(index + 1){\(reply.diagnosticDescription)}"
+        }
+        let consistent = replies.count >= NativeDDCChecksumCompatibilityValidator.requiredReplyCount
+            && replies.dropFirst().allSatisfy { $0 == replies[0] }
+        return (replyDescriptions + ["semantic-fields-consistent=\(consistent)"])
+            .joined(separator: " · ")
+    }
+}
+
 enum NativeDDCChecksumCompatibilityRejection: Equatable {
     case insufficientReplies
     case checksumWasValid
@@ -473,7 +556,10 @@ enum NativeDDCChecksumCompatibilityRejection: Equatable {
 
 enum NativeDDCChecksumCompatibilityResult: Equatable {
     case accepted(DDCReading)
-    case rejected(NativeDDCChecksumCompatibilityRejection)
+    case rejected(
+        NativeDDCChecksumCompatibilityRejection,
+        evidence: NativeDDCChecksumCompatibilityEvidence
+    )
 }
 
 enum NativeDDCChecksumCompatibilityValidator {
@@ -481,15 +567,22 @@ enum NativeDDCChecksumCompatibilityValidator {
 
     static func reading(from replies: [[UInt8]], command: DDCCommand)
         -> NativeDDCChecksumCompatibilityResult {
-        guard replies.count >= requiredReplyCount else { return .rejected(.insufficientReplies) }
+        let evidence = NativeDDCChecksumCompatibilityEvidence(replies: replies)
+        guard replies.count >= requiredReplyCount else {
+            return .rejected(.insufficientReplies, evidence: evidence)
+        }
         let compared = Array(replies.prefix(requiredReplyCount))
         for reply in compared {
-            guard reply.count == 11 else { return .rejected(.invalidField(.wrongLength)) }
+            guard reply.count == 11 else {
+                return .rejected(.invalidField(.wrongLength), evidence: evidence)
+            }
             guard reply.dropLast().reduce(UInt8(0x50), ^) != reply.last else {
-                return .rejected(.checksumWasValid)
+                return .rejected(.checksumWasValid, evidence: evidence)
             }
             let issue = fieldIssue(reply, command: command)
-            guard issue == .badChecksum else { return .rejected(.invalidField(issue)) }
+            guard issue == .badChecksum else {
+                return .rejected(.invalidField(issue), evidence: evidence)
+            }
         }
         guard compared.dropFirst().allSatisfy({ $0.dropLast() == compared[0].dropLast() }) else {
             let commands = compared.map { $0[4] }
@@ -500,13 +593,13 @@ enum NativeDDCChecksumCompatibilityValidator {
                 currentMatches: Set(currents).count == 1,
                 maximumMatches: Set(maximums).count == 1,
                 payloadLengths: compared.map { Int($0[1] & 0x7F) }
-            )))
+            )), evidence: evidence)
         }
         let reply = compared[0]
         let maximum = Int(UInt16(reply[6]) << 8 | UInt16(reply[7]))
         let current = Int(UInt16(reply[8]) << 8 | UInt16(reply[9]))
         guard maximum > 0, current <= maximum else {
-            return .rejected(.invalidRange(current: current, maximum: maximum))
+            return .rejected(.invalidRange(current: current, maximum: maximum), evidence: evidence)
         }
         return .accepted(DDCReading(current: current, maximum: maximum, estimated: true))
     }
@@ -540,7 +633,10 @@ enum NativeDDCChecksumCompatibilityRunner {
             }
         }
         guard transportIssue == nil else {
-            return .rejected(.transportError(transportIssue ?? .responseReadFailed))
+            return .rejected(
+                .transportError(transportIssue ?? .responseReadFailed),
+                evidence: NativeDDCChecksumCompatibilityEvidence(replies: replies)
+            )
         }
         return NativeDDCChecksumCompatibilityValidator.reading(from: replies, command: command)
     }

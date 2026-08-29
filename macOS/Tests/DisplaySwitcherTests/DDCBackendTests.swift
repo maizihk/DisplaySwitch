@@ -315,7 +315,10 @@ final class DDCBackendTests: XCTestCase {
             NativeDDCChecksumCompatibilityValidator.reading(
                 from: [reply], command: .luminance
             ),
-            .rejected(.insufficientReplies)
+            .rejected(
+                .insufficientReplies,
+                evidence: NativeDDCChecksumCompatibilityEvidence(replies: [reply])
+            )
         )
     }
 
@@ -353,7 +356,13 @@ final class DDCBackendTests: XCTestCase {
                 ],
                 command: .luminance
             ),
-            .rejected(.inconsistentPayload(comparison))
+            .rejected(
+                .inconsistentPayload(comparison),
+                evidence: NativeDDCChecksumCompatibilityEvidence(replies: [
+                    badChecksumReply(current: 42, maximum: 100),
+                    badChecksumReply(current: 43, maximum: 100)
+                ])
+            )
         )
     }
 
@@ -379,7 +388,10 @@ final class DDCBackendTests: XCTestCase {
                 NativeDDCChecksumCompatibilityValidator.reading(
                     from: [reply, reply], command: .luminance
                 ),
-                .rejected(expected)
+                .rejected(
+                    expected,
+                    evidence: NativeDDCChecksumCompatibilityEvidence(replies: [reply, reply])
+                )
             )
         }
     }
@@ -663,8 +675,73 @@ final class DDCBackendTests: XCTestCase {
             NativeDDCChecksumCompatibilityRunner.run(command: .luminance) { _ in
                 .failure(.responseTimeout)
             },
-            .rejected(.transportError(.responseTimeout))
+            .rejected(
+                .transportError(.responseTimeout),
+                evidence: NativeDDCChecksumCompatibilityEvidence(replies: [])
+            )
         )
+    }
+
+    func testCompatibilityEvidenceShowsBothRepliesAndPublicSemanticFieldsOnly() {
+        var first = badChecksumReply(current: 42, maximum: 100)
+        first[0] = 0x6F
+        var second = badChecksumReply(current: 43, maximum: 100)
+        second[0] = 0x02
+
+        guard case .rejected(.invalidField(.wrongSource), let evidence) =
+                NativeDDCChecksumCompatibilityValidator.reading(
+                    from: [first, second], command: .luminance
+                ) else {
+            return XCTFail("Expected wrong-source evidence")
+        }
+        let description = evidence.diagnosticDescription
+
+        XCTAssertTrue(description.contains(
+            "reply1{source=0x6F(alternate-source),payload-length=0x88,opcode=0x02," +
+                "result=0x00,command=0x10,current=42,max=100}"
+        ))
+        XCTAssertTrue(description.contains(
+            "reply2{source=0x02(suspected-frame-shift/opcode-at-source),payload-length=0x88," +
+                "opcode=0x02,result=0x00,command=0x10,current=43,max=100}"
+        ))
+        XCTAssertTrue(description.contains("semantic-fields-consistent=false"))
+        XCTAssertFalse(description.contains("["))
+        XCTAssertFalse(description.contains("UUID"))
+        XCTAssertFalse(description.contains("IORegistry"))
+        XCTAssertFalse(description.contains("selector"))
+
+        let snapshot = NativeDDCDiagnosticSnapshot(
+            transportPath: .builtinHDMIConverter,
+            serviceMatched: true,
+            operationCategory: .readReplyRejected,
+            rebuildCount: 1,
+            replyIssue: .badChecksum,
+            chipAddress: 0x37,
+            readDataAddress: 0,
+            readAttemptCount: 7,
+            checksumCompatibilityRejection: .invalidField(.wrongSource),
+            checksumCompatibilityEvidence: evidence
+        )
+        XCTAssertTrue(snapshot.userFacingDescription.contains("reply1{source=0x6F"))
+        XCTAssertTrue(snapshot.userFacingDescription.contains("reply2{source=0x02"))
+        XCTAssertTrue(snapshot.userFacingDescription.contains("semantic-fields-consistent=false"))
+    }
+
+    func testCompatibilitySourceClassificationDistinguishesZeroAndOtherValues() {
+        let cases: [(UInt8, String)] = [
+            (0x6F, "source=0x6F(alternate-source)"),
+            (0x02, "source=0x02(suspected-frame-shift/opcode-at-source)"),
+            (0x00, "source=0x00(suspected-frame-shift/zero-at-source)"),
+            (0x55, "source=0x55(unexpected-source)")
+        ]
+
+        for (source, expected) in cases {
+            var reply = badChecksumReply(current: 42, maximum: 100)
+            reply[0] = source
+            XCTAssertTrue(
+                NativeDDCReplySemanticFields(reply: reply).diagnosticDescription.contains(expected)
+            )
+        }
     }
 
     func testCancellationAndLateReadCannotCommitCacheOrResult() {

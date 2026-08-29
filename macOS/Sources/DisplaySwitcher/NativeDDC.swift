@@ -139,13 +139,17 @@ final class NativeDDCBackend: DDCBackend {
                                  chipAddress: display.chipAddress,
                                  readDataAddress: dataAddress,
                                  readAttemptCount: attempts)
-            case .failure(let issue, let dataAddress, let attempts, _, let compatibilityRejection):
+            case .failure(
+                let issue, let dataAddress, let attempts, _,
+                let compatibilityRejection, let compatibilityEvidence
+            ):
                 recordDiagnostic(
                     selector: selector, path: display.transportPath, serviceMatched: true,
                     category: diagnosticCategory(for: issue), replyIssue: issue,
                     chipAddress: display.chipAddress, readDataAddress: dataAddress,
                     readAttemptCount: attempts,
-                    checksumCompatibilityRejection: compatibilityRejection
+                    checksumCompatibilityRejection: compatibilityRejection,
+                    checksumCompatibilityEvidence: compatibilityEvidence
                 )
                 throw DDCBackendError.invalidReply(command: command, issue: issue)
             }
@@ -215,7 +219,8 @@ final class NativeDDCBackend: DDCBackend {
                                   chipAddress: UInt32? = nil,
                                   readDataAddress: UInt8? = nil,
                                   readAttemptCount: Int? = nil,
-                                  checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil) {
+                                  checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
+                                  checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil) {
         let key = selector.uppercased()
         diagnosticsLock.lock()
         let rebuildCount = diagnosticsBySelector[key]?.rebuildCount ?? 0
@@ -225,7 +230,8 @@ final class NativeDDCBackend: DDCBackend {
             replyIssue: replyIssue, chipAddress: chipAddress,
             readDataAddress: readDataAddress,
             readAttemptCount: readAttemptCount,
-            checksumCompatibilityRejection: checksumCompatibilityRejection
+            checksumCompatibilityRejection: checksumCompatibilityRejection,
+            checksumCompatibilityEvidence: checksumCompatibilityEvidence
         )
         diagnosticsLock.unlock()
     }
@@ -243,7 +249,8 @@ final class NativeDDCBackend: DDCBackend {
             replyIssue: current.replyIssue, chipAddress: current.chipAddress,
             readDataAddress: current.readDataAddress,
             readAttemptCount: current.readAttemptCount,
-            checksumCompatibilityRejection: current.checksumCompatibilityRejection
+            checksumCompatibilityRejection: current.checksumCompatibilityRejection,
+            checksumCompatibilityEvidence: current.checksumCompatibilityEvidence
         )
         diagnosticsLock.unlock()
     }
@@ -563,7 +570,8 @@ final class NativeDDCBackend: DDCBackend {
             let dataAddress,
             let strictAttempts,
             onlyObservedIssueWasBadChecksum: true,
-            checksumCompatibilityRejection: nil
+            checksumCompatibilityRejection: nil,
+            checksumCompatibilityEvidence: nil
         ) = strictOutcome else {
             return strictOutcome
         }
@@ -586,12 +594,13 @@ final class NativeDDCBackend: DDCBackend {
                 reading, dataAddress: dataAddress,
                 attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount
             )
-        case .rejected(let rejection):
+        case .rejected(let rejection, let evidence):
             return .failure(
                 .badChecksum, dataAddress: dataAddress,
                 attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount,
                 onlyObservedIssueWasBadChecksum: true,
-                checksumCompatibilityRejection: rejection
+                checksumCompatibilityRejection: rejection,
+                checksumCompatibilityEvidence: evidence
             )
         }
     }
