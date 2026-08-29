@@ -24,6 +24,26 @@ namespace
         else if (auto toggleSwitch = control.try_as<ToggleSwitch>()) toggleSwitch.Header(box_value(text));
     }
 
+    Grid LabeledToggleRow(std::wstring const& text, ToggleSwitch const& toggle)
+    {
+        toggle.Header(nullptr);
+        toggle.OnContent(box_value(L""));
+        toggle.OffContent(box_value(L""));
+        toggle.HorizontalAlignment(HorizontalAlignment::Right);
+        toggle.VerticalAlignment(VerticalAlignment::Center);
+        AutomationProperties::SetName(toggle, text);
+
+        auto row = Grid();
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto toggleColumn = ColumnDefinition(); toggleColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(toggleColumn);
+
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(toggle, 1);
+        row.Children().Append(label); row.Children().Append(toggle);
+        return row;
+    }
+
     std::wstring Trim(std::wstring value)
     {
         auto whitespace = [](wchar_t c) { return iswspace(c) != 0; };
@@ -112,8 +132,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         validation_ = TextBlock(); validation_.Foreground(SolidColorBrush(Windows::UI::Color{ 255, 196, 43, 28 }));
         validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
-        usbAutomation_ = ToggleSwitch(); Header(usbAutomation_, L"USB 自动切换");
-        usbSwitchDisplaysOnArrival_ = ToggleSwitch(); Header(usbSwitchDisplaysOnArrival_, L"联动协同");
+        usbAutomation_ = ToggleSwitch();
+        usbSwitchDisplaysOnArrival_ = ToggleSwitch();
         usbProfileSelector_ = ComboBox(); Header(usbProfileSelector_, L"联动目标配置");
         usbProfileSelector_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
@@ -122,8 +142,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         displayBackend_.Items().Append(box_value(L"Windows 原生 DDC/CI"));
         displayBackend_.IsEnabled(false);
         controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
-        linkAllDisplays_ = ToggleSwitch(); Header(linkAllDisplays_, L"联动调节所有显示器");
-        autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录时启动");
+        linkAllDisplays_ = ToggleSwitch();
+        autoStart_ = ToggleSwitch();
         usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
@@ -166,7 +186,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
-        commonTab.Content(CreatePage({ CreateSection(L"常规", { autoStart_, commonHint }) }));
+        commonTab.Content(CreatePage({ CreateSection(L"常规", {
+            LabeledToggleRow(L"登录时启动", autoStart_), commonHint }) }));
 
         auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
         refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
@@ -190,7 +211,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
-            usbAutomation_, usbSwitchDisplaysOnArrival_, usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
+            LabeledToggleRow(L"USB 自动切换", usbAutomation_),
+            LabeledToggleRow(L"联动协同", usbSwitchDisplaysOnArrival_),
+            usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
             usbButtons, usbDeviceStatus_, usbMappingsPanel_, usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -239,7 +262,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
-        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_, linkAllDisplays_,
+        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_,
+            LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
         auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -799,7 +823,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto const profile = workingProfiles_[index];
             ProfileEditorControls controls; controls.id = profile.id;
             controls.name = TextBox(); Header(controls.name, L"配置名称"); controls.name.Text(profile.name); controls.name.MaxLength(32);
-            controls.enabled = ToggleSwitch(); Header(controls.enabled, L"启用此协同配置"); controls.enabled.IsOn(profile.coordinationEnabled);
+            controls.enabled = ToggleSwitch(); controls.enabled.IsOn(profile.coordinationEnabled);
             controls.peerHost = TextBox(); Header(controls.peerHost, L"对端 IP 或主机名"); controls.peerHost.Text(profile.peerHost); controls.peerHost.MaxLength(253);
             controls.peerPort = TextBox(); Header(controls.peerPort, L"对端端口"); controls.peerPort.Text(std::to_wstring(profile.peerPort)); controls.peerPort.MaxLength(5);
             controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对码"); controls.pairingCode.Password(profile.pairingCode);
@@ -819,7 +843,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             commitOnReturn(controls.peerPort); commitOnReturn(controls.pairingCode);
 
             auto fields = StackPanel(); fields.Spacing(12);
-            fields.Children().Append(controls.name); fields.Children().Append(controls.enabled);
+            fields.Children().Append(controls.name);
+            fields.Children().Append(LabeledToggleRow(L"启用此协同配置", controls.enabled));
             fields.Children().Append(CreateTwoColumn(controls.peerHost, controls.peerPort, 160));
             fields.Children().Append(controls.pairingCode);
             fields.Children().Append(CreateSubheading(L"显示器输入映射"));
