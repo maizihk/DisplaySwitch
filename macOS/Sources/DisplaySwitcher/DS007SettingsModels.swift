@@ -108,6 +108,28 @@ enum DisplaySettingsSemantics {
     }
 }
 
+struct DisplayCachedValuePresentation: Equatable {
+    struct Entry: Hashable {
+        let stableID: String
+        let command: DDCCommand
+        let value: Int
+
+        var label: String { "≈\(value)" }
+    }
+
+    static func entries(
+        displays: [DisplayConfigurationV4Display],
+        cachedValue: (String, DDCCommand) -> Int?
+    ) -> [Entry] {
+        displays.flatMap { display in
+            DisplaySettingsSemantics.enabledCommands(for: display).compactMap { command in
+                guard let value = cachedValue(display.id, command) else { return nil }
+                return Entry(stableID: display.id.lowercased(), command: command, value: value)
+            }
+        }
+    }
+}
+
 enum DisplayDiagnosticLayout {
     static let wraps = true
     static let maximumNumberOfLines = 0

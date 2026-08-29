@@ -252,6 +252,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.onReadDDC = { [weak self] stableID in
             self?.readDDCForSettings(stableID: stableID)
         }
+        controller.cachedDDCValue = { [weak self] stableID, command in
+            self?.ddcController.cachedValue(stableID: stableID, command: command)
+        }
         controller.onWriteDDC = { [weak self] stableID, command, value in
             guard let self,
                   let entry = self.configurations.first(where: {

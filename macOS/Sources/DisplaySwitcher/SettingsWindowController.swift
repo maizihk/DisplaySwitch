@@ -265,6 +265,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onRefreshDisplays: (() -> Void)?
     var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
+    var cachedDDCValue: ((String, DDCCommand) -> Int?)?
 
     var isSettingsVisible: Bool { window?.isVisible == true }
 
@@ -1238,6 +1239,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 displaySliders[index]?[command]?.isEnabled = enabled
             }
         }
+        restoreCachedDDCValues(in: loaded.document)
         loadSelectedProfileFields()
         refreshSelectedCollaborationStatus()
 
@@ -1248,6 +1250,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             launchAtLoginCheckbox.state = .off
             launchAtLoginCheckbox.isEnabled = false
             launchAtLoginCheckbox.toolTip = "需要 macOS 13 或更高版本"
+        }
+    }
+
+    private func restoreCachedDDCValues(in document: DisplayConfigurationStoreV5Document) {
+        guard let cachedDDCValue else { return }
+        let entries = DisplayCachedValuePresentation.entries(
+            displays: document.displays,
+            cachedValue: cachedDDCValue
+        )
+        let indexByStableID = Dictionary(uniqueKeysWithValues: document.displays.enumerated().map {
+            ($0.element.id.lowercased(), $0.offset + 1)
+        })
+        for entry in entries {
+            guard let index = indexByStableID[entry.stableID] else { continue }
+            displaySliders[index]?[entry.command]?.integerValue = entry.value
+            displayValueLabels[index]?[entry.command]?.stringValue = entry.label
         }
     }
 

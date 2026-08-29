@@ -799,6 +799,28 @@ protocol DDCValueCache: AnyObject {
     func setValue(_ value: Int, stableID: String, command: DDCCommand)
 }
 
+final class UserDefaultsDDCValueCache: DDCValueCache {
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func value(stableID: String, command: DDCCommand) -> Int? {
+        let key = cacheKey(stableID: stableID, command: command)
+        guard defaults.object(forKey: key) != nil else { return nil }
+        return defaults.integer(forKey: key)
+    }
+
+    func setValue(_ value: Int, stableID: String, command: DDCCommand) {
+        defaults.set(value, forKey: cacheKey(stableID: stableID, command: command))
+    }
+
+    private func cacheKey(stableID: String, command: DDCCommand) -> String {
+        "LastValue.stable.\(stableID.lowercased()).\(command.m1ddcName)"
+    }
+}
+
 final class DDCControlService {
     private let router: DDCBackendRouter
     private let cache: DDCValueCache

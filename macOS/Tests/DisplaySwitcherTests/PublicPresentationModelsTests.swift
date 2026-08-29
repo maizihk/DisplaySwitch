@@ -139,10 +139,66 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2） 输入源" })
     }
 
+    func testCachedValuesRestoreByStableIDAcrossRebuildAndCacheInstances() {
+        let suiteName = "DisplayCachedValuePresentation.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            return XCTFail("Could not create isolated defaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let firstCache = UserDefaultsDDCValueCache(defaults: defaults)
+        firstCache.setValue(32, stableID: "DISPLAY-A", command: .luminance)
+        firstCache.setValue(74, stableID: "display-b", command: .luminance)
+
+        let displays = [
+            cachedDisplay(id: "display-a", name: "模拟显示器（1）", brightnessEnabled: true),
+            cachedDisplay(id: "display-b", name: "模拟显示器（2）", brightnessEnabled: true)
+        ]
+        let reopenedCache = UserDefaultsDDCValueCache(defaults: defaults)
+        let firstBuild = DisplayCachedValuePresentation.entries(
+            displays: displays,
+            cachedValue: reopenedCache.value(stableID:command:)
+        )
+        let rebuilt = DisplayCachedValuePresentation.entries(
+            displays: Array(displays.reversed()),
+            cachedValue: reopenedCache.value(stableID:command:)
+        )
+
+        XCTAssertEqual(Set(firstBuild), Set(rebuilt))
+        XCTAssertEqual(firstBuild.first { $0.stableID == "display-a" }?.label, "≈32")
+        XCTAssertEqual(firstBuild.first { $0.stableID == "display-b" }?.label, "≈74")
+    }
+
+    func testCachedPresentationOmitsDisabledAndUnknownDisplaysWithoutCrossAssociation() {
+        let values: [String: Int] = ["display-a": 41, "removed-display": 99]
+        let displays = [
+            cachedDisplay(id: "display-a", name: "模拟显示器（1）", brightnessEnabled: true),
+            cachedDisplay(id: "display-b", name: "模拟显示器（2）", brightnessEnabled: false)
+        ]
+        let entries = DisplayCachedValuePresentation.entries(displays: displays) { stableID, command in
+            command == .luminance ? values[stableID.lowercased()] : nil
+        }
+
+        XCTAssertEqual(entries, [
+            DisplayCachedValuePresentation.Entry(stableID: "display-a", command: .luminance, value: 41)
+        ])
+    }
+
     private func mappingDisplay(id: String, name: String) -> DisplayConfigurationV4Display {
         DisplayConfigurationV4Display(
             id: id, name: name, selector: "selector-\(id)", localInput: nil,
             readEnabled: false, brightnessEnabled: false,
+            contrastEnabled: false, volumeEnabled: false
+        )
+    }
+
+    private func cachedDisplay(
+        id: String,
+        name: String,
+        brightnessEnabled: Bool
+    ) -> DisplayConfigurationV4Display {
+        DisplayConfigurationV4Display(
+            id: id, name: name, selector: "selector-\(id)", localInput: nil,
+            readEnabled: false, brightnessEnabled: brightnessEnabled,
             contrastEnabled: false, volumeEnabled: false
         )
     }
