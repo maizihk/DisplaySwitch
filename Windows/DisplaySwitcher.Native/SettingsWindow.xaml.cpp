@@ -47,6 +47,25 @@ namespace
         return row;
     }
 
+    Grid LabeledControlRow(std::wstring const& text, FrameworkElement const& control)
+    {
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
+        else if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
+        control.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(control, text);
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 1, GridUnitType::Star });
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
+
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        label.TextTrimming(TextTrimming::CharacterEllipsis);
+        Grid::SetColumn(control, 1);
+        row.Children().Append(label); row.Children().Append(control);
+        return row;
+    }
+
     std::wstring Trim(std::wstring value)
     {
         auto whitespace = [](wchar_t c) { return iswspace(c) != 0; };
@@ -137,7 +156,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
         usbAutomation_ = ToggleSwitch();
         usbSwitchDisplaysOnArrival_ = ToggleSwitch();
-        usbProfileSelector_ = ComboBox(); Header(usbProfileSelector_, L"联动目标配置");
+        usbProfileSelector_ = ComboBox();
         usbProfileSelector_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDeviceStatus_ = TextBlock(); usbDeviceStatus_.Opacity(0.72); usbDeviceStatus_.TextWrapping(TextWrapping::Wrap);
@@ -203,11 +222,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
+        auto usbMappingTitle = CreateSubheading(L"USB 离开后切到的输入源");
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
             LabeledToggleRow(L"USB 自动切换", usbAutomation_),
             usbDevices_, learnCurrentUsb, usbDeviceStatus_,
             LabeledToggleRow(L"联动协同", usbSwitchDisplaysOnArrival_),
-            usbProfileSelector_, usbMappingsPanel_, usbHint }) }));
+            LabeledControlRow(L"联动目标", usbProfileSelector_),
+            usbMappingTitle, usbMappingsPanel_, usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
@@ -656,7 +677,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbMappingsPanel_.Children().Clear(); usbMappingEditors_.clear();
         for (auto const& display : workingDisplays_)
         {
-            auto input = TextBox(); Header(input, (display.name + L"：USB 离开后切到的输入源").c_str());
+            auto input = TextBox();
             input.HorizontalAlignment(HorizontalAlignment::Stretch);
             auto old = previous.find(display.id);
             if (old != previous.end()) input.Text(old->second);
@@ -664,7 +685,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             input.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
             input.KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
             { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); });
-            usbMappingsPanel_.Children().Append(input); usbMappingEditors_.push_back({ display.id, input });
+            usbMappingsPanel_.Children().Append(LabeledControlRow(display.name, input));
+            usbMappingEditors_.push_back({ display.id, input });
         }
     }
 
