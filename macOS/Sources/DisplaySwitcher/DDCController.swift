@@ -210,7 +210,7 @@ final class DDCController {
         service.setControlChannel(channel)
     }
 
-    func read(targets: [DDCDisplayTarget]) -> [String: [DDCCommand: DDCResolvedReading]] {
+    func read(targets: [DDCDisplayTarget]) -> DDCReadBatchResult {
         service.read(targets)
     }
 
@@ -219,7 +219,7 @@ final class DDCController {
     }
 
     func write(stableID: String, selector: String, command: DDCCommand, value: Int) throws {
-        let target = DDCDisplayTarget(stableID: stableID, selector: selector, readEnabled: true,
+        let target = DDCDisplayTarget(stableID: stableID, selector: selector,
                                       enabledCommands: [command])
         if let error = service.write(command: command, value: value, targets: [target])[stableID] {
             throw error

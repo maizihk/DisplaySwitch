@@ -482,13 +482,34 @@ enum DisplayPresentationNameResolver {
 struct DDCDisplayTarget: Equatable {
     let stableID: String
     let selector: String
-    let readEnabled: Bool
     let enabledCommands: Set<DDCCommand>
 }
 
 struct DDCResolvedReading: Equatable {
     let reading: DDCReading
     let estimated: Bool
+}
+
+enum DDCReadSkipReason: Equatable {
+    case noEnabledCommands
+
+    var userFacingDescription: String {
+        switch self {
+        case .noEnabledCommands:
+            return "未开启可读取的 DDC 功能"
+        }
+    }
+}
+
+struct DDCReadBatchResult: Equatable {
+    var readings: [String: [DDCCommand: DDCResolvedReading]] = [:]
+    var skipped: [String: DDCReadSkipReason] = [:]
+
+    var isEmpty: Bool { readings.isEmpty }
+
+    subscript(stableID: String) -> [DDCCommand: DDCResolvedReading]? {
+        readings[stableID]
+    }
 }
 
 protocol DDCValueCache: AnyObject {
@@ -546,17 +567,21 @@ final class DDCControlService {
         return displays
     }
 
-    func read(_ targets: [DDCDisplayTarget]) -> [String: [DDCCommand: DDCResolvedReading]] {
-        guard let operation = try? beginOperation() else { return [:] }
+    func read(_ targets: [DDCDisplayTarget]) -> DDCReadBatchResult {
+        guard let operation = try? beginOperation() else { return DDCReadBatchResult() }
         defer { endOperation(operation.id) }
-        var output: [String: [DDCCommand: DDCResolvedReading]] = [:]
+        var output = DDCReadBatchResult()
 
-        for target in targets where target.readEnabled {
-            guard canContinue(operation.token) else { return [:] }
+        for target in targets {
+            guard canContinue(operation.token) else { return DDCReadBatchResult() }
             let commands = DDCCommand.userControls.intersection(target.enabledCommands)
+            guard !commands.isEmpty else {
+                output.skipped[target.stableID] = .noEnabledCommands
+                continue
+            }
             var successful: [DDCCommand: DDCReading] = [:]
             for command in commands {
-                guard canContinue(operation.token) else { return [:] }
+                guard canContinue(operation.token) else { return DDCReadBatchResult() }
                 if let reading = try? router.read(stableID: target.stableID, selector: target.selector,
                                                   command: command, token: operation.token) {
                     successful[command] = reading
@@ -568,17 +593,17 @@ final class DDCControlService {
                 && successful.values.allSatisfy { $0.current == 0 }
 
             for command in commands {
-                guard canContinue(operation.token) else { return [:] }
+                guard canContinue(operation.token) else { return DDCReadBatchResult() }
                 if let reading = successful[command], !allZeroIsUntrusted {
                     guard (try? commitCachedValue(reading.current, stableID: target.stableID,
                                                   command: command, token: operation.token)) != nil else {
-                        return [:]
+                        return DDCReadBatchResult()
                     }
-                    output[target.stableID, default: [:]][command] = DDCResolvedReading(
+                    output.readings[target.stableID, default: [:]][command] = DDCResolvedReading(
                         reading: reading, estimated: false
                     )
                 } else if let cached = cache.value(stableID: target.stableID, command: command) {
-                    output[target.stableID, default: [:]][command] = DDCResolvedReading(
+                    output.readings[target.stableID, default: [:]][command] = DDCResolvedReading(
                         reading: DDCReading(current: cached, maximum: max(100, cached)), estimated: true
                     )
                 }

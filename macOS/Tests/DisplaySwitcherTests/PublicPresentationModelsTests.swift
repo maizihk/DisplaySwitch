@@ -91,4 +91,17 @@ final class PublicPresentationModelsTests: XCTestCase {
             [ManualSwitchMenuEntry(profileID: eligible.id, title: "切换到 工作电脑")]
         )
     }
+
+    func testInputMappingTitlesPreserveSameModelDisplaySuffixes() {
+        let names = ["模拟显示器（1）", "模拟显示器（2）"]
+
+        XCTAssertEqual(names.map(DisplayInputMappingPresentation.usbTitle(displayName:)), [
+            "模拟显示器（1） 离开后输入源",
+            "模拟显示器（2） 离开后输入源"
+        ])
+        XCTAssertEqual(names.map(DisplayInputMappingPresentation.collaborationTitle(displayName:)), [
+            "模拟显示器（1） 输入源",
+            "模拟显示器（2） 输入源"
+        ])
+    }
 }

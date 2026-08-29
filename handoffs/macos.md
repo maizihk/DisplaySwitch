@@ -7,7 +7,7 @@
 - 协调基线：`codex/coord-ds-009-native-display-control@53c2397011323cd941afe315e3a6881fe772299e`
 - 基线确认：协调基线包含 `main@0bbfa9e0fad8350462b3b68083aace4ca9063dce`
 - 分支：`codex/macos-ds-009-native-display-control`
-- 实现提交：`500c609b71f2273bdd91676007f3a7458e74e68a`
+- 实现提交：`551c8d694ba24b6802b1363d69436fd23a97d7dd`，本轮收尾为 PR #46 当前最终提交
 - PR：[#46](https://github.com/maizihk/DisplaySwitch/pull/46)；base 为 `codex/coord-ds-009-native-display-control`
 
 ## 根因
@@ -19,6 +19,8 @@
 - DDC 路由仍保留自动/手动 `m1ddc` 选择，原生失败可能被回退结果遮蔽，无法判断本次原生调用是否真实成功。
 - 对照 AppleSiliconDDC 后确认，原实现把上游默认五次读取尝试缩减成一次；service 绑定也从 IODisplayLocation 高权重的一对一评分简化为 registryEntryID 与遍历顺序，且只识别 `IOMobileFramebuffer` conformance。这些差异会放大偶发读取失败，并可能造成新系统上的漏配或错配。
 - 原实现只校验回复 XOR checksum，未校验 Get VCP 回复长度、来源、opcode、结果码和 command echo；迟到或错误 VCP 回复可能被当作当前读取结果。
+- 显示器页删除旧总读取开关后，运行时目标仍携带默认关闭的 `readEnabled`，服务又在进入后端前按它过滤，因此可见的亮度功能已开启也不会发起原生读取，诊断停留在 `idle · rebuild 0`。
+- USB 与协同映射分别使用 90/180 点固定标题列，输入框又占 120 点；同型号显示器的区分后缀会被固定标签截断。
 
 ## 完成内容
 
@@ -32,21 +34,25 @@
 - 显示名称优先使用已保存的非默认名称，否则使用系统产品名称；同名显示器按已有稳定逻辑 ID 顺序添加本机序号，枚举重排不改变对应关系。
 - 设置页显示器卡片、USB 输入映射、协同输入映射、菜单和辅助功能标签统一使用解析后的显示器名称。
 - 原生读取失败显示脱敏错误；历史缓存只标记为“上次可信值”，不伪装成本次原生读取成功。
+- 读取目标不再携带或检查隐藏的旧 `readEnabled`；亮度、对比度、音量三个可见功能开关是唯一读取选择来源。至少一项开启即进入原生后端，只调用开启项；全部关闭时零后端调用并明确显示“未开启可读取的 DDC 功能”。
+- USB 与协同输入映射统一使用可换行的完整名称标签和 108 点固定输入框；同型号显示器的本机序号保留在标题投影中。
 
 ## 自动验证
 
-- 完整 XCTest：63 项通过。
+- 完整 XCTest：65 项通过。
+- 新增读取门控回归：旧 `readEnabled=false` 且亮度开启时只调用一次原生亮度读取；关闭的对比度/音量零调用；三项全部关闭零调用并返回明确跳过原因。
+- 新增映射标题投影回归：两台同型号中性模拟显示器在 USB 与协同映射中均保留完整名称和本机序号。
 - 名称测试覆盖两台不同型号、两台同型号、已保存名称、稳定本机序号和枚举重排；断言用户可见名称不含 selector/稳定 ID。
 - 后端测试覆盖原生成功、不可用、枚举失败、读取失败和写入失败均零 `m1ddc` 调用；持久化的旧控制通道设置不能重新启用回退。
 - 写入协调测试覆盖 100 次快速滑杆写入合并为首值与最终值、同显示器跨 DDC 项串行、不同显示器故障隔离、取消/刷新/窗口关闭后丢弃迟到完成。
 - 原生纯测试覆盖一对一 service 匹配、同型号位置区分、传输分类、未绑定身份拒绝、Get VCP 正确回复及 checksum/结果码/command echo 错误、分路径 read offset、五次读取与原写入参数回归。
-- 使用本机选定的 Xcode 27 Beta 6：Debug、Release、`./macOS/scripts/build-app.sh` 和 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 均通过。输出目录所在 File Provider 在脚本结束后重新附加 Finder 元数据，清除该非签名元数据后独立严格验签通过。
+- 使用本机选定的 Xcode 27 Beta 6：Debug、Release、`./macOS/scripts/build-app.sh` 和严格签名验证均通过；测试包实际解压后再次严格验签通过。
 - `git diff --check`、构建产物忽略和敏感信息检查通过。
 - 自动测试全部使用模拟后端和模拟副作用，没有访问真实 DDC、USB、UDP、网络、唤醒或输入源切换。
 
 ## 尚未执行
 
-- 未启动 App 验证设置页、菜单和显示器卡片的真实 GUI 名称与布局。
+- 未启动 App 验证设置页、菜单、显示器卡片和两类输入映射的真实 GUI 名称与换行布局。
 - 未验证真实 Apple Silicon CoreDisplay/IOAVService 枚举、同型号显示器本机序号对应、DDC 回读/写入、连续滑杆恢复或显示器断开重连。
 - 未执行真实 USB、UDP、网络、显示器唤醒或输入源切换。
 - Intel Mac 不在本机自动验证范围，当前设计为明确不支持原生 DDC。

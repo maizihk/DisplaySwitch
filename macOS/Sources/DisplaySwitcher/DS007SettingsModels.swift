@@ -91,11 +91,29 @@ enum V2OnlyDatagramGate {
 }
 
 enum DisplaySettingsSemantics {
+    static func enabledCommands(for display: DisplayConfigurationV4Display) -> Set<DDCCommand> {
+        var result = Set<DDCCommand>()
+        if display.brightnessEnabled { result.insert(.luminance) }
+        if display.contrastEnabled { result.insert(.contrast) }
+        if display.volumeEnabled { result.insert(.volume) }
+        return result
+    }
+
     static func trayCommands(for display: DisplayConfigurationV4Display) -> Set<DDCCommand> {
         var result = Set<DDCCommand>()
         if display.brightnessEnabled && display.brightnessShowInTray { result.insert(.luminance) }
         if display.contrastEnabled && display.contrastShowInTray { result.insert(.contrast) }
         if display.volumeEnabled && display.volumeShowInTray { result.insert(.volume) }
         return result
+    }
+}
+
+enum DisplayInputMappingPresentation {
+    static func usbTitle(displayName: String) -> String {
+        "\(displayName) 离开后输入源"
+    }
+
+    static func collaborationTitle(displayName: String) -> String {
+        "\(displayName) 输入源"
     }
 }

@@ -84,12 +84,34 @@ final class DDCBackendTests: XCTestCase {
     func testC020DisabledControlsPerformNoReadOrWrite() {
         let backend = MockDDCBackend()
         let service = makeService(backends: [backend], cache: MockDDCCache())
-        let disabled = target(id: "display-a", readEnabled: false, commands: [])
+        let disabled = target(id: "display-a", commands: [])
 
-        XCTAssertTrue(service.read([disabled]).isEmpty)
+        let result = service.read([disabled])
+        XCTAssertTrue(result.isEmpty)
+        XCTAssertEqual(result.skipped["display-a"], .noEnabledCommands)
+        XCTAssertEqual(result.skipped["display-a"]?.userFacingDescription,
+                       "未开启可读取的 DDC 功能")
         XCTAssertTrue(service.write(command: .luminance, value: 50, targets: [disabled]).isEmpty)
         XCTAssertEqual(backend.readCalls.count, 0)
         XCTAssertEqual(backend.writeCalls.count, 0)
+    }
+
+    func testLegacyReadDisabledDoesNotBlockEnabledLuminance() {
+        let stored = DisplayConfigurationV4Display(
+            id: "display-a", name: "模拟显示器", selector: "selector-a",
+            localInput: nil, readEnabled: false, brightnessEnabled: true,
+            contrastEnabled: false, volumeEnabled: false
+        )
+        let commands = DisplaySettingsSemantics.enabledCommands(for: stored)
+        let backend = MockDDCBackend()
+        backend.readings = ["display-a": [.luminance: DDCReading(current: 42, maximum: 100)]]
+        let service = makeService(backends: [backend], cache: MockDDCCache())
+
+        let result = service.read([target(id: "display-a", commands: commands)])
+
+        XCTAssertEqual(commands, [.luminance])
+        XCTAssertEqual(backend.readCalls.map(\.1), [.luminance])
+        XCTAssertEqual(result["display-a"]?[.luminance]?.reading.current, 42)
     }
 
     func testC024SimulatedDisplayAllZeroRemainsEstimatedAndPreservesCache() {
@@ -371,10 +393,10 @@ final class DDCBackendTests: XCTestCase {
         DDCControlService(router: DDCBackendRouter(backends: backends), cache: cache)
     }
 
-    private func target(id: String, selector: String? = nil, readEnabled: Bool = true,
+    private func target(id: String, selector: String? = nil,
                         commands: Set<DDCCommand> = DDCCommand.userControls) -> DDCDisplayTarget {
         DDCDisplayTarget(stableID: id, selector: selector ?? "selector-\(id)",
-                         readEnabled: readEnabled, enabledCommands: commands)
+                         enabledCommands: commands)
     }
 }
 

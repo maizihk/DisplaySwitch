@@ -575,7 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 ))
             })
             return DDCDisplayTarget(stableID: target.stableID, selector: target.selector,
-                                    readEnabled: target.readEnabled, enabledCommands: commands)
+                                    enabledCommands: commands)
         }
 
         workerQueue.async { [weak self] in
@@ -605,9 +605,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 }
                 for displayID in currentConfigurations.keys.sorted() {
                     let displayReadings = readings[displayID] ?? [:]
-                    let readEnabled = currentConfigurations[displayID]?.readEnabled ?? true
-
-                    if !readEnabled || displayReadings.isEmpty {
+                    if displayReadings.isEmpty {
                         self.applyFallbackValues(to: displayID, readings: readings)
                         continue
                     }
@@ -653,12 +651,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let target = Self.ddcTarget(for: configuration, document: AppPreferences.localConfiguration)
         workerQueue.async { [weak self] in
             guard let self else { return }
-            let result = self.ddcController.read(targets: [target])[target.stableID] ?? [:]
+            let batch = self.ddcController.read(targets: [target])
+            let result = batch[target.stableID] ?? [:]
+            let skipReason = batch.skipped[target.stableID]
             let diagnostic = self.ddcController.diagnostic(selector: target.selector)
             DispatchQueue.main.async {
                 guard self.settingsWindowController.isSettingsVisible else { return }
                 self.settingsWindowController.updateDDCValues(
-                    stableID: target.stableID, values: result, diagnostic: diagnostic
+                    stableID: target.stableID, values: result, diagnostic: diagnostic,
+                    skipReason: skipReason
                 )
             }
         }
@@ -692,12 +693,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     ) -> DDCDisplayTarget {
         let stableID = configuration.id ?? configuration.selector
         let stored = document.displays.first { $0.id.caseInsensitiveCompare(stableID) == .orderedSame }
-        var enabled: Set<DDCCommand> = []
-        if stored?.brightnessEnabled == true { enabled.insert(.luminance) }
-        if stored?.contrastEnabled == true { enabled.insert(.contrast) }
-        if stored?.volumeEnabled == true { enabled.insert(.volume) }
+        let enabled = stored.map(DisplaySettingsSemantics.enabledCommands(for:)) ?? []
         return DDCDisplayTarget(stableID: stableID, selector: configuration.selector,
-                                readEnabled: configuration.readEnabled, enabledCommands: enabled)
+                                enabledCommands: enabled)
     }
 
     private func restoreCachedValues() {

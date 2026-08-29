@@ -318,7 +318,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func updateDDCValues(stableID: String, values: [DDCCommand: DDCResolvedReading],
-                         diagnostic: NativeDDCDiagnosticSnapshot? = nil) {
+                         diagnostic: NativeDDCDiagnosticSnapshot? = nil,
+                         skipReason: DDCReadSkipReason? = nil) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
         }) else { return }
@@ -331,7 +332,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         let estimatedCount = values.values.filter(\.estimated).count
         let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
-        if values.isEmpty {
+        if let skipReason {
+            displayStatusLabels[index]?.stringValue = skipReason.userFacingDescription
+        } else if values.isEmpty {
             displayStatusLabels[index]?.stringValue = "原生读取失败\(diagnosticSuffix)"
         } else if estimatedCount == values.count {
             displayStatusLabels[index]?.stringValue = "原生读取失败，显示上次可信值\(diagnosticSuffix)"
@@ -950,6 +953,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
+    private func displayInputMappingRow(title: String, field: NSTextField) -> NSView {
+        let label = NSTextField(wrappingLabelWithString: title)
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .secondaryLabelColor
+        label.maximumNumberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.widthAnchor.constraint(equalToConstant: 108).isActive = true
+        field.setContentHuggingPriority(.required, for: .horizontal)
+        field.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [label, field])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 10
+        row.distribution = .fill
+        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
+        return row
+    }
+
     private func sectionTitle(_ title: String) -> NSTextField {
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -1245,10 +1268,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             field.placeholderString = "0–65535"
             field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
             field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 120).isActive = true
             usbInputFields[offset + 1] = field
-            usbMappingStack.addArrangedSubview(formRow(
-                title: "\(display.name) 离开后输入源", control: field
+            usbMappingStack.addArrangedSubview(displayInputMappingRow(
+                title: DisplayInputMappingPresentation.usbTitle(displayName: display.name),
+                field: field
             ))
         }
     }
@@ -1282,15 +1305,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             field.placeholderString = "0–65535"
             field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
             field.delegate = self
-            field.widthAnchor.constraint(equalToConstant: 120).isActive = true
             inputFields[index] = field
-            let row = NSStackView(views: [
-                fixedLabel("\(display.name) 输入源", width: 180), field
-            ])
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 8
-            profileMappingStack.addArrangedSubview(row)
+            profileMappingStack.addArrangedSubview(displayInputMappingRow(
+                title: DisplayInputMappingPresentation.collaborationTitle(displayName: display.name),
+                field: field
+            ))
         }
     }
 
