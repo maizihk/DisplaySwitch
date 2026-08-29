@@ -60,8 +60,8 @@ namespace
         AutomationProperties::SetName(control, text);
 
         auto row = Grid(); row.ColumnSpacing(16);
-        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
-        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 120 });
         row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
 
         auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
@@ -103,13 +103,13 @@ namespace
         auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
         row.ColumnDefinitions().Append(labelColumn);
         auto devicesColumn = ColumnDefinition(); devicesColumn.Width(GridLength{ 1, GridUnitType::Star });
-        auto learnColumn = ColumnDefinition(); learnColumn.Width(GridLengthHelper::Auto());
         auto statusColumn = ColumnDefinition(); statusColumn.Width(GridLengthHelper::Auto());
-        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(learnColumn);
-        row.ColumnDefinitions().Append(statusColumn);
+        auto learnColumn = ColumnDefinition(); learnColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(statusColumn);
+        row.ColumnDefinitions().Append(learnColumn);
 
-        auto label = TextBlock(); label.Text(L"USB 触发设备"); label.VerticalAlignment(VerticalAlignment::Center);
-        Grid::SetColumn(devices, 1); Grid::SetColumn(learn, 2); Grid::SetColumn(status, 3);
+        auto label = TextBlock(); label.Text(L"触发设备"); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(devices, 1); Grid::SetColumn(status, 2); Grid::SetColumn(learn, 3);
         row.Children().Append(label); row.Children().Append(devices);
         row.Children().Append(learn); row.Children().Append(status);
         return row;
@@ -260,7 +260,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         commonTab.Content(CreatePage({ CreateSection(L"常规", {
             LabeledToggleRow(L"登录时启动", autoStart_), commonHint }) }));
 
-        auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习 USB 设备…"));
+        auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习"));
+        AutomationProperties::SetName(learnCurrentUsb, L"学习 USB 触发设备");
         learnCurrentUsb.HorizontalAlignment(HorizontalAlignment::Left);
         learnCurrentUsb.Click([this](auto const&, auto const&)
         {
@@ -271,12 +272,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
-        auto usbMappingTitle = CreateSubheading(L"USB 离开后切到的输入源");
+        auto usbMappingTitle = CreateSubheading(L"对端输入源");
         usbTab.Content(CreatePage({ CreateSection(L"USB 切换", {
-            LabeledToggleRow(L"USB 自动切换", usbAutomation_),
+            LabeledToggleRow(L"自动切换", usbAutomation_),
             UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_),
+            usbMappingTitle, usbMappingsPanel_,
             LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_),
-            usbMappingTitle, usbMappingsPanel_, usbHint }) }));
+            usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
