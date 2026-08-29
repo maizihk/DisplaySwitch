@@ -7,6 +7,13 @@ namespace
     {
         return _wcsicmp(left.c_str(), right.c_str()) == 0;
     }
+
+    bool IsGenericDisplayName(std::wstring const& name)
+    {
+        constexpr std::wstring_view prefix = L"显示器 ";
+        if (!name.starts_with(prefix) || name.size() == prefix.size()) return name.empty();
+        return std::all_of(name.begin() + static_cast<std::ptrdiff_t>(prefix.size()), name.end(), iswdigit);
+    }
 }
 
 namespace DisplaySwitcher::Native
@@ -31,6 +38,119 @@ namespace DisplaySwitcher::Native
         display.id = GenerateIdentifier();
         display.name = name;
         return display;
+    }
+
+    std::wstring CanonicalDdcMonitorId(std::wstring const& id)
+    {
+        auto result = id;
+        auto separator = result.find_last_of(L'|');
+        if (separator != std::wstring::npos && separator + 1 < result.size()
+            && std::all_of(result.begin() + static_cast<std::ptrdiff_t>(separator + 1), result.end(), iswdigit))
+            result.resize(separator);
+        return result;
+    }
+
+    std::vector<DdcMonitorInfo> NormalizeDdcMonitorCollection(std::vector<DdcMonitorInfo> monitors)
+    {
+        std::vector<DdcMonitorInfo> unique;
+        for (auto& monitor : monitors)
+        {
+            monitor.id = CanonicalDdcMonitorId(monitor.id);
+            if (monitor.id.empty()) continue;
+            auto found = std::find_if(unique.begin(), unique.end(), [&](auto const& value)
+                { return EqualInsensitive(value.id, monitor.id); });
+            if (found == unique.end()) unique.push_back(std::move(monitor));
+            else
+            {
+                if (found->displayName.empty()) found->displayName = std::move(monitor.displayName);
+                if (found->gdiName.empty()) found->gdiName = std::move(monitor.gdiName);
+            }
+        }
+        std::sort(unique.begin(), unique.end(), [](auto const& left, auto const& right)
+            { return _wcsicmp(left.id.c_str(), right.id.c_str()) < 0; });
+
+        for (auto& monitor : unique) if (monitor.displayName.empty()) monitor.displayName = L"显示器";
+        std::vector<std::wstring> baseNames;
+        baseNames.reserve(unique.size());
+        for (auto const& monitor : unique) baseNames.push_back(monitor.displayName);
+        for (size_t index = 0; index < unique.size(); ++index)
+        {
+            auto count = std::count_if(baseNames.begin(), baseNames.end(), [&](auto const& other)
+                { return EqualInsensitive(other, baseNames[index]); });
+            if (count < 2) continue;
+            auto ordinal = 1 + std::count_if(baseNames.begin(), baseNames.begin() + static_cast<std::ptrdiff_t>(index),
+                [&](auto const& other) { return EqualInsensitive(other, baseNames[index]); });
+            unique[index].displayName = baseNames[index] + L"（" + std::to_wstring(ordinal) + L"）";
+        }
+        return unique;
+    }
+
+    DisplayReconciliationResult ReconcileDisplayConfigurations(
+        std::vector<DisplayConfig> const& existing, std::vector<DdcMonitorInfo> const& connected,
+        bool trustedCompleteEnumeration)
+    {
+        DisplayReconciliationResult result;
+        if (!trustedCompleteEnumeration || connected.empty())
+        {
+            result.displays = existing;
+            return result;
+        }
+        auto monitors = NormalizeDdcMonitorCollection(connected);
+        if (monitors.empty())
+        {
+            result.displays = existing;
+            return result;
+        }
+        result.displays.reserve(monitors.size());
+        std::vector<bool> used(existing.size());
+        for (auto const& monitor : monitors)
+        {
+            auto found = std::find_if(existing.begin(), existing.end(), [&](auto const& display)
+                { return EqualInsensitive(CanonicalDdcMonitorId(display.nativeMonitorId), monitor.id); });
+            if (found == existing.end())
+            {
+                auto display = CreateDisplayConfig(monitor.displayName);
+                display.nativeMonitorId = monitor.id;
+                result.displays.push_back(std::move(display));
+                ++result.added;
+                result.changed = true;
+                continue;
+            }
+            auto index = static_cast<size_t>(std::distance(existing.begin(), found));
+            if (used[index]) continue;
+            used[index] = true;
+            auto display = *found;
+            if (!EqualInsensitive(display.nativeMonitorId, monitor.id))
+            {
+                display.nativeMonitorId = monitor.id;
+                result.changed = true;
+            }
+            if (IsGenericDisplayName(display.name) && display.name != monitor.displayName)
+            {
+                display.name = monitor.displayName;
+                result.changed = true;
+            }
+            result.displays.push_back(std::move(display));
+        }
+        result.removed = static_cast<size_t>(std::count(used.begin(), used.end(), false));
+        result.changed = result.changed || result.removed != 0 || result.displays.size() != existing.size();
+        return result;
+    }
+
+    bool RemoveOrphanedDisplayMappings(std::vector<DisplayConfig> const& displays,
+        std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch)
+    {
+        auto exists = [&](std::wstring const& id) { return FindDisplayById(displays, id).has_value(); };
+        bool changed{};
+        for (auto& profile : profiles)
+        {
+            auto oldSize = profile.displayInputs.size();
+            std::erase_if(profile.displayInputs, [&](auto const& mapping) { return !exists(mapping.displayId); });
+            changed = changed || oldSize != profile.displayInputs.size();
+        }
+        auto oldUsbSize = usbSwitch.displayInputs.size();
+        std::erase_if(usbSwitch.displayInputs, [&](auto const& mapping) { return !exists(mapping.displayId); });
+        return changed || oldUsbSize != usbSwitch.displayInputs.size();
     }
 
     bool IsValidDisplayId(std::wstring const& id) noexcept

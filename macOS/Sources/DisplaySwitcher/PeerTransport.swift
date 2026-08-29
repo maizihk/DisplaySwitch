@@ -1,136 +1,175 @@
+import Darwin
 import Foundation
-import Network
 
-enum PeerTransportConnectionState {
-    case setup
-    case ready
-    case failed(Error)
-    case cancelled
+struct PeerTransportEndpoint: Equatable {
+    let host: String
+    let port: Int
 }
 
-protocol PeerTransportConnection: AnyObject {
-    var stateUpdateHandler: ((PeerTransportConnectionState) -> Void)? { get set }
-    func start(queue: DispatchQueue)
-    func cancel()
-    func send(_ data: Data, completion: @escaping (Error?) -> Void)
-    func receiveMessage(completion: @escaping (Data?, Error?) -> Void)
+protocol PeerTransportDatagramSocket: AnyObject {
+    var onDatagram: ((Data, PeerTransportEndpoint) -> Void)? { get set }
+    var onReceiveError: ((Error) -> Void)? { get set }
+    func start(port: Int, queue: DispatchQueue) throws
+    func send(_ data: Data, to endpoint: PeerTransportEndpoint, completion: @escaping (Error?) -> Void)
+    func stop()
 }
 
-protocol PeerTransportListener: AnyObject {
-    var newConnectionHandler: ((PeerTransportConnection) -> Void)? { get set }
-    var stateUpdateHandler: ((PeerTransportConnectionState) -> Void)? { get set }
-    func start(queue: DispatchQueue)
-    func cancel()
-}
-
-protocol PeerTransportConnectionFactory {
-    func makeListener(port: Int) throws -> PeerTransportListener
-    func makeConnection(host: String, destinationPort: Int, sourcePort: Int) throws -> PeerTransportConnection
-}
-
-private final class NetworkPeerConnection: PeerTransportConnection {
-    private let connection: NWConnection
-
-    var stateUpdateHandler: ((PeerTransportConnectionState) -> Void)? {
-        didSet {
-            connection.stateUpdateHandler = { [weak self] state in
-                self?.stateUpdateHandler?(Self.map(state))
-            }
-        }
-    }
-
-    init(_ connection: NWConnection) {
-        self.connection = connection
-    }
-
-    func start(queue: DispatchQueue) { connection.start(queue: queue) }
-    func cancel() { connection.cancel() }
-
-    func send(_ data: Data, completion: @escaping (Error?) -> Void) {
-        connection.send(content: data, completion: .contentProcessed(completion))
-    }
-
-    func receiveMessage(completion: @escaping (Data?, Error?) -> Void) {
-        connection.receiveMessage { data, _, _, error in completion(data, error) }
-    }
-
-    fileprivate static func map(_ state: NWConnection.State) -> PeerTransportConnectionState {
-        switch state {
-        case .ready: return .ready
-        case .failed(let error): return .failed(error)
-        case .cancelled: return .cancelled
-        default: return .setup
-        }
-    }
-}
-
-private final class NetworkPeerListener: PeerTransportListener {
-    private let listener: NWListener
-
-    var newConnectionHandler: ((PeerTransportConnection) -> Void)? {
-        didSet {
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.newConnectionHandler?(NetworkPeerConnection(connection))
-            }
-        }
-    }
-
-    var stateUpdateHandler: ((PeerTransportConnectionState) -> Void)? {
-        didSet {
-            listener.stateUpdateHandler = { [weak self] state in
-                let mapped: PeerTransportConnectionState
-                switch state {
-                case .ready: mapped = .ready
-                case .failed(let error): mapped = .failed(error)
-                case .cancelled: mapped = .cancelled
-                default: mapped = .setup
-                }
-                self?.stateUpdateHandler?(mapped)
-            }
-        }
-    }
-
-    init(_ listener: NWListener) { self.listener = listener }
-    func start(queue: DispatchQueue) { listener.start(queue: queue) }
-    func cancel() { listener.cancel() }
-}
-
-private struct NetworkPeerTransportConnectionFactory: PeerTransportConnectionFactory {
-    func makeListener(port: Int) throws -> PeerTransportListener {
-        guard let rawPort = UInt16(exactly: port), rawPort > 0,
-              let nwPort = NWEndpoint.Port(rawValue: rawPort) else {
-            throw PeerTransportError.invalidPort(port)
-        }
-        let parameters = NWParameters.udp
-        parameters.allowLocalEndpointReuse = true
-        return NetworkPeerListener(try NWListener(using: parameters, on: nwPort))
-    }
-
-    func makeConnection(host: String, destinationPort: Int, sourcePort: Int) throws -> PeerTransportConnection {
-        guard let rawDestination = UInt16(exactly: destinationPort), rawDestination > 0,
-              let rawSource = UInt16(exactly: sourcePort), rawSource > 0,
-              let destination = NWEndpoint.Port(rawValue: rawDestination),
-              let source = NWEndpoint.Port(rawValue: rawSource) else {
-            throw PeerTransportError.invalidPort(destinationPort)
-        }
-        let parameters = NWParameters.udp
-        parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.any), port: source)
-        return NetworkPeerConnection(NWConnection(
-            host: NWEndpoint.Host(host), port: destination, using: parameters
-        ))
-    }
+protocol PeerTransportSocketFactory {
+    func makeSocket() -> PeerTransportDatagramSocket
 }
 
 private enum PeerTransportError: LocalizedError {
     case invalidPort(Int)
     case notStarted
+    case socketOperation(String, Int32)
+    case addressResolution(Int32)
 
     var errorDescription: String? {
         switch self {
         case .invalidPort(let port): return "通信端口无效：\(port)"
         case .notStarted: return "UDP 发送失败：网络监听尚未启动"
+        case .socketOperation(let operation, let code):
+            return "UDP \(operation)失败（系统错误 \(code)）"
+        case .addressResolution(let code):
+            return "UDP 目标地址解析失败（系统错误 \(code)）"
         }
+    }
+}
+
+private struct BSDPeerTransportSocketFactory: PeerTransportSocketFactory {
+    func makeSocket() -> PeerTransportDatagramSocket { BSDPeerDatagramSocket() }
+}
+
+private final class BSDPeerDatagramSocket: PeerTransportDatagramSocket {
+    var onDatagram: ((Data, PeerTransportEndpoint) -> Void)?
+    var onReceiveError: ((Error) -> Void)?
+
+    private var descriptor: Int32 = -1
+    private var readSource: DispatchSourceRead?
+
+    func start(port: Int, queue: DispatchQueue) throws {
+        guard (1...65_535).contains(port) else { throw PeerTransportError.invalidPort(port) }
+        guard descriptor < 0 else { return }
+
+        let socketDescriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard socketDescriptor >= 0 else {
+            throw PeerTransportError.socketOperation("创建", errno)
+        }
+        do {
+            var reuseAddress: Int32 = 1
+            guard setsockopt(
+                socketDescriptor, SOL_SOCKET, SO_REUSEADDR,
+                &reuseAddress, socklen_t(MemoryLayout<Int32>.size)
+            ) == 0 else {
+                throw PeerTransportError.socketOperation("配置", errno)
+            }
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = in_port_t(UInt16(port).bigEndian)
+            address.sin_addr = in_addr(s_addr: INADDR_ANY)
+            let bindResult = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(socketDescriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
+            }
+            guard bindResult == 0 else { throw PeerTransportError.socketOperation("绑定", errno) }
+            guard fcntl(socketDescriptor, F_SETFL, O_NONBLOCK) == 0 else {
+                throw PeerTransportError.socketOperation("配置", errno)
+            }
+
+            descriptor = socketDescriptor
+            let source = DispatchSource.makeReadSource(fileDescriptor: socketDescriptor, queue: queue)
+            source.setEventHandler { [weak self] in self?.drainDatagrams() }
+            readSource = source
+            source.resume()
+        } catch {
+            Darwin.close(socketDescriptor)
+            throw error
+        }
+    }
+
+    func send(_ data: Data, to endpoint: PeerTransportEndpoint, completion: @escaping (Error?) -> Void) {
+        guard descriptor >= 0 else {
+            completion(PeerTransportError.notStarted)
+            return
+        }
+        var hints = addrinfo()
+        hints.ai_family = AF_INET
+        hints.ai_socktype = SOCK_DGRAM
+        hints.ai_protocol = IPPROTO_UDP
+        var result: UnsafeMutablePointer<addrinfo>?
+        let resolution = getaddrinfo(endpoint.host, String(endpoint.port), &hints, &result)
+        guard resolution == 0, let address = result else {
+            completion(PeerTransportError.addressResolution(resolution))
+            return
+        }
+        defer { freeaddrinfo(result) }
+        let sent = data.withUnsafeBytes { bytes in
+            Darwin.sendto(
+                descriptor, bytes.baseAddress, bytes.count, 0,
+                address.pointee.ai_addr, address.pointee.ai_addrlen
+            )
+        }
+        guard sent == data.count else {
+            completion(PeerTransportError.socketOperation("发送", errno))
+            return
+        }
+        completion(nil)
+    }
+
+    func stop() {
+        guard descriptor >= 0 else { return }
+        let socketDescriptor = descriptor
+        descriptor = -1
+        let source = readSource
+        readSource = nil
+        source?.cancel()
+        Darwin.close(socketDescriptor)
+    }
+
+    private func drainDatagrams() {
+        guard descriptor >= 0 else { return }
+        while true {
+            var buffer = [UInt8](repeating: 0, count: 65_535)
+            var sourceAddress = sockaddr_storage()
+            var sourceLength = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let received = buffer.withUnsafeMutableBytes { bytes in
+                withUnsafeMutablePointer(to: &sourceAddress) { address in
+                    address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.recvfrom(descriptor, bytes.baseAddress, bytes.count, 0, $0, &sourceLength)
+                    }
+                }
+            }
+            if received >= 0 {
+                buffer.removeSubrange(Int(received)..<buffer.count)
+                if let endpoint = Self.endpoint(from: &sourceAddress, length: sourceLength) {
+                    onDatagram?(Data(buffer), endpoint)
+                }
+                continue
+            }
+            if errno == EAGAIN || errno == EWOULDBLOCK { return }
+            onReceiveError?(PeerTransportError.socketOperation("接收", errno))
+            return
+        }
+    }
+
+    private static func endpoint(
+        from address: inout sockaddr_storage,
+        length: socklen_t
+    ) -> PeerTransportEndpoint? {
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        var service = [CChar](repeating: 0, count: Int(NI_MAXSERV))
+        let result = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getnameinfo(
+                    $0, length, &host, socklen_t(host.count), &service, socklen_t(service.count),
+                    NI_NUMERICHOST | NI_NUMERICSERV
+                )
+            }
+        }
+        guard result == 0, let port = Int(String(cString: service)), port > 0 else { return nil }
+        return PeerTransportEndpoint(host: String(cString: host), port: port)
     }
 }
 
@@ -140,31 +179,16 @@ final class PeerTransport {
     var onDatagram: ((Data, @escaping DataReply) -> Void)?
     var onError: ((String) -> Void)?
 
-    private final class OutgoingChannel {
-        let connection: PeerTransportConnection
-        var pending: [Data] = []
-        var ready = false
-
-        init(connection: PeerTransportConnection) { self.connection = connection }
-    }
-
-    private struct DestinationKey: Hashable {
-        let host: String
-        let port: Int
-    }
-
     private let queue: DispatchQueue
     private let callbackQueue: DispatchQueue
-    private let factory: PeerTransportConnectionFactory
+    private let factory: PeerTransportSocketFactory
     private let queueKey = DispatchSpecificKey<Void>()
-    private var listener: PeerTransportListener?
-    private var acceptedConnections: [ObjectIdentifier: PeerTransportConnection] = [:]
-    private var outgoingChannels: [DestinationKey: OutgoingChannel] = [:]
+    private var socket: PeerTransportDatagramSocket?
     private var generation = 0
     private(set) var listeningPort: Int?
 
     init(
-        factory: PeerTransportConnectionFactory = NetworkPeerTransportConnectionFactory(),
+        factory: PeerTransportSocketFactory = BSDPeerTransportSocketFactory(),
         queue: DispatchQueue = DispatchQueue(label: "DisplaySwitcher.peer-network"),
         callbackQueue: DispatchQueue = .main
     ) {
@@ -178,34 +202,34 @@ final class PeerTransport {
 
     func start(port: Int) {
         performSync {
-            if listener != nil, listeningPort == port { return }
+            if socket != nil, listeningPort == port { return }
             stopLocked()
+            let candidate = factory.makeSocket()
+            generation += 1
+            let activeGeneration = generation
+            candidate.onDatagram = { [weak self, weak candidate] data, endpoint in
+                guard let candidate else { return }
+                self?.performAsync {
+                    guard let self, self.generation == activeGeneration,
+                          self.socket === candidate else { return }
+                    self.deliver(data, from: endpoint, on: candidate, generation: activeGeneration)
+                }
+            }
+            candidate.onReceiveError = { [weak self, weak candidate] error in
+                guard let candidate else { return }
+                self?.performAsync {
+                    guard let self, self.generation == activeGeneration,
+                          self.socket === candidate else { return }
+                    self.reportError("UDP 接收失败：\(error.localizedDescription)")
+                    self.stopLocked()
+                }
+            }
             do {
-                let listener = try factory.makeListener(port: port)
-                generation += 1
-                let activeGeneration = generation
-                listener.newConnectionHandler = { [weak self] connection in
-                    self?.performAsync {
-                        guard self?.generation == activeGeneration else {
-                            connection.cancel()
-                            return
-                        }
-                        self?.acceptLocked(connection)
-                    }
-                }
-                listener.stateUpdateHandler = { [weak self] state in
-                    self?.performAsync {
-                        guard let self, self.generation == activeGeneration else { return }
-                        if case .failed(let error) = state {
-                            self.reportError("网络监听失败：\(error.localizedDescription)")
-                            self.stopLocked()
-                        }
-                    }
-                }
-                self.listener = listener
+                try candidate.start(port: port, queue: queue)
+                socket = candidate
                 listeningPort = port
-                listener.start(queue: queue)
             } catch {
+                candidate.stop()
                 reportError("无法监听端口 \(port)：\(error.localizedDescription)")
             }
         }
@@ -215,153 +239,40 @@ final class PeerTransport {
 
     func send(_ data: Data, host: String, port: Int) {
         guard !host.isEmpty, (1...65_535).contains(port) else { return }
-        performSync {
-            guard let sourcePort = listeningPort, listener != nil else {
-                reportError(PeerTransportError.notStarted.localizedDescription)
+        performAsync { [weak self] in
+            guard let self else { return }
+            guard let socket = self.socket, self.listeningPort != nil else {
+                self.reportError(PeerTransportError.notStarted.localizedDescription)
                 return
             }
-            let key = DestinationKey(host: host.lowercased(), port: port)
-            if let channel = outgoingChannels[key] {
-                if channel.ready {
-                    sendLocked(data, on: channel.connection, channelKey: key, isReply: false)
-                } else {
-                    channel.pending.append(data)
-                }
-                return
-            }
-
-            do {
-                let connection = try factory.makeConnection(
-                    host: host, destinationPort: port, sourcePort: sourcePort
-                )
-                let channel = OutgoingChannel(connection: connection)
-                channel.pending.append(data)
-                outgoingChannels[key] = channel
-                let activeGeneration = generation
-                connection.stateUpdateHandler = { [weak self, weak connection] state in
-                    guard let connection else { return }
-                    self?.performAsync {
-                        self?.handleOutgoingStateLocked(
-                            state, connection: connection, key: key, generation: activeGeneration
-                        )
-                    }
-                }
-                connection.start(queue: queue)
-                receiveLocked(on: connection, acceptedKey: nil, outgoingKey: key, generation: activeGeneration)
-            } catch {
-                reportError("UDP 连接失败：\(error.localizedDescription)")
-            }
+            self.sendLocked(
+                data, to: PeerTransportEndpoint(host: host, port: port),
+                on: socket, isReply: false
+            )
         }
     }
 
     private func stopLocked() {
         generation += 1
-        listener?.cancel()
-        listener = nil
+        socket?.onDatagram = nil
+        socket?.onReceiveError = nil
+        socket?.stop()
+        socket = nil
         listeningPort = nil
-        acceptedConnections.values.forEach { $0.cancel() }
-        acceptedConnections.removeAll(keepingCapacity: false)
-        outgoingChannels.values.forEach { $0.connection.cancel() }
-        outgoingChannels.removeAll(keepingCapacity: false)
-    }
-
-    private func handleOutgoingStateLocked(
-        _ state: PeerTransportConnectionState,
-        connection: PeerTransportConnection,
-        key: DestinationKey,
-        generation activeGeneration: Int
-    ) {
-        guard generation == activeGeneration,
-              let channel = outgoingChannels[key], channel.connection === connection else {
-            connection.cancel()
-            return
-        }
-        switch state {
-        case .ready:
-            guard !channel.ready else { return }
-            channel.ready = true
-            let pending = channel.pending
-            channel.pending.removeAll(keepingCapacity: false)
-            for data in pending {
-                sendLocked(data, on: connection, channelKey: key, isReply: false)
-            }
-        case .failed(let error):
-            reportError("UDP 连接失败：\(error.localizedDescription)")
-            removeOutgoingLocked(key: key, connection: connection)
-        case .cancelled:
-            removeOutgoingLocked(key: key, connection: connection)
-        case .setup:
-            break
-        }
-    }
-
-    private func acceptLocked(_ connection: PeerTransportConnection) {
-        let key = ObjectIdentifier(connection)
-        acceptedConnections[key] = connection
-        let activeGeneration = generation
-        connection.stateUpdateHandler = { [weak self, weak connection] state in
-            guard let connection else { return }
-            self?.performAsync {
-                guard let self, self.generation == activeGeneration else {
-                    connection.cancel()
-                    return
-                }
-                switch state {
-                case .failed(let error):
-                    self.reportError("UDP 接收连接失败：\(error.localizedDescription)")
-                    self.removeAcceptedLocked(connection)
-                case .cancelled:
-                    self.removeAcceptedLocked(connection)
-                default:
-                    break
-                }
-            }
-        }
-        connection.start(queue: queue)
-        receiveLocked(on: connection, acceptedKey: key, outgoingKey: nil, generation: activeGeneration)
-    }
-
-    private func receiveLocked(
-        on connection: PeerTransportConnection,
-        acceptedKey: ObjectIdentifier?,
-        outgoingKey: DestinationKey?,
-        generation activeGeneration: Int
-    ) {
-        connection.receiveMessage { [weak self, weak connection] data, error in
-            guard let self, let connection else { return }
-            self.performAsync {
-                guard self.generation == activeGeneration else { return }
-                if let data {
-                    self.deliver(data, replyOn: connection, channelKey: outgoingKey)
-                }
-                if let error {
-                    self.reportError("UDP 接收失败：\(error.localizedDescription)")
-                    if let acceptedKey, self.acceptedConnections[acceptedKey] === connection {
-                        self.removeAcceptedLocked(connection)
-                    }
-                    if let outgoingKey {
-                        self.removeOutgoingLocked(key: outgoingKey, connection: connection)
-                    }
-                } else {
-                    self.receiveLocked(
-                        on: connection, acceptedKey: acceptedKey, outgoingKey: outgoingKey,
-                        generation: activeGeneration
-                    )
-                }
-            }
-        }
     }
 
     private func deliver(
         _ data: Data,
-        replyOn connection: PeerTransportConnection,
-        channelKey: DestinationKey?
+        from endpoint: PeerTransportEndpoint,
+        on socket: PeerTransportDatagramSocket,
+        generation activeGeneration: Int
     ) {
         guard let onDatagram else { return }
-        let reply: DataReply = { [weak self, weak connection] response in
-            guard let self, let connection else { return }
+        let reply: DataReply = { [weak self, weak socket] response in
+            guard let self, let socket else { return }
             self.performAsync {
-                self.sendLocked(response, on: connection, channelKey: channelKey, isReply: true)
+                guard self.generation == activeGeneration, self.socket === socket else { return }
+                self.sendLocked(response, to: endpoint, on: socket, isReply: true)
             }
         }
         callbackQueue.async { onDatagram(data, reply) }
@@ -369,31 +280,15 @@ final class PeerTransport {
 
     private func sendLocked(
         _ data: Data,
-        on connection: PeerTransportConnection,
-        channelKey: DestinationKey?,
+        to endpoint: PeerTransportEndpoint,
+        on socket: PeerTransportDatagramSocket,
         isReply: Bool
     ) {
-        connection.send(data) { [weak self, weak connection] error in
-            guard let self, let connection, let error else { return }
-            self.performAsync {
-                let operation = isReply ? "UDP 回复失败" : "UDP 发送失败"
-                self.reportError("\(operation)：\(error.localizedDescription)")
-                if let channelKey {
-                    self.removeOutgoingLocked(key: channelKey, connection: connection)
-                }
-            }
+        socket.send(data, to: endpoint) { [weak self] error in
+            guard let self, let error else { return }
+            let operation = isReply ? "UDP 回复失败" : "UDP 发送失败"
+            self.reportError("\(operation)：\(error.localizedDescription)")
         }
-    }
-
-    private func removeAcceptedLocked(_ connection: PeerTransportConnection) {
-        acceptedConnections.removeValue(forKey: ObjectIdentifier(connection))
-        connection.cancel()
-    }
-
-    private func removeOutgoingLocked(key: DestinationKey, connection: PeerTransportConnection) {
-        guard let channel = outgoingChannels[key], channel.connection === connection else { return }
-        outgoingChannels.removeValue(forKey: key)
-        connection.cancel()
     }
 
     private func reportError(_ message: String) {

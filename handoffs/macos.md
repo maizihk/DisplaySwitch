@@ -3,61 +3,49 @@
 ## 当前任务
 
 - 日期：2026-08-29
-- 功能：DS-008 / macOS 发布前 UDP 固定源端口修复
-- 共享基线：`codex/coord-ds-008-usb-local-switch@aad145d0e3962c16d05442d34e6b07a8553b21cf`
-- 基线确认：开始前已 fetch；基线包含 PR #41 (`4da002d`) 和 PR #42 (`aad145d`)
-- 分支：`codex/macos-ds-008-fixed-source-port`
-- 实现提交：`bc37d2e214eff1cd514d82878c78e48b8d939966`
-- PR：[#43 DS-008 macOS: bind UDP sends to listen port](https://github.com/maizihk/DisplaySwitch/pull/43)，base 为 `codex/coord-ds-008-usb-local-switch`
+- 功能：DS-009 / macOS USB 入口批量并发修正
+- 分支：`codex/macos-ds-009-native-display-control`
+- 基线：`c1a019b8e38001ac8c119f71c96af9e9be8a89da`
+- 本轮实现提交：本提交
+- PR：[#46](https://github.com/maizihk/DisplaySwitch/pull/46)
 
-## 根因
+## 原因与决策
 
-- Windows `UdpPeer::Start` 把 UDP socket 绑定到本机 `listenPort`，`SendRaw` 复用这个 socket，因此主动数据报的源端口稳定为本机监听端口。
-- Windows 首次未绑定 `status_probe` 只接受 `SourceMatches` 同时匹配配置 host 和 `profile.peerPort` 的来源；其自动测试也按来源地址和来源端口匹配首次探测。
-- macOS 原 `PeerTransport.send` 每次创建未指定本地 endpoint 的 `NWConnection`，系统会分配临时源端口。目标端口虽正确使用 `peerPort`，Windows 仍会在首次 endpoint 绑定前因来源端口不匹配拒绝探测，界面最终表现为等待心跳或无响应。
+- `c1a019b` 已让底层批量服务并发，但 USB 离开路径仍逐台调用单目标 sink，AppDelegate 又把每个单目标任务放进串行 `inputSwitchQueue`；底层从未同时收到多台目标，因此实机仍必然先后切换。
+- 本轮保留事件间的串行队列，只把同一 USB 离开事件的全部有效显示器聚合成一个批次。这比把外层队列整体改成 concurrent 更安全：既消除了同事件串行点，又保留跨事件顺序和安全门控。
+- USB、手动和协同入口现在都把批量目标直接交给同一个 `InputSourceSwitchService`；不同 selector 并发，同一 selector 仍去重并由 per-display arbiter 串行。
+- 单台失败按原 display ID 报告，不取消同批次其他目标。未改变 C2C、writeCycles/writeAttempts、VCP 帧、地址、matcher、租约、诊断、协议或 Windows。
 
-## 完成内容
+## 修改范围
 
-- `PeerTransport` 的监听和主动 UDP 连接都启用本地 endpoint 复用；主动连接使用 `requiredLocalEndpoint` 绑定当前 `listenPort`，目标仍使用所选配置的 `peerPort`。
-- 所有主动 `send` 共用同一路径，因此覆盖 `status_probe`、`wake_display`、`handover_request`、状态机重发及其他主动消息；没有新增第二个用户可配置端口。
-- 主动连接按 host/目标端口复用，连接 ready 前的数据报排队；同一主动连接持续接收对端响应，避免固定源端口后回包落到无人接收的 socket。
-- `start` 同端口重复调用不创建第二个监听；端口重配、`stop`、监听失败、连接失败和发送失败会释放相应监听/连接资源，退出时显式停止网络传输。
-- 收到数据报后的回复仍使用该数据报所属连接，没有修改 eventID、HMAC、endpoint 路由、消息缓存或重放保护。
-- 通过可注入 listener/connection factory 新增 5 项纯传输测试，覆盖三类主动请求的源/目标端口、同端口重复 start、端口重配、stop、发送失败重建和原连接回复。
+- `LocalUSBSwitchCoordinator.swift`：USB 离开事件聚合有效映射并一次提交批次，逐目标保留失败归因与公共向量顺序。
+- `main.swift`：AppDelegate 将 USB 批次统一解析为 `InputSourceSwitchTarget`，只排入一次事件队列，再调用批量输入服务。
+- `LocalUSBSwitchTests.swift`：从 USB 离开入口阻塞第一台写入并证明第二台已进入；覆盖单台失败隔离、同 selector 去重及 16 条公共 USB 向量。
+- `macOS/DEVELOPMENT_CHECKLIST.md`：校准 DS-009 多显示器输入切换状态。
+- 未修改协议、Windows、版本号、tag、Release 或 GitHub Actions。
 
-## 本机验证
+## 自动验证
 
-- 生产 `PeerTransport.swift` 使用本机 macOS 26.5 SDK完成 Swift 类型检查；新增测试文件通过 Swift 语法解析。
-- 仅使用 `127.0.0.1` 的 UDP 运行验证通过：接收端观测到主动请求源端口等于配置 `listenPort`、目标端口等于 loopback 接收端口，且响应由主动连接收到。
-- `contracts/protocol-v2/validate.py`：4 个 schema、1 条 NFC、4 条认证、20 条消息和 6 条状态机向量通过。
-- `contracts/usb-switch-v1/validate.py`：USB-001 至 USB-016 全部通过，配置 schemaVersion 5。
-- `plutil -lint macOS/DisplaySwitcher.xcodeproj/project.pbxproj`、`git diff --check` 和提交内容审查通过。
-- 本机只有 Command Line Tools，没有完整 Xcode；未运行 XCTest、Debug/Release Xcode 构建、`build-app.sh` 或 codesign。按协调策略，不单独触发 workflow_dispatch 或中间云端 CI；这些项目由协调端最终 main PR 的 macOS CI 一次完成。
+- 输入源切换与 USB 入口专项：20/20；完整 XCTest：109/109。
+- 全新 Debug 测试构建、Release 脚本构建通过。
+- `./macOS/scripts/build-app.sh` 在 `/private/tmp` 的干净源码副本通过；App 打包前和 ZIP 实际解压后严格 codesign 验证均通过。
+- 仓库内脚本构建本身成功，但 File Provider 会即时恢复输出 App 的 FinderInfo，导致仓库输出路径直接验签失败；交付 ZIP 来自无该元数据的同源码干净构建。
+- 所有测试使用模拟 resolver/transport；未执行真实 DDC、USB、网络、唤醒或输入源切换。
+- 未触发云端 CI；PR #46 保持开放，不合并。
 
-## 发布产物
+## 测试包
 
-- 本机未生成新的忽略发布产物，因为没有完整 Xcode。
-- 协调端可从本分支重建：`./macOS/scripts/build-app.sh`。
-- 预期忽略产物路径：`macOS/outputs/DisplaySwitcher.app` 和 `macOS/outputs/DisplaySwitcher-macOS-$(uname -m).zip`。
-- 最终 main PR 的 macOS CI 应上传 `DisplaySwitcher-macOS-${runner.arch}-unsigned` artifact。
+- 路径：`macOS/outputs/DisplaySwitcher-DS-009-usb-batch-parallel-macOS-test.zip`
+- SHA-256：`6132ec40aaad728e48486a554f1a7f96c0bd2ff38d56bc4a2711280d6418d95b`
+- 无 `__MACOSX`、AppleDouble 和 Finder 扩展属性；实际解压后严格验签通过；构建产物不进入 Git。
 
-## 尚未执行
+## 尚需用户实机验证
 
-- 新增 5 项 `PeerTransportTests` 及现有完整 XCTest 尚待最终 main PR 的 macOS CI 执行。
-- Debug、Release、正式打包与严格 codesign 尚待最终 main PR 的 macOS CI 执行。
-- 未做真实 macOS/Windows 双机首次探测、心跳、`wake_display`、手动交接和重发验证。
-- 未做真实 USB、DDC、显示器唤醒、输入源切换或 GUI 验证。
+1. USB 离开同一事件中三台显示器是否近同时开始切换，且单台失败不影响其他显示器。
+2. 同一显示器连续触发时是否仍保持串行，不与该显示器的亮度、对比度或音量操作并发。
+3. C2C 偶发不执行问题仍保留，本轮没有调整其重试、服务生命周期或 matcher。
 
-## 安全与边界
+## 安全与工作区
 
-- 仅修改 `macOS/` 和 `handoffs/macos.md`。
-- 未修改 Windows、`PROTOCOL.md`、contracts、coordination、specs、根 README、`AGENTS.md`、GitHub Actions、版本号、tag 或 Release。
-- 未启动 App，未访问局域网，未执行真实 USB、DDC、显示器唤醒或输入源切换。
-- 未记录配对码、凭据、真实 IP、真实 endpoint、USB/显示器标识或个人路径。
-- `macOS/.build/` 和 `macOS/outputs/` 保持 Git 忽略。
-
-## 协调端下一步
-
-1. 审查并合并本 PR 到 `codex/coord-ds-008-usb-local-switch`。
-2. 从协调分支创建最终 main PR，让 macOS CI 一次运行完整 XCTest、Debug、Release、打包、严格验签和 artifact 上传。
-3. CI 通过后再做授权的 macOS/Windows 双机首次探测，确认 Windows 看到的来源端口等于 Mac `listenPort`，并验证心跳、协同唤醒和手动交接。
+- 三个未知重复文件保持未跟踪且不提交。
+- `macOS/.build/` 和 `macOS/outputs/` 是忽略的本机构建产物。

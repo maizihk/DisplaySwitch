@@ -35,7 +35,7 @@ namespace DisplaySwitcher::Native
     }
 
     Controller::Controller(Microsoft::UI::Dispatching::DispatcherQueue const& dispatcher, std::function<void()> exitApplication) :
-        dispatcher_(dispatcher), exitApplication_(std::move(exitApplication)), config_(AppConfig::Load())
+        dispatcher_(dispatcher), exitApplication_(std::move(exitApplication)), config_(AppConfig::Load(&firstRun_))
     {
     }
 
@@ -65,6 +65,7 @@ namespace DisplaySwitcher::Native
             { if (auto self = weak.lock()) self->WriteTrayDdc(displayId, code, value); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
+        if (firstRun_) ShowSettings();
     }
 
     Controller::~Controller() { Dispose(); }
@@ -81,6 +82,33 @@ namespace DisplaySwitcher::Native
         sideEffectGate_.Block();
         trayDdcWrites_.CancelPending();
         auto config = Config();
+        if (!config.displayConfigurationSafeMode)
+        {
+            try
+            {
+                auto enumeration = EnumerateDdcMonitors();
+                if (enumeration.IsTrustedNonEmptySnapshot())
+                {
+                    auto reconciled = ReconcileDisplayConfigurations(config.displays, enumeration.monitors, true);
+                    config.displays = std::move(reconciled.displays);
+                    auto mappingsChanged = RemoveOrphanedDisplayMappings(
+                        config.displays, config.collaborationProfiles, config.usbSwitch);
+                    if (reconciled.changed || mappingsChanged || config.displayControlBackend != L"native_ddc")
+                    {
+                        config.displayControlBackend = L"native_ddc";
+                        config.Save();
+                        std::scoped_lock lock(configMutex_);
+                        config_ = config;
+                    }
+                }
+            }
+            catch (...)
+            {
+                config.EnterSafeState();
+                std::scoped_lock lock(configMutex_);
+                config_ = config;
+            }
+        }
         std::vector<std::pair<std::wstring, std::wstring>> menuProfiles;
         for (auto const& profile : config.EnabledCompleteProfiles()) menuProfiles.emplace_back(profile.id, profile.name);
         trayIcon_->SetProfiles(std::move(menuProfiles));
@@ -117,8 +145,11 @@ namespace DisplaySwitcher::Native
             config.displayConfigurationSafeMode, std::nullopt, config.usbSwitch.collaborationWakeEnabled, collaborationValid };
         for (auto const& display : config.displays)
             usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
-                !display.BackendMonitorId(config.displayControlBackend == L"auto" ? L"native_ddc" : config.displayControlBackend).empty(), true });
-        usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
+                !display.nativeMonitorId.empty(), true });
+        usbInitial.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
+            std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
+        if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
+        else usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
         v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
@@ -171,6 +202,7 @@ namespace DisplaySwitcher::Native
     void Controller::EndUsbLearning()
     {
         if (!usbLearningActive_.exchange(false)) return;
+        if (usbSwitchCoordinator_) usbSwitchCoordinator_->ConfigurationChanged();
         ApplyConfiguration(false);
     }
 
@@ -182,8 +214,8 @@ namespace DisplaySwitcher::Native
     void Controller::OnUsbPresenceChanged(bool present)
     {
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
-        WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
         if (usbSwitchCoordinator_) ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present));
+        WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
     }
 
     void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions)

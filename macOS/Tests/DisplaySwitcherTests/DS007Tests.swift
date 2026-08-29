@@ -105,6 +105,40 @@ final class DS007Tests: XCTestCase {
         XCTAssertEqual(executor.cancelCount, 1)
     }
 
+    func testDS009DifferentDisplaysRemainFailureIsolated() {
+        let executor = ControlledWriteExecutor()
+        let coordinator = DDCLatestWinsCoordinator(executor: executor)
+        var completions: [String: Bool] = [:]
+        coordinator.onCompletion = { request, result in
+            completions[request.key.stableID] = (try? result.get()) != nil
+        }
+        coordinator.submit(request(displayID: "display-a", command: .luminance, value: 30))
+        coordinator.submit(request(displayID: "display-b", command: .luminance, value: 70))
+
+        XCTAssertEqual(executor.maximumConcurrent, 2)
+        executor.completeNext(success: false)
+        executor.completeNext(success: true)
+
+        XCTAssertEqual(completions["display-a"], false)
+        XCTAssertEqual(completions["display-b"], true)
+    }
+
+    func testDS009RefreshOrWindowCloseDropsPendingAndLateUICompletion() {
+        let executor = ControlledWriteExecutor()
+        let coordinator = DDCLatestWinsCoordinator(executor: executor)
+        var published = 0
+        coordinator.onCompletion = { _, _ in published += 1 }
+        coordinator.submit(request(command: .contrast, value: 20))
+        coordinator.submit(request(command: .contrast, value: 80))
+
+        coordinator.cancelAll()
+        executor.completeNext(success: true)
+
+        XCTAssertEqual(executor.started.map(\.value), [20])
+        XCTAssertEqual(published, 0)
+        XCTAssertEqual(executor.cancelCount, 1)
+    }
+
     func testU023RecoveryRetriesExactlyOnce() throws {
         var attempts = 0
         var recoveries = 0
@@ -131,7 +165,11 @@ final class DS007Tests: XCTestCase {
     }
 
     private func request(command: DDCCommand, value: Int) -> DDCWriteRequest {
-        DDCWriteRequest(key: DDCWriteKey(stableID: "display", command: command),
+        request(displayID: "display", command: command, value: value)
+    }
+
+    private func request(displayID: String, command: DDCCommand, value: Int) -> DDCWriteRequest {
+        DDCWriteRequest(key: DDCWriteKey(stableID: displayID, command: command),
                         selector: "selector", value: value)
     }
 

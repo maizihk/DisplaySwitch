@@ -32,7 +32,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     private:
         Microsoft::UI::Xaml::UIElement BuildContent();
-        Microsoft::UI::Xaml::Controls::Border CreateSection(std::wstring const& title,
+        Microsoft::UI::Xaml::Controls::Border CreateSection(
             std::vector<Microsoft::UI::Xaml::UIElement> const& children);
         Microsoft::UI::Xaml::Controls::Border CreateCard(Microsoft::UI::Xaml::UIElement const& child);
         Microsoft::UI::Xaml::Controls::ScrollViewer CreatePage(
@@ -158,7 +158,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
         bool loading_{};
-        bool cmmChannelAvailable_{};
     };
 }
 

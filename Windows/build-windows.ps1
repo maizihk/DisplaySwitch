@@ -82,6 +82,7 @@ $releaseFiles = @(
     "DisplaySwitcher.Native.winmd",
     "Microsoft.WindowsAppRuntime.Bootstrap.dll",
     "App.xbf",
+    "AppIcon-256.png",
     "AppIcon.ico",
     "SettingsWindow.xbf"
 )

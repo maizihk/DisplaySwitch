@@ -17,6 +17,8 @@ namespace DisplaySwitcher::Native
         profileId_ = std::move(profileId);
         deadlineMilliseconds_ = nowMilliseconds + LearningWindowMilliseconds;
         baselineReferences_.clear();
+        previousReferences_.clear();
+        departedBaselineReferences_.clear();
         candidates_.clear();
         for (auto const& device : baseline)
         {
@@ -25,6 +27,7 @@ namespace DisplaySwitcher::Native
                 { return SameReference(value, device.localReference); }))
                 baselineReferences_.push_back(device.localReference);
         }
+        previousReferences_ = baselineReferences_;
         return generation_;
     }
 
@@ -37,15 +40,34 @@ namespace DisplaySwitcher::Native
             Finish();
             return;
         }
+        std::vector<std::wstring> currentReferences;
+        for (auto const& device : devices)
+            if (!device.localReference.empty() && std::none_of(currentReferences.begin(), currentReferences.end(), [&](auto const& value)
+                { return SameReference(value, device.localReference); })) currentReferences.push_back(device.localReference);
+
+        for (auto const& baseline : baselineReferences_)
+        {
+            auto wasPresent = std::any_of(previousReferences_.begin(), previousReferences_.end(), [&](auto const& value)
+                { return SameReference(value, baseline); });
+            auto isPresent = std::any_of(currentReferences.begin(), currentReferences.end(), [&](auto const& value)
+                { return SameReference(value, baseline); });
+            auto alreadyDeparted = std::any_of(departedBaselineReferences_.begin(), departedBaselineReferences_.end(), [&](auto const& value)
+                { return SameReference(value, baseline); });
+            if (wasPresent && !isPresent && !alreadyDeparted) departedBaselineReferences_.push_back(baseline);
+        }
+
         for (auto const& device : devices)
         {
             if (device.localReference.empty()) continue;
             auto existedAtStart = std::any_of(baselineReferences_.begin(), baselineReferences_.end(), [&](auto const& value)
                 { return SameReference(value, device.localReference); });
+            auto departedAfterStart = std::any_of(departedBaselineReferences_.begin(), departedBaselineReferences_.end(), [&](auto const& value)
+                { return SameReference(value, device.localReference); });
             auto alreadyCandidate = std::any_of(candidates_.begin(), candidates_.end(), [&](auto const& value)
                 { return SameReference(value.localReference, device.localReference); });
-            if (!existedAtStart && !alreadyCandidate) candidates_.push_back(device);
+            if ((!existedAtStart || departedAfterStart) && !alreadyCandidate) candidates_.push_back(device);
         }
+        previousReferences_ = std::move(currentReferences);
     }
 
     std::optional<UsbLearningDevice> UsbLearningSession::Confirm(uint64_t generation,
@@ -74,6 +96,8 @@ namespace DisplaySwitcher::Native
         active_ = false;
         profileId_.clear();
         baselineReferences_.clear();
+        previousReferences_.clear();
+        departedBaselineReferences_.clear();
         candidates_.clear();
     }
 }

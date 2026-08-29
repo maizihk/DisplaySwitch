@@ -86,6 +86,7 @@
     <ClInclude Include="UnboundProbeRouter.h" />
     <ClInclude Include="UsbWatcher.h" />
     <ClInclude Include="UsbLearning.h" />
+    <ClInclude Include="UsbPresencePollPolicy.h" />
     <ClInclude Include="UsbSwitchCoordinator.h" />
     <ApplicationDefinition Include="App.xaml" />
     <Page Include="SettingsWindow.xaml" />
@@ -113,6 +114,7 @@
     <ClCompile Include="UsbSwitchCoordinator.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
     <ResourceCompile Include="AppIcon.rc" />
+    <Image Include="AppIcon-256.png" />
     <Image Include="AppIcon.ico" />
   </ItemGroup>
   <ItemGroup>

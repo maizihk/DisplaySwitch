@@ -6,6 +6,16 @@ struct LocalUSBSwitchDisplay: Equatable {
     let available: Bool
 }
 
+struct LocalUSBDisplaySwitchRequest: Equatable {
+    let displayID: String
+    let targetInput: Int
+}
+
+struct LocalUSBDisplaySwitchOutcome: Equatable {
+    let displayID: String
+    let succeeded: Bool
+}
+
 struct LocalUSBSwitchRuntimeConfiguration: Equatable {
     var enabled: Bool
     var learning: Bool
@@ -23,7 +33,10 @@ enum LocalUSBSwitchReportReason: String, Equatable {
 }
 
 protocol LocalUSBSwitchActionSink: AnyObject {
-    func switchUSBDisplay(displayID: String, targetInput: Int, completion: @escaping (Bool) -> Void)
+    func switchUSBDisplays(
+        _ requests: [LocalUSBDisplaySwitchRequest],
+        completion: @escaping (LocalUSBDisplaySwitchOutcome) -> Void
+    )
     func wakeUSBDisplay()
     func sendCollaborationWakeDisplay() -> Bool
     func reportUSBSwitch(displayID: String?, reason: LocalUSBSwitchReportReason)
@@ -83,20 +96,30 @@ final class LocalUSBSwitchCoordinator {
 
     private func scheduleDeparture() {
         guard let sink else { return }
+        var requests: [LocalUSBDisplaySwitchRequest] = []
+        var deferredReports: [(String, LocalUSBSwitchReportReason)] = []
         for display in configuration.displays {
             guard display.available else {
-                sink.reportUSBSwitch(displayID: display.displayID, reason: .displayUnavailable)
+                deferredReports.append((display.displayID, .displayUnavailable))
                 continue
             }
             guard let targetInput = display.targetInput else {
-                sink.reportUSBSwitch(displayID: display.displayID, reason: .missingMapping)
+                deferredReports.append((display.displayID, .missingMapping))
                 continue
             }
-            sink.switchUSBDisplay(displayID: display.displayID, targetInput: targetInput) { [weak sink] success in
-                if !success {
-                    sink?.reportUSBSwitch(displayID: display.displayID, reason: .ddcFailed)
-                }
+            requests.append(LocalUSBDisplaySwitchRequest(
+                displayID: display.displayID,
+                targetInput: targetInput
+            ))
+        }
+        if !requests.isEmpty {
+            sink.switchUSBDisplays(requests) { [weak sink] outcome in
+                guard !outcome.succeeded else { return }
+                sink?.reportUSBSwitch(displayID: outcome.displayID, reason: .ddcFailed)
             }
+        }
+        for (displayID, reason) in deferredReports {
+            sink.reportUSBSwitch(displayID: displayID, reason: reason)
         }
         guard configuration.collaborationWakeEnabled else { return }
         guard configuration.collaborationProfileValid, sink.sendCollaborationWakeDisplay() else {

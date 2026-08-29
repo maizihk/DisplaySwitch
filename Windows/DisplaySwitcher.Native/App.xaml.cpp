@@ -13,14 +13,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         lifetimeWindow_ = Window();
         lifetimeWindow_.Title(L"DisplaySwitcher lifetime host");
-        lifetimeWindow_.Activate();
 
         HWND window{};
         check_hresult(lifetimeWindow_.as<::IWindowNative>()->get_WindowHandle(&window));
         auto id = Microsoft::UI::GetWindowIdFromWindow(window);
         auto appWindow = Windowing::AppWindow::GetFromWindowId(id);
         appWindow.IsShownInSwitchers(false);
-        appWindow.Hide();
 
         controller_ = ::DisplaySwitcher::Native::Controller::Create(
             Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread(),

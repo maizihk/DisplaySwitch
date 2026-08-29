@@ -5,9 +5,23 @@ namespace DisplaySwitcher::Native
 {
     UsbSwitchCoordinator::UsbSwitchCoordinator(UsbSwitchInitialState initial) : state_(std::move(initial)) {}
 
+    void UsbSwitchCoordinator::UpdateConfiguration(UsbSwitchInitialState initial) noexcept
+    {
+        auto preserveBaseline = state_.enabled == initial.enabled && state_.learning == initial.learning &&
+            state_.safeState == initial.safeState && state_.bindingKey == initial.bindingKey;
+        if (preserveBaseline) initial.baselinePresence = state_.baselinePresence;
+        else
+        {
+            initial.baselinePresence.reset();
+            lastWakeMilliseconds_.reset();
+        }
+        state_ = std::move(initial);
+    }
+
     void UsbSwitchCoordinator::ConfigurationChanged() noexcept
     {
         state_.baselinePresence.reset();
+        lastWakeMilliseconds_.reset();
     }
 
     std::vector<UsbSwitchAction> UsbSwitchCoordinator::RequestWake(int64_t nowMilliseconds)

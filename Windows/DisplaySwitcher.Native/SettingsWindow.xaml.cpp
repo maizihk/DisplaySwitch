@@ -24,6 +24,136 @@ namespace
         else if (auto toggleSwitch = control.try_as<ToggleSwitch>()) toggleSwitch.Header(box_value(text));
     }
 
+    void ConfigureCompactToggle(ToggleSwitch const& toggle, std::wstring const& automationName)
+    {
+        toggle.Header(nullptr);
+        toggle.OnContent(box_value(L""));
+        toggle.OffContent(box_value(L""));
+        toggle.MinWidth(0);
+        toggle.Width(40);
+        toggle.HorizontalAlignment(HorizontalAlignment::Right);
+        toggle.VerticalAlignment(VerticalAlignment::Center);
+        AutomationProperties::SetName(toggle, automationName);
+    }
+
+    Grid LabeledToggleRow(std::wstring const& text, ToggleSwitch const& toggle)
+    {
+        ConfigureCompactToggle(toggle, text);
+
+        auto row = Grid();
+        row.HorizontalAlignment(HorizontalAlignment::Stretch);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto toggleColumn = ColumnDefinition(); toggleColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(toggleColumn);
+
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(toggle, 1);
+        row.Children().Append(label); row.Children().Append(toggle);
+        return row;
+    }
+
+    Grid LabeledControlRow(std::wstring const& text, FrameworkElement const& control)
+    {
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
+        else if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
+        control.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(control, text);
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 120 });
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
+
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        label.TextTrimming(TextTrimming::CharacterEllipsis);
+        Grid::SetColumn(control, 1);
+        row.Children().Append(label); row.Children().Append(control);
+        return row;
+    }
+
+    Grid LabeledControlToggleRow(std::wstring const& text, FrameworkElement const& control,
+        ToggleSwitch const& toggle, std::wstring const& toggleAutomationName)
+    {
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
+        else if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
+        control.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(control, text);
+        ConfigureCompactToggle(toggle, toggleAutomationName);
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto toggleColumn = ColumnDefinition(); toggleColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
+        row.ColumnDefinitions().Append(toggleColumn);
+
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(control, 1); Grid::SetColumn(toggle, 2);
+        row.Children().Append(label); row.Children().Append(control); row.Children().Append(toggle);
+        return row;
+    }
+
+    Grid LabeledWideControlRow(std::wstring const& text, Control const& control)
+    {
+        if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
+        else if (auto passwordBox = control.try_as<PasswordBox>()) passwordBox.Header(nullptr);
+        control.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(control, text);
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 1, GridUnitType::Star });
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(control, 1); row.Children().Append(label); row.Children().Append(control);
+        return row;
+    }
+
+    Grid PeerAddressRow(TextBox const& host, TextBox const& port)
+    {
+        host.Header(nullptr); port.Header(nullptr);
+        host.HorizontalAlignment(HorizontalAlignment::Stretch); port.Width(120);
+        AutomationProperties::SetName(host, L"对端地址"); AutomationProperties::SetName(port, L"对端端口");
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto addressLabelColumn = ColumnDefinition(); addressLabelColumn.Width(GridLength{ 200 });
+        auto hostColumn = ColumnDefinition(); hostColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto portLabelColumn = ColumnDefinition(); portLabelColumn.Width(GridLengthHelper::Auto());
+        auto portColumn = ColumnDefinition(); portColumn.Width(GridLength{ 120 });
+        row.ColumnDefinitions().Append(addressLabelColumn); row.ColumnDefinitions().Append(hostColumn);
+        row.ColumnDefinitions().Append(portLabelColumn); row.ColumnDefinitions().Append(portColumn);
+
+        auto addressLabel = TextBlock(); addressLabel.Text(L"对端地址"); addressLabel.VerticalAlignment(VerticalAlignment::Center);
+        auto portLabel = TextBlock(); portLabel.Text(L"端口"); portLabel.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(host, 1); Grid::SetColumn(portLabel, 2); Grid::SetColumn(port, 3);
+        row.Children().Append(addressLabel); row.Children().Append(host);
+        row.Children().Append(portLabel); row.Children().Append(port);
+        return row;
+    }
+
+    Grid UsbDeviceRow(ComboBox const& devices, Button const& learn, TextBlock const& status)
+    {
+        devices.Header(nullptr); devices.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(devices, L"USB 触发设备");
+        learn.VerticalAlignment(VerticalAlignment::Center);
+        status.VerticalAlignment(VerticalAlignment::Center); status.TextWrapping(TextWrapping::NoWrap);
+
+        auto row = Grid(); row.ColumnSpacing(12);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        row.ColumnDefinitions().Append(labelColumn);
+        auto devicesColumn = ColumnDefinition(); devicesColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto statusColumn = ColumnDefinition(); statusColumn.Width(GridLengthHelper::Auto());
+        auto learnColumn = ColumnDefinition(); learnColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(statusColumn);
+        row.ColumnDefinitions().Append(learnColumn);
+
+        auto label = TextBlock(); label.Text(L"触发设备"); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(devices, 1); Grid::SetColumn(status, 2); Grid::SetColumn(learn, 3);
+        row.Children().Append(label); row.Children().Append(devices);
+        row.Children().Append(learn); row.Children().Append(status);
+        return row;
+    }
+
     std::wstring Trim(std::wstring value)
     {
         auto whitespace = [](wchar_t c) { return iswspace(c) != 0; };
@@ -112,21 +242,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         validation_ = TextBlock(); validation_.Foreground(SolidColorBrush(Windows::UI::Color{ 255, 196, 43, 28 }));
         validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
-        usbAutomation_ = ToggleSwitch(); Header(usbAutomation_, L"USB 自动切换");
-        usbSwitchDisplaysOnArrival_ = ToggleSwitch(); Header(usbSwitchDisplaysOnArrival_, L"联动协同");
-        usbProfileSelector_ = ComboBox(); Header(usbProfileSelector_, L"联动目标配置");
+        usbAutomation_ = ToggleSwitch();
+        usbSwitchDisplaysOnArrival_ = ToggleSwitch();
+        usbProfileSelector_ = ComboBox();
         usbProfileSelector_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDevices_ = ComboBox(); Header(usbDevices_, L"当前 USB 设备"); usbDevices_.HorizontalAlignment(HorizontalAlignment::Stretch);
         usbDeviceStatus_ = TextBlock(); usbDeviceStatus_.Opacity(0.72); usbDeviceStatus_.TextWrapping(TextWrapping::Wrap);
         displayBackend_ = ComboBox(); Header(displayBackend_, L"控制通道"); displayBackend_.HorizontalAlignment(HorizontalAlignment::Stretch);
-        displayBackend_.Items().Append(box_value(L"自动"));
-        displayBackend_.Items().Append(box_value(L"原生 DDC"));
-        cmmChannelAvailable_ = !original_.controlMyMonitorPath.empty();
-        if (cmmChannelAvailable_) displayBackend_.Items().Append(box_value(L"ControlMyMonitor 回退"));
-        displayBackend_.SelectionChanged([this](auto const&, auto const&) { UpdateDisplayBackendVisibility(); SaveImmediately(); });
+        displayBackend_.Items().Append(box_value(L"Windows 原生 DDC/CI"));
+        displayBackend_.IsEnabled(false);
         controlMyMonitor_ = TextBox(); Header(controlMyMonitor_, L"ControlMyMonitor 路径");
-        linkAllDisplays_ = ToggleSwitch(); Header(linkAllDisplays_, L"联动调节所有显示器");
-        autoStart_ = ToggleSwitch(); Header(autoStart_, L"登录时启动");
+        linkAllDisplays_ = ToggleSwitch();
+        autoStart_ = ToggleSwitch();
         usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
@@ -169,32 +296,28 @@ namespace winrt::DisplaySwitcher::Native::implementation
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
-        commonTab.Content(CreatePage({ CreateSection(L"常规", { autoStart_, commonHint }) }));
+        commonTab.Content(CreatePage({ CreateSection({
+            LabeledToggleRow(L"登录时启动", autoStart_), commonHint }) }));
 
-        auto refresh = Button(); refresh.Content(box_value(L"重新读取")); refresh.VerticalAlignment(VerticalAlignment::Bottom);
-        refresh.Click([this](auto const&, auto const&) { LoadUsbDevices(); });
-        auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习 USB 设备…"));
+        auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习"));
+        AutomationProperties::SetName(learnCurrentUsb, L"学习 USB 触发设备");
+        learnCurrentUsb.HorizontalAlignment(HorizontalAlignment::Left);
         learnCurrentUsb.Click([this](auto const&, auto const&)
         {
             StartUsbLearning(L"usb-switch");
         });
-        auto clearCurrentUsb = Button(); clearCurrentUsb.Content(box_value(L"清除当前设备"));
-        clearCurrentUsb.Click([this](auto const&, auto const&)
-        {
-            selectedUsbLocalReference_.clear(); selectedUsbName_.clear();
-            selectedUsbVendorId_ = -1; selectedUsbProductId_ = -1;
-            usbDevices_.SelectedIndex(-1); SaveImmediately(); RefreshUsbDeviceSelection();
-        });
-        auto usbButtons = StackPanel(); usbButtons.Orientation(Orientation::Horizontal); usbButtons.Spacing(8);
-        usbButtons.Children().Append(learnCurrentUsb); usbButtons.Children().Append(clearCurrentUsb);
         auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
-        usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
-            usbAutomation_, usbSwitchDisplaysOnArrival_, usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
-            usbButtons, usbDeviceStatus_, usbMappingsPanel_, usbHint }) }));
+        auto usbMappingTitle = CreateSubheading(L"对端输入源");
+        usbTab.Content(CreatePage({ CreateSection({
+            LabeledToggleRow(L"自动切换", usbAutomation_),
+            UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_),
+            usbMappingTitle, usbMappingsPanel_,
+            LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同"),
+            usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
@@ -206,6 +329,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto peerHint = TextBlock(); peerHint.Text(L"可保存多个目标配置并同时开启。检测只发送 v2 状态探测，不执行 USB、唤醒或显示器操作。");
         peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
         auto addProfile = Button(); addProfile.Content(box_value(L"添加配置"));
+        addProfile.VerticalAlignment(VerticalAlignment::Bottom);
         addProfile.Click([this](auto const&, auto const&)
         {
             CaptureProfileEditors();
@@ -231,7 +355,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             RebuildProfileEditors();
         });
         profileEditorsPanel_ = StackPanel(); profileEditorsPanel_.Spacing(14);
-        peerTab.Content(CreatePage({ CreateSection(L"协同配置", {
+        peerTab.Content(CreatePage({ CreateSection({
             peerStatus, peerHint, CreateTwoColumn(profileSelector_, addProfile), profileEditorsPanel_ }) }));
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -242,14 +366,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
-        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_, linkAllDisplays_,
+        displayTab.Content(CreatePage({ CreateSection({ displayHint, displayBackend_,
+            LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
         auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         aboutTab.Header(CreateTabHeader(L"\uE946", L"关于"));
         auto info = ::DisplaySwitcher::Native::PublicAboutInfo();
         auto aboutIcon = Image(); aboutIcon.Width(72); aboutIcon.Height(72); aboutIcon.HorizontalAlignment(HorizontalAlignment::Center);
-        aboutIcon.Source(Microsoft::UI::Xaml::Media::Imaging::BitmapImage(Windows::Foundation::Uri(L"ms-appx:///AppIcon.ico")));
+        aboutIcon.Source(Microsoft::UI::Xaml::Media::Imaging::BitmapImage(Windows::Foundation::Uri(L"ms-appx:///AppIcon-256.png")));
         auto aboutName = TextBlock(); aboutName.Text(info.applicationName); aboutName.FontSize(24);
         aboutName.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); aboutName.HorizontalAlignment(HorizontalAlignment::Center);
         auto aboutDetails = TextBlock(); aboutDetails.Text(L"版本 " + info.publicVersion + L"\n" + info.architecture + L"\n协议 v2");
@@ -261,7 +386,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         aboutLinks.Children().Append(project); aboutLinks.Children().Append(license); aboutLinks.Children().Append(notices);
         auto buildNotice = TextBlock(); buildNotice.Text(info.buildNotice); buildNotice.TextWrapping(TextWrapping::Wrap);
         buildNotice.TextAlignment(TextAlignment::Center); buildNotice.Opacity(0.72);
-        aboutTab.Content(CreatePage({ CreateSection(L"关于", { aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
+        aboutTab.Content(CreatePage({ CreateSection({ aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
         tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab); tabs_.TabItems().Append(aboutTab);
@@ -281,11 +406,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         return root;
     }
 
-    Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
+    Border SettingsWindow::CreateSection(std::vector<UIElement> const& children)
     {
-        auto panel = StackPanel(); panel.Spacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
-        auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
-        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
+        auto panel = StackPanel(); panel.Spacing(16);
         for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
     }
 
@@ -402,9 +525,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         RebuildProfileEditors();
         autoStart_.IsOn(config.startWithWindows);
         linkAllDisplays_.IsOn(config.linkAllDisplays);
-        if (config.displayControlBackend == L"native_ddc") displayBackend_.SelectedIndex(1);
-        else if (config.displayControlBackend == L"control_my_monitor" && cmmChannelAvailable_) displayBackend_.SelectedIndex(2);
-        else displayBackend_.SelectedIndex(0);
+        displayBackend_.SelectedIndex(0);
         UpdateDisplayBackendVisibility();
         loading_ = false;
     }
@@ -570,20 +691,23 @@ namespace winrt::DisplaySwitcher::Native::implementation
         CaptureDisplayEditors();
         try
         {
-            ddcMonitors_ = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
-            for (auto const& monitor : ddcMonitors_)
+            auto enumeration = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
+            if (!enumeration.success)
             {
-                auto known = std::any_of(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
-                    { return _wcsicmp(display.nativeMonitorId.c_str(), monitor.id.c_str()) == 0; });
-                if (known) continue;
-                auto display = ::DisplaySwitcher::Native::CreateDisplayConfig(
-                    L"显示器 " + std::to_wstring(workingDisplays_.size() + 1));
-                display.nativeMonitorId = monitor.id;
-                display.backend.clear();
-                workingDisplays_.push_back(std::move(display));
+                ShowValidationError(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message);
+                return;
             }
+            if (!enumeration.IsTrustedNonEmptySnapshot())
+            {
+                ShowValidationError(enumeration.monitors.empty()
+                    ? L"暂未检测到显示器；已保留现有设置和映射，显示器可能处于休眠或短暂断开状态。"
+                    : L"显示器枚举结果不完整；已保留现有设置和映射。");
+                return;
+            }
+            ddcMonitors_ = std::move(enumeration.monitors);
             // Old ControlMyMonitor paths often start with the GDI device name. Use that only once
             // when no stable native ID has been saved; later matching is always by native ID.
+            bool legacyAssociationChanged{};
             for (auto& display : workingDisplays_)
             {
                 if (!display.nativeMonitorId.empty() || display.controlMonitorPath.empty()) continue;
@@ -591,13 +715,25 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 {
                     return display.controlMonitorPath.starts_with(monitor.gdiName);
                 });
-                if (found != ddcMonitors_.end()) display.nativeMonitorId = found->id;
+                if (found != ddcMonitors_.end())
+                {
+                    display.nativeMonitorId = found->id;
+                    legacyAssociationChanged = true;
+                }
             }
+            auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
+                workingDisplays_, ddcMonitors_, true);
+            workingDisplays_ = std::move(reconciled.displays);
+            auto usbSwitch = original_.usbSwitch;
+            auto mappingsChanged = ::DisplaySwitcher::Native::RemoveOrphanedDisplayMappings(
+                workingDisplays_, workingProfiles_, usbSwitch);
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
-            if (workingDisplays_.size() != original_.displays.size()) SaveImmediately();
-            if (ddcMonitors_.empty() && displayBackend_.SelectedIndex() == 0)
+            RebuildProfileEditors();
+            if (legacyAssociationChanged || reconciled.changed || mappingsChanged) SaveImmediately();
+            if (ddcMonitors_.empty())
                 ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
+            else if (!enumeration.message.empty()) ShowValidationError(enumeration.message);
             else validation_.Visibility(Visibility::Collapsed);
         }
         catch (...) { ShowValidationError(L"读取原生 DDC/CI 显示器失败。"); }
@@ -629,7 +765,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbMappingsPanel_.Children().Clear(); usbMappingEditors_.clear();
         for (auto const& display : workingDisplays_)
         {
-            auto input = TextBox(); Header(input, (display.name + L"：USB 离开后切到的输入源").c_str());
+            auto input = TextBox();
             input.HorizontalAlignment(HorizontalAlignment::Stretch);
             auto old = previous.find(display.id);
             if (old != previous.end()) input.Text(old->second);
@@ -637,7 +773,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             input.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
             input.KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
             { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); });
-            usbMappingsPanel_.Children().Append(input); usbMappingEditors_.push_back({ display.id, input });
+            usbMappingsPanel_.Children().Append(LabeledControlRow(display.name, input));
+            usbMappingEditors_.push_back({ display.id, input });
         }
     }
 
@@ -675,23 +812,53 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.status.TextWrapping(TextWrapping::Wrap);
 
             auto read = Button(); read.Content(box_value(L"读取 DDC 参数"));
-            AutomationProperties::SetName(read, L"读取显示器 " + std::to_wstring(index + 1) + L" 的 DDC 参数");
+            AutomationProperties::SetName(read, L"读取 " + display.name + L" 的 DDC 参数");
             read.Click([this, id = display.id](auto const&, auto const&) { ReadDdc(id); });
-            auto controlRow = [&](wchar_t const* name, ::DisplaySwitcher::Native::DdcVcpCode code, Slider const& slider,
-                ToggleSwitch const& enabled, ToggleSwitch const& showInTray)
+            auto controlsGrid = Grid();
+            controlsGrid.ColumnSpacing(12); controlsGrid.RowSpacing(10);
+            controlsGrid.HorizontalAlignment(HorizontalAlignment::Stretch);
+            for (auto width : { 96.0, 132.0, 132.0 })
             {
-                auto row = Grid(); row.ColumnSpacing(10);
-                for (auto width : { 72.0, 54.0, 62.0 }) { auto column = ColumnDefinition(); column.Width(GridLength{ width }); row.ColumnDefinitions().Append(column); }
-                auto sliderColumn = ColumnDefinition(); sliderColumn.Width(GridLength{ 1, GridUnitType::Star }); row.ColumnDefinitions().Append(sliderColumn);
-                auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 44 }); row.ColumnDefinitions().Append(valueColumn);
+                auto column = ColumnDefinition(); column.Width(GridLength{ width });
+                controlsGrid.ColumnDefinitions().Append(column);
+            }
+            auto sliderColumn = ColumnDefinition();
+            sliderColumn.Width(GridLength{ 1, GridUnitType::Star });
+            controlsGrid.ColumnDefinitions().Append(sliderColumn);
+            auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 44 });
+            controlsGrid.ColumnDefinitions().Append(valueColumn);
+            for (int rowIndex = 0; rowIndex < 4; ++rowIndex)
+            {
+                auto row = RowDefinition(); row.Height(GridLengthHelper::Auto());
+                controlsGrid.RowDefinitions().Append(row);
+            }
+
+            auto functionHeader = TextBlock(); functionHeader.Text(L"功能"); functionHeader.Opacity(0.66);
+            functionHeader.HorizontalAlignment(HorizontalAlignment::Left);
+            auto trayHeader = TextBlock(); trayHeader.Text(L"托盘"); trayHeader.Opacity(0.66);
+            trayHeader.HorizontalAlignment(HorizontalAlignment::Left);
+            Grid::SetColumn(functionHeader, 1); Grid::SetColumn(trayHeader, 2);
+            controlsGrid.Children().Append(functionHeader); controlsGrid.Children().Append(trayHeader);
+
+            auto controlRow = [&](wchar_t const* name, ::DisplaySwitcher::Native::DdcVcpCode code, Slider const& slider,
+                ToggleSwitch const& enabled, ToggleSwitch const& showInTray, int rowIndex)
+            {
                 auto label = TextBlock(); label.Text(name); label.VerticalAlignment(VerticalAlignment::Center);
                 auto value = TextBlock(); value.Text(std::to_wstring(static_cast<int>(std::lround(slider.Value())))); value.VerticalAlignment(VerticalAlignment::Center);
                 value.HorizontalAlignment(HorizontalAlignment::Right);
+                enabled.HorizontalAlignment(HorizontalAlignment::Left);
+                showInTray.HorizontalAlignment(HorizontalAlignment::Left);
+                slider.HorizontalAlignment(HorizontalAlignment::Stretch);
                 AutomationProperties::SetName(enabled, std::wstring(name) + L"功能开关");
                 AutomationProperties::SetName(showInTray, std::wstring(name) + L"在托盘显示");
                 AutomationProperties::SetName(slider, std::wstring(name) + L"调节");
                 Grid::SetColumn(enabled, 1); Grid::SetColumn(showInTray, 2); Grid::SetColumn(slider, 3); Grid::SetColumn(value, 4);
-                row.Children().Append(label); row.Children().Append(enabled); row.Children().Append(showInTray); row.Children().Append(slider); row.Children().Append(value);
+                for (auto const& element : { label.as<FrameworkElement>(), enabled.as<FrameworkElement>(),
+                    showInTray.as<FrameworkElement>(), slider.as<FrameworkElement>(), value.as<FrameworkElement>() })
+                    Grid::SetRow(element, rowIndex);
+                controlsGrid.Children().Append(label); controlsGrid.Children().Append(enabled);
+                controlsGrid.Children().Append(showInTray); controlsGrid.Children().Append(slider);
+                controlsGrid.Children().Append(value);
                 enabled.Toggled([this, slider, showInTray](auto const& sender, auto const&)
                 {
                     auto on = sender.template as<ToggleSwitch>().IsOn(); slider.IsEnabled(on);
@@ -706,21 +873,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
                     [this, id = display.id, code, slider](IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
                     { if (args.Key() == Windows::System::VirtualKey::Enter) WriteDdc(id, code, static_cast<int>(std::lround(slider.Value()))); }));
                 slider.IsEnabled(enabled.IsOn()); showInTray.IsEnabled(enabled.IsOn());
-                return row;
             };
-            auto brightnessRow = controlRow(L"亮度", ::DisplaySwitcher::Native::DdcVcpCode::Brightness,
-                controls.brightness, controls.brightnessEnabled, controls.brightnessShowInTray);
-            auto contrastRow = controlRow(L"对比度", ::DisplaySwitcher::Native::DdcVcpCode::Contrast,
-                controls.contrast, controls.contrastEnabled, controls.contrastShowInTray);
-            auto volumeRow = controlRow(L"音量", ::DisplaySwitcher::Native::DdcVcpCode::Volume,
-                controls.volume, controls.volumeEnabled, controls.volumeShowInTray);
+            controlRow(L"亮度", ::DisplaySwitcher::Native::DdcVcpCode::Brightness,
+                controls.brightness, controls.brightnessEnabled, controls.brightnessShowInTray, 1);
+            controlRow(L"对比度", ::DisplaySwitcher::Native::DdcVcpCode::Contrast,
+                controls.contrast, controls.contrastEnabled, controls.contrastShowInTray, 2);
+            controlRow(L"音量", ::DisplaySwitcher::Native::DdcVcpCode::Volume,
+                controls.volume, controls.volumeEnabled, controls.volumeShowInTray, 3);
 
             auto fields = StackPanel(); fields.Spacing(10);
-            auto displayTitle = TextBlock(); displayTitle.Text(L"显示器 " + std::to_wstring(index + 1));
+            auto displayTitle = TextBlock(); displayTitle.Text(display.name);
             displayTitle.FontSize(18); displayTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-            auto columns = TextBlock(); columns.Text(L"                 功能      托盘"); columns.Opacity(0.66);
-            fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(columns);
-            fields.Children().Append(brightnessRow); fields.Children().Append(contrastRow); fields.Children().Append(volumeRow);
+            fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(controlsGrid);
             fields.Children().Append(controls.status);
             displayEditorsPanel_.Children().Append(CreateCard(fields));
             displayEditors_.push_back(std::move(controls));
@@ -762,10 +926,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto const profile = workingProfiles_[index];
             ProfileEditorControls controls; controls.id = profile.id;
             controls.name = TextBox(); Header(controls.name, L"配置名称"); controls.name.Text(profile.name); controls.name.MaxLength(32);
-            controls.enabled = ToggleSwitch(); Header(controls.enabled, L"启用此协同配置"); controls.enabled.IsOn(profile.coordinationEnabled);
+            controls.enabled = ToggleSwitch(); controls.enabled.IsOn(profile.coordinationEnabled);
             controls.peerHost = TextBox(); Header(controls.peerHost, L"对端 IP 或主机名"); controls.peerHost.Text(profile.peerHost); controls.peerHost.MaxLength(253);
             controls.peerPort = TextBox(); Header(controls.peerPort, L"对端端口"); controls.peerPort.Text(std::to_wstring(profile.peerPort)); controls.peerPort.MaxLength(5);
-            controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对码"); controls.pairingCode.Password(profile.pairingCode);
+            controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对密码"); controls.pairingCode.Password(profile.pairingCode);
             controls.pairingCode.PlaceholderText(L"NFC 后 8–128 个 UTF-8 字节");
             controls.enabled.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
             controls.name.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
@@ -782,10 +946,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             commitOnReturn(controls.peerPort); commitOnReturn(controls.pairingCode);
 
             auto fields = StackPanel(); fields.Spacing(12);
-            fields.Children().Append(controls.name); fields.Children().Append(controls.enabled);
-            fields.Children().Append(CreateTwoColumn(controls.peerHost, controls.peerPort, 160));
-            fields.Children().Append(controls.pairingCode);
-            fields.Children().Append(CreateSubheading(L"显示器输入映射"));
+            fields.Children().Append(LabeledControlToggleRow(
+                L"配置名称", controls.name, controls.enabled, L"启用此协同配置"));
+            fields.Children().Append(PeerAddressRow(controls.peerHost, controls.peerPort));
+            fields.Children().Append(LabeledWideControlRow(L"配对密码", controls.pairingCode));
+            fields.Children().Append(CreateSubheading(L"对端输入源"));
 
             auto addMapping = [&](std::wstring const& displayId, std::wstring const& label, bool unavailable)
             {
@@ -796,13 +961,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 if (existing != profile.displayInputs.end()) mapping.peerInput.Text(std::to_wstring(existing->peerInput));
                 if (unavailable) mapping.peerInput.Description(box_value(L"该显示器已移除；映射保留但不会自动绑定到其他显示器。"));
                 mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-                fields.Children().Append(mapping.peerInput); controls.mappings.push_back(std::move(mapping));
+                fields.Children().Append(LabeledControlRow(label, mapping.peerInput));
+                controls.mappings.push_back(std::move(mapping));
             };
-            for (auto const& display : workingDisplays_) addMapping(display.id, display.name + L" · 对端输入源", false);
+            for (auto const& display : workingDisplays_) addMapping(display.id, display.name, false);
             for (auto const& mapping : profile.displayInputs)
                 if (std::none_of(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
                 { return _wcsicmp(display.id.c_str(), mapping.displayId.c_str()) == 0; }))
-                    addMapping(mapping.displayId, L"已移除显示器 · 对端输入源", true);
+                    addMapping(mapping.displayId, L"已移除显示器", true);
             if (workingDisplays_.empty() && profile.displayInputs.empty())
             {
                 auto empty = TextBlock(); empty.Text(L"尚未添加显示器。此配置不会执行显示器写入。"); empty.Opacity(0.72);
@@ -871,8 +1037,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 if (_wcsicmp(devices_[index].LearningDevice().localReference.c_str(), selectedUsbLocalReference_.c_str()) == 0)
                 { selected = static_cast<int>(index); break; }
         usbDevices_.SelectedIndex(selected); loading_ = wasLoading;
-        usbDeviceStatus_.Text(selectedUsbLocalReference_.empty() ? L"尚未选择 USB 设备" :
-            (selected >= 0 ? L"已选择的 USB 设备当前已连接" : L"已选择的 USB 设备当前未连接；绑定仍保留"));
+        usbDeviceStatus_.Text(selectedUsbLocalReference_.empty() ? L"（未选择）" :
+            (selected >= 0 ? L"（已连接）" : L"（未连接）"));
     }
 
     void SettingsWindow::RemoveProfile(std::wstring const& id)
@@ -936,7 +1102,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         if (result.outcome == Outcome::AuthenticationFailed)
         {
-            SetConnectionStatus(L"认证失败", false); ShowValidationError(L"v2 对端已响应，但认证失败。请检查配对码。"); return;
+            SetConnectionStatus(L"认证失败", false); ShowValidationError(L"v2 对端已响应，但认证失败。请检查配对密码。"); return;
         }
         if (result.outcome == Outcome::NoResponse)
         {
@@ -996,9 +1162,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         CaptureDisplayEditors();
         auto config = original_;
-        config.displayControlBackend = displayBackend_.SelectedIndex() == 2 ? L"control_my_monitor" :
-            displayBackend_.SelectedIndex() == 1 ? L"native_ddc" : L"auto";
-        config.controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
+        config.displayControlBackend = L"native_ddc";
         config.linkAllDisplays = linkAllDisplays_.IsOn();
         config.displays = workingDisplays_;
         return config;
@@ -1121,7 +1285,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (profile.peerPort < 1 || profile.peerPort > 65535)
             { reject(2, profile.name + L"的对端端口必须为 1–65535。"); return false; }
             if (!profile.pairingCode.empty() && !::DisplaySwitcher::Native::AppConfig::IsValidPairingCode(profile.pairingCode))
-            { reject(2, profile.name + L"的配对码在 NFC 规范化后必须为 8–128 个 UTF-8 字节。"); return false; }
+            { reject(2, profile.name + L"的配对密码在 NFC 规范化后必须为 8–128 个 UTF-8 字节。"); return false; }
             profile.pairingCode = ::DisplaySwitcher::Native::AppConfig::NormalizeNfc(profile.pairingCode);
             for (auto const& mapping : profile.displayInputs)
                 if (mapping.peerInput < 0 || mapping.peerInput > 65535)
@@ -1136,7 +1300,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
             }
         }
         CaptureDisplayEditors();
-        auto backendIndex = displayBackend_.SelectedIndex();
         if (usbAutomation_.IsOn() && workingDisplays_.empty())
         { reject(1, L"启用 USB 自动切换前，请先完成显示器配置。"); return false; }
         std::vector<::DisplaySwitcher::Native::UsbDisplayInputMapping> usbMappings;
@@ -1159,19 +1322,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (profile == workingProfiles_.end() || !profile->coordinationEnabled || !candidate.InspectProfile(profile->id).complete)
             { reject(1, L"启用联动协同前，必须选择一个已开启且完整的协同配置。"); return false; }
         }
-        auto controlMyMonitorPath = Trim(controlMyMonitor_.Text().c_str());
-        if (backendIndex == 2 && controlMyMonitorPath.empty())
-        { reject(3, L"兼容控制通道尚未配置，已恢复最后有效选择。"); return false; }
         std::set<std::wstring> hardwareIds;
         for (auto const& display : workingDisplays_)
         {
             if (display.name.empty())
             { reject(3, L"显示器信息不完整，已恢复最后有效配置。"); return false; }
-            std::wstring backend = backendIndex == 2 ? L"control_my_monitor" : L"native_ddc";
-            auto hardwareId = backend == L"native_ddc" ? display.nativeMonitorId : display.controlMonitorPath;
+            std::wstring backend = L"native_ddc";
+            auto hardwareId = ::DisplaySwitcher::Native::CanonicalDdcMonitorId(display.nativeMonitorId);
             if (hardwareId.empty())
             {
-                reject(3, display.name + (backend == L"native_ddc" ? L"当前未关联可用显示器。" : L"尚未配置兼容通道。"));
+                reject(3, display.name + L"当前未关联可用显示器。");
                 return false;
             }
             hardwareId = backend + L":" + hardwareId;
@@ -1187,9 +1347,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         result.usbSwitch.deviceName = selectedUsbName_;
         result.usbSwitch.vendorId = selectedUsbVendorId_; result.usbSwitch.productId = selectedUsbProductId_;
         result.usbSwitch.displayInputs = std::move(usbMappings);
-        result.displayControlBackend = backendIndex == 2 ? L"control_my_monitor" : backendIndex == 1 ? L"native_ddc" : L"auto";
+        result.displayControlBackend = L"native_ddc";
         result.linkAllDisplays = linkAllDisplays_.IsOn();
-        result.controlMyMonitorPath = controlMyMonitorPath; result.displays = workingDisplays_;
+        result.displays = workingDisplays_;
         result.collaborationProfiles = workingProfiles_;
         for (auto& display : result.displays) display.macInput = -1;
         result.displayConfigurationSafeMode = false; result.startWithWindows = autoStart_.IsOn();
