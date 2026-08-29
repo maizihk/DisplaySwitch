@@ -24,7 +24,7 @@ namespace
         else if (auto toggleSwitch = control.try_as<ToggleSwitch>()) toggleSwitch.Header(box_value(text));
     }
 
-    Grid LabeledToggleRow(std::wstring const& text, ToggleSwitch const& toggle)
+    void ConfigureCompactToggle(ToggleSwitch const& toggle, std::wstring const& automationName)
     {
         toggle.Header(nullptr);
         toggle.OnContent(box_value(L""));
@@ -33,7 +33,12 @@ namespace
         toggle.Width(40);
         toggle.HorizontalAlignment(HorizontalAlignment::Right);
         toggle.VerticalAlignment(VerticalAlignment::Center);
-        AutomationProperties::SetName(toggle, text);
+        AutomationProperties::SetName(toggle, automationName);
+    }
+
+    Grid LabeledToggleRow(std::wstring const& text, ToggleSwitch const& toggle)
+    {
+        ConfigureCompactToggle(toggle, text);
 
         auto row = Grid();
         row.HorizontalAlignment(HorizontalAlignment::Stretch);
@@ -63,6 +68,27 @@ namespace
         label.TextTrimming(TextTrimming::CharacterEllipsis);
         Grid::SetColumn(control, 1);
         row.Children().Append(label); row.Children().Append(control);
+        return row;
+    }
+
+    Grid LabeledControlToggleRow(std::wstring const& text, FrameworkElement const& control,
+        ToggleSwitch const& toggle)
+    {
+        if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
+        control.HorizontalAlignment(HorizontalAlignment::Stretch);
+        AutomationProperties::SetName(control, text);
+        ConfigureCompactToggle(toggle, L"联动协同");
+
+        auto row = Grid(); row.ColumnSpacing(16);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
+        auto controlColumn = ColumnDefinition(); controlColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto toggleColumn = ColumnDefinition(); toggleColumn.Width(GridLengthHelper::Auto());
+        row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(controlColumn);
+        row.ColumnDefinitions().Append(toggleColumn);
+
+        auto label = TextBlock(); label.Text(text); label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(control, 1); Grid::SetColumn(toggle, 2);
+        row.Children().Append(label); row.Children().Append(control); row.Children().Append(toggle);
         return row;
     }
 
@@ -226,8 +252,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbTab.Content(CreatePage({ CreateSection(L"USB 触发设备", {
             LabeledToggleRow(L"USB 自动切换", usbAutomation_),
             usbDevices_, learnCurrentUsb, usbDeviceStatus_,
-            LabeledToggleRow(L"联动协同", usbSwitchDisplaysOnArrival_),
-            LabeledControlRow(L"联动目标", usbProfileSelector_),
+            LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_),
             usbMappingTitle, usbMappingsPanel_, usbHint }) }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
