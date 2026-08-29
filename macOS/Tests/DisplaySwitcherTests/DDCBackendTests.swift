@@ -309,6 +309,92 @@ final class DDCBackendTests: XCTestCase {
         )
     }
 
+    func testChecksumCompatibilityRejectsSingleBadReply() {
+        let reply = badChecksumReply(current: 42, maximum: 100)
+        XCTAssertEqual(
+            NativeDDCChecksumCompatibilityValidator.reading(
+                from: [reply], command: .luminance
+            ),
+            .rejected(.insufficientReplies)
+        )
+    }
+
+    func testChecksumCompatibilityAcceptsOnlyTwoConsistentIndependentReplies() {
+        let reply = badChecksumReply(current: 42, maximum: 100)
+        var buffersWereFresh: [Bool] = []
+        var calls = 0
+        let result = NativeDDCChecksumCompatibilityRunner.run(command: .luminance) { response in
+            buffersWereFresh.append(response.allSatisfy { $0 == 0 })
+            calls += 1
+            response = reply
+            return .success(())
+        }
+
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(buffersWereFresh, [true, true])
+        XCTAssertEqual(
+            result,
+            .accepted(DDCReading(current: 42, maximum: 100, estimated: true))
+        )
+    }
+
+    func testChecksumCompatibilityRejectsTwoDifferentReplies() {
+        XCTAssertEqual(
+            NativeDDCChecksumCompatibilityValidator.reading(
+                from: [
+                    badChecksumReply(current: 42, maximum: 100),
+                    badChecksumReply(current: 43, maximum: 100)
+                ],
+                command: .luminance
+            ),
+            .rejected(.inconsistentPayload)
+        )
+    }
+
+    func testChecksumCompatibilityRejectsInvalidFieldsAndRanges() {
+        var wrongSource = badChecksumReply(current: 42, maximum: 100)
+        wrongSource[0] = 0x00
+        var wrongOpcode = badChecksumReply(current: 42, maximum: 100)
+        wrongOpcode[2] = 0x03
+        var wrongCommand = badChecksumReply(current: 42, maximum: 100)
+        wrongCommand[4] = DDCCommand.contrast.rawValue
+        let invalidCases: [([UInt8], NativeDDCChecksumCompatibilityRejection)] = [
+            (Array(badChecksumReply(current: 42, maximum: 100).dropLast()),
+             .invalidField(.wrongLength)),
+            (wrongSource, .invalidField(.wrongSource)),
+            (wrongOpcode, .invalidField(.wrongOpcode)),
+            (wrongCommand, .invalidField(.wrongCommand)),
+            (badChecksumReply(current: 1, maximum: 0), .invalidRange),
+            (badChecksumReply(current: 101, maximum: 100), .invalidRange)
+        ]
+
+        for (reply, expected) in invalidCases {
+            XCTAssertEqual(
+                NativeDDCChecksumCompatibilityValidator.reading(
+                    from: [reply, reply], command: .luminance
+                ),
+                .rejected(expected)
+            )
+        }
+    }
+
+    func testEstimatedNativeReadingIsCachedAndProjectedAsEstimated() {
+        let backend = MockDDCBackend()
+        backend.readings = [
+            "display-a": [
+                .luminance: DDCReading(current: 42, maximum: 100, estimated: true)
+            ]
+        ]
+        let cache = MockDDCCache()
+        let service = makeService(backends: [backend], cache: cache)
+
+        let result = service.read([target(id: "display-a", commands: [.luminance])])
+
+        XCTAssertEqual(result["display-a"]?[.luminance]?.reading.current, 42)
+        XCTAssertTrue(result["display-a"]?[.luminance]?.estimated == true)
+        XCTAssertEqual(cache.values["display-a"]?[.luminance], 42)
+    }
+
     func testNativeReadTransportParametersAreExplicitAndTestable() {
         let parameters = NativeDDCTransportParameters.appleSiliconDDCCompatible
         XCTAssertEqual(parameters.writeDataAddress, 0x51)
@@ -437,7 +523,15 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(addresses.count, 10)
         XCTAssertEqual(Array(addresses.prefix(5)), Array(repeating: 0x51, count: 5))
         XCTAssertEqual(Array(addresses.suffix(5)), Array(repeating: 0, count: 5))
-        XCTAssertEqual(outcome, .failure(.wrongCommand, dataAddress: 0, attempts: 10))
+        XCTAssertEqual(
+            outcome,
+            .failure(
+                .wrongCommand,
+                dataAddress: 0,
+                attempts: 10,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
     }
 
     func testRequestWriteFailureDoesNotProbeAlternateReadOffset() {
@@ -452,7 +546,15 @@ final class DDCBackendTests: XCTestCase {
         }
 
         XCTAssertEqual(addresses, Array(repeating: 0x51, count: 5))
-        XCTAssertEqual(outcome, .failure(.requestWriteFailed, dataAddress: 0x51, attempts: 5))
+        XCTAssertEqual(
+            outcome,
+            .failure(
+                .requestWriteFailed,
+                dataAddress: 0x51,
+                attempts: 5,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
     }
 
     func testReadOffsetPreferenceIsPerDisplayAndInvalidatedWithService() {
@@ -584,6 +686,16 @@ final class DDCBackendTests: XCTestCase {
                         commands: Set<DDCCommand> = DDCCommand.userControls) -> DDCDisplayTarget {
         DDCDisplayTarget(stableID: id, selector: selector ?? "selector-\(id)",
                          enabledCommands: commands)
+    }
+
+    private func badChecksumReply(current: Int, maximum: Int) -> [UInt8] {
+        var reply: [UInt8] = [
+            0x6E, 0x88, 0x02, 0x00, DDCCommand.luminance.rawValue, 0x00,
+            UInt8((maximum >> 8) & 0xFF), UInt8(maximum & 0xFF),
+            UInt8((current >> 8) & 0xFF), UInt8(current & 0xFF), 0
+        ]
+        reply[10] = reply.dropLast().reduce(UInt8(0x50), ^) ^ 0xFF
+        return reply
     }
 }
 

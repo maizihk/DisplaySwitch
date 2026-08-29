@@ -370,6 +370,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if let skipReason {
             displayStatusLabels[index]?.stringValue = skipReason.userFacingDescription
+        } else if diagnostic?.operationCategory == .readChecksumEstimated {
+            displayStatusLabels[index]?.stringValue = "已读取（弱校验）\(diagnosticSuffix)"
         } else if values.isEmpty {
             displayStatusLabels[index]?.stringValue = "原生读取失败\(diagnosticSuffix)"
         } else if estimatedCount == values.count {

@@ -135,11 +135,11 @@ final class NativeDDCBackend: DDCBackend {
                     rememberReadDataAddress(dataAddress, selector: selector)
                 }
                 recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
-                                 category: .readSucceeded,
+                                 category: reading.estimated ? .readChecksumEstimated : .readSucceeded,
                                  chipAddress: display.chipAddress,
                                  readDataAddress: dataAddress,
                                  readAttemptCount: attempts)
-            case .failure(let issue, let dataAddress, let attempts):
+            case .failure(let issue, let dataAddress, let attempts, _):
                 recordDiagnostic(
                     selector: selector, path: display.transportPath, serviceMatched: true,
                     category: diagnosticCategory(for: issue), replyIssue: issue,
@@ -533,7 +533,7 @@ final class NativeDDCBackend: DDCBackend {
     ) -> NativeDDCReadStrategyOutcome {
         let alternateDataAddress: UInt8? = transportPath == .typeCDPAlt
             && primaryDataAddress == parameters.typeCDPReadDataAddress ? 0 : nil
-        return NativeDDCReadStrategyRunner.run(
+        let strictOutcome = NativeDDCReadStrategyRunner.run(
             primaryDataAddress: primaryDataAddress,
             alternateDataAddress: alternateDataAddress,
             attemptsPerStrategy: parameters.readAttempts(for: transportPath)
@@ -553,6 +553,40 @@ final class NativeDDCBackend: DDCBackend {
                 return .failure(issue)
             }
             return NativeDDCReplyValidator.reading(from: response, command: command)
+        }
+        guard case .failure(
+            .badChecksum,
+            let dataAddress,
+            let strictAttempts,
+            onlyObservedIssueWasBadChecksum: true
+        ) = strictOutcome else {
+            return strictOutcome
+        }
+        let compatibility = NativeDDCChecksumCompatibilityRunner.run(command: command) { response in
+            var request: [UInt8] = [command.rawValue]
+            return communicate(
+                service: service,
+                chipAddress: chipAddress,
+                request: &request,
+                response: &response,
+                attempts: 1,
+                readDataAddress: dataAddress,
+                readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                parameters: parameters
+            )
+        }
+        switch compatibility {
+        case .accepted(let reading):
+            return .success(
+                reading, dataAddress: dataAddress,
+                attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount
+            )
+        case .rejected:
+            return .failure(
+                .badChecksum, dataAddress: dataAddress,
+                attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount,
+                onlyObservedIssueWasBadChecksum: true
+            )
         }
     }
 
