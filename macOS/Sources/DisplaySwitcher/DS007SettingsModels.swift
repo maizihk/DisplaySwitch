@@ -109,11 +109,40 @@ enum DisplaySettingsSemantics {
 }
 
 enum DisplayInputMappingPresentation {
+    enum Context {
+        case usb
+        case collaboration
+    }
+
+    struct Row: Equatable {
+        let displayID: String
+        let title: String
+    }
+
     static func usbTitle(displayName: String) -> String {
         "\(displayName) 离开后输入源"
     }
 
     static func collaborationTitle(displayName: String) -> String {
         "\(displayName) 输入源"
+    }
+
+    static func rows(
+        displays: [DisplayConfigurationV4Display],
+        context: Context
+    ) -> [Row] {
+        var seen = Set<String>()
+        return displays.compactMap { display in
+            let key = display.id.lowercased()
+            guard seen.insert(key).inserted else { return nil }
+            let title: String
+            switch context {
+            case .usb:
+                title = usbTitle(displayName: display.name)
+            case .collaboration:
+                title = collaborationTitle(displayName: display.name)
+            }
+            return Row(displayID: key, title: title)
+        }
     }
 }

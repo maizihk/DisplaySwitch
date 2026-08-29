@@ -18,6 +18,40 @@ private extension NSColor {
     }
 }
 
+private final class DisplayInputMappingRowView: NSStackView {
+    let inputField = NSTextField()
+    private let titleLabel = NSTextField(wrappingLabelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        titleLabel.font = .systemFont(ofSize: 12)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.maximumNumberOfLines = 0
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        inputField.placeholderString = "0–65535"
+        inputField.widthAnchor.constraint(equalToConstant: 108).isActive = true
+        inputField.setContentHuggingPriority(.required, for: .horizontal)
+        inputField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        setViews([titleLabel, inputField], in: .center)
+        orientation = .horizontal
+        alignment = .firstBaseline
+        spacing = 10
+        distribution = .fill
+        widthAnchor.constraint(equalToConstant: 590).isActive = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func update(title: String, value: String, delegate: NSTextFieldDelegate) {
+        titleLabel.stringValue = title
+        inputField.stringValue = value
+        inputField.delegate = delegate
+    }
+}
+
 private final class HoverTrackingView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
@@ -258,7 +292,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
     private let usbMappingStack = NSStackView()
     private lazy var learnUSBButton = NSButton(title: "学习 USB 设备…", target: self, action: #selector(learnUSBDevice))
-    private var inputFields: [Int: NSTextField] = [:]
+    private var inputFields: [String: NSTextField] = [:]
+    private var profileMappingRows: [String: DisplayInputMappingRowView] = [:]
     private var displayFeatureSwitches: [Int: [DDCCommand: NSSwitch]] = [:]
     private var displayTraySwitches: [Int: [DDCCommand: NSSwitch]] = [:]
     private var displaySliders: [Int: [DDCCommand: NSSlider]] = [:]
@@ -266,7 +301,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var displayStatusLabels: [Int: NSTextField] = [:]
     private let displayStack = NSStackView()
     private var usbLearningPending = false
-    private var usbInputFields: [Int: NSTextField] = [:]
+    private var usbInputFields: [String: NSTextField] = [:]
+    private var usbMappingRows: [String: DisplayInputMappingRowView] = [:]
     private var configurationDocument: DisplayConfigurationStoreV5Document?
     private var editingProfiles: [CollaborationProfile] = []
     private var selectedProfileIndex = 0
@@ -953,26 +989,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func displayInputMappingRow(title: String, field: NSTextField) -> NSView {
-        let label = NSTextField(wrappingLabelWithString: title)
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.maximumNumberOfLines = 0
-        label.lineBreakMode = .byWordWrapping
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        field.widthAnchor.constraint(equalToConstant: 108).isActive = true
-        field.setContentHuggingPriority(.required, for: .horizontal)
-        field.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let row = NSStackView(views: [label, field])
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 10
-        row.distribution = .fill
-        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
-        return row
-    }
-
     private func sectionTitle(_ title: String) -> NSTextField {
         let label = NSTextField(labelWithString: title)
         label.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -1085,8 +1101,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func persistUSBDisplayMappings() {
         persistDocument { document in
-            document.usbSwitch.displayInputs = document.displays.enumerated().compactMap { offset, display in
-                guard let field = self.usbInputFields[offset + 1],
+            document.usbSwitch.displayInputs = document.displays.compactMap { display in
+                guard let field = self.usbInputFields[display.id.lowercased()],
                       let value = Int(field.stringValue), (0...65535).contains(value) else { return nil }
                 return USBDisplayInputMapping(displayID: display.id, targetInput: value)
             }
@@ -1112,8 +1128,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profile.peerPort = peerPortField.integerValue
         profile.pairingCode = pairingCodeField.stringValue.precomposedStringWithCanonicalMapping
         if let requestedEnabled { profile.coordinationEnabled = requestedEnabled }
-        let mapping = document.displays.enumerated().compactMap { offset, display -> DisplayInputMapping? in
-            guard let field = inputFields[offset + 1], let value = Int(field.stringValue),
+        let mapping = document.displays.compactMap { display -> DisplayInputMapping? in
+            guard let field = inputFields[display.id.lowercased()], let value = Int(field.stringValue),
                   (0...65535).contains(value) else { return nil }
             return DisplayInputMapping(displayID: display.id, peerInput: value)
         }
@@ -1144,7 +1160,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             editingProfiles = document.collaborationProfiles
             clearValidationError()
             onSave?()
-            reloadValues()
+            reloadValues(rebuildDisplayForms: false)
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
@@ -1174,7 +1190,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         launchAtLoginCheckbox.state = (status == .enabled || status == .requiresApproval) ? .on : .off
     }
 
-    private func reloadValues() {
+    private func reloadValues(rebuildDisplayForms shouldRebuildDisplayForms: Bool = true) {
         learnUSBButton.isEnabled = true
         let loaded = AppPreferences.loadDisplayConfigurations()
         configurationDocument = loaded.document
@@ -1198,7 +1214,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         reloadUSBControls(document: loaded.document)
         refreshSelectedCollaborationStatus()
         let configurations = loaded.configurations
-        rebuildDisplayForms(configurations)
+        if shouldRebuildDisplayForms {
+            rebuildDisplayForms(configurations)
+        }
         for configuration in configurations {
             let index = configuration.index
             guard let stored = loaded.document.displays[safe: index - 1] else { continue }
@@ -1255,25 +1273,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         usbCollaborationProfilePopup.isEnabled = true
 
-        usbMappingStack.arrangedSubviews.forEach {
-            usbMappingStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
-        usbInputFields.removeAll()
         let mappings = Dictionary(uniqueKeysWithValues: document.usbSwitch.displayInputs.map {
             ($0.displayID.lowercased(), $0.targetInput)
         })
-        for (offset, display) in document.displays.enumerated() {
-            let field = NSTextField()
-            field.placeholderString = "0–65535"
-            field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
-            field.delegate = self
-            usbInputFields[offset + 1] = field
-            usbMappingStack.addArrangedSubview(displayInputMappingRow(
-                title: DisplayInputMappingPresentation.usbTitle(displayName: display.name),
-                field: field
-            ))
+        let descriptors = DisplayInputMappingPresentation.rows(
+            displays: document.displays, context: .usb
+        )
+        var reconciled: [String: DisplayInputMappingRowView] = [:]
+        for descriptor in descriptors {
+            let row = usbMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
+            row.update(
+                title: descriptor.title,
+                value: mappings[descriptor.displayID].map(String.init) ?? "",
+                delegate: self
+            )
+            reconciled[descriptor.displayID] = row
         }
+        replaceMappingRows(in: usbMappingStack, rows: descriptors.compactMap {
+            reconciled[$0.displayID]
+        })
+        usbMappingRows = reconciled
+        usbInputFields = reconciled.mapValues(\.inputField)
     }
 
     private func loadSelectedProfileFields() {
@@ -1288,29 +1308,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func rebuildProfileMappings(profile: CollaborationProfile) {
-        profileMappingStack.arrangedSubviews.forEach {
-            profileMappingStack.removeArrangedSubview($0)
-            $0.removeFromSuperview()
-        }
         profileMappingStack.orientation = .vertical
         profileMappingStack.alignment = .leading
         profileMappingStack.spacing = 6
-        inputFields.removeAll()
         let mappings = Dictionary(uniqueKeysWithValues: profile.displayInputs.map {
             ($0.displayID.lowercased(), $0.peerInput)
         })
-        for (offset, display) in (configurationDocument?.displays ?? []).enumerated() {
-            let index = offset + 1
-            let field = NSTextField()
-            field.placeholderString = "0–65535"
-            field.stringValue = mappings[display.id.lowercased()].map(String.init) ?? ""
-            field.delegate = self
-            inputFields[index] = field
-            profileMappingStack.addArrangedSubview(displayInputMappingRow(
-                title: DisplayInputMappingPresentation.collaborationTitle(displayName: display.name),
-                field: field
-            ))
+        let descriptors = DisplayInputMappingPresentation.rows(
+            displays: configurationDocument?.displays ?? [], context: .collaboration
+        )
+        var reconciled: [String: DisplayInputMappingRowView] = [:]
+        for descriptor in descriptors {
+            let row = profileMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
+            row.update(
+                title: descriptor.title,
+                value: mappings[descriptor.displayID].map(String.init) ?? "",
+                delegate: self
+            )
+            reconciled[descriptor.displayID] = row
         }
+        replaceMappingRows(in: profileMappingStack, rows: descriptors.compactMap {
+            reconciled[$0.displayID]
+        })
+        profileMappingRows = reconciled
+        inputFields = reconciled.mapValues(\.inputField)
+    }
+
+    private func replaceMappingRows(in stack: NSStackView, rows: [DisplayInputMappingRowView]) {
+        let desired = Set(rows.map(ObjectIdentifier.init))
+        for view in stack.arrangedSubviews where !desired.contains(ObjectIdentifier(view)) {
+            stack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        stack.setViews(rows, in: .center)
     }
 
     @objc private func profileSelectionChanged(_ sender: NSPopUpButton) {

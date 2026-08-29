@@ -104,4 +104,41 @@ final class PublicPresentationModelsTests: XCTestCase {
             "模拟显示器（2） 输入源"
         ])
     }
+
+    func testTwentyMappingReloadsRemainUniqueAndStableByDisplayID() {
+        let displays = [
+            mappingDisplay(id: "display-a", name: "模拟显示器 A"),
+            mappingDisplay(id: "display-b", name: "模拟显示器 B（1）"),
+            mappingDisplay(id: "display-c", name: "模拟显示器 B（2）")
+        ]
+        var usbRows: [DisplayInputMappingPresentation.Row] = []
+        var collaborationRows: [DisplayInputMappingPresentation.Row] = []
+
+        for cycle in 0..<20 {
+            let reordered = cycle.isMultiple(of: 2) ? displays : Array(displays.reversed())
+            usbRows = DisplayInputMappingPresentation.rows(
+                displays: Array(reordered) + [displays[1]], context: .usb
+            )
+            collaborationRows = DisplayInputMappingPresentation.rows(
+                displays: Array(reordered) + [displays[2]], context: .collaboration
+            )
+            XCTAssertEqual(Set(usbRows.map(\.displayID)).count, displays.count)
+            XCTAssertEqual(Set(collaborationRows.map(\.displayID)).count, displays.count)
+            XCTAssertEqual(usbRows.count, displays.count)
+            XCTAssertEqual(collaborationRows.count, displays.count)
+        }
+
+        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（1） 离开后输入源" })
+        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（2） 离开后输入源" })
+        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（1） 输入源" })
+        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2） 输入源" })
+    }
+
+    private func mappingDisplay(id: String, name: String) -> DisplayConfigurationV4Display {
+        DisplayConfigurationV4Display(
+            id: id, name: name, selector: "selector-\(id)", localInput: nil,
+            readEnabled: false, brightnessEnabled: false,
+            contrastEnabled: false, volumeEnabled: false
+        )
+    }
 }
