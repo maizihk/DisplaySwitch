@@ -296,7 +296,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
-        commonTab.Content(CreatePage({ CreateSection(L"常规", {
+        commonTab.Content(CreatePage({ CreateSection({
             LabeledToggleRow(L"登录时启动", autoStart_), commonHint }) }));
 
         auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习"));
@@ -312,7 +312,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         auto usbMappingTitle = CreateSubheading(L"对端输入源");
-        usbTab.Content(CreatePage({ CreateSection(L"USB 切换", {
+        usbTab.Content(CreatePage({ CreateSection({
             LabeledToggleRow(L"自动切换", usbAutomation_),
             UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_),
             usbMappingTitle, usbMappingsPanel_,
@@ -355,7 +355,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             RebuildProfileEditors();
         });
         profileEditorsPanel_ = StackPanel(); profileEditorsPanel_.Spacing(14);
-        peerTab.Content(CreatePage({ CreateSection(L"协同配置", {
+        peerTab.Content(CreatePage({ CreateSection({
             peerStatus, peerHint, CreateTwoColumn(profileSelector_, addProfile), profileEditorsPanel_ }) }));
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -366,7 +366,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
-        displayTab.Content(CreatePage({ CreateSection(L"显示器控制", { displayHint, displayBackend_,
+        displayTab.Content(CreatePage({ CreateSection({ displayHint, displayBackend_,
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
@@ -386,7 +386,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         aboutLinks.Children().Append(project); aboutLinks.Children().Append(license); aboutLinks.Children().Append(notices);
         auto buildNotice = TextBlock(); buildNotice.Text(info.buildNotice); buildNotice.TextWrapping(TextWrapping::Wrap);
         buildNotice.TextAlignment(TextAlignment::Center); buildNotice.Opacity(0.72);
-        aboutTab.Content(CreatePage({ CreateSection(L"关于", { aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
+        aboutTab.Content(CreatePage({ CreateSection({ aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
         tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab); tabs_.TabItems().Append(aboutTab);
@@ -406,11 +406,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         return root;
     }
 
-    Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
+    Border SettingsWindow::CreateSection(std::vector<UIElement> const& children)
     {
         auto panel = StackPanel(); panel.Spacing(16);
-        auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
-        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
         for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
     }
 

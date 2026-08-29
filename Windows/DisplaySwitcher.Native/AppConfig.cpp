@@ -677,12 +677,14 @@ namespace DisplaySwitcher::Native
         return path / L"DisplaySwitcher" / L"settings.json";
     }
 
-    AppConfig AppConfig::Load() { return LoadFromPath(ConfigPath()); }
+    AppConfig AppConfig::Load(bool* firstRun) { return LoadFromPath(ConfigPath(), firstRun); }
 
-    AppConfig AppConfig::LoadFromPath(std::filesystem::path const& path)
+    AppConfig AppConfig::LoadFromPath(std::filesystem::path const& path, bool* firstRun)
     {
         auto defaults = NewConfig();
-        if (!std::filesystem::exists(path))
+        auto const configurationExists = std::filesystem::exists(path);
+        if (firstRun) *firstRun = !configurationExists;
+        if (!configurationExists)
         {
             try { WriteAtomic(defaults, path, true); }
             catch (...) { EnterSafeMode(defaults); SetMarker(path); }

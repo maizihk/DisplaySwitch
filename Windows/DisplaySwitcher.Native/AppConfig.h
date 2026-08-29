@@ -55,8 +55,8 @@ namespace DisplaySwitcher::Native
         static bool IsValidPairingCode(std::wstring const& code, bool requireNormalized = false);
         static std::wstring NormalizeNfc(std::wstring const& text);
         static bool IsValidConfigurationPath(std::wstring const& path) noexcept;
-        static AppConfig Load();
-        static AppConfig LoadFromPath(std::filesystem::path const& path);
+        static AppConfig Load(bool* firstRun = nullptr);
+        static AppConfig LoadFromPath(std::filesystem::path const& path, bool* firstRun = nullptr);
         void EnterSafeState() noexcept;
         void Save() const;
         void SaveToPath(std::filesystem::path const& path,

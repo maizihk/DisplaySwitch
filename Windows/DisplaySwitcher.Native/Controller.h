@@ -61,6 +61,7 @@ namespace DisplaySwitcher::Native
         winrt::Microsoft::UI::Dispatching::DispatcherQueue dispatcher_{ nullptr };
         std::function<void()> exitApplication_;
         mutable std::mutex configMutex_;
+        bool firstRun_{};
         AppConfig config_;
         std::unique_ptr<TrayIcon> trayIcon_;
         std::unique_ptr<UdpPeer> peer_;

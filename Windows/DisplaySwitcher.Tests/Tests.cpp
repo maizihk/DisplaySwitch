@@ -172,8 +172,11 @@ namespace
     void TestFreshInstallAndCounts(std::filesystem::path const& root)
     {
         auto freshPath = root / L"fresh.json";
-        auto first = AppConfig::LoadFromPath(freshPath);
-        auto second = AppConfig::LoadFromPath(freshPath);
+        bool firstRun{};
+        bool secondRun{ true };
+        auto first = AppConfig::LoadFromPath(freshPath, &firstRun);
+        auto second = AppConfig::LoadFromPath(freshPath, &secondRun);
+        Check(firstRun && !secondRun, L"首次启动应显示设置，后续启动应只驻留托盘");
         Check(IsValidDisplayId(first.localEndpointId) && first.localEndpointId == second.localEndpointId,
             L"C-001: localEndpointID 应随机生成、持久保存且重启稳定");
         Check(first.collaborationProfiles.size() == 1 && first.collaborationProfiles[0].name == L"配置 1"

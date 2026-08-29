@@ -35,7 +35,7 @@ namespace DisplaySwitcher::Native
     }
 
     Controller::Controller(Microsoft::UI::Dispatching::DispatcherQueue const& dispatcher, std::function<void()> exitApplication) :
-        dispatcher_(dispatcher), exitApplication_(std::move(exitApplication)), config_(AppConfig::Load())
+        dispatcher_(dispatcher), exitApplication_(std::move(exitApplication)), config_(AppConfig::Load(&firstRun_))
     {
     }
 
@@ -65,6 +65,7 @@ namespace DisplaySwitcher::Native
             { if (auto self = weak.lock()) self->WriteTrayDdc(displayId, code, value); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
+        if (firstRun_) ShowSettings();
     }
 
     Controller::~Controller() { Dispose(); }
