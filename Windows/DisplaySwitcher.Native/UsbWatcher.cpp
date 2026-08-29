@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Diagnostics.h"
+#include "UsbPresencePollPolicy.h"
 #include "UsbWatcher.h"
 
 namespace
@@ -75,15 +76,30 @@ namespace DisplaySwitcher::Native
             vendorId_ = vendorId;
             productId_ = productId;
             localReference_ = std::move(localReference);
+            pendingTargetPresence_.reset();
         }
         if (changeEvent_) SetEvent(changeEvent_);
     }
 
     DWORD CALLBACK UsbWatcher::OnDeviceNotification(HCMNOTIFICATION, void* context,
-        CM_NOTIFY_ACTION, PCM_NOTIFY_EVENT_DATA, DWORD)
+        CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA eventData, DWORD eventDataSize)
     {
         auto watcher = static_cast<UsbWatcher*>(context);
-        if (watcher && watcher->changeEvent_) SetEvent(watcher->changeEvent_);
+        if (!watcher) return ERROR_SUCCESS;
+        auto kind = UsbDeviceNotificationKind::Other;
+        if (action == CM_NOTIFY_ACTION_DEVICEINSTANCEENUMERATED || action == CM_NOTIFY_ACTION_DEVICEINSTANCESTARTED)
+            kind = UsbDeviceNotificationKind::Present;
+        else if (action == CM_NOTIFY_ACTION_DEVICEINSTANCEREMOVED)
+            kind = UsbDeviceNotificationKind::Removed;
+        std::optional<bool> targetPresence;
+        if (eventData && eventDataSize >= sizeof(CM_NOTIFY_EVENT_DATA) &&
+            eventData->FilterType == CM_NOTIFY_FILTER_TYPE_DEVICEINSTANCE)
+        {
+            std::scoped_lock lock(watcher->configurationMutex_);
+            targetPresence = TargetUsbPresenceFromNotification(kind, watcher->localReference_, eventData->u.DeviceInstance.InstanceId);
+            if (targetPresence) watcher->pendingTargetPresence_ = targetPresence;
+        }
+        if (watcher->changeEvent_) SetEvent(watcher->changeEvent_);
         return ERROR_SUCCESS;
     }
 
@@ -104,36 +120,68 @@ namespace DisplaySwitcher::Native
     void UsbWatcher::Poll(std::stop_token token)
     {
         std::optional<bool> last;
+        UsbPresencePollPolicy pollPolicy;
         int lastVendor{}, lastProduct{};
         { std::scoped_lock lock(configurationMutex_); lastVendor = vendorId_; lastProduct = productId_; }
         std::wstring lastReference;
+        std::optional<bool> authoritativePresence;
+        ULONGLONG authoritativeUntil{};
         while (!token.stop_requested())
         {
             try
             {
                 int vendor{}, product{};
                 std::wstring reference;
-                { std::scoped_lock lock(configurationMutex_); vendor = vendorId_; product = productId_; reference = localReference_; }
+                std::optional<bool> targetPresence;
+                {
+                    std::scoped_lock lock(configurationMutex_);
+                    vendor = vendorId_; product = productId_; reference = localReference_;
+                    targetPresence = pendingTargetPresence_;
+                    pendingTargetPresence_.reset();
+                }
                 if (vendor != lastVendor || product != lastProduct || _wcsicmp(reference.c_str(), lastReference.c_str()) != 0)
                 {
                     last.reset();
+                    authoritativePresence.reset();
                     lastVendor = vendor;
                     lastProduct = product;
                     lastReference = std::move(reference);
                 }
-                auto present = IsPresent();
+                bool present{};
+                auto now = GetTickCount64();
+                if (targetPresence)
+                {
+                    present = *targetPresence;
+                    authoritativePresence = present;
+                    authoritativeUntil = now + 1500;
+                }
+                else
+                {
+                    auto observed = IsPresent();
+                    if (authoritativePresence && now < authoritativeUntil && observed != *authoritativePresence)
+                        present = *authoritativePresence;
+                    else
+                    {
+                        present = observed;
+                        if (now >= authoritativeUntil) authoritativePresence.reset();
+                    }
+                }
                 if ((!last.has_value() || *last != present) && callback_)
                 {
-                    WriteDiagnostic(present ? "usb.poll_change present=1" : "usb.poll_change present=0");
                     callback_(present);
+                    WriteDiagnostic(targetPresence
+                        ? (*targetPresence ? "usb.target_notification present=1" : "usb.target_notification present=0")
+                        : (present ? "usb.poll_change present=1" : "usb.poll_change present=0"));
                 }
                 last = present;
             }
             catch (...) {}
             if (changeEvent_)
             {
-                auto fallbackMilliseconds = notificationsEnabled_.load() ? 2000 : 250;
-                WaitForSingleObject(changeEvent_, fallbackMilliseconds);
+                auto wait = WaitForSingleObject(changeEvent_,
+                    pollPolicy.NextWaitMilliseconds(notificationsEnabled_.load()));
+                if (wait == WAIT_OBJECT_0) pollPolicy.NotificationReceived();
+                else if (wait == WAIT_TIMEOUT) pollPolicy.WaitTimedOut();
             }
             else
             {

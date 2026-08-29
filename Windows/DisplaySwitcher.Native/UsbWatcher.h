@@ -36,6 +36,7 @@ namespace DisplaySwitcher::Native
         int vendorId_;
         int productId_;
         std::wstring localReference_;
+        std::optional<bool> pendingTargetPresence_;
         PresenceCallback callback_;
         HANDLE changeEvent_{};
         HCMNOTIFICATION notification_{};

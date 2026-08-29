@@ -552,16 +552,11 @@ namespace DisplaySwitcher::Native
         for (auto const& display : displays)
         {
             if (!IsValidDisplayId(display.id) || !VisibleText(display.name, 1, 64) || !ids.insert(Lower(display.id)).second) return false;
-            std::wstring hardwareId;
-            auto backend = displayControlBackend == L"auto" ? L"native_ddc" : displayControlBackend;
-            if (backend == L"native_ddc") hardwareId = display.nativeMonitorId;
-            else if (backend == L"control_my_monitor") hardwareId = display.controlMonitorPath;
-            else return false;
+            auto hardwareId = CanonicalDdcMonitorId(display.nativeMonitorId);
             if (hardwareId.empty()) return false;
-            hardwareId = backend + L":" + hardwareId;
+            hardwareId = L"native_ddc:" + hardwareId;
             if (!hardwareIds.insert(Lower(hardwareId)).second) return false;
         }
-        if (displayControlBackend == L"control_my_monitor" && controlMyMonitorPath.empty()) return false;
         return profileId.empty() || IsProfileDisplayMappingComplete(profileId);
     }
 
@@ -635,7 +630,7 @@ namespace DisplaySwitcher::Native
         if (!VisibleText(profile->name, 1, 32)) result.problems.push_back(L"名称无效");
         if (profile->peerHost.empty()) result.problems.push_back(L"未填写对端主机");
         if (profile->peerPort < 1 || profile->peerPort > 65535) result.problems.push_back(L"端口无效");
-        if (!IsValidPairingCode(profile->pairingCode)) result.problems.push_back(L"配对码无效");
+        if (!IsValidPairingCode(profile->pairingCode)) result.problems.push_back(L"配对密码无效");
         if (profile->displayInputs.empty()) result.problems.push_back(L"未配置显示器输入映射");
         for (auto const& mapping : profile->displayInputs)
             if (!FindDisplayById(displays, mapping.displayId)) result.problems.push_back(L"显示器映射已不可用");
@@ -682,12 +677,14 @@ namespace DisplaySwitcher::Native
         return path / L"DisplaySwitcher" / L"settings.json";
     }
 
-    AppConfig AppConfig::Load() { return LoadFromPath(ConfigPath()); }
+    AppConfig AppConfig::Load(bool* firstRun) { return LoadFromPath(ConfigPath(), firstRun); }
 
-    AppConfig AppConfig::LoadFromPath(std::filesystem::path const& path)
+    AppConfig AppConfig::LoadFromPath(std::filesystem::path const& path, bool* firstRun)
     {
         auto defaults = NewConfig();
-        if (!std::filesystem::exists(path))
+        auto const configurationExists = std::filesystem::exists(path);
+        if (firstRun) *firstRun = !configurationExists;
+        if (!configurationExists)
         {
             try { WriteAtomic(defaults, path, true); }
             catch (...) { EnterSafeMode(defaults); SetMarker(path); }
