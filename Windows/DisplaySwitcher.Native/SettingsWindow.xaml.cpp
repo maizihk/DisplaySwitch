@@ -260,6 +260,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto displayHint = TextBlock(); displayHint.Text(L"新显示器的功能和托盘开关默认关闭。读取只访问亮度、对比度和音量。");
         displayHint.TextWrapping(TextWrapping::Wrap); displayHint.Opacity(0.72);
         auto refreshDdc = Button(); refreshDdc.Content(box_value(L"重新检测显示器"));
+        refreshDdc.HorizontalAlignment(HorizontalAlignment::Left);
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
@@ -305,11 +306,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
     {
-        auto panel = StackPanel(); panel.Spacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
+        auto panel = Grid(); panel.RowSpacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
         panel.HorizontalAlignment(HorizontalAlignment::Stretch);
         auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
-        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
-        for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
+        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+
+        auto appendRow = [&](UIElement const& child, int rowIndex)
+        {
+            auto row = RowDefinition(); row.Height(GridLengthHelper::Auto());
+            panel.RowDefinitions().Append(row);
+            Grid::SetRow(child.as<FrameworkElement>(), rowIndex); panel.Children().Append(child);
+        };
+        appendRow(heading, 0);
+        for (size_t index = 0; index < children.size(); ++index)
+            appendRow(children[index], static_cast<int>(index + 1));
+        return CreateCard(panel);
     }
 
     Border SettingsWindow::CreateCard(UIElement const& child)
