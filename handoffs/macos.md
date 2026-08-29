@@ -7,7 +7,7 @@
 - 协调基线：`codex/coord-ds-009-native-display-control@53c2397011323cd941afe315e3a6881fe772299e`
 - 基线确认：协调基线包含 `main@0bbfa9e0fad8350462b3b68083aace4ca9063dce`
 - 分支：`codex/macos-ds-009-native-display-control`
-- 本轮实现提交：`154f40d`（弱校验读取）、`3007d26`（缓存恢复）、`1e4fa31`（单绑定 UDP socket）、`57ea705`（已绑定 v2 探测）、`57a2f5c`（脱敏 DDC 兼容拒绝诊断）、本提交（两次回复公共字段投影）
+- 本轮实现提交：`154f40d`（弱校验读取）、`3007d26`（缓存恢复）、`1e4fa31`（单绑定 UDP socket）、`57ea705`（已绑定 v2 探测）、`57a2f5c`（脱敏 DDC 兼容拒绝诊断）、`e2d0dd7`（两次回复公共字段投影）、本提交（request echo 与输入源写优先根因修复）
 - PR：[#46](https://github.com/maizihk/DisplaySwitch/pull/46)；base 为 `codex/coord-ds-009-native-display-control`
 
 ## 根因
@@ -32,12 +32,14 @@
 - 单 socket 后仍无响应的确定根因在消息路由：Mac 对已绑定配置仍发送 `targetEndpointID = nil` 的未绑定探测，Windows 会因 source endpoint 已存在而按 endpoint conflict 拒绝。
 - Dell 的有界兼容读取确实已执行但仍只汇总成 `bad-checksum`，无法判断是回复不足、两次语义不一致、字段/范围非法还是传输失败；在没有这些证据前继续放宽校验会导致误接受。
 - 最新实机结果已把两台显示器的兼容拒绝收窄为 `invalid-field/wrong-source`，但旧诊断没有保留两次回复的 source 和其他公共语义字段，仍无法区分替代 source 值与疑似帧移位。
+- 两台 Dell 的实际字段 `00 82 01 10 FD` 是 `0x00 + GetVCP 请求包`，不是显示器回复。根因是旧 `communicate` 在每次 read attempt 前都重新双写请求，随后立即读到本次请求回显，还将它误送入坏校验兼容路径。
+- 小米 Type-C 切换回归的完整触发链是托盘 `menuWillOpen` 自动读取三台显示器，Dell 失败又全局 `invalidate + discover` 替换 `displaysByUUID` 中的健康 service；随后小米输入源写与读取队列争用或使用了已过期 service。
 
 ## 完成内容
 
 - 运行时 DDC 路由固定选择 Apple Silicon 原生后端；保留 `m1ddc` 源码作为历史实现，但任何控制通道设置都不能启动它。Intel Mac 明确报告当前原生后端不支持。
 - 保留已正常工作的写入 `0x51`、五次尝试和双写语义；不用读取修复改写写入协议。
-- 读取恢复为每个策略最多五次有限尝试，每次重试都创建并清空独立 response buffer；内置 HDMI 使用 offset `0`，Type-C/DP 先使用 `0x51`，仅在严格拒绝、回复超时或回复读取失败后有限尝试 offset `0`。单次坏校验回复仍保持失败，只有本轮新增的双请求一致性规则可生成明确标记的弱校验值。
+- Get VCP 的每个 offset 策略改为单次写请求，随后按50ms/20ms有界多次读取；每次都使用清零新 buffer，匹配 `0x00 + 当前请求包` 的回显只计数并丢弃，不进入严格解析、弱校验或缓存。Set VCP 仍保留有限双写。
 - 设置页提供脱敏诊断：仅显示传输分类、service 是否匹配、请求写入/回复超时/回复 I2C/回复校验类别和重建次数，不显示硬件标识或路径。
 - 完整枚举当前 `AppleCLCD2`、`IOMobileFramebufferShim` 及兼容 framebuffer 和外部 `DCPAVServiceProxy`，按 IODisplayLocation、产品名和序列信息评分，并保证一个显示器和一个 serviceLocation 只绑定一次。
 - 在线显示器身份与可通信 service 分离：未匹配到 service 时仍可显示产品身份，但读取/写入明确失败。Get VCP 回复新增长度、checksum、来源、载荷、opcode、结果码及 command echo 校验。
@@ -60,13 +62,16 @@
 - 严格读取和两次兼容读取均失败时，最终脱敏诊断可区分 `insufficient-replies`、`inconsistent-payload`、`invalid-field/<code>`、`invalid-range` 和 `transport-error`；不展示完整帧、IORegistry 路径或硬件标识。
 - 每次兼容读取回复只保留并展示 source byte、payload-length byte、opcode、result、command 和按固定位置解析的 current/max，同时标记两次语义字段是否一致。
 - source `0x6F` 标记为替代 source，`0x02` 和 `0x00` 标记为疑似帧移位，其他值标记为未预期 source；本轮不扫描、重排或接受 `wrong-source`。
+- 托盘打开及设置重载只恢复稳定 ID 缓存，不再自动读取 VCP；唯一硬件读取入口是设置页的显式“读取 DDC 参数”。
+- 输入源切换使用独立优先队列；开始前取消已激活的读取 token 并使排队/迟到结果失效。原生 input 写入每次都按目标稳定 selector 重解析当前 service，单显示器失败恢复只替换该 selector，不改动其他健康显示器的 service 引用。
 
 ## 自动验证
 
-- 完整 XCTest：89 项通过。
+- 完整 XCTest：100 项通过。
 - 新增已绑定探测回归：未绑定 probe target 为空；已绑定 probe target 为预期 peer endpoint；合法 response 成功，错误 source/target/event/HMAC 不标在线，且全程零硬件副作用。
 - 新增兼容拒绝诊断回归：五类最终拒绝及传输失败均生成脱敏投影；两次不一致只展示 command 是否匹配、current/max 是否一致和 payload length。
-- 本轮 37 项 DDCBackendTests 通过；新增两次 reply 逐条公共字段投影、语义一致性、source `0x6F/0x02/0x00/其他` 分类和诊断脱敏测试。
+- 本轮 46 项 DDCBackendTests 通过；覆盖 Get VCP 单写多读、一次/多次 echo 后有效回复、全 echo 失败、echo 禁止进入弱校验、取消停止后续轮询和 Set VCP 双写回归。
+- 托盘打开零 DDC I/O、Dell 读取取消后小米 input 写可立即完成、迟到读取不提交缓存、单 selector service 替换不影响其他显示器均以纯模拟验证。
 - 本轮 `./macOS/scripts/build-app.sh` 和清理 File Provider 元数据后的严格 codesign 验证通过；未手动触发云端 CI。
 - 新增弱校验读取回归：严格成功不进入兼容路径；单次坏校验拒绝；两次独立一致回复接受为估算值；不一致、错误来源/长度/opcode/result/command 和非法范围全部拒绝；每次请求均使用清零新 buffer。
 - 新增设置缓存回归：两台同型号显示器按稳定 ID 分别恢复，窗口重开/表单重建和新缓存实例均保持值；禁用项、未知 ID 和已移除显示器不投影也不串值。
@@ -78,11 +83,11 @@
 - 新增 endpoint 与诊断回归：synthetic `dispextE`、`dispext0`、`dispext1`、旧 MCDP 和未知路径分类及 offset；七种回复拒绝原因均投影为脱敏代码，并显示 offset 和尝试次数。
 - 新增原生寻址回归：`dispextE` 非 MCDP 使用 chip `0x37`/offset `0`；明确 MCDP 即使带数字 endpoint 也使用 chip `0xB7`/offset `0`；数字 endpoint 使用 chip `0x37`/offset `0x51`。
 - 新增 Type-C 双 offset 回归：`0x51` 连续五次 bad-checksum 后以全新 buffer 在 offset `0` 严格成功；两个策略均失败时总计十次后明确失败；请求写入失败不进行无意义的 read-offset 切换。
-- 新增按显示器读取偏好缓存及 service 失效清理测试；诊断断言包含脱敏 chip/offset/attempts，布局投影断言诊断标签不截断而允许多行。
+- 新增按显示器读取偏好缓存及 service 失效清理测试；诊断断言包含脱敏 chip/offset/polls/丢弃 echo 数，布局投影断言诊断标签不截断而允许多行。
 - 名称测试覆盖两台不同型号、两台同型号、已保存名称、稳定本机序号和枚举重排；断言用户可见名称不含 selector/稳定 ID。
 - 后端测试覆盖原生成功、不可用、枚举失败、读取失败和写入失败均零 `m1ddc` 调用；持久化的旧控制通道设置不能重新启用回退。
 - 写入协调测试覆盖 100 次快速滑杆写入合并为首值与最终值、同显示器跨 DDC 项串行、不同显示器故障隔离、取消/刷新/窗口关闭后丢弃迟到完成。
-- 原生纯测试覆盖一对一 service 匹配、同型号位置区分、传输分类、未绑定身份拒绝、Get VCP 正确回复及 checksum/结果码/command echo 错误、分路径 read offset、五次读取与原写入参数回归。
+- 原生纯测试覆盖一对一 service 匹配、同型号位置区分、传输分类、未绑定身份拒绝、Get VCP 正确回复及 checksum/结果码/command echo 错误、分路径 read offset、单写五次有界轮询与原 Set VCP 双写参数回归。
 - 使用本机选定的 Xcode 27 Beta 6：Debug、Release、`./macOS/scripts/build-app.sh` 和严格签名验证均通过。
 - `git diff --check`、构建产物忽略和敏感信息检查通过。
 - 自动测试全部使用模拟后端和模拟副作用，没有访问真实 DDC、USB、UDP、网络、唤醒或输入源切换。
@@ -93,8 +98,8 @@
 - 未验证真实 Apple Silicon CoreDisplay/IOAVService 枚举、同型号显示器本机序号对应、DDC 回读/写入、连续滑杆恢复或显示器断开重连。
 - 未执行真实 USB、UDP、网络、显示器唤醒或输入源切换。
 - 已绑定 endpoint 定向修复后尚需 Windows/macOS 双机实测确认双向检测、连续探测和重启监听。
-- Dell 兼容读取尚需下一次实机截图确认具体最终拒绝类别；本轮没有再放宽校验条件。
-- 需要下一次实机截图确认两次 `wrong-source` 回复的实际 source 值、其他语义字段及一致性；半绑定协同问题暂停，等待协调端的协议决定。
+- 需实机确认 Dell 读取在丢弃 request echo 后能收到严格回复，或以明确 `request-echo`/超时诊断失败；不再接受 echo 为弱校验值。
+- 需实机重测打开托盘后小米 Type-C 输入源切换，确认目标 service 重解析和读取取消消除偶发失败；半绑定协同问题继续暂停。
 - Intel Mac 不在本机自动验证范围，当前设计为明确不支持原生 DDC。
 - 内置 HDMI converter 的当前系统 IORegistry 结构和 service 匹配仍需授权实机只读验证；未经验证时不声称旧系统的 `AppleDCPMCDP29XX` 父节点规则仍完全适用。
 

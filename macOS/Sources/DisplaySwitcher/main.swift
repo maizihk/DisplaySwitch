@@ -171,6 +171,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var instanceLockFD: Int32 = -1
     private var ownsPrimaryInstance = false
     private let workerQueue = DispatchQueue(label: "DisplaySwitcher.ddc")
+    private let ddcReadQueue = DispatchQueue(label: "DisplaySwitcher.ddc.read")
+    private let inputSwitchQueue = DispatchQueue(label: "DisplaySwitcher.ddc.input", qos: .userInitiated)
+    private let ddcReadGenerationLock = NSLock()
+    private var ddcReadGeneration: UInt64 = 0
     private let ddcController = DDCController()
     private lazy var ddcWriteCoordinator = DDCLatestWinsCoordinator(
         executor: DDCControllerWriteExecutor(
@@ -217,8 +221,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var displayMenuItems: [Int: NSMenuItem] = [:]
     private var profileSwitchItems: [NSMenuItem] = []
     private var configurations: [Int: DisplayConfiguration] = [:]
-    private var isRefreshing = false
-    private var lastRefresh = Date.distantPast
     private var settingsWindowHasBeenShown = false
 
     private lazy var settingsWindowController: SettingsWindowController = {
@@ -344,9 +346,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         menu.addItem(linkedItem)
         menu.addItem(.separator())
 
-        let refreshItem = NSMenuItem(title: "刷新当前数值", action: #selector(refreshValuesManually), keyEquivalent: "r")
-        refreshItem.target = self
-        menu.addItem(refreshItem)
         menu.addItem(detectItem)
 
         let settingsItem = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
@@ -379,7 +378,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        refreshValues(force: false)
+        DDCTrayOpenPolicy.presentCachedValues { [weak self] in
+            self?.restoreCachedValues()
+        }
     }
 
     @objc private func switchToProfile(_ sender: NSMenuItem) {
@@ -416,10 +417,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         profileSwitchItems.forEach { $0.isEnabled = false }
+        cancelReadsForInputSwitch()
         let currentConfigurations = targetConfigurations
         let ddcController = ddcController
 
-        workerQueue.async { [weak self] in
+        inputSwitchQueue.async { [weak self] in
             let firstError = LockedFirstError()
             let group = DispatchGroup()
             for displayID in targetDisplayIDs {
@@ -484,10 +486,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    @objc private func refreshValuesManually() {
-        refreshValues(force: true)
-    }
-
     @objc private func detectDisplaysManually() {
         detectDisplays(showFailure: true)
     }
@@ -530,7 +528,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         self.rebuildDisplayMenuItems()
                         self.restoreCachedValues()
                         self.finishDetection()
-                        self.refreshValues(force: true)
                     } catch let error as DisplayConfigurationStoreError {
                         self.finishDetection()
                         self.enterConfigurationSafetyState(error)
@@ -548,7 +545,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             } catch {
                 DispatchQueue.main.async {
                     self?.finishDetection()
-                    self?.refreshValues(force: true)
                     if showFailure {
                         self?.showError(title: "显示器检测失败", error: error)
                     }
@@ -560,72 +556,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func finishDetection() {
         detectItem.title = "重新检测显示器"
         detectItem.isEnabled = true
-    }
-
-    private func refreshValues(force: Bool) {
-        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else { return }
-        guard !isRefreshing else { return }
-        guard force || Date().timeIntervalSince(lastRefresh) > 3 else { return }
-        isRefreshing = true
-        let currentConfigurations = configurations
-        let ddcController = ddcController
-        let localDocument = AppPreferences.localConfiguration
-        let targets = currentConfigurations.values.map { configuration in
-            let target = Self.ddcTarget(for: configuration, document: localDocument)
-            let commands = Set(target.enabledCommands.filter {
-                !ddcWriteCoordinator.isBusy(DDCWriteKey(
-                    stableID: target.stableID, command: $0
-                ))
-            })
-            return DDCDisplayTarget(stableID: target.stableID, selector: target.selector,
-                                    enabledCommands: commands)
-        }
-
-        workerQueue.async { [weak self] in
-            guard self?.configurationSafetyGate.allows(.ddc) == true,
-                  self?.usbLearningSafetyGate.allows(.ddc) == true else {
-                DispatchQueue.main.async { self?.isRefreshing = false }
-                return
-            }
-            let resolved = ddcController.read(targets: targets)
-            var readings: [Int: [DisplayControl: (current: Int, maximum: Int)]] = [:]
-            var estimates: [Int: Set<DisplayControl>] = [:]
-            for (displayID, configuration) in currentConfigurations {
-                let stableID = configuration.id ?? configuration.selector
-                for control in DisplayControl.allCases {
-                    guard let value = resolved[stableID]?[control.ddcCommand] else { continue }
-                    let maximum = Self.validatedMaximum(value.reading.maximum, current: value.reading.current)
-                    readings[displayID, default: [:]][control] = (value.reading.current, maximum)
-                    if value.estimated { estimates[displayID, default: []].insert(control) }
-                }
-            }
-
-            DispatchQueue.main.async {
-                guard let self else { return }
-                guard self.configurationSafetyGate.allows(.ddc), self.usbLearningSafetyGate.allows(.ddc) else {
-                    self.isRefreshing = false
-                    return
-                }
-                for displayID in currentConfigurations.keys.sorted() {
-                    let displayReadings = readings[displayID] ?? [:]
-                    if displayReadings.isEmpty {
-                        self.applyFallbackValues(to: displayID, readings: readings)
-                        continue
-                    }
-
-                    for (control, reading) in displayReadings {
-                        self.displayControls[displayID]?.update(
-                            control,
-                            value: reading.current,
-                            maximum: reading.maximum,
-                            estimated: estimates[displayID]?.contains(control) == true
-                        )
-                    }
-                }
-                self.lastRefresh = Date()
-                self.isRefreshing = false
-            }
-        }
     }
 
     private func setControl(_ control: DisplayControl, value: Int, fromDisplay displayID: Int) {
@@ -652,27 +582,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                   ($0.id ?? $0.selector).caseInsensitiveCompare(stableID) == .orderedSame
               }) else { return }
         let target = Self.ddcTarget(for: configuration, document: AppPreferences.localConfiguration)
-        workerQueue.async { [weak self] in
-            guard let self else { return }
+        let generation = currentDDCReadGeneration()
+        ddcReadQueue.async { [weak self] in
+            guard let self, self.isCurrentDDCReadGeneration(generation) else { return }
             let batch = self.ddcController.read(targets: [target])
             let result = batch[target.stableID] ?? [:]
             let skipReason = batch.skipped[target.stableID]
             let diagnostic = self.ddcController.diagnostic(selector: target.selector)
             DispatchQueue.main.async {
-                guard self.settingsWindowController.isSettingsVisible else { return }
+                guard self.isCurrentDDCReadGeneration(generation),
+                      self.settingsWindowController.isSettingsVisible else { return }
                 self.settingsWindowController.updateDDCValues(
                     stableID: target.stableID, values: result, diagnostic: diagnostic,
                     skipReason: skipReason
                 )
             }
         }
-    }
-
-    private static func validatedMaximum(_ reported: Int?, current: Int) -> Int {
-        guard let reported, reported >= 10, reported >= current else {
-            return max(100, current)
-        }
-        return reported
     }
 
     private func cachedValue(displayID: Int, control: DisplayControl) -> Int? {
@@ -711,27 +636,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    private func applyFallbackValues(
-        to displayID: Int,
-        readings: [Int: [DisplayControl: (current: Int, maximum: Int)]]
-    ) {
-        for control in DisplayControl.allCases {
-            if let cached = cachedValue(displayID: displayID, control: control) {
-                displayControls[displayID]?.update(control, value: cached, estimated: true)
-            } else if linkedItem.state == .on,
-                      let linkedReading = readings
-                        .filter({ $0.key != displayID })
-                        .sorted(by: { $0.key < $1.key })
-                        .compactMap({ $0.value[control] })
-                        .first {
-                displayControls[displayID]?.update(
-                    control,
-                    value: linkedReading.current,
-                    maximum: linkedReading.maximum,
-                    estimated: true
-                )
-            }
-        }
+    private func currentDDCReadGeneration() -> UInt64 {
+        ddcReadGenerationLock.lock()
+        defer { ddcReadGenerationLock.unlock() }
+        return ddcReadGeneration
+    }
+
+    private func isCurrentDDCReadGeneration(_ value: UInt64) -> Bool {
+        ddcReadGenerationLock.lock()
+        defer { ddcReadGenerationLock.unlock() }
+        return value == ddcReadGeneration
+    }
+
+    private func cancelReadsForInputSwitch() {
+        ddcReadGenerationLock.lock()
+        ddcReadGeneration &+= 1
+        ddcReadGenerationLock.unlock()
+        ddcController.cancelReads()
     }
 
     private func finishSwitch(message: String, activeMenuItem: NSMenuItem? = nil) {
@@ -1155,9 +1076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         configureUSBMonitor()
         configurePeerTransport()
         updateConfigurationSafetyUI()
-        lastRefresh = .distantPast
         restoreCachedValues()
-        refreshValues(force: true)
     }
 
     private func rebuildDisplayMenuItems() {
@@ -1313,7 +1232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             completion(false)
             return
         }
-        workerQueue.async { [weak self] in
+        cancelReadsForInputSwitch()
+        inputSwitchQueue.async { [weak self] in
             guard let self, self.configurationSafetyGate.allows(.ddc),
                   self.usbLearningSafetyGate.allows(.ddc) else {
                 DispatchQueue.main.async { completion(false) }

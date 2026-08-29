@@ -125,9 +125,10 @@ final class NativeDDCBackend: DDCBackend {
                 primaryDataAddress: preferredReadDataAddress(
                     selector: selector, path: display.transportPath
                 ),
+                token: token,
                 parameters: transportParameters
             ) {
-            case .success(let reading, let dataAddress, let attempts):
+            case .success(let reading, let dataAddress, let attempts, let discardedEchoes):
                 try token.throwIfCancelled()
                 resolved = reading
                 if display.transportPath == .typeCDPAlt,
@@ -138,16 +139,19 @@ final class NativeDDCBackend: DDCBackend {
                                  category: reading.estimated ? .readChecksumEstimated : .readSucceeded,
                                  chipAddress: display.chipAddress,
                                  readDataAddress: dataAddress,
-                                 readAttemptCount: attempts)
+                                 readAttemptCount: attempts,
+                                 discardedRequestEchoCount: discardedEchoes)
             case .failure(
-                let issue, let dataAddress, let attempts, _,
+                let issue, let dataAddress, let attempts, let discardedEchoes, _,
                 let compatibilityRejection, let compatibilityEvidence
             ):
+                try token.throwIfCancelled()
                 recordDiagnostic(
                     selector: selector, path: display.transportPath, serviceMatched: true,
                     category: diagnosticCategory(for: issue), replyIssue: issue,
                     chipAddress: display.chipAddress, readDataAddress: dataAddress,
                     readAttemptCount: attempts,
+                    discardedRequestEchoCount: discardedEchoes,
                     checksumCompatibilityRejection: compatibilityRejection,
                     checksumCompatibilityEvidence: compatibilityEvidence
                 )
@@ -157,7 +161,7 @@ final class NativeDDCBackend: DDCBackend {
             try token.throwIfCancelled()
             incrementRebuild(selector: selector)
             invalidate(selector: selector)
-            _ = discover()
+            _ = rediscoverDisplay(selector: selector)
         })
         guard let resolved else { throw DDCBackendError.readFailed(stableID: stableID, command: command) }
         return resolved
@@ -172,7 +176,9 @@ final class NativeDDCBackend: DDCBackend {
         guard let nativeValue = UInt16(exactly: value) else { throw DDCError.invalidValue(value) }
         try DDCSingleRetry.perform(operation: {
             try token.throwIfCancelled()
-            let candidate = display(for: selector)
+            let candidate = NativeDDCWriteServicePolicy.requiresFreshResolution(for: command)
+                ? rediscoverDisplay(selector: selector)
+                : display(for: selector)
             guard let display = candidate, let service = display.service else {
                 let path = candidate?.transportPath ?? .unmatched
                 recordDiagnostic(selector: selector, path: path, serviceMatched: false,
@@ -196,7 +202,7 @@ final class NativeDDCBackend: DDCBackend {
             try token.throwIfCancelled()
             incrementRebuild(selector: selector)
             invalidate(selector: selector)
-            _ = discover()
+            _ = rediscoverDisplay(selector: selector)
         })
     }
 
@@ -219,6 +225,7 @@ final class NativeDDCBackend: DDCBackend {
                                   chipAddress: UInt32? = nil,
                                   readDataAddress: UInt8? = nil,
                                   readAttemptCount: Int? = nil,
+                                  discardedRequestEchoCount: Int? = nil,
                                   checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
                                   checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil) {
         let key = selector.uppercased()
@@ -230,6 +237,7 @@ final class NativeDDCBackend: DDCBackend {
             replyIssue: replyIssue, chipAddress: chipAddress,
             readDataAddress: readDataAddress,
             readAttemptCount: readAttemptCount,
+            discardedRequestEchoCount: discardedRequestEchoCount,
             checksumCompatibilityRejection: checksumCompatibilityRejection,
             checksumCompatibilityEvidence: checksumCompatibilityEvidence
         )
@@ -249,6 +257,7 @@ final class NativeDDCBackend: DDCBackend {
             replyIssue: current.replyIssue, chipAddress: current.chipAddress,
             readDataAddress: current.readDataAddress,
             readAttemptCount: current.readAttemptCount,
+            discardedRequestEchoCount: current.discardedRequestEchoCount,
             checksumCompatibilityRejection: current.checksumCompatibilityRejection,
             checksumCompatibilityEvidence: current.checksumCompatibilityEvidence
         )
@@ -260,6 +269,7 @@ final class NativeDDCBackend: DDCBackend {
         case .requestWriteFailed: return .readRequestWriteFailed
         case .responseTimeout: return .readResponseTimeout
         case .responseReadFailed: return .readResponseFailed
+        case .requestEcho: return .readReplyRejected
         default: return .readReplyRejected
         }
     }
@@ -309,6 +319,32 @@ final class NativeDDCBackend: DDCBackend {
             cacheLock.unlock()
         }
         return display
+    }
+
+    /// Re-enumerates the current service for one stable selector without replacing
+    /// healthy service references belonging to other displays.
+    private func rediscoverDisplay(selector: String) -> NativeDDCDisplay? {
+        cacheLock.lock()
+        let knownDisplays = self.knownDisplays
+        cacheLock.unlock()
+        let selected = Self.discoverDisplays(knownDisplays: knownDisplays).first {
+            $0.systemUUID.caseInsensitiveCompare(selector) == .orderedSame
+        }
+        cacheLock.lock()
+        displaysByUUID = NativeDDCSelectedServiceMap.replacingSelected(
+            selector: selector, with: selected, in: displaysByUUID
+        )
+        readPreferenceCache.invalidate(selector: selector)
+        cacheLock.unlock()
+        if let selected {
+            recordDiagnostic(
+                selector: selected.systemUUID,
+                path: selected.transportPath,
+                serviceMatched: selected.service != nil,
+                category: selected.service == nil ? .serviceUnmatched : .idle
+            )
+        }
+        return selected
     }
 
     private static func discoverDisplays(
@@ -540,64 +576,93 @@ final class NativeDDCBackend: DDCBackend {
         command: DDCCommand,
         transportPath: NativeDDCTransportPath,
         primaryDataAddress: UInt8,
+        token: DDCCancellationToken,
         parameters: NativeDDCTransportParameters
     ) -> NativeDDCReadStrategyOutcome {
         let alternateDataAddress: UInt8? = transportPath == .typeCDPAlt
             && primaryDataAddress == parameters.typeCDPReadDataAddress ? 0 : nil
         let strictOutcome = NativeDDCReadStrategyRunner.run(
             primaryDataAddress: primaryDataAddress,
-            alternateDataAddress: alternateDataAddress,
-            attemptsPerStrategy: parameters.readAttempts(for: transportPath)
-        ) { readDataAddress, response in
-            var request: [UInt8] = [command.rawValue]
-            let exchange = communicate(
+            alternateDataAddress: alternateDataAddress
+        ) { readDataAddress in
+            let transaction = getVCPTransaction(
                 service: service,
                 chipAddress: chipAddress,
-                request: &request,
-                response: &response,
-                attempts: 1,
+                command: command,
                 readDataAddress: readDataAddress,
-                readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                pollDelaysMicroseconds: parameters.readPollDelaysMicroseconds(for: transportPath),
+                token: token,
                 parameters: parameters
             )
-            if case .failure(let issue) = exchange {
-                return .failure(issue)
+            switch transaction {
+            case .reply(let response, let polls, let discardedEchoes):
+                return NativeDDCReadExchangeOutcome(
+                    result: NativeDDCReplyValidator.reading(from: response, command: command),
+                    polls: polls,
+                    discardedRequestEchoes: discardedEchoes
+                )
+            case .failure(let issue, let polls, let discardedEchoes):
+                return NativeDDCReadExchangeOutcome(
+                    result: .failure(issue), polls: polls,
+                    discardedRequestEchoes: discardedEchoes
+                )
+            case .cancelled(let polls, let discardedEchoes):
+                return NativeDDCReadExchangeOutcome(
+                    result: .failure(.responseTimeout), polls: polls,
+                    discardedRequestEchoes: discardedEchoes
+                )
             }
-            return NativeDDCReplyValidator.reading(from: response, command: command)
         }
         guard case .failure(
             .badChecksum,
             let dataAddress,
             let strictAttempts,
+            let strictDiscardedEchoes,
             onlyObservedIssueWasBadChecksum: true,
             checksumCompatibilityRejection: nil,
             checksumCompatibilityEvidence: nil
         ) = strictOutcome else {
             return strictOutcome
         }
+        var compatibilityPolls = 0
+        var compatibilityDiscardedEchoes = 0
         let compatibility = NativeDDCChecksumCompatibilityRunner.run(command: command) { response in
-            var request: [UInt8] = [command.rawValue]
-            return communicate(
+            switch getVCPTransaction(
                 service: service,
                 chipAddress: chipAddress,
-                request: &request,
-                response: &response,
-                attempts: 1,
+                command: command,
                 readDataAddress: dataAddress,
-                readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                pollDelaysMicroseconds: parameters.readPollDelaysMicroseconds(for: transportPath),
+                token: token,
                 parameters: parameters
-            )
+            ) {
+            case .reply(let reply, let polls, let discardedEchoes):
+                compatibilityPolls += polls
+                compatibilityDiscardedEchoes += discardedEchoes
+                response = reply
+                return .success(())
+            case .failure(let issue, let polls, let discardedEchoes):
+                compatibilityPolls += polls
+                compatibilityDiscardedEchoes += discardedEchoes
+                return .failure(issue)
+            case .cancelled(let polls, let discardedEchoes):
+                compatibilityPolls += polls
+                compatibilityDiscardedEchoes += discardedEchoes
+                return .failure(.responseTimeout)
+            }
         }
         switch compatibility {
         case .accepted(let reading):
             return .success(
                 reading, dataAddress: dataAddress,
-                attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount
+                attempts: strictAttempts + compatibilityPolls,
+                discardedRequestEchoes: strictDiscardedEchoes + compatibilityDiscardedEchoes
             )
         case .rejected(let rejection, let evidence):
             return .failure(
                 .badChecksum, dataAddress: dataAddress,
-                attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount,
+                attempts: strictAttempts + compatibilityPolls,
+                discardedRequestEchoes: strictDiscardedEchoes + compatibilityDiscardedEchoes,
                 onlyObservedIssueWasBadChecksum: true,
                 checksumCompatibilityRejection: rejection,
                 checksumCompatibilityEvidence: evidence
@@ -613,15 +678,11 @@ final class NativeDDCBackend: DDCBackend {
         parameters: NativeDDCTransportParameters
     ) -> Bool {
         var request: [UInt8] = [command, UInt8(value >> 8), UInt8(value & 0xff)]
-        var response: [UInt8] = []
-        switch communicate(
+        switch communicateWrite(
             service: service,
             chipAddress: chipAddress,
             request: &request,
-            response: &response,
             attempts: parameters.writeAttempts,
-            readDataAddress: nil,
-            readSleepMicroseconds: nil,
             parameters: parameters
         ) {
         case .success: return true
@@ -629,14 +690,52 @@ final class NativeDDCBackend: DDCBackend {
         }
     }
 
-    private static func communicate(
+    private static func getVCPTransaction(
+        service: IOAVService,
+        chipAddress: UInt32,
+        command: DDCCommand,
+        readDataAddress: UInt8,
+        pollDelaysMicroseconds: [UInt32],
+        token: DDCCancellationToken,
+        parameters: NativeDDCTransportParameters
+    ) -> NativeDDCGetVCPTransactionOutcome {
+        var packet = NativeDDCRequestPacket.getVCP(chipAddress: chipAddress, command: command)
+        return NativeDDCGetVCPTransactionRunner.run(
+            requestPacket: packet,
+            pollCount: pollDelaysMicroseconds.count,
+            shouldContinue: { !token.isCancelled },
+            writeRequest: {
+                usleep(parameters.writeSleepMicroseconds)
+                return IOAVServiceWriteI2C(
+                    service,
+                    chipAddress,
+                    UInt32(parameters.writeDataAddress),
+                    &packet,
+                    UInt32(packet.count)
+                ) == KERN_SUCCESS
+            },
+            readReply: { pollIndex, response in
+                usleep(pollDelaysMicroseconds[pollIndex])
+                let result = IOAVServiceReadI2C(
+                    service,
+                    chipAddress,
+                    UInt32(readDataAddress),
+                    &response,
+                    UInt32(response.count)
+                )
+                if result == kIOReturnTimeout || result == kIOReturnNotResponding {
+                    return .timeout
+                }
+                return result == KERN_SUCCESS ? .reply : .readFailed
+            }
+        )
+    }
+
+    private static func communicateWrite(
         service: IOAVService,
         chipAddress: UInt32,
         request: inout [UInt8],
-        response: inout [UInt8],
         attempts: Int,
-        readDataAddress: UInt8?,
-        readSleepMicroseconds: UInt32?,
         parameters: NativeDDCTransportParameters
     ) -> Result<Void, NativeDDCReplyIssue> {
         let dataAddress = parameters.writeDataAddress
@@ -658,21 +757,6 @@ final class NativeDDCBackend: DDCBackend {
                     &packet,
                     UInt32(packet.count)
                 ) == KERN_SUCCESS
-            }
-
-            if writeSucceeded, !response.isEmpty {
-                usleep(readSleepMicroseconds ?? parameters.typeCDPReadSleepMicroseconds)
-                let readResult = IOAVServiceReadI2C(
-                    service,
-                    chipAddress,
-                    UInt32(readDataAddress ?? parameters.typeCDPReadDataAddress),
-                    &response,
-                    UInt32(response.count)
-                )
-                if readResult == kIOReturnTimeout || readResult == kIOReturnNotResponding {
-                    return .failure(.responseTimeout)
-                }
-                if readResult != KERN_SUCCESS { return .failure(.responseReadFailed) }
             }
 
             if writeSucceeded { return .success(()) }

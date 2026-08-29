@@ -156,6 +156,10 @@ final class DDCController {
         service.cancelAll()
     }
 
+    func cancelReads() {
+        service.cancelReads()
+    }
+
     func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {
         let known = Self.knownDisplays(from: existingConfigurations)
         service.updateKnownDisplays(known)
