@@ -7,7 +7,7 @@
 - 协调基线：`codex/coord-ds-009-native-display-control@53c2397011323cd941afe315e3a6881fe772299e`
 - 基线确认：协调基线包含 `main@0bbfa9e0fad8350462b3b68083aace4ca9063dce`
 - 分支：`codex/macos-ds-009-native-display-control`
-- 实现提交：`551c8d694ba24b6802b1363d69436fd23a97d7dd`、`02f006c4d661876bc865ea413dba574b9bd94c61`；本轮原生寻址与读取策略修复提交见 PR #46 最新 HEAD
+- 实现提交：`551c8d694ba24b6802b1363d69436fd23a97d7dd`、`02f006c4d661876bc865ea413dba574b9bd94c61`、`9342841645a18bdd4a3b2634b5a2f09b880c0ec1`
 - PR：[#46](https://github.com/maizihk/DisplaySwitch/pull/46)；base 为 `codex/coord-ds-009-native-display-control`
 
 ## 根因
