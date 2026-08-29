@@ -88,6 +88,30 @@ enum NativeTransportPathClassifier {
     }
 }
 
+struct NativeDDCTransportAddressing: Equatable {
+    let transportPath: NativeDDCTransportPath
+    let chipAddress: UInt32
+
+    static func resolve(endpointToken: String? = nil,
+                        epicProviderClass: String?, transportDescription: String?)
+        -> NativeDDCTransportAddressing {
+        let classifiedPath = NativeTransportPathClassifier.classify(
+            endpointToken: endpointToken,
+            epicProviderClass: epicProviderClass,
+            transportDescription: transportDescription
+        )
+        // dispextE identifies the built-in HDMI route on current Apple Silicon,
+        // but it is not evidence of an MCDP converter chip. Only explicit MCDP
+        // provider metadata selects the converter's 0xB7 address.
+        let provider = epicProviderClass?.uppercased() ?? ""
+        let isExplicitMCDP = provider.contains("MCDP")
+        return NativeDDCTransportAddressing(
+            transportPath: isExplicitMCDP ? .builtinHDMIConverter : classifiedPath,
+            chipAddress: isExplicitMCDP ? 0xB7 : 0x37
+        )
+    }
+}
+
 enum NativeDisplayEndpointToken {
     static func extract(from values: [String]) -> String? {
         let expression = try? NSRegularExpression(
@@ -122,18 +146,21 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let operationCategory: NativeDDCOperationCategory
     let rebuildCount: Int
     let replyIssue: NativeDDCReplyIssue?
+    let chipAddress: UInt32?
     let readDataAddress: UInt8?
     let readAttemptCount: Int?
 
     init(transportPath: NativeDDCTransportPath, serviceMatched: Bool,
          operationCategory: NativeDDCOperationCategory, rebuildCount: Int,
-         replyIssue: NativeDDCReplyIssue? = nil, readDataAddress: UInt8? = nil,
+         replyIssue: NativeDDCReplyIssue? = nil, chipAddress: UInt32? = nil,
+         readDataAddress: UInt8? = nil,
          readAttemptCount: Int? = nil) {
         self.transportPath = transportPath
         self.serviceMatched = serviceMatched
         self.operationCategory = operationCategory
         self.rebuildCount = rebuildCount
         self.replyIssue = replyIssue
+        self.chipAddress = chipAddress
         self.readDataAddress = readDataAddress
         self.readAttemptCount = readAttemptCount
     }
@@ -148,6 +175,9 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
             "service \(serviceMatched ? "matched" : "unmatched")",
             operation
         ]
+        if let chipAddress {
+            parts.append(String(format: "chip 0x%02X", chipAddress))
+        }
         if let readDataAddress {
             parts.append(readDataAddress == 0 ? "offset 0" : String(format: "offset 0x%02X", readDataAddress))
         }
@@ -225,6 +255,74 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .monitorRejected: return "monitor-rejected"
         case .wrongCommand: return "wrong-command"
         }
+    }
+
+    var permitsAlternateReadOffset: Bool {
+        self != .requestWriteFailed
+    }
+}
+
+enum NativeDDCReadStrategyOutcome: Equatable {
+    case success(DDCReading, dataAddress: UInt8, attempts: Int)
+    case failure(NativeDDCReplyIssue, dataAddress: UInt8, attempts: Int)
+}
+
+enum NativeDDCReadStrategyRunner {
+    static func run(
+        primaryDataAddress: UInt8,
+        alternateDataAddress: UInt8?,
+        attemptsPerStrategy: Int,
+        responseLength: Int = 11,
+        exchange: (UInt8, inout [UInt8]) -> Result<DDCReading, NativeDDCReplyIssue>
+    ) -> NativeDDCReadStrategyOutcome {
+        let attemptLimit = max(attemptsPerStrategy, 1)
+        var totalAttempts = 0
+        var lastIssue = NativeDDCReplyIssue.responseReadFailed
+        func runStrategy(_ address: UInt8) -> DDCReading? {
+            for _ in 0..<attemptLimit {
+                totalAttempts += 1
+                var response = [UInt8](repeating: 0, count: responseLength)
+                switch exchange(address, &response) {
+                case .success(let reading):
+                    return reading
+                case .failure(let issue):
+                    lastIssue = issue
+                }
+            }
+            return nil
+        }
+
+        if let reading = runStrategy(primaryDataAddress) {
+            return .success(reading, dataAddress: primaryDataAddress, attempts: totalAttempts)
+        }
+        if lastIssue.permitsAlternateReadOffset,
+           let alternateDataAddress, alternateDataAddress != primaryDataAddress {
+            if let reading = runStrategy(alternateDataAddress) {
+                return .success(reading, dataAddress: alternateDataAddress, attempts: totalAttempts)
+            }
+            return .failure(lastIssue, dataAddress: alternateDataAddress, attempts: totalAttempts)
+        }
+        return .failure(lastIssue, dataAddress: primaryDataAddress, attempts: totalAttempts)
+    }
+}
+
+struct NativeDDCReadPreferenceCache {
+    private var values: [String: UInt8] = [:]
+
+    func preferredAddress(selector: String, default defaultAddress: UInt8) -> UInt8 {
+        values[selector.uppercased()] ?? defaultAddress
+    }
+
+    mutating func remember(address: UInt8, selector: String) {
+        values[selector.uppercased()] = address
+    }
+
+    mutating func invalidate(selector: String) {
+        values.removeValue(forKey: selector.uppercased())
+    }
+
+    mutating func removeAll() {
+        values.removeAll()
     }
 }
 

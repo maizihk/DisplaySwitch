@@ -370,6 +370,102 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
     }
 
+    func testNativeTransportAddressingSeparatesEndpointPathFromConverterChip() {
+        XCTAssertEqual(
+            NativeDDCTransportAddressing.resolve(
+                endpointToken: "dispextE", epicProviderClass: nil,
+                transportDescription: nil
+            ),
+            NativeDDCTransportAddressing(transportPath: .builtinHDMIConverter,
+                                         chipAddress: 0x37)
+        )
+        XCTAssertEqual(
+            NativeDDCTransportAddressing.resolve(
+                endpointToken: "dispext1", epicProviderClass: "AppleDCPMCDP29XX",
+                transportDescription: "HDMI"
+            ),
+            NativeDDCTransportAddressing(transportPath: .builtinHDMIConverter,
+                                         chipAddress: 0xB7)
+        )
+        XCTAssertEqual(
+            NativeDDCTransportAddressing.resolve(
+                endpointToken: "dispext1", epicProviderClass: nil,
+                transportDescription: "DisplayPort"
+            ),
+            NativeDDCTransportAddressing(transportPath: .typeCDPAlt,
+                                         chipAddress: 0x37)
+        )
+    }
+
+    func testTypeCReadFallsBackFromBadChecksumUsingFreshBoundedBuffers() {
+        var addresses: [UInt8] = []
+        var buffersWereFresh: [Bool] = []
+
+        let outcome = NativeDDCReadStrategyRunner.run(
+            primaryDataAddress: 0x51,
+            alternateDataAddress: 0,
+            attemptsPerStrategy: 5
+        ) { address, response in
+            addresses.append(address)
+            buffersWereFresh.append(response.allSatisfy { $0 == 0 })
+            response[0] = 0xFF
+            if address == 0 {
+                return .success(DDCReading(current: 42, maximum: 100))
+            }
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(addresses, [0x51, 0x51, 0x51, 0x51, 0x51, 0])
+        XCTAssertTrue(buffersWereFresh.allSatisfy { $0 })
+        XCTAssertEqual(
+            outcome,
+            .success(DDCReading(current: 42, maximum: 100), dataAddress: 0, attempts: 6)
+        )
+    }
+
+    func testTypeCReadStopsAfterBothBoundedStrategiesFail() {
+        var addresses: [UInt8] = []
+        let outcome = NativeDDCReadStrategyRunner.run(
+            primaryDataAddress: 0x51,
+            alternateDataAddress: 0,
+            attemptsPerStrategy: 5
+        ) { address, _ in
+            addresses.append(address)
+            return .failure(address == 0x51 ? .responseTimeout : .wrongCommand)
+        }
+
+        XCTAssertEqual(addresses.count, 10)
+        XCTAssertEqual(Array(addresses.prefix(5)), Array(repeating: 0x51, count: 5))
+        XCTAssertEqual(Array(addresses.suffix(5)), Array(repeating: 0, count: 5))
+        XCTAssertEqual(outcome, .failure(.wrongCommand, dataAddress: 0, attempts: 10))
+    }
+
+    func testRequestWriteFailureDoesNotProbeAlternateReadOffset() {
+        var addresses: [UInt8] = []
+        let outcome = NativeDDCReadStrategyRunner.run(
+            primaryDataAddress: 0x51,
+            alternateDataAddress: 0,
+            attemptsPerStrategy: 5
+        ) { address, _ in
+            addresses.append(address)
+            return .failure(.requestWriteFailed)
+        }
+
+        XCTAssertEqual(addresses, Array(repeating: 0x51, count: 5))
+        XCTAssertEqual(outcome, .failure(.requestWriteFailed, dataAddress: 0x51, attempts: 5))
+    }
+
+    func testReadOffsetPreferenceIsPerDisplayAndInvalidatedWithService() {
+        var cache = NativeDDCReadPreferenceCache()
+        cache.remember(address: 0, selector: "selector-a")
+
+        XCTAssertEqual(cache.preferredAddress(selector: "SELECTOR-A", default: 0x51), 0)
+        XCTAssertEqual(cache.preferredAddress(selector: "selector-b", default: 0x51), 0x51)
+
+        cache.invalidate(selector: "selector-a")
+        XCTAssertEqual(cache.preferredAddress(selector: "selector-a", default: 0x51), 0x51)
+    }
+
     func testNativeDiagnosticsExposeOnlySanitizedTransportState() {
         let snapshot = NativeDDCDiagnosticSnapshot(
             transportPath: .builtinHDMIConverter,
@@ -377,13 +473,14 @@ final class DDCBackendTests: XCTestCase {
             operationCategory: .readResponseTimeout,
             rebuildCount: 1,
             replyIssue: .responseTimeout,
+            chipAddress: 0x37,
             readDataAddress: 0,
             readAttemptCount: 5
         )
 
         XCTAssertEqual(
             snapshot.userFacingDescription,
-            "builtin-hdmi-converter · service matched · read-response-timeout · offset 0 · attempts 5 · rebuild 1"
+            "builtin-hdmi-converter · service matched · read-response-timeout · chip 0x37 · offset 0 · attempts 5 · rebuild 1"
         )
         XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
         XCTAssertFalse(snapshot.userFacingDescription.contains("/"))
@@ -407,12 +504,14 @@ final class DDCBackendTests: XCTestCase {
                 operationCategory: .readReplyRejected,
                 rebuildCount: 1,
                 replyIssue: issue,
+                chipAddress: 0x37,
                 readDataAddress: 0x51,
                 readAttemptCount: 5
             )
             XCTAssertTrue(snapshot.userFacingDescription.contains("read-reply-rejected/\(code)"))
             XCTAssertTrue(snapshot.userFacingDescription.contains("offset 0x51"))
             XCTAssertTrue(snapshot.userFacingDescription.contains("attempts 5"))
+            XCTAssertTrue(snapshot.userFacingDescription.contains("chip 0x37"))
             XCTAssertFalse(snapshot.userFacingDescription.contains("UUID"))
             XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
         }

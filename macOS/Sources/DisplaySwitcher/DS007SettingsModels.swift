@@ -108,6 +108,11 @@ enum DisplaySettingsSemantics {
     }
 }
 
+enum DisplayDiagnosticLayout {
+    static let wraps = true
+    static let maximumNumberOfLines = 0
+}
+
 enum DisplayInputMappingPresentation {
     enum Context {
         case usb

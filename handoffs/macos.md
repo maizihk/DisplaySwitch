@@ -7,7 +7,7 @@
 - 协调基线：`codex/coord-ds-009-native-display-control@53c2397011323cd941afe315e3a6881fe772299e`
 - 基线确认：协调基线包含 `main@0bbfa9e0fad8350462b3b68083aace4ca9063dce`
 - 分支：`codex/macos-ds-009-native-display-control`
-- 实现提交：`551c8d694ba24b6802b1363d69436fd23a97d7dd`、`02f006c4d661876bc865ea413dba574b9bd94c61`，本轮映射生命周期修复以 PR #46 当前 HEAD 为准
+- 实现提交：`551c8d694ba24b6802b1363d69436fd23a97d7dd`、`02f006c4d661876bc865ea413dba574b9bd94c61`；本轮原生寻址与读取策略修复提交见 PR #46 最新 HEAD
 - PR：[#46](https://github.com/maizihk/DisplaySwitch/pull/46)；base 为 `codex/coord-ds-009-native-display-control`
 
 ## 根因
@@ -24,12 +24,14 @@
 - 持久化文档始终只有三个唯一显示器；重复行来自设置页每次即时保存都经 `onSave -> reloadSettings` 与本地 `reloadValues` 重建动态映射区，旧行生命周期依赖整组移除再追加，且字段仅按数组序号关联，没有稳定显示器 ID 的幂等协调。
 - 小米 Type-C 偶发切换失败来自原生双写结果覆盖：第一次 `IOAVServiceWriteI2C` 已接受输入源命令后，显示器可能立即断开当前 Type-C 链路；第二次返回失败会覆盖第一次成功，触发无意义的重建和重试，并把已接受的命令误报为失败。
 - M4/macOS 27 不再提供旧分类器依赖的 `EPICProviderClass`、`Transport` 或 `ConnectionType`；三个服务只在 IORegistry 层级中暴露通用 `dispextE`、`dispext0`、`dispext1` endpoint。内置 HDMI 因而被误分为 `unknown-external`，错误使用 Type-C 的读取 offset `0x51`，最终只显示笼统的 `read-reply-rejected`。
+- 上一轮把 `builtin-hdmi-converter` 传输分类直接等同于 MCDP 芯片地址 `0xB7`；但 M4 的 `dispextE` 只是内置 HDMI 通道证据，不是 MCDP 芯片证据。这使内置 HDMI 在读取请求写入阶段使用错误 I2C 地址。
+- 部分 Type-C/DP 显示器在 offset `0x51` 返回可重复的严格校验失败；单一 offset 策略无法兼容该路径，而接受坏校验和会把迟到或错误回复伪装成成功。
 
 ## 完成内容
 
 - 运行时 DDC 路由固定选择 Apple Silicon 原生后端；保留 `m1ddc` 源码作为历史实现，但任何控制通道设置都不能启动它。Intel Mac 明确报告当前原生后端不支持。
 - 保留已正常工作的写入 `0x51`、五次尝试和双写语义；不用读取修复改写写入协议。
-- 读取恢复为同一 service 最多五次有限尝试，每次重试前清空 response buffer；Type-C/DP Alt 固定使用 `0x51`，确认为内置 HDMI converter 时固定使用 `0`，未识别路径明确标记为 `unknown-external`，不在同一操作中无界探测。
+- 读取恢复为每个策略最多五次有限尝试，每次重试都创建并清空独立 response buffer；内置 HDMI 使用 offset `0`，Type-C/DP 先使用 `0x51`，仅在严格拒绝、回复超时或回复读取失败后有限尝试 offset `0`。两个策略均失败时保持失败，绝不接受坏校验和。
 - 设置页提供脱敏诊断：仅显示传输分类、service 是否匹配、请求写入/回复超时/回复 I2C/回复校验类别和重建次数，不显示硬件标识或路径。
 - 完整枚举当前 `AppleCLCD2`、`IOMobileFramebufferShim` 及兼容 framebuffer 和外部 `DCPAVServiceProxy`，按 IODisplayLocation、产品名和序列信息评分，并保证一个显示器和一个 serviceLocation 只绑定一次。
 - 在线显示器身份与可通信 service 分离：未匹配到 service 时仍可显示产品身份，但读取/写入明确失败。Get VCP 回复新增长度、checksum、来源、载荷、opcode、结果码及 command echo 校验。
@@ -42,16 +44,21 @@
 - 两个映射区改为按小写稳定 display ID 协调现有行：重复 ID 只保留一行、过期行可靠移除、重排复用现有行；即时保存成功后不再无条件重建整个显示器页面。
 - 原生有限双写继续执行两次，但一轮内任意一次传输接受即视为该 DDC 命令已提交；后一次因输入切换造成的链路消失不再抹掉前一次成功。两次均失败时仍按原有有限重试、service 失效和重发现路径明确失败。
 - registry 发现只从 proxy、父节点或相邻 framebuffer 的本机路径/名称中提取通用 endpoint token，不把完整路径带入模型、诊断或日志；`dispextE` 固定分类为内置 HDMI，数字 `dispextN` 固定分类为 Type-C/DP，旧 MCDP/Transport 规则继续作为兼容回退。
-- HDMI 读取固定 offset `0`，Type-C/DP 固定 offset `0x51`，同一次操作不盲试另一 offset。脱敏诊断增加最后具体拒绝原因、实际 offset 和本轮有限尝试次数。
+- 传输分类、读取 offset 与 I2C chip address 已拆开：M4 `dispextE` 使用 chip `0x37`/offset `0`；只有明确 MCDP provider 才使用 chip `0xB7`/offset `0`；Type-C/DP 默认 chip `0x37`/offset `0x51`。
+- Type-C/DP 在 offset `0` 严格校验成功后按稳定 selector 缓存本进程读取偏好；service 失效、重建或取消会清除该偏好，下一次从确定的默认策略重新验证。
+- 脱敏诊断显示实际 chip、offset、有限尝试次数和最后拒绝原因；设置页诊断标签允许多行换行，不显示路径、UUID 或序列号。
 
 ## 自动验证
 
-- 完整 XCTest：70 项通过。
+- 完整 XCTest：76 项通过。
 - 新增读取门控回归：旧 `readEnabled=false` 且亮度开启时只调用一次原生亮度读取；关闭的对比度/音量零调用；三项全部关闭零调用并返回明确跳过原因。
 - 新增映射标题投影回归：两台同型号中性模拟显示器在 USB 与协同映射中均保留完整名称和本机序号。
 - 新增 20 轮页面顺序变化、保存/重载等价投影回归：USB 与协同映射始终各为三个唯一稳定 ID，两个同型号名称的（1）/（2）后缀完整保留。
 - 新增原生双写回归：`成功 -> 链路断开` 与 `失败 -> 成功` 均判定接受，只有两次都失败才报错；保持固定两次调用，不执行真实 DDC。
 - 新增 endpoint 与诊断回归：synthetic `dispextE`、`dispext0`、`dispext1`、旧 MCDP 和未知路径分类及 offset；七种回复拒绝原因均投影为脱敏代码，并显示 offset 和尝试次数。
+- 新增原生寻址回归：`dispextE` 非 MCDP 使用 chip `0x37`/offset `0`；明确 MCDP 即使带数字 endpoint 也使用 chip `0xB7`/offset `0`；数字 endpoint 使用 chip `0x37`/offset `0x51`。
+- 新增 Type-C 双 offset 回归：`0x51` 连续五次 bad-checksum 后以全新 buffer 在 offset `0` 严格成功；两个策略均失败时总计十次后明确失败；请求写入失败不进行无意义的 read-offset 切换。
+- 新增按显示器读取偏好缓存及 service 失效清理测试；诊断断言包含脱敏 chip/offset/attempts，布局投影断言诊断标签不截断而允许多行。
 - 名称测试覆盖两台不同型号、两台同型号、已保存名称、稳定本机序号和枚举重排；断言用户可见名称不含 selector/稳定 ID。
 - 后端测试覆盖原生成功、不可用、枚举失败、读取失败和写入失败均零 `m1ddc` 调用；持久化的旧控制通道设置不能重新启用回退。
 - 写入协调测试覆盖 100 次快速滑杆写入合并为首值与最终值、同显示器跨 DDC 项串行、不同显示器故障隔离、取消/刷新/窗口关闭后丢弃迟到完成。

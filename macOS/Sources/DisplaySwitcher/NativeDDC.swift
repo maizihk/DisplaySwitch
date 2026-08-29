@@ -2,8 +2,9 @@
 // Discovery and I2C packet handling are derived from AppleSiliconDDC:
 // https://github.com/waydabber/AppleSiliconDDC
 // Copyright (c) 2021 Istvan T., used under the MIT License.
-// MonitorControl uses a different read offset (0 instead of 0x51); DS-009 keeps
-// the offset explicit and testable rather than probing both values on hardware.
+// MonitorControl uses a different read offset (0 instead of 0x51). DS-009 keeps
+// both strategies explicit and bounded, and only falls back after a strict
+// Type-C/DP read failure.
 
 import CoreGraphics
 import Foundation
@@ -25,11 +26,6 @@ private struct NativeRegistryTransport {
     let chipAddress: UInt32
 }
 
-private enum NativeDDCReadOutcome {
-    case success(DDCReading, attempts: Int)
-    case failure(NativeDDCReplyIssue, attempts: Int)
-}
-
 final class NativeDDCBackend: DDCBackend {
     let identifier = "apple-silicon-native"
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
@@ -39,6 +35,7 @@ final class NativeDDCBackend: DDCBackend {
     private let diagnosticsLock = NSLock()
     private var transportLocks: [String: NSLock] = [:]
     private var displaysByUUID: [String: NativeDDCDisplay] = [:]
+    private var readPreferenceCache = NativeDDCReadPreferenceCache()
     private var diagnosticsBySelector: [String: NativeDDCDiagnosticSnapshot] = [:]
     private let transportParameters: NativeDDCTransportParameters
 
@@ -125,20 +122,28 @@ final class NativeDDCBackend: DDCBackend {
                 chipAddress: display.chipAddress,
                 command: command,
                 transportPath: display.transportPath,
+                primaryDataAddress: preferredReadDataAddress(
+                    selector: selector, path: display.transportPath
+                ),
                 parameters: transportParameters
             ) {
-            case .success(let reading, let attempts):
+            case .success(let reading, let dataAddress, let attempts):
                 try token.throwIfCancelled()
                 resolved = reading
+                if display.transportPath == .typeCDPAlt,
+                   dataAddress != transportParameters.typeCDPReadDataAddress {
+                    rememberReadDataAddress(dataAddress, selector: selector)
+                }
                 recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
                                  category: .readSucceeded,
-                                 readDataAddress: transportParameters.readDataAddress(for: display.transportPath),
+                                 chipAddress: display.chipAddress,
+                                 readDataAddress: dataAddress,
                                  readAttemptCount: attempts)
-            case .failure(let issue, let attempts):
+            case .failure(let issue, let dataAddress, let attempts):
                 recordDiagnostic(
                     selector: selector, path: display.transportPath, serviceMatched: true,
                     category: diagnosticCategory(for: issue), replyIssue: issue,
-                    readDataAddress: transportParameters.readDataAddress(for: display.transportPath),
+                    chipAddress: display.chipAddress, readDataAddress: dataAddress,
                     readAttemptCount: attempts
                 )
                 throw DDCBackendError.invalidReply(command: command, issue: issue)
@@ -175,12 +180,13 @@ final class NativeDDCBackend: DDCBackend {
                 parameters: transportParameters
             ) else {
                 recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
-                                 category: .writeTransportFailed)
+                                 category: .writeTransportFailed,
+                                 chipAddress: display.chipAddress)
                 throw DDCBackendError.writeFailed(stableID: stableID, command: command)
             }
             try token.throwIfCancelled()
             recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
-                             category: .writeSucceeded)
+                             category: .writeSucceeded, chipAddress: display.chipAddress)
         }, recover: {
             try token.throwIfCancelled()
             incrementRebuild(selector: selector)
@@ -192,6 +198,7 @@ final class NativeDDCBackend: DDCBackend {
     func cancelAll() {
         cacheLock.lock()
         displaysByUUID.removeAll()
+        readPreferenceCache.removeAll()
         cacheLock.unlock()
     }
 
@@ -204,6 +211,7 @@ final class NativeDDCBackend: DDCBackend {
     private func recordDiagnostic(selector: String, path: NativeDDCTransportPath,
                                   serviceMatched: Bool, category: NativeDDCOperationCategory,
                                   replyIssue: NativeDDCReplyIssue? = nil,
+                                  chipAddress: UInt32? = nil,
                                   readDataAddress: UInt8? = nil,
                                   readAttemptCount: Int? = nil) {
         let key = selector.uppercased()
@@ -212,7 +220,8 @@ final class NativeDDCBackend: DDCBackend {
         diagnosticsBySelector[key] = NativeDDCDiagnosticSnapshot(
             transportPath: path, serviceMatched: serviceMatched,
             operationCategory: category, rebuildCount: rebuildCount,
-            replyIssue: replyIssue, readDataAddress: readDataAddress,
+            replyIssue: replyIssue, chipAddress: chipAddress,
+            readDataAddress: readDataAddress,
             readAttemptCount: readAttemptCount
         )
         diagnosticsLock.unlock()
@@ -228,7 +237,8 @@ final class NativeDDCBackend: DDCBackend {
         diagnosticsBySelector[key] = NativeDDCDiagnosticSnapshot(
             transportPath: current.transportPath, serviceMatched: current.serviceMatched,
             operationCategory: current.operationCategory, rebuildCount: current.rebuildCount + 1,
-            replyIssue: current.replyIssue, readDataAddress: current.readDataAddress,
+            replyIssue: current.replyIssue, chipAddress: current.chipAddress,
+            readDataAddress: current.readDataAddress,
             readAttemptCount: current.readAttemptCount
         )
         diagnosticsLock.unlock()
@@ -256,6 +266,22 @@ final class NativeDDCBackend: DDCBackend {
     private func invalidate(selector: String) {
         cacheLock.lock()
         displaysByUUID.removeValue(forKey: selector.uppercased())
+        readPreferenceCache.invalidate(selector: selector)
+        cacheLock.unlock()
+    }
+
+    private func preferredReadDataAddress(selector: String, path: NativeDDCTransportPath) -> UInt8 {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return readPreferenceCache.preferredAddress(
+            selector: selector,
+            default: transportParameters.readDataAddress(for: path)
+        )
+    }
+
+    private func rememberReadDataAddress(_ address: UInt8, selector: String) {
+        cacheLock.lock()
+        readPreferenceCache.remember(address: address, selector: selector)
         cacheLock.unlock()
     }
 
@@ -425,10 +451,9 @@ final class NativeDDCBackend: DDCBackend {
                 property(entry: entry, key: "Location") as? String == "External",
                 let unmanagedService = IOAVServiceCreateWithService(kCFAllocatorDefault, entry)
             else { continue }
-            let transportPath = transportPath(
+            let addressing = transportAddressing(
                 for: entry, adjacentEndpointToken: currentFramebuffer.endpointToken
             )
-            let isConverter = transportPath == .builtinHDMIConverter
             transports.append(NativeRegistryTransport(
                 metadata: NativeTransportCandidate(
                     serviceLocation: currentFramebuffer.serviceLocation,
@@ -436,20 +461,23 @@ final class NativeDDCBackend: DDCBackend {
                     productName: currentFramebuffer.productName,
                     serialNumber: currentFramebuffer.serialNumber,
                     edidUUID: currentFramebuffer.edidUUID,
-                    transportPath: transportPath
+                    transportPath: addressing.transportPath
                 ),
                 service: unmanagedService.takeRetainedValue() as IOAVService,
-                chipAddress: isConverter ? 0xB7 : 0x37
+                chipAddress: addressing.chipAddress
             ))
         }
         return transports
     }
 
-    private static func transportPath(for proxy: io_registry_entry_t,
-                                      adjacentEndpointToken: String?) -> NativeDDCTransportPath {
+    private static func transportAddressing(for proxy: io_registry_entry_t,
+                                            adjacentEndpointToken: String?)
+        -> NativeDDCTransportAddressing {
         var parent: io_registry_entry_t = 0
         guard IORegistryEntryGetParentEntry(proxy, kIOServicePlane, &parent) == KERN_SUCCESS else {
-            return .unknownExternal
+            return NativeDDCTransportAddressing(
+                transportPath: .unknownExternal, chipAddress: 0x37
+            )
         }
         defer { IOObjectRelease(parent) }
         let provider = property(entry: parent, key: "EPICProviderClass") as? String
@@ -465,7 +493,7 @@ final class NativeDDCBackend: DDCBackend {
             parentName,
             adjacentEndpointToken ?? ""
         ])
-        return NativeTransportPathClassifier.classify(
+        return NativeDDCTransportAddressing.resolve(
             endpointToken: endpointToken,
             epicProviderClass: provider,
             transportDescription: descriptions.joined(separator: " ")
@@ -500,35 +528,32 @@ final class NativeDDCBackend: DDCBackend {
         chipAddress: UInt32,
         command: DDCCommand,
         transportPath: NativeDDCTransportPath,
+        primaryDataAddress: UInt8,
         parameters: NativeDDCTransportParameters
-    ) -> NativeDDCReadOutcome {
-        var request: [UInt8] = [command.rawValue]
-        var lastIssue = NativeDDCReplyIssue.responseReadFailed
-        let attemptLimit = parameters.readAttempts(for: transportPath)
-        for attempt in 1...max(attemptLimit, 1) {
-            // A fresh buffer prevents a failed retry from accepting bytes left by an
-            // earlier command or a late response.
-            var response = [UInt8](repeating: 0, count: 11)
+    ) -> NativeDDCReadStrategyOutcome {
+        let alternateDataAddress: UInt8? = transportPath == .typeCDPAlt
+            && primaryDataAddress == parameters.typeCDPReadDataAddress ? 0 : nil
+        return NativeDDCReadStrategyRunner.run(
+            primaryDataAddress: primaryDataAddress,
+            alternateDataAddress: alternateDataAddress,
+            attemptsPerStrategy: parameters.readAttempts(for: transportPath)
+        ) { readDataAddress, response in
+            var request: [UInt8] = [command.rawValue]
             let exchange = communicate(
                 service: service,
                 chipAddress: chipAddress,
                 request: &request,
                 response: &response,
                 attempts: 1,
-                readDataAddress: parameters.readDataAddress(for: transportPath),
+                readDataAddress: readDataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
                 parameters: parameters
             )
-            guard case .success = exchange else {
-                if case .failure(let issue) = exchange { lastIssue = issue }
-                continue
+            if case .failure(let issue) = exchange {
+                return .failure(issue)
             }
-            switch NativeDDCReplyValidator.reading(from: response, command: command) {
-            case .success(let reading): return .success(reading, attempts: attempt)
-            case .failure(let issue): lastIssue = issue
-            }
+            return NativeDDCReplyValidator.reading(from: response, command: command)
         }
-        return .failure(lastIssue, attempts: max(attemptLimit, 1))
     }
 
     private static func write(

@@ -15,6 +15,11 @@ private final class RecordingAboutMetadata: AboutBundleMetadataSource {
 }
 
 final class PublicPresentationModelsTests: XCTestCase {
+    func testDisplayDiagnosticLayoutWrapsInsteadOfTruncatingTransportDetails() {
+        XCTAssertTrue(DisplayDiagnosticLayout.wraps)
+        XCTAssertEqual(DisplayDiagnosticLayout.maximumNumberOfLines, 0)
+    }
+
     func testC023AboutPageUsesOnlyPublicMetadataAndHasNoRuntimeSideEffectDependencies() {
         let metadata = RecordingAboutMetadata(values: [
             "CFBundleName": "DisplaySwitcher",

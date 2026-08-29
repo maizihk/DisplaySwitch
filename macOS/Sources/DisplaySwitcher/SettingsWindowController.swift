@@ -917,14 +917,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         readButton.tag = index
         readButton.setAccessibilityLabel("读取\(name) DDC 参数")
-        let status = NSTextField(labelWithString: "尚未读取")
+        let status = NSTextField(wrappingLabelWithString: "尚未读取")
         status.textColor = .secondaryLabelColor
         status.font = .systemFont(ofSize: 11)
+        status.maximumNumberOfLines = DisplayDiagnosticLayout.maximumNumberOfLines
+        status.lineBreakMode = DisplayDiagnosticLayout.wraps ? .byWordWrapping : .byTruncatingTail
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         displayStatusLabels[index] = status
         let toolbar = NSStackView(views: [readButton, status])
         toolbar.orientation = .horizontal
-        toolbar.alignment = .centerY
+        toolbar.alignment = .top
         toolbar.spacing = 10
+        status.widthAnchor.constraint(lessThanOrEqualToConstant: 460).isActive = true
 
         let headings = NSStackView(views: [
             fixedLabel("", width: 64), fixedLabel("功能", width: 44),
