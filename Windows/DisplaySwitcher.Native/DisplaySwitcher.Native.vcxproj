@@ -114,6 +114,7 @@
     <ClCompile Include="UsbSwitchCoordinator.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
     <ResourceCompile Include="AppIcon.rc" />
+    <Image Include="AppIcon-256.png" />
     <Image Include="AppIcon.ico" />
   </ItemGroup>
   <ItemGroup>

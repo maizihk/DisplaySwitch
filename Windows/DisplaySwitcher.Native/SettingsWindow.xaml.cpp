@@ -373,7 +373,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         aboutTab.Header(CreateTabHeader(L"\uE946", L"关于"));
         auto info = ::DisplaySwitcher::Native::PublicAboutInfo();
         auto aboutIcon = Image(); aboutIcon.Width(72); aboutIcon.Height(72); aboutIcon.HorizontalAlignment(HorizontalAlignment::Center);
-        aboutIcon.Source(Microsoft::UI::Xaml::Media::Imaging::BitmapImage(Windows::Foundation::Uri(L"ms-appx:///AppIcon.ico")));
+        aboutIcon.Source(Microsoft::UI::Xaml::Media::Imaging::BitmapImage(Windows::Foundation::Uri(L"ms-appx:///AppIcon-256.png")));
         auto aboutName = TextBlock(); aboutName.Text(info.applicationName); aboutName.FontSize(24);
         aboutName.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); aboutName.HorizontalAlignment(HorizontalAlignment::Center);
         auto aboutDetails = TextBlock(); aboutDetails.Text(L"版本 " + info.publicVersion + L"\n" + info.architecture + L"\n协议 v2");
