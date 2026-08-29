@@ -29,6 +29,7 @@ namespace
         toggle.Header(nullptr);
         toggle.OnContent(box_value(L""));
         toggle.OffContent(box_value(L""));
+        toggle.MinWidth(0);
         toggle.HorizontalAlignment(HorizontalAlignment::Right);
         toggle.VerticalAlignment(VerticalAlignment::Center);
         AutomationProperties::SetName(toggle, text);
@@ -183,7 +184,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto tabStripFooterInset = Grid(); tabStripFooterInset.Width(12);
         tabs_.TabStripHeader(tabStripHeaderInset); tabs_.TabStripFooter(tabStripFooterInset);
 
-        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
         auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
         commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
@@ -206,7 +207,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         });
         auto usbButtons = StackPanel(); usbButtons.Orientation(Orientation::Horizontal); usbButtons.Spacing(8);
         usbButtons.Children().Append(learnCurrentUsb); usbButtons.Children().Append(clearCurrentUsb);
-        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto usbTab = TabViewItem(); usbTab.IsClosable(false); usbTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         usbTab.Header(CreateTabHeader(L"\uE88E", L"USB 切换"));
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
@@ -217,7 +218,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             usbProfileSelector_, CreateTwoColumn(usbDevices_, refresh),
             usbButtons, usbDeviceStatus_, usbMappingsPanel_, usbHint }) }));
 
-        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
         auto peerStatus = StackPanel(); peerStatus.Orientation(Orientation::Horizontal); peerStatus.Spacing(8);
         connectionDot_ = TextBlock(); connectionDot_.Text(L"●"); connectionDot_.FontSize(16);
@@ -255,12 +256,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         peerTab.Content(CreatePage({ CreateSection(L"协同配置", {
             peerStatus, peerHint, CreateTwoColumn(profileSelector_, addProfile), profileEditorsPanel_ }) }));
 
-        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
         auto displayHint = TextBlock(); displayHint.Text(L"新显示器的功能和托盘开关默认关闭。读取只访问亮度、对比度和音量。");
         displayHint.TextWrapping(TextWrapping::Wrap); displayHint.Opacity(0.72);
         auto refreshDdc = Button(); refreshDdc.Content(box_value(L"重新检测显示器"));
-        refreshDdc.HorizontalAlignment(HorizontalAlignment::Left);
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
@@ -268,7 +268,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
-        auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         aboutTab.Header(CreateTabHeader(L"\uE946", L"关于"));
         auto info = ::DisplaySwitcher::Native::PublicAboutInfo();
         auto aboutIcon = Image(); aboutIcon.Width(72); aboutIcon.Height(72); aboutIcon.HorizontalAlignment(HorizontalAlignment::Center);
@@ -306,28 +306,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
     {
-        auto panel = Grid(); panel.RowSpacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
-        panel.HorizontalAlignment(HorizontalAlignment::Stretch);
+        auto panel = StackPanel(); panel.Spacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
         auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
-        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-
-        auto appendRow = [&](UIElement const& child, int rowIndex)
-        {
-            auto row = RowDefinition(); row.Height(GridLengthHelper::Auto());
-            panel.RowDefinitions().Append(row);
-            Grid::SetRow(child.as<FrameworkElement>(), rowIndex); panel.Children().Append(child);
-        };
-        appendRow(heading, 0);
-        for (size_t index = 0; index < children.size(); ++index)
-            appendRow(children[index], static_cast<int>(index + 1));
-        return CreateCard(panel);
+        heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
+        for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
     }
 
     Border SettingsWindow::CreateCard(UIElement const& child)
     {
         auto border = Border(); border.Child(child); border.Padding(Thickness{ 20, 20, 20, 20 });
-        border.HorizontalAlignment(HorizontalAlignment::Stretch);
-        if (auto element = child.try_as<FrameworkElement>()) element.HorizontalAlignment(HorizontalAlignment::Stretch);
         border.CornerRadius(CornerRadius{ 8, 8, 8, 8 });
         border.BorderThickness(Thickness{ 1, 1, 1, 1 });
         border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
