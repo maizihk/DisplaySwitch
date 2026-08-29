@@ -896,20 +896,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func makeV2StatusProbe(eventID: String, profile: CollaborationProfile) -> Data? {
         let localEndpointID = AppPreferences.localConfiguration.localEndpointID
         guard let nonce = try? V2Crypto.makeNonce(),
-              let key = try? V2Crypto.deriveKey(
-                pairingCode: profile.pairingCode,
-                sourceEndpointID: localEndpointID
+              let message = try? V2PeerCapabilityInspection.statusProbe(
+                eventID: eventID,
+                localEndpointID: localEndpointID,
+                profile: profile,
+                timestamp: Int64(Date().timeIntervalSince1970),
+                nonce: nonce
               ) else { return nil }
-        var message = V2Message(
-            type: .statusProbe,
-            eventID: eventID,
-            sourceEndpointID: localEndpointID,
-            targetEndpointID: nil,
-            sourcePlatform: .macos,
-            timestamp: Int64(Date().timeIntervalSince1970),
-            nonce: nonce
-        )
-        message.authTag = V2Crypto.authenticationTag(for: message, key: key)
         return try? JSONEncoder().encode(message)
     }
 
@@ -933,27 +926,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         guard let eventID = V2MessageEnvelope.eventID(in: data),
               let inspectionID = inspectionIDByEventID[eventID],
               let pending = pendingPeerInspections[inspectionID],
-              eventID == pending.v2EventID,
-              let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data),
-              let key = try? V2Crypto.deriveKey(
-                pairingCode: pending.profile.pairingCode,
-                sourceEndpointID: sourceEndpointID
-              ) else { return false }
-        let validation = V2MessageValidator.validate(
+              eventID == pending.v2EventID else { return false }
+        switch V2PeerCapabilityInspection.validateResponse(
             data: data,
-            context: V2MessageValidationContext(
-                now: Int64(Date().timeIntervalSince1970),
-                localEndpointID: AppPreferences.localConfiguration.localEndpointID,
-                knownSourceEndpointID: sourceEndpointID,
-                authenticationKey: key
-            )
-        )
-        if validation.reason == .authenticationFailed {
+            profile: pending.profile,
+            eventID: pending.v2EventID,
+            localEndpointID: AppPreferences.localConfiguration.localEndpointID,
+            now: Int64(Date().timeIntervalSince1970)
+        ) {
+        case .accepted(let endpointID):
+            completePeerCapabilityInspection(inspectionID, result: .v2(endpointID: endpointID))
+        case .authenticationFailed:
             completePeerCapabilityInspection(inspectionID, result: .authenticationFailed)
-            return true
+        case .rejected:
+            break
         }
-        guard validation.accepted, validation.message?.type == .statusResponse else { return true }
-        completePeerCapabilityInspection(inspectionID, result: .v2(endpointID: sourceEndpointID))
         return true
     }
 

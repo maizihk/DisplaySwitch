@@ -456,6 +456,86 @@ enum PeerCapabilityInspectionResult: Equatable {
     case noResponse
 }
 
+enum V2PeerCapabilityInspectionResponse: Equatable {
+    case accepted(endpointID: String)
+    case authenticationFailed
+    case rejected
+}
+
+enum V2PeerCapabilityInspection {
+    static func statusProbe(
+        eventID: String,
+        localEndpointID: String,
+        profile: CollaborationProfile,
+        timestamp: Int64,
+        nonce: String
+    ) throws -> V2Message {
+        let targetEndpointID: String?
+        if profile.peerProtocolVersion == 2 {
+            targetEndpointID = profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID)
+        } else {
+            targetEndpointID = nil
+        }
+        let key = try V2Crypto.deriveKey(
+            pairingCode: profile.pairingCode,
+            sourceEndpointID: localEndpointID
+        )
+        var message = V2Message(
+            type: .statusProbe,
+            eventID: eventID,
+            sourceEndpointID: localEndpointID,
+            targetEndpointID: targetEndpointID,
+            sourcePlatform: .macos,
+            timestamp: timestamp,
+            nonce: nonce
+        )
+        message.authTag = V2Crypto.authenticationTag(for: message, key: key)
+        return message
+    }
+
+    static func validateResponse(
+        data: Data,
+        profile: CollaborationProfile,
+        eventID: String,
+        localEndpointID: String,
+        now: Int64
+    ) -> V2PeerCapabilityInspectionResponse {
+        guard let expectedEventID = V2Crypto.normalizedUUID(eventID),
+              V2MessageEnvelope.eventID(in: data) == expectedEventID,
+              let sourceEndpointID = V2MessageEnvelope.sourceEndpointID(in: data) else {
+            return .rejected
+        }
+
+        if profile.peerProtocolVersion == 2,
+           let expectedPeerEndpointID = profile.peerEndpointID.flatMap(V2Crypto.normalizedUUID),
+           sourceEndpointID != expectedPeerEndpointID {
+            return .rejected
+        }
+
+        guard let key = try? V2Crypto.deriveKey(
+            pairingCode: profile.pairingCode,
+            sourceEndpointID: sourceEndpointID
+        ) else { return .rejected }
+        let validation = V2MessageValidator.validate(
+            data: data,
+            context: V2MessageValidationContext(
+                now: now,
+                localEndpointID: localEndpointID,
+                knownSourceEndpointID: sourceEndpointID,
+                authenticationKey: key
+            )
+        )
+        if validation.reason == .authenticationFailed { return .authenticationFailed }
+        guard validation.accepted,
+              let message = validation.message,
+              message.type == .statusResponse,
+              message.targetEndpointID == V2Crypto.normalizedUUID(localEndpointID) else {
+            return .rejected
+        }
+        return .accepted(endpointID: sourceEndpointID)
+    }
+}
+
 struct V2ProfileRoute: Equatable {
     let profileID: String
     let endpointID: String

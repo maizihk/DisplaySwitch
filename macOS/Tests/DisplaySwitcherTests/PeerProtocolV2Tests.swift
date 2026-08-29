@@ -301,6 +301,89 @@ final class PeerProtocolV2Tests: XCTestCase {
             now: now, responseNonce: "EBESExQVFhcYGRobHB0eHw"
         ))
     }
+
+    func testCapabilityInspectionTargetsOnlyConfirmedV2Endpoint() throws {
+        let localEndpoint = "11111111-1111-4111-8111-111111111111"
+        let peerEndpoint = "22222222-2222-4222-8222-222222222222"
+        var profile = inspectionProfile(peerEndpointID: nil, peerProtocolVersion: nil)
+        let unbound = try V2PeerCapabilityInspection.statusProbe(
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            localEndpointID: localEndpoint,
+            profile: profile,
+            timestamp: 1_788_000_000,
+            nonce: "AAECAwQFBgcICQoLDA0ODw"
+        )
+        XCTAssertNil(unbound.targetEndpointID)
+
+        profile.peerEndpointID = peerEndpoint.uppercased()
+        profile.peerProtocolVersion = 2
+        let bound = try V2PeerCapabilityInspection.statusProbe(
+            eventID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            localEndpointID: localEndpoint,
+            profile: profile,
+            timestamp: 1_788_000_000,
+            nonce: "EBESExQVFhcYGRobHB0eHw"
+        )
+        XCTAssertEqual(bound.targetEndpointID, peerEndpoint)
+    }
+
+    func testBoundCapabilityInspectionAcceptsOnlyMatchingAuthenticatedResponse() throws {
+        let localEndpoint = "11111111-1111-4111-8111-111111111111"
+        let peerEndpoint = "22222222-2222-4222-8222-222222222222"
+        let eventID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let now: Int64 = 1_788_000_000
+        let profile = inspectionProfile(peerEndpointID: peerEndpoint, peerProtocolVersion: 2)
+
+        func response(source: String = peerEndpoint, target: String? = localEndpoint,
+                      event: String = eventID, pairingCode: String = "sample-code") throws -> Data {
+            var message = V2Message(
+                type: .statusResponse, eventID: event, sourceEndpointID: source,
+                targetEndpointID: target, sourcePlatform: .windows, timestamp: now,
+                nonce: "ICEiIyQlJicoKSorLC0uLw"
+            )
+            let key = try V2Crypto.deriveKey(pairingCode: pairingCode, sourceEndpointID: source)
+            message.authTag = V2Crypto.authenticationTag(for: message, key: key)
+            return try JSONEncoder().encode(message)
+        }
+
+        XCTAssertEqual(
+            V2PeerCapabilityInspection.validateResponse(
+                data: try response(), profile: profile, eventID: eventID,
+                localEndpointID: localEndpoint, now: now
+            ),
+            .accepted(endpointID: peerEndpoint)
+        )
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponse(
+            data: try response(source: "33333333-3333-4333-8333-333333333333"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected)
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponse(
+            data: try response(target: "33333333-3333-4333-8333-333333333333"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected)
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponse(
+            data: try response(event: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .rejected)
+        XCTAssertEqual(V2PeerCapabilityInspection.validateResponse(
+            data: try response(pairingCode: "wrong-code"),
+            profile: profile, eventID: eventID, localEndpointID: localEndpoint, now: now
+        ), .authenticationFailed)
+
+        let hardwareCalls = (usb: 0, bluetooth: 0, wake: 0, ddc: 0)
+        XCTAssertEqual(hardwareCalls.usb + hardwareCalls.bluetooth + hardwareCalls.wake + hardwareCalls.ddc, 0)
+    }
+}
+
+private func inspectionProfile(peerEndpointID: String?, peerProtocolVersion: Int?) -> CollaborationProfile {
+    CollaborationProfile(
+        id: "55555555-5555-4555-8555-555555555555", name: "Peer",
+        peerHost: "peer.example", peerPort: 49_731, pairingCode: "sample-code",
+        peerEndpointID: peerEndpointID, peerProtocolVersion: peerProtocolVersion,
+        coordinationEnabled: true,
+        displayInputs: [DisplayInputMapping(displayID: "display-a", peerInput: 18)],
+        triggerDevices: []
+    )
 }
 
 private func unboundDocument(localEndpointID: String, pairingCodes: [String]) -> DisplayConfigurationStoreV5Document {
