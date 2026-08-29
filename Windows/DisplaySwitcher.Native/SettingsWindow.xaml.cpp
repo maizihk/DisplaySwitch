@@ -30,6 +30,7 @@ namespace
         toggle.OnContent(box_value(L""));
         toggle.OffContent(box_value(L""));
         toggle.MinWidth(0);
+        toggle.Width(40);
         toggle.HorizontalAlignment(HorizontalAlignment::Right);
         toggle.VerticalAlignment(VerticalAlignment::Center);
         AutomationProperties::SetName(toggle, text);
@@ -306,7 +307,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     Border SettingsWindow::CreateSection(std::wstring const& title, std::vector<UIElement> const& children)
     {
-        auto panel = StackPanel(); panel.Spacing(16); panel.Padding(Thickness{ 0, 0, 20, 0 });
+        auto panel = StackPanel(); panel.Spacing(16);
         auto heading = TextBlock(); heading.Text(title); heading.FontSize(20);
         heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold()); panel.Children().Append(heading);
         for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
