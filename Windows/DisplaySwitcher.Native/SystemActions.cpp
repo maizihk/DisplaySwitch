@@ -3,12 +3,6 @@
 #include "Diagnostics.h"
 #include "SystemActions.h"
 
-namespace
-{
-    using namespace DisplaySwitcher::Native;
-
-}
-
 namespace DisplaySwitcher::Native
 {
     bool WakeDisplay()
@@ -19,11 +13,9 @@ namespace DisplaySwitcher::Native
 
     DdcEnumerationResult EnumerateDdcMonitors()
     {
-        AppConfig config; config.displayControlBackend = L"native_ddc";
-        DdcBackendSet backends(config); DdcCancellationSource cancellation;
-        auto backend = backends.Lookup(L"native_ddc");
-        return backend ? backend->Enumerate(cancellation.Begin()) :
-            DdcEnumerationResult{ false, DdcErrorKind::BackendUnavailable, L"Windows 原生 DDC 后端不可用", {}, false };
+        auto backend = CreateNativeDdcBackend();
+        DdcCancellationSource cancellation;
+        return backend->Enumerate(cancellation.Begin());
     }
 
     ActionResult SwitchDisplaysToMac(AppConfig const& config)
@@ -31,19 +23,16 @@ namespace DisplaySwitcher::Native
         auto started = GetTickCount64();
         if (!config.HasDisplayConfiguration())
             return { false, L"显示器配置不完整，未执行切换" };
-        DdcBackendSet backends(config); DdcCancellationSource cancellation; auto token = cancellation.Begin();
+        auto backend = CreateNativeDdcBackend();
+        DdcCancellationSource cancellation; auto token = cancellation.Begin();
         auto result = ExecuteDisplayActions(config.displays, [&](DisplayConfig const& display)
         {
-            auto backendKey = DdcControlService::BackendKey(config, display);
-            auto backend = backends.Lookup(backendKey);
-            if (!backend) return ActionResult{ false, L"Windows 原生 DDC 后端不可用" };
             auto status = backend->Status();
             if (status.availability != DdcAvailability::Available)
                 return ActionResult{ false, status.message.empty() ? L"Windows 原生 DDC 后端暂时不可用" : status.message };
-            auto monitorId = display.BackendMonitorId(backendKey);
             // The backend acquires a fresh handle set on each call. Retry exactly
             // once after an explicit native failure, without a fixed delay.
-            auto write = WriteNativeWithOneRefresh(*backend, monitorId,
+            auto write = WriteNativeWithOneRefresh(*backend, display.nativeMonitorId,
                 DdcVcpCode::InputSource, display.macInput, token);
             return ActionResult{ write.success, write.message };
         });

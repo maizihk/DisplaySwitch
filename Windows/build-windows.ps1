@@ -51,6 +51,21 @@ function Invoke-CleanEnvironmentProcess([string]$fileName, [string[]]$arguments)
     if ($process.ExitCode -ne 0) { throw "Windows 构建失败，MSBuild 退出码：$($process.ExitCode)" }
 }
 
+$nativeRuntime = Join-Path $PSScriptRoot "DisplaySwitcher.Native"
+$nativeRuntimeSources = Get-ChildItem -LiteralPath $nativeRuntime -File |
+    Where-Object { $_.Extension -in ".cpp", ".h", ".xaml", ".idl", ".vcxproj" }
+foreach ($token in @("ControlMyMonitor", "control_my_monitor", "ControlChannel", "ControlMonitorPath")) {
+    if ($nativeRuntimeSources | Select-String -SimpleMatch $token -Quiet) {
+        throw "正式 Windows 运行时仍包含已删除的 DDC 后端兼容标识：$token"
+    }
+}
+$ddcBackendSource = Join-Path $nativeRuntime "DdcBackends.cpp"
+foreach ($token in @("CreateProcessW", "ShellExecuteW", "WinExec", "_wsystem", "system(")) {
+    if (Select-String -LiteralPath $ddcBackendSource -SimpleMatch $token -Quiet) {
+        throw "正式 DDC 后端仍包含外部进程启动路径：$token"
+    }
+}
+
 $msbuild = Find-MSBuild
 Invoke-CleanEnvironmentProcess $msbuild @(
     $project, "/restore", "/m", "/t:Rebuild", "/p:Configuration=Release", "/p:Platform=x64", "/v:minimal"

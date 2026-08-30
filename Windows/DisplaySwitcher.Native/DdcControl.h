@@ -112,8 +112,6 @@ namespace DisplaySwitcher::Native
     {
     public:
         virtual ~IDdcBackend() = default;
-        virtual std::wstring Key() const = 0;
-        virtual std::wstring DisplayName() const = 0;
         virtual DdcBackendStatus Status() const = 0;
         virtual DdcEnumerationResult Enumerate(DdcCancellationToken const& cancellation) = 0;
         virtual DdcCapabilities Capabilities(std::wstring const& monitorId,
@@ -123,8 +121,6 @@ namespace DisplaySwitcher::Native
         virtual DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
             DdcCancellationToken const& cancellation) = 0;
     };
-
-    using DdcBackendLookup = std::function<IDdcBackend*(std::wstring const& key)>;
 
     DdcWriteResult WriteNativeWithOneRefresh(IDdcBackend& backend, std::wstring const& monitorId,
         DdcVcpCode code, int value, DdcCancellationToken const& cancellation);
@@ -190,7 +186,7 @@ namespace DisplaySwitcher::Native
     class DdcControlService final
     {
     public:
-        DdcControlService(DdcBackendLookup lookup, std::function<bool()> sideEffectsAllowed = {});
+        DdcControlService(IDdcBackend& backend, std::function<bool()> sideEffectsAllowed = {});
         DdcControlBatchResult Read(AppConfig& config, std::vector<std::wstring> const& displayIds,
             DdcCancellationToken const& cancellation) const;
         DdcControlBatchResult Write(AppConfig& config, std::wstring const& displayId, DdcVcpCode code,
@@ -198,13 +194,11 @@ namespace DisplaySwitcher::Native
 
         static int EffectiveMaximum(int current, int reportedMaximum) noexcept;
         static bool FeatureEnabled(DisplayConfig const& display, DdcVcpCode code) noexcept;
-        static std::wstring BackendKey(AppConfig const& config, DisplayConfig const& display);
 
     private:
         bool Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const;
-        IDdcBackend* Backend(AppConfig const& config, DisplayConfig const& display) const;
 
-        DdcBackendLookup lookup_;
+        IDdcBackend* backend_{};
         std::function<bool()> sideEffectsAllowed_;
     };
 }
