@@ -6,8 +6,8 @@
 - 功能：DS-019 / 内建 HDMI Get VCP 请求校验和
 - 堆叠基线：`codex/macos-ds-017-production-read-transactions@85691cf`
 - 分支：`codex/macos-ds-017-production-read-transactions`
-- 实现提交：本任务提交，最终 SHA 以分支 HEAD 为准
-- PR：实机验证前不创建，避免把未确认硬件行为带入合并候选
+- 实现提交：`8ed8830`；实机验收记录为本次后续提交
+- PR：实机验收通过，创建后等待 CI 通过再合并
 
 ## DS-019 原因与决策
 
@@ -32,6 +32,13 @@
 - 大小：656466 bytes。
 - 完全退出 BetterDisplay 后，先对小米内建 HDMI 连续读取 20 次，记录成功次数与 attempt；再对 Dell C2DP 连续读取 3 次，必须保持第 1 次严格成功。
 - 本轮无需输入源切换；Set VCP 字节和写路径未变。小米仍 0 次成功或 Dell 出现回归时不得合并。
+
+## DS-019 实机验收结果
+
+- 用户完全退出 BetterDisplay 后确认：小米内建 HDMI 连续 20/20 次严格读取成功，Dell C2DP 连续 3/3 次严格读取成功。
+- 首张验收截图中两条链路均为 `read-succeeded`、`chip 0x37`、`attempts 1`；HDMI 使用 offset 0，C2DP 使用 offset 0x51，符合各自传输策略。
+- 根因确认：内建 HDMI 单字节 Get VCP 请求漏算写入目标地址 `0x51`，显示器此前不接受 `82 01 10 FD`；改为 `82 01 10 AC` 后稳定回复。
+- DS-019 满足合并条件；DS-018 的 service 复用仍保持撤回状态，不作为修复的一部分。
 
 ## 上一任务：DS-018 IOAVService 生命周期稳定化
 
