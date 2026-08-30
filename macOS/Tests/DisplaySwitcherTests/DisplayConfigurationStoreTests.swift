@@ -31,7 +31,6 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let second = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(first.safetyState, .ready)
         XCTAssertEqual(first.document.schemaVersion, 5)
-        XCTAssertEqual(first.document.controlChannel, .automatic)
         XCTAssertFalse(first.document.linkAllDisplays)
         XCTAssertEqual(first.document.usbSwitch, .disabled)
         XCTAssertEqual(first.document.localEndpointID, second.document.localEndpointID)
@@ -161,7 +160,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
     func testStagingReadbackFailureNeverReplacesLastValidValue() throws {
         var document = DisplayConfigurationStore.load(storage: storage).document
         let original = storage.data(forKey: DisplayConfigurationStore.storageKey)
-        document.controlChannel = .fallback
+        document.linkAllDisplays.toggle()
         storage.corruptReadBack = true
         XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
         XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.storageKey), original)
@@ -175,6 +174,26 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertNotEqual(blocked.safetyState, .ready)
         try DisplayConfigurationStore.saveDocument(blocked.document, storage: storage)
         XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .ready)
+    }
+
+    func testLegacyBackendSelectionFieldIsIgnoredAndNeverSavedAgain() throws {
+        let original = populatedDocument()
+        var dictionary = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any]
+        )
+        dictionary["controlChannel"] = "fallback"
+        storage.values[DisplayConfigurationStore.storageKey] = try JSONSerialization.data(
+            withJSONObject: dictionary, options: [.sortedKeys]
+        )
+
+        let loaded = DisplayConfigurationStore.load(storage: storage)
+        XCTAssertEqual(loaded.safetyState, .ready)
+        try DisplayConfigurationStore.saveDocument(loaded.document, storage: storage)
+        let saved = try XCTUnwrap(storage.data(forKey: DisplayConfigurationStore.storageKey))
+        let savedDictionary = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: saved) as? [String: Any]
+        )
+        XCTAssertNil(savedDictionary["controlChannel"])
     }
 
     func testUnknownCurrentSchemaAndCorruptDataAreSafelyRejected() {
@@ -230,8 +249,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         peer.displayInputs = [DisplayInputMapping(displayID: display.id, peerInput: 18)]
         return DisplayConfigurationStoreV5Document(
             schemaVersion: 5, localEndpointID: UUID().uuidString,
-            localDeviceName: "Local", listenPort: 49731,
-            controlChannel: .automatic, linkAllDisplays: false,
+            localDeviceName: "Local", listenPort: 49731, linkAllDisplays: false,
             displays: [display], collaborationProfiles: [peer]
         )
     }

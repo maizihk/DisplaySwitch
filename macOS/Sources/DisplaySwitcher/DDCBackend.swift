@@ -6,7 +6,7 @@ enum DDCCommand: UInt8, CaseIterable, Hashable {
     case input = 0x60
     case volume = 0x62
 
-    var m1ddcName: String {
+    var cacheKeyComponent: String {
         switch self {
         case .luminance: return "luminance"
         case .contrast: return "contrast"
@@ -811,99 +811,63 @@ extension DDCBackend {
 }
 
 final class DDCBackendRouter {
-    private let backends: [DDCBackend]
+    private let backend: DDCBackend
 
-    init(backends: [DDCBackend]) {
-        self.backends = backends
-    }
-
-    func setControlChannel(_ channel: DDCControlChannel) {
-        // DS-009 deliberately keeps the persisted setting readable while the runtime is
-        // native-only. Selecting automatic or the historical fallback must not silently
-        // launch m1ddc and report a native operation as successful.
-        _ = channel
-    }
-
-    private var selectedBackends: [DDCBackend] {
-        backends.filter { $0.identifier == "apple-silicon-native" }
+    init(backend: DDCBackend) {
+        self.backend = backend
     }
 
     var availability: DDCBackendAvailability {
-        selectedBackends.contains { $0.availability == .available }
-            ? .available
-            : .unavailable("没有可用的硬件 DDC 后端")
+        backend.availability
     }
 
     var capabilities: DDCBackendCapabilities {
-        let available = selectedBackends.filter { $0.availability == .available }
-        return DDCBackendCapabilities(
-            canEnumerate: available.contains { $0.capabilities.canEnumerate },
-            canReadVCP: available.contains { $0.capabilities.canReadVCP },
-            canWriteVCP: available.contains { $0.capabilities.canWriteVCP }
-        )
+        backend.availability == .available
+            ? backend.capabilities
+            : DDCBackendCapabilities(canEnumerate: false, canReadVCP: false, canWriteVCP: false)
     }
 
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
-        backends.forEach { $0.updateKnownDisplays(displays) }
+        backend.updateKnownDisplays(displays)
     }
 
     func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
-        var lastError: Error?
-        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canEnumerate {
-            do {
-                try token.throwIfCancelled()
-                let displays = try backend.enumerateDisplays(token: token)
-                if !displays.isEmpty { return displays }
-                lastError = DDCBackendError.unavailable(backend: backend.identifier)
-            } catch DDCBackendError.cancelled {
-                throw DDCBackendError.cancelled
-            } catch {
-                lastError = error
-            }
+        guard backend.availability == .available, backend.capabilities.canEnumerate else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        throw lastError ?? DDCBackendError.unavailable(backend: "all")
+        try token.throwIfCancelled()
+        let displays = try backend.enumerateDisplays(token: token)
+        guard !displays.isEmpty else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
+        }
+        return displays
     }
 
     func read(stableID: String, selector: String, command: DDCCommand,
               token: DDCCancellationToken) throws -> DDCReading {
-        var lastError: Error?
-        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canReadVCP {
-            do {
-                try token.throwIfCancelled()
-                return try backend.read(stableID: stableID, selector: selector, command: command, token: token)
-            } catch DDCBackendError.cancelled {
-                throw DDCBackendError.cancelled
-            } catch {
-                lastError = error
-            }
+        guard backend.availability == .available, backend.capabilities.canReadVCP else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        throw lastError ?? DDCBackendError.unavailable(backend: "all")
+        try token.throwIfCancelled()
+        return try backend.read(stableID: stableID, selector: selector, command: command, token: token)
     }
 
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
                token: DDCCancellationToken) throws {
-        var lastError: Error?
-        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canWriteVCP {
-            do {
-                try token.throwIfCancelled()
-                try backend.write(stableID: stableID, selector: selector, command: command,
-                                  value: value, token: token)
-                return
-            } catch DDCBackendError.cancelled {
-                throw DDCBackendError.cancelled
-            } catch {
-                lastError = error
-            }
+        guard backend.availability == .available, backend.capabilities.canWriteVCP else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        throw lastError ?? DDCBackendError.unavailable(backend: "all")
+        try token.throwIfCancelled()
+        try backend.write(stableID: stableID, selector: selector, command: command,
+                          value: value, token: token)
     }
 
     func cancelAll() {
-        backends.forEach { $0.cancelAll() }
+        backend.cancelAll()
     }
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
-        selectedBackends.compactMap { $0.diagnostic(selector: selector) }.first
+        backend.diagnostic(selector: selector)
     }
 }
 
@@ -1006,7 +970,7 @@ final class UserDefaultsDDCValueCache: DDCValueCache {
     }
 
     private func cacheKey(stableID: String, command: DDCCommand) -> String {
-        "LastValue.stable.\(stableID.lowercased()).\(command.m1ddcName)"
+        "LastValue.stable.\(stableID.lowercased()).\(command.cacheKeyComponent)"
     }
 }
 
@@ -1046,10 +1010,6 @@ final class DDCControlService {
 
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
         router.updateKnownDisplays(displays)
-    }
-
-    func setControlChannel(_ channel: DDCControlChannel) {
-        router.setControlChannel(channel)
     }
 
     func enumerateDisplays() throws -> [DDCBackendDisplay] {

@@ -148,7 +148,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             schemaVersion: 5,
             localEndpointID: UUID().uuidString,
             localDeviceName: "本机",
-            listenPort: 49731, controlChannel: .automatic, linkAllDisplays: false,
+            listenPort: 49731, linkAllDisplays: false,
             displays: [display],
             collaborationProfiles: [eligible, incomplete, disabled]
         )

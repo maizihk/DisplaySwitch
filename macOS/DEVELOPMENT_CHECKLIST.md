@@ -12,7 +12,7 @@
 - 当前版本：2.1.0（build 19）。
 - 本机配置为 `schemaVersion = 5`；v4 保留非 USB 设置并迁移到新格式，独立 USB 功能默认关闭且不猜测旧绑定或输入源。
 - 双端网络运行时只接受协议 v2；v1、缺失版本、类型错误和未知版本均在入口安全拒绝。
-- Apple Silicon 优先使用内置 CoreDisplay/IOAVService DDC，`m1ddc` 为可选回退；Intel Mac 尚无内置原生 DDC 后端。
+- macOS 正式运行时只使用 Apple Silicon CoreDisplay/IOAVService 原生 DDC；Intel Mac 明确不支持，不执行外部 DDC 工具或软件调光回退。
 - App Sandbox 和 Hardened Runtime 当前保持关闭，正式公证前必须评估私有 API、USB、DDC 与登录启动兼容性。
 
 ## 已完成
@@ -87,11 +87,11 @@
 
 验收：自动测试不得访问真实 UDP、USB、蓝牙、DDC、唤醒或输入源切换；实机项保持未完成。
 
-### M-005 DDC 后端正式接口化
+### M-005 / DS-011 DDC 后端接口化与原生单后端收敛
 
 - [x] 定义统一的枚举、能力、VCP 读取/写入、错误、取消和后端可用性接口。
-- [x] Apple Silicon 私有 CoreDisplay/IOAVService 与 `m1ddc` 回退成为独立后端，并覆盖原生可用、不可用和失败回退。
-- [x] Intel Mac 只选择实际可用的 `m1ddc` 硬件 DDC 后端；没有后端时明确报告不支持，不以软件调光冒充 DDC。
+- [x] 正式运行路径只实例化 Apple Silicon CoreDisplay/IOAVService 原生后端；原生不可用、枚举、读取或写入失败均明确失败。
+- [x] 删除外部进程、可执行路径检测、历史回退选择和相关错误；Intel Mac 明确报告不支持，不以软件调光冒充 DDC。
 - [x] 显示器枚举、读写和缓存按稳定逻辑 ID 关联，不依赖后端枚举顺序；旧 selector/index 缓存继续兼容读取。
 - [x] 亮度、对比度、音量功能开关在统一服务层阻断相应读写；单台或单项失败不会中止或误操作其他显示器。
 - [x] 单项零值合法；同一显示器三项均成功为零时判为不可信遥测，不覆盖缓存；写入成功后才提交缓存。
@@ -197,7 +197,7 @@
 
 - [x] 设置页、菜单和映射字段使用已保存名称或系统产品名称，不再把用户可见名称硬编码为“显示器 1/2/3”。
 - [x] 同型号显示器使用稳定逻辑 ID 的本机顺序生成中性序号；枚举重排不改变对应关系，也不展示或记录原始 UUID、IORegistry 路径。
-- [x] 当前运行时只选择 Apple Silicon 原生 CoreDisplay/IOAVService 后端；原生枚举、读取或写入失败均明确失败，不调用 `m1ddc`，Intel Mac 明确显示不支持。
+- [x] 当前运行时只选择 Apple Silicon 原生 CoreDisplay/IOAVService 后端；原生枚举、读取或写入失败均明确失败，不调用外部进程，Intel Mac 明确显示不支持。
 - [x] 已知原生写入正常，保留现有 `0x51`、五次尝试和双写语义；只由现有 latest-wins 协调器合并高频滑杆值，并以模拟回归防止读取修复破坏写入。
 - [x] 读取恢复为五次有限尝试，每次清空 response buffer；Type-C/DP Alt 固定使用 `0x51`，确认为内置 HDMI converter 时固定使用 `0`，不在同一操作中盲探多套策略。
 - [x] 本机脱敏诊断区分 `typec-dp-alt` / `builtin-hdmi-converter` / `unknown-external`、service 匹配、读写阶段返回类别和重建次数；不显示 UUID、IORegistry 路径或序列号。
@@ -213,7 +213,7 @@
 - [x] 原生双写聚合保留任一已接受结果，避免 Type-C 输入源切换后链路立即消失使第二次失败覆盖第一次成功；两次均失败仍进入有限重建/重试。
 - [x] M4/macOS 27 的通用 endpoint token 分类覆盖 `dispextE` 内置 HDMI 与数字 `dispextN` Type-C/DP；只提取 token，不保存或展示 IORegistry 路径，并继续保留旧 MCDP/Transport 兼容规则。
 - [x] 原生读取诊断显示脱敏的 chip、最后拒绝原因、实际 offset 与有限尝试次数；M4 `dispextE` 与明确 MCDP 的芯片地址分离，Type-C/DP 仅在首选 offset 严格失败后进行一次有界策略回退并缓存成功偏好。
-- [x] 模拟测试覆盖不同/同型号名称传播、稳定区分、枚举重排、原生失败零 `m1ddc`、高频合并、串行、故障隔离及迟到结果丢弃。
+- [x] 模拟测试覆盖不同/同型号名称传播、稳定区分、枚举重排、原生失败、高频合并、串行、故障隔离及迟到结果丢弃。
 - [x] UDP 发送与接收改为同一个绑定 `listenPort` 的 socket；回复定向原始来源地址/端口，不再建立第二个复用本机端口的出站 socket。
 - [x] 已绑定 v2 配置的手动检测定向已确认 peer endpoint；只有首次未绑定检测使用空 target，且响应必须同时匹配 source、target、event 和 HMAC。
 - [x] 坏校验和兼容读取最终失败时，设置页可脱敏区分回复不足、两次语义不一致、字段非法、范围非法和传输错误；不记录原始帧或硬件标识。
@@ -240,6 +240,15 @@
 - [x] 明确拒绝展示“系统设置 → 隐私与安全性 → 本地网络”文字路径；`NSLocalNetworkUsageDescription` 准确说明检测、协同唤醒和显示器切换用途。
 - [x] 11 项相关展示测试和 118 项完整 XCTest 通过；Debug、Release、`build-app.sh` 与严格 codesign 验证通过。
 - [ ] macOS 15 及以上首次授权弹窗、允许、拒绝、重新允许，以及错误地址/对端离线/现有防火墙/错误配对码的状态仍需用户实机验证；未重置 TCC 或修改防火墙。
+
+### DS-011 原生 DDC 单后端清理（自动验证完成，实机待验）
+
+- [x] 删除正式 macOS 运行时中的外部 DDC 进程、可执行路径检测、专属错误和历史回退路由；原生失败明确失败。
+- [x] 设置页移除后端选择器，只读显示 Apple Silicon 原生 DDC；Intel Mac 明确显示不支持。
+- [x] 配置文档不再读取或写入历史后端选择字段；旧字段作为未知字段安全忽略，其他 schemaVersion 5 数据保持不变。
+- [x] VCP/cache 字段改为平台无关命名，保留既有 `LastValue.stable.*` 键和值，避免清空可信缓存。
+- [x] 37 项 DDC、14 项配置相关测试及 119 项完整 XCTest 通过；Debug、Release、`build-app.sh` 和严格 codesign 验证通过。
+- [ ] Apple Silicon 原生枚举、显式读取、亮度/对比度/音量写入与输入源切换仍需用户实机回归；本任务未执行硬件动作。
 
 ### M-203 Bonjour/mDNS 自动发现
 
@@ -270,3 +279,4 @@
 | 2026-08-29 | DS-009 多显示器输入源并发 | 自动验证及用户实机验证通过 | 4756ef2 | 修复 USB 单目标包装串行点，USB/手动/协同统一批量入口；20 项相关测试、109 项全部 XCTest、Debug/Release、打包和严格验签通过；用户实机确认小米与 Dell 同时切换，不再先后串行 |
 | 2026-08-29 | DS-009 macOS 协同检测诊断 | 自动验证完成，双机日志待验 | 本任务提交 | 保留 1 秒超时和协议 v2；24 项相关测试、115 项全部 XCTest、Release 打包和严格验签通过；未执行真实网络或硬件动作 |
 | 2026-08-30 | DS-010 本地网络权限引导 | 自动验证完成，权限实机待验 | 本任务提交 | 11 项相关测试、118 项全部 XCTest、Debug/Release、打包和严格验签通过；普通失败不误报系统拒绝，未访问真实局域网或硬件 |
+| 2026-08-30 | DS-011 原生 DDC 单后端清理 | 自动验证完成，实机待验 | 本任务提交 | 51 项相关测试、119 项全部 XCTest、Debug/Release、打包和严格验签通过；正式运行路径不含外部 DDC 进程或历史后端选择 |

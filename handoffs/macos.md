@@ -3,6 +3,59 @@
 ## 当前任务
 
 - 日期：2026-08-30
+- 功能：DS-011 / macOS 原生 DDC 单后端清理
+- 基线：`e6655b524cd8c012fcfd1cab2eb465494c96788e`
+- 分支：`codex/macos-ds-011-native-ddc-only`
+- 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
+- PR / CI：按任务边界不创建 PR、不触发云端 CI
+
+## DS-011 原因与决策
+
+- 运行时虽然已只选择原生后端，仓库仍保留完整的外部进程实现、路径检测、历史回退路由、配置字段和设置选择器；这些死路径会让公开能力边界与代码事实不一致。
+- DS-011 将路由收敛为一个注入式 `DDCBackend`，正式 App 只注入 `NativeDDCBackend`。原生不可用或读写失败直接返回原生错误，不尝试替代后端。
+- VCP/cache 属性改成平台无关名称，但继续生成完全相同的 `LastValue.stable.*` 键，避免清空已有可信缓存。
+- schemaVersion 保持 5；旧后端选择字段由 Codable 作为未知字段忽略，后续编码不再保存。
+- 根 `README.md` 仍有历史回退描述，但本平台任务禁止修改共享文件；需由协调端在合并阶段统一校准。
+
+## DS-011 实现
+
+- 删除外部 DDC 后端、`Process`/`Pipe` 调用、Homebrew/可执行路径探测、专属错误和显示器列表文本解析。
+- `DDCBackendRouter` 改为单后端路由，保留统一枚举、读写、取消、诊断、缓存和安全闸门接口。
+- 删除配置模型、启动和重载路径中的后端选择；设置页以只读文字显示“Apple Silicon 原生 DDC”，Intel Mac 显示不支持。
+- 测试覆盖原生成功、不可用、读写失败显式返回、旧配置字段不再写回，以及旧可信缓存键继续读取。
+
+## DS-011 自动验证
+
+- 相关 XCTest：51/51（DDC 37 项、配置 14 项）。
+- 完整 XCTest：119/119；现有输入源切换、队列、USB、v2 网络和安全闸门模拟回归继续通过。
+- Debug、Release、`./macOS/scripts/build-app.sh` 与 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 均通过。
+- 使用本机选定的 Xcode 27 Beta 6；命令只记录通用的 `$DEVELOPER_DIR` 表达，不记录本机绝对路径。
+- 未执行真实 DDC、输入源切换、USB、网络或唤醒，未修改系统权限、签名信任或防火墙。
+
+## DS-011 尚需用户实机验证
+
+1. Apple Silicon 原生显示器枚举与稳定名称保持正确。
+2. 设置页显式读取，以及亮度、对比度、音量写入保持现有行为。
+3. USB、手动和协同入口的多显示器输入源切换不回归。
+4. Intel Mac 只显示原生 DDC 不支持，不执行外部进程。
+
+## DS-011 修改范围
+
+- `macOS/Sources/DisplaySwitcher/DDCBackend.swift`
+- `macOS/Sources/DisplaySwitcher/DDCController.swift`
+- `macOS/Sources/DisplaySwitcher/DisplayConfigurationStore.swift`
+- `macOS/Sources/DisplaySwitcher/SettingsWindowController.swift`
+- `macOS/Sources/DisplaySwitcher/main.swift`
+- `macOS/Tests/DisplaySwitcherTests/DDCBackendTests.swift`
+- `macOS/Tests/DisplaySwitcherTests/DisplayConfigurationStoreTests.swift`
+- `macOS/Tests/DisplaySwitcherTests/PeerProtocolV2Tests.swift`
+- `macOS/Tests/DisplaySwitcherTests/PublicPresentationModelsTests.swift`
+- `macOS/DEVELOPMENT_CHECKLIST.md`
+- `handoffs/macos.md`
+
+## 上一任务：DS-010 本地网络权限引导
+
+- 日期：2026-08-30
 - 功能：DS-010 / macOS 本地网络权限引导
 - 基线：`main@5e382569466139193cab0828865af6c3c91d4c49`
 - 分支：`codex/macos-ds-010-local-network-permission-ux`

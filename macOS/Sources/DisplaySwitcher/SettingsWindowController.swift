@@ -270,7 +270,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var isSettingsVisible: Bool { window?.isVisible == true }
 
     private let linkedCheckbox = NSSwitch()
-    private let controlChannelPopup = NSPopUpButton()
+    private let nativeDDCStatusLabel = NSTextField(labelWithString: DDCController.backendSummaryWithoutHardwareAccess)
     private let launchAtLoginCheckbox = NSSwitch()
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
@@ -691,10 +691,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        controlChannelPopup.addItem(withTitle: "Apple Silicon 原生 DDC")
-        controlChannelPopup.isEnabled = false
         refreshDisplaysButton.setAccessibilityLabel("检测并刷新显示器")
-        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制通道"), controlChannelPopup, refreshDisplaysButton])
+        nativeDDCStatusLabel.textColor = .secondaryLabelColor
+        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制后端"), nativeDDCStatusLabel, refreshDisplaysButton])
         channelRow.orientation = .horizontal
         channelRow.alignment = .centerY
         channelRow.spacing = 12
@@ -842,7 +841,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
 
-        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制通道"), controlChannelPopup, refreshDisplaysButton])
+        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制后端"), nativeDDCStatusLabel, refreshDisplaysButton])
         channelRow.orientation = .horizontal
         channelRow.alignment = .centerY
         channelRow.spacing = 12
@@ -1245,7 +1244,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbLearningPending = false
         reloadProfilePopup()
         linkedCheckbox.state = loaded.document.linkAllDisplays ? .on : .off
-        controlChannelPopup.selectItem(at: 0)
         usbAutomationCheckbox.state = loaded.document.usbSwitch.enabled ? .on : .off
         usbArrivalSwitchCheckbox.state = loaded.document.usbSwitch.collaborationWakeEnabled ? .on : .off
         usbStatusLabel.stringValue = loaded.document.usbSwitch.enabled ? "等待设备状态" : "USB 切换未启用"

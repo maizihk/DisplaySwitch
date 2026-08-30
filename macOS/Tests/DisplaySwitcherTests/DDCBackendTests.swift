@@ -38,7 +38,7 @@ final class DDCBackendTests: XCTestCase {
                           .volume: DDCReading(current: 7, maximum: 20)]
         ]
         let cache = MockDDCCache()
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a")])
 
@@ -55,7 +55,7 @@ final class DDCBackendTests: XCTestCase {
         backend.readings = ["display-a": Dictionary(uniqueKeysWithValues:
             DDCCommand.userControls.map { ($0, DDCReading(current: 0, maximum: 100)) })]
         let cache = MockDDCCache(values: ["display-a": [.luminance: 35, .contrast: 46, .volume: 8]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a")])
 
@@ -73,7 +73,7 @@ final class DDCBackendTests: XCTestCase {
             .volume: DDCReading(current: 9, maximum: 20)
         ]]
         let cache = MockDDCCache()
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a")])
 
@@ -91,7 +91,7 @@ final class DDCBackendTests: XCTestCase {
         backend.readFailures = ["display-a": [.contrast]]
         backend.writeFailures = ["display-a": [.luminance]]
         let cache = MockDDCCache(values: ["display-a": [.contrast: 44]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let readings = service.read([
             target(id: "display-b", commands: [.luminance]),
@@ -112,7 +112,7 @@ final class DDCBackendTests: XCTestCase {
 
     func testC020DisabledControlsPerformNoReadOrWrite() {
         let backend = MockDDCBackend()
-        let service = makeService(backends: [backend], cache: MockDDCCache())
+        let service = makeService(backend: backend, cache: MockDDCCache())
         let disabled = target(id: "display-a", commands: [])
 
         let result = service.read([disabled])
@@ -134,7 +134,7 @@ final class DDCBackendTests: XCTestCase {
         let commands = DisplaySettingsSemantics.enabledCommands(for: stored)
         let backend = MockDDCBackend()
         backend.readings = ["display-a": [.luminance: DDCReading(current: 42, maximum: 100)]]
-        let service = makeService(backends: [backend], cache: MockDDCCache())
+        let service = makeService(backend: backend, cache: MockDDCCache())
 
         let result = service.read([target(id: "display-a", commands: commands)])
 
@@ -148,7 +148,7 @@ final class DDCBackendTests: XCTestCase {
         backend.readings = ["simulated-display": Dictionary(uniqueKeysWithValues:
             DDCCommand.userControls.map { ($0, DDCReading(current: 0, maximum: 0)) })]
         let cache = MockDDCCache(values: ["simulated-display": [.luminance: 63]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "simulated-display")])
 
@@ -158,18 +158,15 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(cache.writeCount, 0)
     }
 
-    func testNativeSuccessAndEveryNativeFailureNeverUseM1DDC() throws {
+    func testSingleNativeBackendSuccessAndFailuresRemainExplicit() throws {
         let native = MockDDCBackend(identifier: "apple-silicon-native")
-        let fallback = MockDDCBackend(identifier: "m1ddc")
         native.readings = ["display-a": [.luminance: DDCReading(current: 30, maximum: 100)]]
-        fallback.readings = ["display-a": [.luminance: DDCReading(current: 70, maximum: 100)]]
         let token = DDCCancellationToken()
-        let router = DDCBackendRouter(backends: [native, fallback])
+        let router = DDCBackendRouter(backend: native)
 
         let nativeRead = try router.read(stableID: "display-a", selector: "selector-a",
                                          command: .luminance, token: token)
         XCTAssertEqual(nativeRead.current, 30)
-        XCTAssertEqual(fallback.readCalls.count, 0)
 
         native.readFailures = ["display-a": [.luminance]]
         XCTAssertThrowsError(try router.read(
@@ -179,43 +176,30 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertThrowsError(try router.read(
             stableID: "display-a", selector: "selector-a", command: .luminance, token: token))
         XCTAssertEqual(native.readCalls.count, 2)
-        XCTAssertEqual(fallback.readCalls.count, 0)
 
         native.availabilityValue = .available
         native.writeFailures = ["display-a": [.contrast]]
         XCTAssertThrowsError(try router.write(stableID: "display-a", selector: "selector-a",
                                               command: .contrast, value: 55, token: token))
-        XCTAssertEqual(fallback.writeCalls.count, 0)
         native.writeFailures = [:]
         try router.write(stableID: "display-a", selector: "selector-a", command: .volume,
                          value: 8, token: token)
-        XCTAssertEqual(fallback.writeCalls.count, 0)
 
-        fallback.displays = [DDCBackendDisplay(stableID: "display-a", name: "A", selector: "selector-a")]
         native.availabilityValue = .unavailable("unsupported architecture")
         XCTAssertThrowsError(try router.enumerateDisplays(token: token))
-        XCTAssertEqual(fallback.enumerateCount, 0)
+        XCTAssertEqual(native.enumerateCount, 0)
     }
 
-    func testPersistedControlChannelCannotReenableM1DDC() throws {
-        let native = MockDDCBackend(identifier: "apple-silicon-native")
-        let fallback = MockDDCBackend(identifier: "m1ddc")
-        native.readings = ["display-a": [.luminance: DDCReading(current: 31, maximum: 100)]]
-        fallback.readings = ["display-a": [.luminance: DDCReading(current: 72, maximum: 100)]]
-        let router = DDCBackendRouter(backends: [native, fallback])
-        let token = DDCCancellationToken()
+    func testPlatformNeutralCommandNamesPreserveExistingCacheKeys() {
+        let suite = "DisplaySwitcher.DDC.Cache.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(73, forKey: "LastValue.stable.display-a.luminance")
+        let cache = UserDefaultsDDCValueCache(defaults: defaults)
 
-        router.setControlChannel(.native)
-        XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
-                                       command: .luminance, token: token).current, 31)
-        XCTAssertEqual(fallback.readCalls.count, 0)
-
-        for channel in DDCControlChannel.allCases {
-            router.setControlChannel(channel)
-            XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
-                                           command: .luminance, token: token).current, 31)
-        }
-        XCTAssertEqual(fallback.readCalls.count, 0)
+        XCTAssertEqual(cache.value(stableID: "DISPLAY-A", command: .luminance), 73)
+        cache.setValue(44, stableID: "DISPLAY-A", command: .contrast)
+        XCTAssertEqual(defaults.integer(forKey: "LastValue.stable.display-a.contrast"), 44)
     }
 
     func testProductNamesAndSameModelStableLocalOrdinalsSurviveEnumerationReorder() {
@@ -404,7 +388,7 @@ final class DDCBackendTests: XCTestCase {
             ]
         ]
         let cache = MockDDCCache()
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a", commands: [.luminance])])
 
@@ -748,7 +732,7 @@ final class DDCBackendTests: XCTestCase {
         let backend = MockDDCBackend()
         backend.readings = ["display-a": [.luminance: DDCReading(current: 88, maximum: 100)]]
         let cache = MockDDCCache(values: ["display-a": [.luminance: 22]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
         backend.onRead = { service.setOperationsAllowed(false) }
 
         let result = service.read([target(id: "display-a", commands: [.luminance])])
@@ -779,7 +763,7 @@ final class DDCBackendTests: XCTestCase {
             "display-a": [.luminance: DDCReading(current: 10, maximum: 100)],
             "display-b": [.luminance: DDCReading(current: 90, maximum: 100)]
         ]
-        let service = makeService(backends: [backend], cache: MockDDCCache())
+        let service = makeService(backend: backend, cache: MockDDCCache())
 
         XCTAssertEqual(try service.enumerateDisplays().map(\.stableID), ["display-b", "display-a"])
         let result = service.read([
@@ -793,7 +777,7 @@ final class DDCBackendTests: XCTestCase {
     func testConfigurationAndUSBLearningSafetyStatesIssueNoDDCCalls() {
         for _ in 0..<2 {
             let backend = MockDDCBackend()
-            let service = makeService(backends: [backend], cache: MockDDCCache())
+            let service = makeService(backend: backend, cache: MockDDCCache())
             service.setOperationsAllowed(false)
             XCTAssertTrue(service.read([target(id: "display-a")]).isEmpty)
             XCTAssertNotNil(service.write(command: .luminance, value: 50,
@@ -803,8 +787,8 @@ final class DDCBackendTests: XCTestCase {
         }
     }
 
-    private func makeService(backends: [DDCBackend], cache: MockDDCCache) -> DDCControlService {
-        DDCControlService(router: DDCBackendRouter(backends: backends), cache: cache)
+    private func makeService(backend: DDCBackend, cache: MockDDCCache) -> DDCControlService {
+        DDCControlService(router: DDCBackendRouter(backend: backend), cache: cache)
     }
 
     private func target(id: String, selector: String? = nil,
