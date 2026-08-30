@@ -15,6 +15,57 @@ private final class RecordingAboutMetadata: AboutBundleMetadataSource {
 }
 
 final class PublicPresentationModelsTests: XCTestCase {
+    func testLocalNetworkPermissionPresentationUsesFourConservativeStates() {
+        let notChecked = LocalNetworkPermissionPresentation.make(for: .notChecked)
+        let connected = LocalNetworkPermissionPresentation.make(for: .collaborationConnected)
+        let denied = LocalNetworkPermissionPresentation.make(for: .explicitSystemDenial)
+        let failed = LocalNetworkPermissionPresentation.make(for: .ordinaryNetworkFailure)
+
+        XCTAssertEqual(notChecked.statusText, "未检测")
+        XCTAssertEqual(connected.statusText, "协同连接正常")
+        XCTAssertEqual(denied.statusText, "系统明确拒绝")
+        XCTAssertEqual(failed.statusText, "连接失败，请检查权限、地址和防火墙")
+        XCTAssertTrue(denied.isExplicitlyDenied)
+        XCTAssertTrue(denied.detailText.contains("系统设置 → 隐私与安全性 → 本地网络"))
+    }
+
+    func testAmbiguousFailuresNeverClaimLocalNetworkPermissionWasDenied() {
+        let ambiguousEvidence: [LocalNetworkPermissionEvidence] = [
+            .timeout, .authenticationFailure, .ordinaryNetworkFailure
+        ]
+
+        for evidence in ambiguousEvidence {
+            let presentation = LocalNetworkPermissionPresentation.make(for: evidence)
+            XCTAssertEqual(presentation.statusText, "连接失败，请检查权限、地址和防火墙")
+            XCTAssertFalse(presentation.isExplicitlyDenied)
+            XCTAssertTrue(presentation.detailText.contains("未获得系统明确拒绝"))
+        }
+    }
+
+    func testPermissionEntryUsesOnlySimulatedInspectionAndHasZeroHardwareSideEffects() {
+        var networkInspectionCount = 0
+        let usbCount = 0
+        let ddcCount = 0
+        let wakeCount = 0
+        let inputSwitchCount = 0
+
+        let simulatedInspection: LocalNetworkPermissionInspectionAction.Inspection = { completion in
+            networkInspectionCount += 1
+            completion(.v2(endpointID: "00000000-0000-4000-8000-000000000001"))
+        }
+        var presentation: LocalNetworkPermissionPresentation?
+        LocalNetworkPermissionInspectionAction.perform(using: simulatedInspection) { _, evidence in
+            presentation = LocalNetworkPermissionPresentation.make(for: evidence)
+        }
+
+        XCTAssertEqual(presentation?.statusText, "协同连接正常")
+        XCTAssertEqual(networkInspectionCount, 1)
+        XCTAssertEqual(usbCount, 0)
+        XCTAssertEqual(ddcCount, 0)
+        XCTAssertEqual(wakeCount, 0)
+        XCTAssertEqual(inputSwitchCount, 0)
+    }
+
     func testOnlyExplicitSettingsReadUsesHardware() {
         let automaticEntryPoints: [DDCValuePresentationEntryPoint] = [
             .startup, .trayOpen, .displayDetection, .configurationReload

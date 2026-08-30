@@ -2,6 +2,52 @@
 
 ## 当前任务
 
+- 日期：2026-08-30
+- 功能：DS-010 / macOS 本地网络权限引导
+- 基线：`main@5e382569466139193cab0828865af6c3c91d4c49`
+- 分支：`codex/macos-ds-010-local-network-permission-ux`
+- 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
+- PR / CI：按任务边界不创建 PR、不触发云端 CI
+
+## DS-010 原因与决策
+
+- macOS 的本地网络权限由系统管理，原界面没有入口或保守状态说明，用户无法区分权限、地址、对端、防火墙和认证问题。
+- 当前直接 BSD UDP socket 没有可靠公开信号可单独证明本地网络 TCC 被拒绝。超时、零响应、发送失败、认证失败和普通网络错误一律显示一般连接失败。
+- “系统明确拒绝”只接受显式系统拒绝证据；本轮不改 UDP 架构，不增加 Bonjour、组播或旁路探测。
+
+## DS-010 实现
+
+- 协同页顶部新增紧凑的“本地网络权限”模块，说明用途、当前状态和“检测并申请权限”入口；不新增标签或 App 内权限开关。
+- 入口复用现有协同配置校验、绑定源端口、v2 状态探测、HMAC 和响应验证路径；检测仍为零 USB、DDC、唤醒和输入源切换副作用。
+- 状态限制为“未检测”“协同连接正常”“系统明确拒绝”“连接失败，请检查权限、地址和防火墙”。明确拒绝时保留“系统设置 → 隐私与安全性 → 本地网络”文字路径。
+- 更新 `NSLocalNetworkUsageDescription`，说明连接检测、协同唤醒和用户配置的显示器切换，不暗示同步原始 USB 或硬件标识。
+
+## DS-010 自动验证
+
+- 相关 `PublicPresentationModelsTests`：11/11，通过四状态、模糊错误不误报、模拟网络入口和零硬件副作用。
+- 完整 XCTest：118/118；既有 v2、固定源端口、重放保护、USB 和 DDC 模拟回归继续通过。
+- Debug、Release、`./macOS/scripts/build-app.sh` 和严格 codesign 验证通过，保持 ad-hoc 签名。
+- 使用本机选定的 Xcode 27 Beta 6；命令仅使用通用的 `$DEVELOPER_DIR` 表达，不记录本机绝对路径。
+- 未访问真实局域网，未弹授权框，未执行真实 USB、DDC、唤醒或输入源切换，未修改 TCC 或防火墙。
+
+## DS-010 尚需用户实机验证
+
+1. macOS 15 及以上首次点击“检测并申请权限”是否出现系统本地网络授权框。
+2. 分别选择允许、拒绝，并在“系统设置 → 隐私与安全性 → 本地网络”重新允许后的恢复行为。
+3. 错误地址、对端未运行、现有防火墙阻断和错误配对码只显示一般连接失败，不显示“系统明确拒绝”。
+4. 模块在浅色/深色模式及紧凑窗口中的真实 AppKit 布局。
+
+## DS-010 修改范围
+
+- `macOS/Resources/Info.plist`
+- `macOS/Sources/DisplaySwitcher/PublicPresentationModels.swift`
+- `macOS/Sources/DisplaySwitcher/SettingsWindowController.swift`
+- `macOS/Tests/DisplaySwitcherTests/PublicPresentationModelsTests.swift`
+- `macOS/DEVELOPMENT_CHECKLIST.md`
+- `handoffs/macos.md`
+
+## 上一任务：DS-009 协同检测诊断
+
 - 日期：2026-08-29
 - 功能：DS-009 / macOS 非对称协同检测第一阶段诊断
 - 分支：`codex/macos-ds-009-collaboration-diagnostics`

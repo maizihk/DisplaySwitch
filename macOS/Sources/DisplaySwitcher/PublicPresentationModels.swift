@@ -1,5 +1,76 @@
 import Foundation
 
+enum LocalNetworkPermissionEvidence: Equatable {
+    case notChecked
+    case collaborationConnected
+    case timeout
+    case authenticationFailure
+    case ordinaryNetworkFailure
+    case explicitSystemDenial
+}
+
+struct LocalNetworkPermissionPresentation: Equatable {
+    let statusText: String
+    let detailText: String
+    let isFailure: Bool
+    let isExplicitlyDenied: Bool
+
+    static func make(for evidence: LocalNetworkPermissionEvidence) -> Self {
+        switch evidence {
+        case .notChecked:
+            return Self(
+                statusText: "未检测",
+                detailText: "点击“检测并申请权限”后，将使用当前协同配置执行一次真实连接检测。",
+                isFailure: false,
+                isExplicitlyDenied: false
+            )
+        case .collaborationConnected:
+            return Self(
+                statusText: "协同连接正常",
+                detailText: "已通过当前协同配置完成认证连接。",
+                isFailure: false,
+                isExplicitlyDenied: false
+            )
+        case .explicitSystemDenial:
+            return Self(
+                statusText: "系统明确拒绝",
+                detailText: "请前往“系统设置 → 隐私与安全性 → 本地网络”，允许 DisplaySwitcher 访问。",
+                isFailure: true,
+                isExplicitlyDenied: true
+            )
+        case .timeout, .authenticationFailure, .ordinaryNetworkFailure:
+            return Self(
+                statusText: "连接失败，请检查权限、地址和防火墙",
+                detailText: "未获得系统明确拒绝本地网络访问的证据。",
+                isFailure: true,
+                isExplicitlyDenied: false
+            )
+        }
+    }
+}
+
+enum LocalNetworkPermissionInspectionAction {
+    typealias Inspection = (@escaping (PeerCapabilityInspectionResult) -> Void) -> Void
+
+    static func perform(
+        using inspection: Inspection,
+        completion: @escaping (PeerCapabilityInspectionResult, LocalNetworkPermissionEvidence) -> Void
+    ) {
+        inspection { result in
+            let evidence: LocalNetworkPermissionEvidence
+            switch result {
+            case .v2:
+                evidence = .collaborationConnected
+            case .authenticationFailed:
+                evidence = .authenticationFailure
+            case .noResponse:
+                evidence = .timeout
+            }
+            completion(result, evidence)
+        }
+    }
+}
+
 protocol AboutBundleMetadataSource {
     func stringValue(forInfoDictionaryKey key: String) -> String?
 }
