@@ -1115,6 +1115,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             SetConnectionStatus(L"网络权限未就绪", false);
             ShowValidationError(L"请先点击“检查网络权限”，确认本机 UDP 监听已就绪后再检测连接。"); return;
         }
+        if (result.outcome == Outcome::SendFailed)
+        {
+            SetConnectionStatus(L"探测发送失败", false);
+            ShowValidationError(L"无法发送状态探测。请检查对端地址、端口和本机网络状态。"); return;
+        }
         if (result.outcome == Outcome::LocalConfigurationIncomplete)
         {
             SetConnectionStatus(L"本机配置不完整", false); ShowValidationError(L"本机配置不完整，未发送探测消息。"); return;

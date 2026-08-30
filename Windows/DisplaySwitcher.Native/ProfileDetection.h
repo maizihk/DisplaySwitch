@@ -18,6 +18,7 @@ namespace DisplaySwitcher::Native
         AuthenticationFailed,
         NoResponse,
         NetworkNotReady,
+        SendFailed,
         LocalConfigurationIncomplete,
     };
 
@@ -62,6 +63,7 @@ namespace DisplaySwitcher::Native
         ProfileDetectionAction Start(int64_t nowMilliseconds, bool localConfigurationComplete,
             std::wstring const& savedEndpointId, std::wstring v2EventId);
         ProfileDetectionAction Advance(int64_t nowMilliseconds);
+        void MarkProbeSent(int64_t nowMilliseconds) noexcept;
         ProfileDetectionAction OnV2StatusResponse(int64_t nowMilliseconds, std::wstring const& eventId,
             std::wstring const& sourceEndpointId, bool authenticated);
         void Cancel() noexcept;

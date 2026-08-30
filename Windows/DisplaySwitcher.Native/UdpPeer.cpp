@@ -139,17 +139,17 @@ namespace DisplaySwitcher::Native
         return matched;
     }
 
-    void UdpPeer::SendRaw(std::string const& data, std::wstring const& host, int port, bool trace,
+    bool UdpPeer::SendRaw(std::string const& data, std::wstring const& host, int port, bool trace,
         std::function<bool()> const& stillValid)
     {
-        if (host.empty()) return;
+        if (host.empty()) return false;
         auto started = std::chrono::steady_clock::now();
         SOCKET socket;
         {
             std::scoped_lock lock(mutex_);
             socket = socket_;
         }
-        if (socket == INVALID_SOCKET) return;
+        if (socket == INVALID_SOCKET) return false;
 
         addrinfoW hints{};
         hints.ai_family = AF_INET;
@@ -164,12 +164,12 @@ namespace DisplaySwitcher::Native
         {
             if (trace) WriteDiagnostic("udp.send resolve_ok=0 resolve_ms=" + std::to_string(resolvedMilliseconds));
             Report(L"发送失败：无法解析主机 " + host);
-            return;
+            return false;
         }
         if (stillValid && !stillValid())
         {
             FreeAddrInfoW(addresses);
-            return;
+            return false;
         }
         auto sent = sendto(socket, data.data(), static_cast<int>(data.size()), 0,
             addresses->ai_addr, static_cast<int>(addresses->ai_addrlen));
@@ -178,7 +178,12 @@ namespace DisplaySwitcher::Native
             std::chrono::steady_clock::now() - started).count();
         if (trace) WriteDiagnostic("udp.send resolve_ok=1 resolve_ms=" + std::to_string(resolvedMilliseconds) +
             " total_ms=" + std::to_string(totalMilliseconds));
-        if (sent == SOCKET_ERROR) Report(L"发送失败：" + SocketError(WSAGetLastError()));
+        if (sent == SOCKET_ERROR)
+        {
+            Report(L"发送失败：" + SocketError(WSAGetLastError()));
+            return false;
+        }
+        return true;
     }
 
     double UdpPeer::TimestampNow()

@@ -1092,6 +1092,16 @@ namespace
             timeout.v2Sends == 1,
             L"网络检测：v2 超时必须报告无响应且不得发送 v1");
 
+        Harness slowSend;
+        slowSend.Apply(slowSend.session.Start(14000, true, endpointA, v2Event));
+        slowSend.session.MarkProbeSent(18000);
+        slowSend.Apply(slowSend.session.Advance(19999));
+        Check(!slowSend.result && slowSend.session.Active(),
+            L"DS-012: 慢 KDF 和地址解析不得消耗实际发送后的响应窗口");
+        slowSend.Apply(slowSend.session.OnV2StatusResponse(19999, v2Event, endpointA, true));
+        Check(slowSend.result && slowSend.result->outcome == ProfileDetectionOutcome::V2Available,
+            L"DS-012: 探测实际发送后两秒内的响应必须被接受");
+
         Harness incomplete;
         incomplete.Apply(incomplete.session.Start(13000, false, {}, v2Event));
         Check(incomplete.result && incomplete.result->outcome == ProfileDetectionOutcome::LocalConfigurationIncomplete &&
@@ -1101,7 +1111,7 @@ namespace
         auto noHardware = [&](Harness const& value)
         { return value.usbCalls == 0 && value.bluetoothCalls == 0 && value.wakeCalls == 0 && value.ddcCalls == 0; };
         Check(noHardware(first) && noHardware(changed) && noHardware(known) && noHardware(authentication) &&
-            noHardware(timeout) && noHardware(incomplete),
+            noHardware(timeout) && noHardware(slowSend) && noHardware(incomplete),
             L"网络检测：模拟全流程必须保持 USB、蓝牙、唤醒和 DDC 调用为零");
 
         // Simulate first contact where neither side has persisted the peer endpoint.
@@ -1381,13 +1391,13 @@ namespace
             L"UDP loopback：非对称 bootstrap 不得重绑、保存或触发硬件副作用");
         auto receivedBeforeCanceledSend = receiverDatagrams.load();
         std::atomic<bool> cancellationChecked{};
-        sender.SendRaw("canceled", L"127.0.0.1", receiverPort, false, [&]
+        auto canceledSend = sender.SendRaw("canceled", L"127.0.0.1", receiverPort, false, [&]
         {
             cancellationChecked = true;
             return false;
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        Check(cancellationChecked && receiverDatagrams.load() == receivedBeforeCanceledSend,
+        Check(!canceledSend && cancellationChecked && receiverDatagrams.load() == receivedBeforeCanceledSend,
             L"UDP 发送：检测取消或代次变化后不得发送迟到的数据报");
         receiver->Stop();
         sender.Stop();

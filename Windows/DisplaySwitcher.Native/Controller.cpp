@@ -440,6 +440,7 @@ namespace DisplaySwitcher::Native
         if (profileDetection_ && profileDetection_->session.WaitingForV2() && message.type == L"status_response" &&
             EqualId(message.eventId, profileDetection_->session.PendingEventId()))
         {
+            WriteDiagnostic("profile_detection.response_received");
             auto detectionGeneration = profileDetection_->generation;
             auto localEndpointId = profileDetection_->workingConfig.localEndpointId;
             auto pairingCode = profileDetection_->profile.pairingCode;
@@ -458,6 +459,8 @@ namespace DisplaySwitcher::Native
                 }
                 catch (...) { return; }
                 if (!validation.accepted && validation.reason != L"authentication_failed") return;
+                WriteDiagnostic(validation.accepted ? "profile_detection.response_authenticated" :
+                    "profile_detection.response_authentication_failed");
                 self->Enqueue([weak, message = std::move(message), detectionGeneration,
                     authenticated = validation.accepted]
                 {
@@ -846,26 +849,22 @@ namespace DisplaySwitcher::Native
         }
 
         profileDetectionActive_ = true;
+        WriteDiagnostic("profile_detection.started");
         // Invalidate hardware work that was queued before detection began. The
         // runtime state machines are rebuilt from the saved configuration when
         // detection completes, so an old timeout cannot fire after the pause.
         ++sideEffectGeneration_;
         StopPeerHealthCheck();
         ApplyProfileDetectionAction(std::move(action));
-        auto generation = profileDetection_->generation;
-        std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, generation]
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds(ProfileDetectionSession::ProbeTimeoutMilliseconds));
-            if (auto self = weak.lock(); self && !self->disposed_)
-                self->Enqueue([weak, generation] { if (auto value = weak.lock()) value->AdvanceProfileDetection(generation); });
-        }).detach();
     }
 
     void Controller::AdvanceProfileDetection(uint64_t generation)
     {
         if (!profileDetection_ || profileDetection_->generation != generation) return;
         auto action = profileDetection_->session.Advance(NowMilliseconds());
+        if (action.kind == ProfileDetectionAction::Kind::Complete &&
+            action.result.outcome == ProfileDetectionOutcome::NoResponse)
+            WriteDiagnostic("profile_detection.response_timeout");
         ApplyProfileDetectionAction(std::move(action));
     }
 
@@ -890,6 +889,7 @@ namespace DisplaySwitcher::Native
         message.sourcePlatform = L"windows";
         message.timestamp = static_cast<int64_t>(UdpPeer::TimestampNow());
         message.nonce = GenerateV2Nonce();
+        auto sendStarted = std::chrono::steady_clock::now();
         std::weak_ptr<Controller> weak = shared_from_this();
         profileDetectionProbeOperation_.Start(
             [weak, message = std::move(message), profile = std::move(profile), generation]
@@ -900,25 +900,39 @@ namespace DisplaySwitcher::Native
                 auto key = self->v2KeyCache_.Get(profile.pairingCode, message.sourceEndpointId);
                 message = SignV2Message(std::move(message), key);
                 if (self->disposed_ || self->profileDetectionGeneration_ != generation || canceled()) return true;
-                self->peer_->SendRaw(SerializeV2Message(message), profile.peerHost, profile.peerPort, false,
+                return self->peer_->SendRaw(SerializeV2Message(message), profile.peerHost, profile.peerPort, false,
                     [weak, generation, canceled]
                     {
                         auto current = weak.lock();
                         return current && !current->disposed_ && current->profileDetectionActive_ &&
                             current->profileDetectionGeneration_.load() == generation && !canceled();
                     });
-                return true;
             },
             [weak](std::function<void()> completion)
             {
                 if (auto self = weak.lock()) self->Enqueue(std::move(completion));
             },
-            [weak, generation](bool succeeded)
+            [weak, generation, sendStarted](bool succeeded)
             {
+                auto value = weak.lock();
+                if (!value || !value->profileDetection_ || value->profileDetection_->generation != generation) return;
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - sendStarted).count();
+                WriteDiagnostic("profile_detection.send_completed success=" + std::to_string(succeeded ? 1 : 0) +
+                    " elapsed_ms=" + std::to_string(elapsed));
                 if (!succeeded)
-                    if (auto value = weak.lock(); value && value->profileDetection_ &&
-                        value->profileDetection_->generation == generation)
-                        value->CompleteProfileDetection({ ProfileDetectionOutcome::LocalConfigurationIncomplete });
+                {
+                    value->CompleteProfileDetection({ ProfileDetectionOutcome::SendFailed });
+                    return;
+                }
+                value->profileDetection_->session.MarkProbeSent(NowMilliseconds());
+                std::thread([weak, generation]
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(ProfileDetectionSession::ProbeTimeoutMilliseconds));
+                    if (auto self = weak.lock(); self && !self->disposed_)
+                        self->Enqueue([weak, generation]
+                        { if (auto current = weak.lock()) current->AdvanceProfileDetection(generation); });
+                }).detach();
             });
     }
 

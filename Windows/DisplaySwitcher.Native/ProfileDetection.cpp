@@ -86,6 +86,11 @@ namespace DisplaySwitcher::Native
         return Complete({ ProfileDetectionOutcome::NoResponse });
     }
 
+    void ProfileDetectionSession::MarkProbeSent(int64_t nowMilliseconds) noexcept
+    {
+        if (WaitingForV2()) deadlineMilliseconds_ = nowMilliseconds + ProbeTimeoutMilliseconds;
+    }
+
     ProfileDetectionAction ProfileDetectionSession::OnV2StatusResponse(int64_t nowMilliseconds,
         std::wstring const& eventId, std::wstring const& sourceEndpointId, bool authenticated)
     {
