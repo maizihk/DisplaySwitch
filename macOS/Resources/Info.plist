@@ -29,6 +29,6 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>用于与 Windows 端显示器切换程序协同，确认 USB 键鼠已接入并唤醒显示输出。</string>
+    <string>用于检测并连接局域网中的 DisplaySwitcher 设备，协同唤醒显示输出和执行用户配置的显示器切换；不会同步原始 USB 或显示器硬件标识。</string>
 </dict>
 </plist>

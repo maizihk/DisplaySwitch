@@ -12,7 +12,7 @@
 - 当前版本：2.1.0（build 19）。
 - 本机配置为 `schemaVersion = 5`；v4 保留非 USB 设置并迁移到新格式，独立 USB 功能默认关闭且不猜测旧绑定或输入源。
 - 双端网络运行时只接受协议 v2；v1、缺失版本、类型错误和未知版本均在入口安全拒绝。
-- Apple Silicon 优先使用内置 CoreDisplay/IOAVService DDC，`m1ddc` 为可选回退；Intel Mac 尚无内置原生 DDC 后端。
+- macOS 正式运行时只使用 Apple Silicon CoreDisplay/IOAVService 原生 DDC；Intel Mac 明确不支持，不执行外部 DDC 工具或软件调光回退。
 - App Sandbox 和 Hardened Runtime 当前保持关闭，正式公证前必须评估私有 API、USB、DDC 与登录启动兼容性。
 
 ## 已完成
@@ -87,11 +87,11 @@
 
 验收：自动测试不得访问真实 UDP、USB、蓝牙、DDC、唤醒或输入源切换；实机项保持未完成。
 
-### M-005 DDC 后端正式接口化
+### M-005 / DS-011 DDC 后端接口化与原生单后端收敛
 
 - [x] 定义统一的枚举、能力、VCP 读取/写入、错误、取消和后端可用性接口。
-- [x] Apple Silicon 私有 CoreDisplay/IOAVService 与 `m1ddc` 回退成为独立后端，并覆盖原生可用、不可用和失败回退。
-- [x] Intel Mac 只选择实际可用的 `m1ddc` 硬件 DDC 后端；没有后端时明确报告不支持，不以软件调光冒充 DDC。
+- [x] 正式运行路径只实例化 Apple Silicon CoreDisplay/IOAVService 原生后端；原生不可用、枚举、读取或写入失败均明确失败。
+- [x] 删除外部进程、可执行路径检测、历史回退选择和相关错误；Intel Mac 明确报告不支持，不以软件调光冒充 DDC。
 - [x] 显示器枚举、读写和缓存按稳定逻辑 ID 关联，不依赖后端枚举顺序；旧 selector/index 缓存继续兼容读取。
 - [x] 亮度、对比度、音量功能开关在统一服务层阻断相应读写；单台或单项失败不会中止或误操作其他显示器。
 - [x] 单项零值合法；同一显示器三项均成功为零时判为不可信遥测，不覆盖缓存；写入成功后才提交缓存。
@@ -197,7 +197,7 @@
 
 - [x] 设置页、菜单和映射字段使用已保存名称或系统产品名称，不再把用户可见名称硬编码为“显示器 1/2/3”。
 - [x] 同型号显示器使用稳定逻辑 ID 的本机顺序生成中性序号；枚举重排不改变对应关系，也不展示或记录原始 UUID、IORegistry 路径。
-- [x] 当前运行时只选择 Apple Silicon 原生 CoreDisplay/IOAVService 后端；原生枚举、读取或写入失败均明确失败，不调用 `m1ddc`，Intel Mac 明确显示不支持。
+- [x] 当前运行时只选择 Apple Silicon 原生 CoreDisplay/IOAVService 后端；原生枚举、读取或写入失败均明确失败，不调用外部进程，Intel Mac 明确显示不支持。
 - [x] 已知原生写入正常，保留现有 `0x51`、五次尝试和双写语义；只由现有 latest-wins 协调器合并高频滑杆值，并以模拟回归防止读取修复破坏写入。
 - [x] 读取恢复为五次有限尝试，每次清空 response buffer；Type-C/DP Alt 固定使用 `0x51`，确认为内置 HDMI converter 时固定使用 `0`，不在同一操作中盲探多套策略。
 - [x] 本机脱敏诊断区分 `typec-dp-alt` / `builtin-hdmi-converter` / `unknown-external`、service 匹配、读写阶段返回类别和重建次数；不显示 UUID、IORegistry 路径或序列号。
@@ -213,7 +213,7 @@
 - [x] 原生双写聚合保留任一已接受结果，避免 Type-C 输入源切换后链路立即消失使第二次失败覆盖第一次成功；两次均失败仍进入有限重建/重试。
 - [x] M4/macOS 27 的通用 endpoint token 分类覆盖 `dispextE` 内置 HDMI 与数字 `dispextN` Type-C/DP；只提取 token，不保存或展示 IORegistry 路径，并继续保留旧 MCDP/Transport 兼容规则。
 - [x] 原生读取诊断显示脱敏的 chip、最后拒绝原因、实际 offset 与有限尝试次数；M4 `dispextE` 与明确 MCDP 的芯片地址分离，Type-C/DP 仅在首选 offset 严格失败后进行一次有界策略回退并缓存成功偏好。
-- [x] 模拟测试覆盖不同/同型号名称传播、稳定区分、枚举重排、原生失败零 `m1ddc`、高频合并、串行、故障隔离及迟到结果丢弃。
+- [x] 模拟测试覆盖不同/同型号名称传播、稳定区分、枚举重排、原生失败、高频合并、串行、故障隔离及迟到结果丢弃。
 - [x] UDP 发送与接收改为同一个绑定 `listenPort` 的 socket；回复定向原始来源地址/端口，不再建立第二个复用本机端口的出站 socket。
 - [x] 已绑定 v2 配置的手动检测定向已确认 peer endpoint；只有首次未绑定检测使用空 target，且响应必须同时匹配 source、target、event 和 HMAC。
 - [x] 坏校验和兼容读取最终失败时，设置页可脱敏区分回复不足、两次语义不一致、字段非法、范围非法和传输错误；不记录原始帧或硬件标识。
@@ -230,6 +230,79 @@
 - [x] 12 项输入源专项和 104 项完整 XCTest 通过，覆盖实际抵达 write adapter、候选选择证据、多候选零误写、传输结果与设备反馈分离、匿名 ID 重排稳定及诊断脱敏。
 - [ ] C2C 与 C2DP 各 3 次诊断日志尚待用户实测，用于判断 C2C 是 service 选错、WriteI2C 未接受，还是设备未执行。
 - [ ] 真实 Apple Silicon 多显示器枚举、同型号物理位置对应、连续拖动、读写失败恢复和系统升级兼容性尚未授权验证。
+
+### DS-010 本地网络权限引导（自动验证完成，实机待验）
+
+- [x] 在现有“协同”页顶部增加紧凑的“本地网络权限”模块，不新增设置标签或 App 内权限开关。
+- [x] “检测并申请权限”复用现有协同检测与绑定端口 UDP 路径；不使用 Bonjour、组播、旁路连接或硬件动作触发授权。
+- [x] 展示模型仅允许“未检测”“协同连接正常”“系统明确拒绝”“连接失败，请检查权限、地址和防火墙”四类状态。
+- [x] 超时、认证失败和普通网络错误保持一般失败；当前 BSD UDP 无法可靠证明 TCC 拒绝，因此生产路径不从模糊错误推断“系统明确拒绝”。
+- [x] 明确拒绝展示“系统设置 → 隐私与安全性 → 本地网络”文字路径；`NSLocalNetworkUsageDescription` 准确说明检测、协同唤醒和显示器切换用途。
+- [x] 11 项相关展示测试和 118 项完整 XCTest 通过；Debug、Release、`build-app.sh` 与严格 codesign 验证通过。
+- [ ] macOS 15 及以上首次授权弹窗、允许、拒绝、重新允许，以及错误地址/对端离线/现有防火墙/错误配对码的状态仍需用户实机验证；未重置 TCC 或修改防火墙。
+
+### DS-011 原生 DDC 单后端清理（自动验证完成，实机待验）
+
+- [x] 删除正式 macOS 运行时中的外部 DDC 进程、可执行路径检测、专属错误和历史回退路由；原生失败明确失败。
+- [x] 设置页移除后端选择器和冗余的单后端说明；Intel Mac 在原生后端不可用时明确显示不支持。
+- [x] 显示器控制与每台显示器的操作按钮收进标题行左右两侧；读取结果独占下一行并自动换行，避免长诊断挤压标题和按钮。
+- [x] 本机配置检查弹窗使用可执行的中文提示，不暴露内部枚举名；原生后端可用时不重复展示后端名称。
+- [x] 编辑已启用配置时保留并保存有效的部分输入；配置暂时不完整则自动安全停用，补全后由用户重新启用，不再回滚已输入字段。
+- [x] 配置文档不再读取或写入历史后端选择字段；旧字段作为未知字段安全忽略，其他 schemaVersion 5 数据保持不变。
+- [x] VCP/cache 字段改为平台无关命名，保留既有 `LastValue.stable.*` 键和值，避免清空可信缓存。
+- [x] 37 项 DDC、17 项配置相关测试及 122 项完整 XCTest 通过；Debug、Release、`build-app.sh` 和严格 codesign 验证通过。
+- [ ] Apple Silicon 原生枚举、显式读取、亮度/对比度/音量写入与输入源切换仍需用户实机回归；本任务未执行硬件动作。
+
+### DS-014 内建 HDMI 原生 DDC 读取收敛（完成）
+
+- [x] 实机确认内建 HDMI 的 offset 0 与 0x51 均只返回非 DDC/CI 数据；停止继续试探 chip、offset、延迟、写周期、回复长度或宽松校验。
+- [x] 正式内建 HDMI 读取只执行一次既定 offset 0 严格事务；失败后不探测备用 offset、不进入弱校验、不重建 service，也不覆盖可信缓存。
+- [x] 设置页失败状态收敛为“当前连接不支持可靠读取”，有缓存时明确“显示上次可信值”；不再展示 IOReturn、chip、offset、attempts 或原始回复。
+- [x] 保留严格 DDC/CI 校验、EDID-like 拒绝、显式连续输入/输出缓冲区和原始回复不出界面的隐私边界。
+- [x] Type-C/DP 严格成功路径、其他 Type-C/DP 失败样本、Set VCP 与输入源写入路径均未改变。
+- [x] 50 项 DDC 测试和 135 项完整 XCTest 通过；Debug、Release、`build-app.sh` 与严格 codesign 通过。
+- [ ] 第二个 Type-C/DP 失败样本后续单独立项诊断，不与内建 HDMI 根因合并；本任务未执行新的硬件动作。
+
+### M-008 / DS-015 IOAVService 拓扑绑定（自动验证完成，实机待验）
+
+- [x] 移除依赖 IORegistry 遍历先后顺序的 framebuffer/service 关联；只使用当前在线 CoreDisplay 的精确 `IODisplayLocation` 与 DCPAV endpoint 拓扑建立一对一绑定。
+- [x] Apple Silicon 平台拓扑按当前节点动态解析：内建 HDMI `disp0` 对应 `dispextE`，数字 `dispextN` 只对应同名 endpoint；不按品牌、型号、枚举顺序或历史接口猜测。
+- [x] 同型号、重复 endpoint、未知 endpoint 或多 service 歧义均安全拒绝，不把 DDC 操作发送到另一台显示器。
+- [x] 每次显式 DDC 读写前重新发现当前 service；重连、接口变化或旧 service 失效后不复用旧 transport、service identity 或读取偏好。
+- [x] 未修改 DDC/CI 帧、chip、offset、重试时序、Set VCP、输入源切换、USB、网络或协议。
+- [x] 54 项 DDC 专项和 139 项完整 XCTest 通过；Release `build-app.sh`、打包与严格 codesign 验证通过。
+- [ ] 小米内建 HDMI 显式读取、两台同型号显示器物理目标、热插拔和 HDMI/USB-C/DP 接口变化仍需用户实机验证；本任务未执行硬件动作。
+
+### DS-017 内建 HDMI 生产读取事务（严格成功已确认，可靠性失败）
+
+- [x] 静态审计当前 BetterDisplay 生产二进制，确认普通 Get VCP 使用标准 `0x51` 请求寻址；`0x50` 是明确的 `ddc2ab` 备用寻址，不用于普通亮度读取。
+- [x] 内建 HDMI 改为最多 8 次完整的“单次 WriteI2C → 10 ms → 单次 ReadI2C”事务，严格失败之间等待 5 ms；每次回复缓冲区重新清零。
+- [x] Type-C/DP 继续使用已验证的双写、50 ms 与既有 read offset；Set VCP、输入源切换、service 匹配、USB、网络和协议均未改变。
+- [x] 严格 checksum 与语义校验保持不变；失败不接受随机数据，也不覆盖上次可信缓存。
+- [x] 54 项 DDC 专项和 139 项完整 XCTest 通过；Release `build-app.sh`、打包与严格 codesign 验证通过。
+- [x] 用户实机确认小米内建 HDMI 偶尔可在第 4/8 次完整事务得到严格有效亮度回复；同一构建中 Dell C2DP 仍可第 1 次严格读取成功。
+- [x] 后续连续 20 次 HDMI 读取全部失败，证明完整事务重试只提高撞到有效帧的机会，并非可靠性根因；本方案不得单独合并。
+
+### DS-018 IOAVService 生命周期稳定化（实机否定，代码已撤回）
+
+- [x] 对照 BetterDisplay 当前生产二进制：能力查询是独立的 MCCS `0xF3/0xE3` 分块事务，不是亮度 Get VCP 的必要前置；应用使用全局串行 DDC 队列并长期持有同一 `IOAVService`。
+- [x] 根因审计发现 DS-015 虽在每次操作前正确重验当前拓扑，却也在每次重验时调用 `IOAVServiceCreateWithService` 并替换对象；这是当前与 BetterDisplay 最关键的生命周期差异，也符合“退出重开偶尔恢复、同一连接随机撞到有效帧”的实机现象，是否为根因由本轮实机验证决定。
+- [x] 每次显式硬件操作仍重新枚举在线显示器及当前 registry 拓扑；只有 selector、registry service identity、transport、chip 和在线状态均未变化时复用现有 service，且枚举位置变化不使稳定 service 失效。
+- [x] 热插拔、接口/transport/chip 变化、service identity 变化、离线或既有恢复路径主动失效时不复用，按当前拓扑创建新 service；不按品牌、型号、端口顺序或历史接口猜测。
+- [x] 未改 DDC 帧、offset、重试次数、等待时间、严格校验、Set VCP、输入源切换、USB、网络或共享协议。
+- [x] DDC 专项 XCTest 55/55，完整 XCTest 140/140；Release `build-app.sh`、严格 codesign 与 ZIP 完整性验证通过。
+- [x] 用户实机连续读取小米内建 HDMI 20 次均失败，同一构建中 Dell C2DP 保持严格成功；service 生命周期不是该故障根因。
+- [x] DS-019 已撤回全部 service 复用代码和对应测试，恢复每次操作按当前拓扑创建 service；DS-018 不进入合并候选。
+
+### DS-019 内建 HDMI Get VCP 请求校验和（完成）
+
+- [x] 根因审计发现旧公开 AppleSiliconDDC 对单字节 Get VCP 请求漏算写入目标地址 `0x51`：亮度请求被构造成 `82 01 10 FD`，而标准帧应为 `82 01 10 AC`。
+- [x] 既有 HDMI 诊断中被拒绝回复的 `payloadLength=0x82 / opcode=0x01 / result=0x10 / command=0xFD` 与错误请求帧完全对应，证明驱动读回了未被显示器接受的本机请求，而非有效 DDC/CI 回复。
+- [x] 静态审计 BetterDisplay 当前生产二进制，确认其普通 Get VCP 校验和同时异或 chip 写地址与 `0x51`；其读取地址和完整事务结构与前序审计一致。
+- [x] 仅内建 HDMI Get VCP 改为包含 `0x51` 的校验和；已实机稳定的 Type-C/DP 单字节读取继续使用既有兼容帧，所有 Set VCP 写入继续包含 `0x51`，输入源、USB、网络和共享协议均未改变。
+- [x] 纯帧测试固定 HDMI Get VCP=`82 01 10 AC`、Type-C/DP Get VCP=`82 01 10 FD`、Set VCP 亮度 100=`84 03 10 00 64 CC`。
+- [x] DDC 专项 XCTest 56/56、完整 XCTest 141/141；Release `build-app.sh`、严格 codesign 与 ZIP 完整性验证通过。
+- [x] 用户完全退出 BetterDisplay 后实机确认：小米内建 HDMI 连续 20/20 次严格成功，Dell C2DP 连续 3/3 次严格成功；首张截图两者均为 `attempts 1`，无读取回归。
 
 ### M-203 Bonjour/mDNS 自动发现
 
@@ -259,3 +332,10 @@
 | 2026-08-29 | DS-009 C2C 输入源链路诊断 | 自动验证完成，C2C/C2DP 日志待验 | 本任务提交 | 记录候选、选择、实际 WriteI2C 和同 service VCP 0x60 反馈；12 项专项、104 项全部 XCTest、构建和严格验签通过 |
 | 2026-08-29 | DS-009 多显示器输入源并发 | 自动验证及用户实机验证通过 | 4756ef2 | 修复 USB 单目标包装串行点，USB/手动/协同统一批量入口；20 项相关测试、109 项全部 XCTest、Debug/Release、打包和严格验签通过；用户实机确认小米与 Dell 同时切换，不再先后串行 |
 | 2026-08-29 | DS-009 macOS 协同检测诊断 | 自动验证完成，双机日志待验 | 本任务提交 | 保留 1 秒超时和协议 v2；24 项相关测试、115 项全部 XCTest、Release 打包和严格验签通过；未执行真实网络或硬件动作 |
+| 2026-08-30 | DS-010 本地网络权限引导 | 自动验证完成，权限实机待验 | 本任务提交 | 11 项相关测试、118 项全部 XCTest、Debug/Release、打包和严格验签通过；普通失败不误报系统拒绝，未访问真实局域网或硬件 |
+| 2026-08-30 | DS-011 原生 DDC 单后端清理 | 自动验证完成，实机待验 | 本任务提交 | 54 项相关测试、122 项全部 XCTest、Debug/Release、打包和严格验签通过；正式运行路径不含外部 DDC 进程或历史后端选择 |
+| 2026-08-30 | DS-014 内建 HDMI 原生 DDC 读取诊断 | 正式安全策略完成 | 本任务提交 | 实机确认内建 HDMI 读取不可用后停止参数探测；50 项 DDC、135 项完整 XCTest、Debug/Release、打包和严格验签通过 |
+| 2026-08-30 | M-008 / DS-015 IOAVService 拓扑绑定 | 自动验证完成，实机待验 | 039466b | 移除遍历顺序绑定并按当前 endpoint 一对一解析；54 项 DDC、139 项完整 XCTest、Release 打包和严格验签通过；PR #55 保持开放，未执行硬件动作 |
+| 2026-08-30 | DS-017 内建 HDMI 生产读取事务 | 严格成功已确认，可靠性失败 | 533c507、180ba01 | 小米 HDMI 偶尔可在第 4/8 次严格成功，但随后连续 20 次失败；证明完整事务可读但不是可靠性根因 |
+| 2026-08-30 | DS-018 IOAVService 生命周期稳定化 | 实机否定，代码已撤回 | 85691cf、后续 DS-019 提交 | 小米 HDMI 20/20 失败而 Dell C2DP 保持成功；证明 service 复用不是根因，不进入合并候选 |
+| 2026-08-30 | DS-019 内建 HDMI Get VCP 请求校验和 | 完成 | 8ed8830、验收记录提交 | HDMI 20/20、C2DP 3/3 严格成功；56 项 DDC、141 项完整 XCTest、Release 打包、严格验签和 ZIP 校验通过 |

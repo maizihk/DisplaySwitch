@@ -130,7 +130,7 @@ final class PeerProtocolV2Tests: XCTestCase {
             schemaVersion: 5,
             localEndpointID: "11111111-1111-4111-8111-111111111111",
             localDeviceName: "Local", listenPort: 49_731,
-            controlChannel: .automatic, linkAllDisplays: false, displays: [display],
+            linkAllDisplays: false, displays: [display],
             collaborationProfiles: [profile("A", endpoint: endpoint), profile("B", endpoint: endpoint.uppercased())]
         )
         let rejected = V2EndpointRoutingTable.build(from: duplicate)
@@ -541,7 +541,7 @@ private func unboundDocument(localEndpointID: String, pairingCodes: [String]) ->
     }
     return DisplayConfigurationStoreV5Document(
         schemaVersion: 5, localEndpointID: localEndpointID, localDeviceName: "Local",
-        listenPort: 49_731, controlChannel: .automatic, linkAllDisplays: false,
+        listenPort: 49_731, linkAllDisplays: false,
         displays: [display], collaborationProfiles: profiles
     )
 }

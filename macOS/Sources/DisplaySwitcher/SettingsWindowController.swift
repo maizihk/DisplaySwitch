@@ -270,7 +270,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var isSettingsVisible: Bool { window?.isVisible == true }
 
     private let linkedCheckbox = NSSwitch()
-    private let controlChannelPopup = NSPopUpButton()
     private let launchAtLoginCheckbox = NSSwitch()
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
@@ -280,6 +279,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let peerPortField = NSTextField()
     private let pairingCodeField = NSSecureTextField()
     private let peerStatusLabel = NSTextField(wrappingLabelWithString: "协同未启用")
+    private let localNetworkPermissionStatusLabel = NSTextField(labelWithString: "")
+    private let localNetworkPermissionDetailLabel = NSTextField(wrappingLabelWithString: "")
     private let profilePopup = NSPopUpButton()
     private let profileNameField = NSTextField()
     private let profileMappingStack = NSStackView()
@@ -288,6 +289,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private lazy var moveProfileUpButton = NSButton(title: "↑", target: self, action: #selector(moveProfileUp))
     private lazy var moveProfileDownButton = NSButton(title: "↓", target: self, action: #selector(moveProfileDown))
     private lazy var inspectProfileButton = NSButton(title: "检测", target: self, action: #selector(inspectCurrentProfile))
+    private lazy var requestLocalNetworkPermissionButton = NSButton(
+        title: "检测并申请权限",
+        target: self,
+        action: #selector(requestLocalNetworkPermission)
+    )
     private lazy var refreshDisplaysButton = NSButton(title: "检测/刷新", target: self, action: #selector(refreshDisplays))
     private let usbDeviceLabel = NSTextField(wrappingLabelWithString: "未选择触发设备")
     private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
@@ -328,6 +334,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         super.init(window: window)
         window.delegate = self
         buildInterface()
+        updateLocalNetworkPermissionPresentation(.notChecked)
     }
 
     required init?(coder: NSCoder) {
@@ -371,6 +378,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if let skipReason {
             displayStatusLabels[index]?.stringValue = skipReason.userFacingDescription
+        } else if diagnostic?.operationCategory == .reliableReadUnsupported {
+            displayStatusLabels[index]?.stringValue = values.isEmpty
+                ? "当前连接不支持可靠读取"
+                : "当前连接不支持可靠读取，显示上次可信值"
         } else if diagnostic?.operationCategory == .readChecksumEstimated {
             displayStatusLabels[index]?.stringValue = "已读取（弱校验）\(diagnosticSuffix)"
         } else if values.isEmpty {
@@ -527,6 +538,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         moveProfileUpButton.setAccessibilityLabel("上移协同配置")
         moveProfileDownButton.setAccessibilityLabel("下移协同配置")
         inspectProfileButton.setAccessibilityLabel("检测当前协同配置")
+        requestLocalNetworkPermissionButton.setAccessibilityLabel("检测并申请本地网络权限")
         learnUSBButton.setAccessibilityLabel("学习 USB 设备")
         let peerGrid = NSGridView(views: [
             [NSTextField(labelWithString: "配置名称"), profileNameField],
@@ -542,6 +554,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let peerHint = NSTextField(wrappingLabelWithString: "可以同时启用多个协同配置。检测只验证连接，不执行 USB、唤醒或显示器操作。")
         peerHint.textColor = .secondaryLabelColor
         peerHint.font = .systemFont(ofSize: 11)
+        let localNetworkPermissionDescription = NSTextField(
+            wrappingLabelWithString: "本地网络用于检测并连接局域网中的 DisplaySwitcher 设备。权限由 macOS 管理。"
+        )
+        localNetworkPermissionDescription.textColor = .secondaryLabelColor
+        localNetworkPermissionDescription.font = .systemFont(ofSize: 11)
+        localNetworkPermissionStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        localNetworkPermissionDetailLabel.font = .systemFont(ofSize: 11)
+        localNetworkPermissionDetailLabel.textColor = .secondaryLabelColor
+        let localNetworkPermissionRow = NSStackView(views: [
+            localNetworkPermissionStatusLabel,
+            requestLocalNetworkPermissionButton
+        ])
+        localNetworkPermissionRow.orientation = .horizontal
+        localNetworkPermissionRow.alignment = .centerY
+        localNetworkPermissionRow.spacing = 12
+        localNetworkPermissionRow.distribution = .fill
+        localNetworkPermissionStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        requestLocalNetworkPermissionButton.setContentHuggingPriority(.required, for: .horizontal)
         tabView.addTabViewItem(makePage(label: "USB 切换", views: [
             module(title: "USB 切换", views: [
                 switchRow(
@@ -567,6 +597,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         ]))
 
         tabView.addTabViewItem(makePage(label: "协同", views: [
+            module(title: "本地网络权限", views: [
+                localNetworkPermissionDescription,
+                localNetworkPermissionRow,
+                localNetworkPermissionDetailLabel
+            ]),
             module(title: "协同配置", views: [
                 profileToolbar,
                 separator(),
@@ -659,21 +694,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
-        controlChannelPopup.addItem(withTitle: "Apple Silicon 原生 DDC")
-        controlChannelPopup.isEnabled = false
         refreshDisplaysButton.setAccessibilityLabel("检测并刷新显示器")
-        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制通道"), controlChannelPopup, refreshDisplaysButton])
-        channelRow.orientation = .horizontal
-        channelRow.alignment = .centerY
-        channelRow.spacing = 12
 
         let documentView = FlippedDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
         displayStack.translatesAutoresizingMaskIntoConstraints = false
         documentView.addSubview(displayStack)
         scrollView.documentView = documentView
-        displayStack.addArrangedSubview(module(title: "显示器控制", views: [
-            channelRow,
+        displayStack.addArrangedSubview(module(title: "显示器控制", headerAccessory: refreshDisplaysButton, views: [
             separator(),
             switchRow(
                 button: linkedCheckbox,
@@ -810,21 +838,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
 
-        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制通道"), controlChannelPopup, refreshDisplaysButton])
-        channelRow.orientation = .horizontal
-        channelRow.alignment = .centerY
-        channelRow.spacing = 12
-        displayStack.addArrangedSubview(module(title: "显示器控制", views: [
-            channelRow,
+        displayStack.addArrangedSubview(module(title: "显示器控制", headerAccessory: refreshDisplaysButton, views: [
             separator(),
             switchRow(button: linkedCheckbox, title: "联动调节所有显示器",
                       description: "只联动同时开启相同控制项的显示器。", symbolName: "link")
         ]))
 
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
+            let readControls = displayReadControls(index: configuration.index, name: configuration.name)
             displayStack.addArrangedSubview(module(
                 title: configuration.name,
-                views: [displayForm(index: configuration.index, name: configuration.name)]
+                headerAccessory: readControls.button,
+                views: [readControls.status, separator(), displayForm(index: configuration.index)]
             ))
         }
 
@@ -839,8 +864,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func module(title: String, views: [NSView]) -> NSView {
+    private func module(title: String, headerAccessory: NSView? = nil, views: [NSView]) -> NSView {
         let heading = sectionTitle(title)
+        let header: NSView
+        if let headerAccessory {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let headerRow = NSStackView(views: [heading, spacer, headerAccessory])
+            headerRow.orientation = .horizontal
+            headerRow.alignment = .centerY
+            headerRow.spacing = 10
+            headerRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
+            header = headerRow
+        } else {
+            header = heading
+        }
         let card = AppearanceBackgroundView()
         card.translatesAutoresizingMaskIntoConstraints = false
 
@@ -858,7 +897,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)
         ])
 
-        let wrapper = NSStackView(views: [heading, card])
+        let wrapper = NSStackView(views: [header, card])
         wrapper.orientation = .vertical
         wrapper.alignment = .leading
         wrapper.spacing = 8
@@ -916,7 +955,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func displayForm(index: Int, name: String) -> NSView {
+    private func displayReadControls(index: Int, name: String) -> (button: NSButton, status: NSTextField) {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         readButton.tag = index
         readButton.setAccessibilityLabel("读取\(name) DDC 参数")
@@ -926,13 +965,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         status.maximumNumberOfLines = DisplayDiagnosticLayout.maximumNumberOfLines
         status.lineBreakMode = DisplayDiagnosticLayout.wraps ? .byWordWrapping : .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        status.widthAnchor.constraint(equalToConstant: 590).isActive = true
         displayStatusLabels[index] = status
-        let toolbar = NSStackView(views: [readButton, status])
-        toolbar.orientation = .horizontal
-        toolbar.alignment = .top
-        toolbar.spacing = 10
-        status.widthAnchor.constraint(lessThanOrEqualToConstant: 460).isActive = true
+        return (readButton, status)
+    }
 
+    private func displayForm(index: Int) -> NSView {
         let headings = NSStackView(views: [
             fixedLabel("", width: 64), fixedLabel("功能", width: 44),
             fixedLabel("在托盘显示", width: 82), fixedLabel("", width: 300),
@@ -972,7 +1010,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             return row
         }
 
-        let form = NSStackView(views: [toolbar, headings] + rows)
+        let form = NSStackView(views: [headings] + rows)
         form.orientation = .vertical
         form.alignment = .leading
         form.spacing = 8
@@ -1141,25 +1179,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             return DisplayInputMapping(displayID: display.id, peerInput: value)
         }
         profile.displayInputs = mapping
-        if profile.coordinationEnabled {
-            let known = Set(document.displays.map { $0.id.lowercased() })
-            let inspection = DisplayConfigurationStore.inspectProfile(
-                profile, displays: document.displays, ddcAvailableDisplayIDs: known
-            )
-            guard inspection.issues.isEmpty else {
-                peerCoordinationCheckbox.state = .off
-                showValidationError("配置不完整，请检查名称、地址、端口、配对码和显示器输入映射。")
-                loadSelectedProfileFields()
-                return
-            }
+        let decision = DisplayConfigurationStore.profileForSafeSave(profile, displays: document.displays)
+        peerCoordinationCheckbox.state = decision.profile.coordinationEnabled ? .on : .off
+        let didSave = persistDocument { value in
+            value.collaborationProfiles[self.selectedProfileIndex] = decision.profile
         }
-        persistDocument { value in
-            value.collaborationProfiles[self.selectedProfileIndex] = profile
+        if didSave, decision.disabledBecauseIncomplete {
+            showValidationError("配置不完整，已自动停用并保存当前输入。请补全所有字段后重新启用。")
         }
     }
 
-    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV5Document) -> Void) {
-        guard var document = configurationDocument else { return }
+    @discardableResult
+    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV5Document) -> Void) -> Bool {
+        guard var document = configurationDocument else { return false }
         mutation(&document)
         do {
             try AppPreferences.saveLocalConfiguration(document)
@@ -1168,14 +1200,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             clearValidationError()
             onSave?()
             reloadValues(rebuildDisplayForms: false)
+            return true
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
             showValidationError("设置未保存，已恢复最后有效值：\n\(error.localizedDescription)")
+            return false
         } catch {
             onConfigurationSaveFailure?(.writeFailed)
             reloadValues()
             showValidationError("设置未保存，已恢复最后有效值。")
+            return false
         }
     }
 
@@ -1213,7 +1248,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbLearningPending = false
         reloadProfilePopup()
         linkedCheckbox.state = loaded.document.linkAllDisplays ? .on : .off
-        controlChannelPopup.selectItem(at: 0)
         usbAutomationCheckbox.state = loaded.document.usbSwitch.enabled ? .on : .off
         usbArrivalSwitchCheckbox.state = loaded.document.usbSwitch.collaborationWakeEnabled ? .on : .off
         usbStatusLabel.stringValue = loaded.document.usbSwitch.enabled ? "等待设备状态" : "USB 切换未启用"
@@ -1417,6 +1451,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func inspectCurrentProfile() {
+        performCurrentProfileInspection()
+    }
+
+    @objc private func requestLocalNetworkPermission() {
+        performCurrentProfileInspection()
+    }
+
+    private func performCurrentProfileInspection() {
         guard editingProfiles.indices.contains(selectedProfileIndex), let document = configurationDocument else { return }
         let localIDs = DDCController.hasLocalBackendWithoutHardwareAccess
             ? Set(document.displays.map { $0.id.lowercased() }) : Set<String>()
@@ -1425,23 +1467,40 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard inspection.isComplete else {
             let alert = NSAlert()
             alert.messageText = "本机配置需要检查"
-            alert.informativeText = "\(inspection.issues.map(\.rawValue).joined(separator: "、"))\n\n\(DDCController.backendSummaryWithoutHardwareAccess)"
+            var messages = inspection.issues.map(\.userFacingDescription)
+            if !inspection.ddcUnavailableDisplayIDs.isEmpty {
+                messages.append(DDCController.backendSummaryWithoutHardwareAccess)
+            }
+            alert.informativeText = messages.map { "• \($0)" }.joined(separator: "\n")
             alert.beginSheetModal(for: window!)
             return
         }
         let profile = editingProfiles[selectedProfileIndex]
         guard let onInspectPeer else {
+            updateLocalNetworkPermissionPresentation(.ordinaryNetworkFailure)
             showPeerInspectionResult(.noResponse, profileID: profile.id)
             return
         }
         inspectProfileButton.isEnabled = false
+        requestLocalNetworkPermissionButton.isEnabled = false
         peerStatusLabel.stringValue = "正在检测 \(profile.name)…"
-        onInspectPeer(profile) { [weak self] result in
+        LocalNetworkPermissionInspectionAction.perform(using: { completion in
+            onInspectPeer(profile, completion)
+        }) { [weak self] result, permissionEvidence in
             DispatchQueue.main.async {
                 self?.inspectProfileButton.isEnabled = true
+                self?.requestLocalNetworkPermissionButton.isEnabled = true
+                self?.updateLocalNetworkPermissionPresentation(permissionEvidence)
                 self?.showPeerInspectionResult(result, profileID: profile.id)
             }
         }
+    }
+
+    private func updateLocalNetworkPermissionPresentation(_ evidence: LocalNetworkPermissionEvidence) {
+        let presentation = LocalNetworkPermissionPresentation.make(for: evidence)
+        localNetworkPermissionStatusLabel.stringValue = presentation.statusText
+        localNetworkPermissionStatusLabel.textColor = presentation.isFailure ? .systemRed : .labelColor
+        localNetworkPermissionDetailLabel.stringValue = presentation.detailText
     }
 
     private func showPeerInspectionResult(_ result: PeerCapabilityInspectionResult, profileID: String) {

@@ -291,7 +291,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             ($0.index, $0)
         })
         ddcController.updateConfigurations(loadResult.configurations)
-        ddcController.setControlChannel(loadResult.document.controlChannel)
         ddcWriteCoordinator.onCompletion = { [weak self] request, result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -1171,7 +1170,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let values = result.configurations
         configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
         ddcController.updateConfigurations(values)
-        ddcController.setControlChannel(result.document.controlChannel)
         rebuildDisplayMenuItems()
         if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
         linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
