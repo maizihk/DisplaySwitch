@@ -1466,7 +1466,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard inspection.isComplete else {
             let alert = NSAlert()
             alert.messageText = "本机配置需要检查"
-            alert.informativeText = "\(inspection.issues.map(\.rawValue).joined(separator: "、"))\n\n\(DDCController.backendSummaryWithoutHardwareAccess)"
+            var messages = inspection.issues.map(\.userFacingDescription)
+            if !inspection.ddcUnavailableDisplayIDs.isEmpty {
+                messages.append(DDCController.backendSummaryWithoutHardwareAccess)
+            }
+            alert.informativeText = messages.map { "• \($0)" }.joined(separator: "\n")
             alert.beginSheetModal(for: window!)
             return
         }

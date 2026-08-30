@@ -220,6 +220,23 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         ).isComplete)
     }
 
+    func testProfileValidationIssuesUseReadableLocalizedDescriptions() {
+        let expected: [LocalProfileIssue: String] = [
+            .missingName: "请填写配置名称。",
+            .missingHost: "请填写对端地址。",
+            .invalidPort: "通信端口必须在 1–65535 之间。",
+            .invalidPairingCode: "配对码必须为 8–128 个 UTF-8 字节。",
+            .missingDisplayMapping: "请为当前每台显示器填写对端输入源。",
+            .orphanedDisplayMapping: "存在不再对应当前显示器的旧输入源映射，请重新保存配置。"
+        ]
+
+        XCTAssertEqual(expected.count, 6)
+        for (issue, description) in expected {
+            XCTAssertEqual(issue.userFacingDescription, description)
+            XCTAssertNotEqual(issue.userFacingDescription, issue.rawValue)
+        }
+    }
+
     func testIncompleteEnabledProfileIsExcludedFromMenu() {
         var document = populatedDocument()
         document.collaborationProfiles[0].peerHost = ""

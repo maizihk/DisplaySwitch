@@ -185,6 +185,23 @@ struct UserDefaultsDisplayConfigurationStorage: DisplayConfigurationStorage {
 
 enum LocalProfileIssue: String, Equatable, Hashable {
     case missingName, missingHost, invalidPort, invalidPairingCode, missingDisplayMapping, orphanedDisplayMapping
+
+    var userFacingDescription: String {
+        switch self {
+        case .missingName:
+            return "请填写配置名称。"
+        case .missingHost:
+            return "请填写对端地址。"
+        case .invalidPort:
+            return "通信端口必须在 1–65535 之间。"
+        case .invalidPairingCode:
+            return "配对码必须为 8–128 个 UTF-8 字节。"
+        case .missingDisplayMapping:
+            return "请为当前每台显示器填写对端输入源。"
+        case .orphanedDisplayMapping:
+            return "存在不再对应当前显示器的旧输入源映射，请重新保存配置。"
+        }
+    }
 }
 
 struct LocalProfileInspection: Equatable {
