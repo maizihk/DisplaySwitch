@@ -210,6 +210,11 @@ struct LocalProfileInspection: Equatable {
     var isComplete: Bool { issues.isEmpty && ddcUnavailableDisplayIDs.isEmpty }
 }
 
+struct CollaborationProfileSaveDecision: Equatable {
+    let profile: CollaborationProfile
+    let disabledBecauseIncomplete: Bool
+}
+
 final class USBLearningSafetyGate {
     private let lock = NSLock()
     private var active = false
@@ -420,6 +425,21 @@ enum DisplayConfigurationStore {
         if !mapped.isSubset(of: known) { issues.insert(.orphanedDisplayMapping) }
         let unavailable = displays.map(\.id).filter { !ddcAvailableDisplayIDs.contains($0.lowercased()) }
         return LocalProfileInspection(issues: issues.sorted { $0.rawValue < $1.rawValue }, ddcUnavailableDisplayIDs: unavailable)
+    }
+
+    static func profileForSafeSave(_ profile: CollaborationProfile,
+                                   displays: [DisplayConfigurationV4Display]) -> CollaborationProfileSaveDecision {
+        guard profile.coordinationEnabled else {
+            return CollaborationProfileSaveDecision(profile: profile, disabledBecauseIncomplete: false)
+        }
+        let known = Set(displays.map { $0.id.lowercased() })
+        let inspection = inspectProfile(profile, displays: displays, ddcAvailableDisplayIDs: known)
+        guard !inspection.issues.isEmpty else {
+            return CollaborationProfileSaveDecision(profile: profile, disabledBecauseIncomplete: false)
+        }
+        var safeProfile = profile
+        safeProfile.coordinationEnabled = false
+        return CollaborationProfileSaveDecision(profile: safeProfile, disabledBecauseIncomplete: true)
     }
 
     static func menuEligibleProfiles(in document: DisplayConfigurationStoreV5Document) -> [CollaborationProfile] {

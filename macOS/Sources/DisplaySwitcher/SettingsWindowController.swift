@@ -1175,25 +1175,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             return DisplayInputMapping(displayID: display.id, peerInput: value)
         }
         profile.displayInputs = mapping
-        if profile.coordinationEnabled {
-            let known = Set(document.displays.map { $0.id.lowercased() })
-            let inspection = DisplayConfigurationStore.inspectProfile(
-                profile, displays: document.displays, ddcAvailableDisplayIDs: known
-            )
-            guard inspection.issues.isEmpty else {
-                peerCoordinationCheckbox.state = .off
-                showValidationError("配置不完整，请检查名称、地址、端口、配对码和显示器输入映射。")
-                loadSelectedProfileFields()
-                return
-            }
+        let decision = DisplayConfigurationStore.profileForSafeSave(profile, displays: document.displays)
+        peerCoordinationCheckbox.state = decision.profile.coordinationEnabled ? .on : .off
+        let didSave = persistDocument { value in
+            value.collaborationProfiles[self.selectedProfileIndex] = decision.profile
         }
-        persistDocument { value in
-            value.collaborationProfiles[self.selectedProfileIndex] = profile
+        if didSave, decision.disabledBecauseIncomplete {
+            showValidationError("配置不完整，已自动停用并保存当前输入。请补全所有字段后重新启用。")
         }
     }
 
-    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV5Document) -> Void) {
-        guard var document = configurationDocument else { return }
+    @discardableResult
+    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV5Document) -> Void) -> Bool {
+        guard var document = configurationDocument else { return false }
         mutation(&document)
         do {
             try AppPreferences.saveLocalConfiguration(document)
@@ -1202,14 +1196,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             clearValidationError()
             onSave?()
             reloadValues(rebuildDisplayForms: false)
+            return true
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
             showValidationError("设置未保存，已恢复最后有效值：\n\(error.localizedDescription)")
+            return false
         } catch {
             onConfigurationSaveFailure?(.writeFailed)
             reloadValues()
             showValidationError("设置未保存，已恢复最后有效值。")
+            return false
         }
     }
 

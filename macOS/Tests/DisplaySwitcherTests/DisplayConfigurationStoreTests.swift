@@ -243,6 +243,34 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
     }
 
+    func testIncompleteEnabledProfileIsSavedDisabledWithoutLosingPartialMappings() {
+        var document = populatedDocument()
+        let secondDisplay = DisplayConfigurationV4Display(
+            id: UUID().uuidString, name: "Display 2", selector: UUID().uuidString,
+            localInput: nil, readEnabled: false
+        )
+        document.displays.append(secondDisplay)
+        let original = document.collaborationProfiles[0]
+
+        let decision = DisplayConfigurationStore.profileForSafeSave(original, displays: document.displays)
+
+        XCTAssertTrue(decision.disabledBecauseIncomplete)
+        XCTAssertFalse(decision.profile.coordinationEnabled)
+        XCTAssertEqual(decision.profile.displayInputs, original.displayInputs)
+        XCTAssertEqual(decision.profile.displayInputs.count, 1)
+    }
+
+    func testCompleteEnabledProfileRemainsEnabledWhenSaved() {
+        let document = populatedDocument()
+        let original = document.collaborationProfiles[0]
+
+        let decision = DisplayConfigurationStore.profileForSafeSave(original, displays: document.displays)
+
+        XCTAssertFalse(decision.disabledBecauseIncomplete)
+        XCTAssertTrue(decision.profile.coordinationEnabled)
+        XCTAssertEqual(decision.profile, original)
+    }
+
     func testProfileNamesRemainUniqueAfterTrimmingAndCanonicalization() {
         var document = populatedDocument()
         var duplicate = document.collaborationProfiles[0]
