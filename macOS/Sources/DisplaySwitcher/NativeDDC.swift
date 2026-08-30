@@ -157,24 +157,34 @@ final class NativeDDCBackend: DDCBackend {
                 throw DDCBackendError.displayUnavailable(stableID: stableID)
             }
             var hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
+            var requestChecksumMode: NativeDDCRequestChecksumMode?
+            let readPreference = preferredReadPreference(display: display)
             let readOutcome = hardwareArbiter.withControlOperation(displayKey: selector) {
                 Self.read(
                     service: service,
                     chipAddress: display.chipAddress,
                     command: command,
                     transportPath: display.transportPath,
-                    primaryDataAddress: preferredReadDataAddress(display: display),
+                    primaryDataAddress: readPreference.dataAddress,
+                    preferredChecksumMode: readPreference.checksumMode,
                     parameters: transportParameters,
                     edidReferences: display.edidReferences,
-                    diagnosticRecorder: { hdmiReadDiagnostics = $0 }
+                    diagnosticRecorder: { hdmiReadDiagnostics = $0 },
+                    checksumModeRecorder: { requestChecksumMode = $0 }
                 )
             }
             switch readOutcome {
             case .success(let reading, let dataAddress, let attempts):
                 try token.throwIfCancelled()
                 resolved = reading
-                if dataAddress != transportParameters.readDataAddress(for: display.transportPath) {
-                    rememberReadDataAddress(dataAddress, display: display)
+                if let requestChecksumMode {
+                    rememberReadPreference(
+                        NativeDDCReadPreference(
+                            dataAddress: dataAddress,
+                            checksumMode: requestChecksumMode
+                        ),
+                        display: display
+                    )
                 }
                 recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
                                  category: reading.estimated ? .readChecksumEstimated
@@ -183,6 +193,7 @@ final class NativeDDCBackend: DDCBackend {
                                  chipAddress: display.chipAddress,
                                  readDataAddress: dataAddress,
                                  readAttemptCount: attempts,
+                                 requestChecksumMode: requestChecksumMode,
                                  hdmiReadDiagnostics: hdmiReadDiagnostics)
             case .failure(
                 let issue, let dataAddress, let attempts, _,
@@ -202,6 +213,7 @@ final class NativeDDCBackend: DDCBackend {
                     category: diagnosticCategory(for: issue), replyIssue: issue,
                     chipAddress: display.chipAddress, readDataAddress: dataAddress,
                     readAttemptCount: attempts,
+                    requestChecksumMode: requestChecksumMode,
                     checksumCompatibilityRejection: compatibilityRejection,
                     checksumCompatibilityEvidence: compatibilityEvidence,
                     hdmiReadDiagnostics: hdmiReadDiagnostics
@@ -282,6 +294,7 @@ final class NativeDDCBackend: DDCBackend {
                                   chipAddress: UInt32? = nil,
                                   readDataAddress: UInt8? = nil,
                                   readAttemptCount: Int? = nil,
+                                  requestChecksumMode: NativeDDCRequestChecksumMode? = nil,
                                   checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
                                   checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil,
                                   hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []) {
@@ -294,6 +307,7 @@ final class NativeDDCBackend: DDCBackend {
             replyIssue: replyIssue, chipAddress: chipAddress,
             readDataAddress: readDataAddress,
             readAttemptCount: readAttemptCount,
+            requestChecksumMode: requestChecksumMode,
             checksumCompatibilityRejection: checksumCompatibilityRejection,
             checksumCompatibilityEvidence: checksumCompatibilityEvidence,
             hdmiReadDiagnostics: hdmiReadDiagnostics
@@ -314,6 +328,7 @@ final class NativeDDCBackend: DDCBackend {
             replyIssue: current.replyIssue, chipAddress: current.chipAddress,
             readDataAddress: current.readDataAddress,
             readAttemptCount: current.readAttemptCount,
+            requestChecksumMode: current.requestChecksumMode,
             checksumCompatibilityRejection: current.checksumCompatibilityRejection,
             checksumCompatibilityEvidence: current.checksumCompatibilityEvidence,
             hdmiReadDiagnostics: current.hdmiReadDiagnostics
@@ -347,18 +362,24 @@ final class NativeDDCBackend: DDCBackend {
         cacheLock.unlock()
     }
 
-    private func preferredReadDataAddress(display: NativeDDCDisplay) -> UInt8 {
+    private func preferredReadPreference(display: NativeDDCDisplay) -> NativeDDCReadPreference {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-        return readPreferenceCache.preferredAddress(
+        let defaultMode: NativeDDCRequestChecksumMode = display.transportPath == .builtinHDMIConverter
+            ? .standard : .legacy
+        return readPreferenceCache.preferred(
             for: readPreferenceKey(for: display),
-            default: transportParameters.readDataAddress(for: display.transportPath)
+            default: NativeDDCReadPreference(
+                dataAddress: transportParameters.readDataAddress(for: display.transportPath),
+                checksumMode: defaultMode
+            )
         )
     }
 
-    private func rememberReadDataAddress(_ address: UInt8, display: NativeDDCDisplay) {
+    private func rememberReadPreference(_ preference: NativeDDCReadPreference,
+                                        display: NativeDDCDisplay) {
         cacheLock.lock()
-        readPreferenceCache.remember(address: address, for: readPreferenceKey(for: display))
+        readPreferenceCache.remember(preference, for: readPreferenceKey(for: display))
         cacheLock.unlock()
     }
 
@@ -696,12 +717,15 @@ final class NativeDDCBackend: DDCBackend {
         command: DDCCommand,
         transportPath: NativeDDCTransportPath,
         primaryDataAddress: UInt8,
+        preferredChecksumMode: NativeDDCRequestChecksumMode = .legacy,
         parameters: NativeDDCTransportParameters,
         edidReferences: [[UInt8]] = [],
-        diagnosticRecorder: (([NativeDDCReadAttemptDiagnostic]) -> Void)? = nil
+        diagnosticRecorder: (([NativeDDCReadAttemptDiagnostic]) -> Void)? = nil,
+        checksumModeRecorder: ((NativeDDCRequestChecksumMode) -> Void)? = nil
     ) -> NativeDDCReadStrategyOutcome {
         if transportPath == .builtinHDMIConverter,
            chipAddress == 0x37 {
+            checksumModeRecorder?(.standard)
             var attemptDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
             var strategyAttempt = 0
             let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
@@ -754,13 +778,13 @@ final class NativeDDCBackend: DDCBackend {
             return outcome
         }
         diagnosticRecorder?([])
-        let alternateDataAddress: UInt8? = transportPath == .typeCDPAlt
-            && primaryDataAddress == parameters.typeCDPReadDataAddress ? 0 : nil
-        let strictOutcome = NativeDDCReadStrategyRunner.run(
+        let strictResult = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: preferredChecksumMode,
             primaryDataAddress: primaryDataAddress,
-            alternateDataAddress: alternateDataAddress,
-            attemptsPerStrategy: parameters.readAttempts(for: transportPath)
-        ) { readDataAddress, response in
+            defaultDataAddress: parameters.typeCDPReadDataAddress,
+            attemptsPerAddress: parameters.readAttempts(for: transportPath),
+            allowsFallback: transportPath == .typeCDPAlt
+        ) { checksumMode, readDataAddress, response in
             var request: [UInt8] = [command.rawValue]
             let exchange = communicate(
                 service: service,
@@ -771,7 +795,7 @@ final class NativeDDCBackend: DDCBackend {
                 readDataAddress: readDataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
                 requestWriteCycles: parameters.writeCycles,
-                requestChecksumIncludesDataAddress: transportPath == .builtinHDMIConverter,
+                requestChecksumIncludesDataAddress: checksumMode.includesDataAddress,
                 parameters: parameters
             )
             if case .failure(let issue) = exchange {
@@ -779,15 +803,19 @@ final class NativeDDCBackend: DDCBackend {
             }
             return NativeDDCReplyValidator.reading(from: response, command: command)
         }
+        checksumModeRecorder?(strictResult.checksumMode)
         guard case .failure(
-            .badChecksum,
-            let dataAddress,
-            let strictAttempts,
-            onlyObservedIssueWasBadChecksum: true,
-            checksumCompatibilityRejection: nil,
-            checksumCompatibilityEvidence: nil
-        ) = strictOutcome else {
-            return strictOutcome
+            let finalIssue,
+            let finalDataAddress,
+            let totalAttempts,
+            let finalOnlyBadChecksum,
+            _, _
+        ) = strictResult.outcome else {
+            return strictResult.outcome
+        }
+
+        guard finalIssue == .badChecksum, finalOnlyBadChecksum else {
+            return strictResult.outcome
         }
         let compatibility = NativeDDCChecksumCompatibilityRunner.run(command: command) { response in
             var request: [UInt8] = [command.rawValue]
@@ -797,23 +825,23 @@ final class NativeDDCBackend: DDCBackend {
                 request: &request,
                 response: &response,
                 attempts: 1,
-                readDataAddress: dataAddress,
+                readDataAddress: finalDataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
                 requestWriteCycles: parameters.writeCycles,
-                requestChecksumIncludesDataAddress: transportPath == .builtinHDMIConverter,
+                requestChecksumIncludesDataAddress: strictResult.checksumMode.includesDataAddress,
                 parameters: parameters
             )
         }
         switch compatibility {
         case .accepted(let reading):
             return .success(
-                reading, dataAddress: dataAddress,
-                attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount
+                reading, dataAddress: finalDataAddress,
+                attempts: totalAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount
             )
         case .rejected(let rejection, let evidence):
             return .failure(
-                .badChecksum, dataAddress: dataAddress,
-                attempts: strictAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount,
+                .badChecksum, dataAddress: finalDataAddress,
+                attempts: totalAttempts + NativeDDCChecksumCompatibilityValidator.requiredReplyCount,
                 onlyObservedIssueWasBadChecksum: true,
                 checksumCompatibilityRejection: rejection,
                 checksumCompatibilityEvidence: evidence

@@ -234,6 +234,7 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let chipAddress: UInt32?
     let readDataAddress: UInt8?
     let readAttemptCount: Int?
+    let requestChecksumMode: NativeDDCRequestChecksumMode?
     let checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection?
     let checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence?
     let hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic]
@@ -243,6 +244,7 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
          replyIssue: NativeDDCReplyIssue? = nil, chipAddress: UInt32? = nil,
          readDataAddress: UInt8? = nil,
          readAttemptCount: Int? = nil,
+         requestChecksumMode: NativeDDCRequestChecksumMode? = nil,
          checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
          checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil,
          hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []) {
@@ -254,6 +256,7 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         self.chipAddress = chipAddress
         self.readDataAddress = readDataAddress
         self.readAttemptCount = readAttemptCount
+        self.requestChecksumMode = requestChecksumMode
         self.checksumCompatibilityRejection = checksumCompatibilityRejection
         self.checksumCompatibilityEvidence = checksumCompatibilityEvidence
         self.hdmiReadDiagnostics = hdmiReadDiagnostics
@@ -280,6 +283,9 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         }
         if let readAttemptCount {
             parts.append("attempts \(readAttemptCount)")
+        }
+        if let requestChecksumMode {
+            parts.append("checksum \(requestChecksumMode.rawValue)")
         }
         if let checksumCompatibilityRejection {
             parts.append("compatibility \(checksumCompatibilityRejection.diagnosticDescription)")
@@ -567,6 +573,81 @@ enum NativeDDCReadStrategyRunner {
     }
 }
 
+struct NativeDDCChecksumStrategyResult: Equatable {
+    let outcome: NativeDDCReadStrategyOutcome
+    let checksumMode: NativeDDCRequestChecksumMode
+}
+
+enum NativeDDCChecksumStrategyRunner {
+    static func run(
+        preferredMode: NativeDDCRequestChecksumMode,
+        primaryDataAddress: UInt8,
+        defaultDataAddress: UInt8,
+        attemptsPerAddress: Int,
+        allowsFallback: Bool = true,
+        exchange: (NativeDDCRequestChecksumMode, UInt8, inout [UInt8])
+            -> Result<DDCReading, NativeDDCReplyIssue>
+    ) -> NativeDDCChecksumStrategyResult {
+        var totalAttempts = 0
+        var nextPrimaryAddress = primaryDataAddress
+        var finalOutcome: NativeDDCReadStrategyOutcome = .failure(
+            .responseReadFailed,
+            dataAddress: primaryDataAddress,
+            attempts: 0,
+            onlyObservedIssueWasBadChecksum: false
+        )
+        var finalMode = preferredMode
+
+        let modes = allowsFallback ? [preferredMode, preferredMode.alternate] : [preferredMode]
+        for mode in modes {
+            finalMode = mode
+            let alternateAddress: UInt8? = allowsFallback
+                ? (nextPrimaryAddress == defaultDataAddress ? 0 : defaultDataAddress)
+                : nil
+            let outcome = NativeDDCReadStrategyRunner.run(
+                primaryDataAddress: nextPrimaryAddress,
+                alternateDataAddress: alternateAddress,
+                attemptsPerStrategy: attemptsPerAddress
+            ) { address, response in
+                exchange(mode, address, &response)
+            }
+            switch outcome {
+            case .success(let reading, let dataAddress, let attempts):
+                return NativeDDCChecksumStrategyResult(
+                    outcome: .success(
+                        reading,
+                        dataAddress: dataAddress,
+                        attempts: totalAttempts + attempts
+                    ),
+                    checksumMode: mode
+                )
+            case .failure(
+                let issue, let dataAddress, let attempts, let onlyBadChecksum,
+                _, _
+            ):
+                totalAttempts += attempts
+                nextPrimaryAddress = dataAddress
+                finalOutcome = .failure(
+                    issue,
+                    dataAddress: dataAddress,
+                    attempts: totalAttempts,
+                    onlyObservedIssueWasBadChecksum: onlyBadChecksum
+                )
+                if issue == .requestWriteFailed {
+                    return NativeDDCChecksumStrategyResult(
+                        outcome: finalOutcome,
+                        checksumMode: mode
+                    )
+                }
+            }
+        }
+        return NativeDDCChecksumStrategyResult(
+            outcome: finalOutcome,
+            checksumMode: finalMode
+        )
+    }
+}
+
 enum NativeDDCBuiltinHDMIReadPolicy {
     // A Get VCP retry must repeat the complete request/reply exchange. Repeating
     // only the request writes can leave the HDMI service returning a stale or
@@ -742,16 +823,33 @@ struct NativeDDCReadPreferenceKey: Hashable {
     }
 }
 
-struct NativeDDCReadPreferenceCache {
-    private var values: [NativeDDCReadPreferenceKey: UInt8] = [:]
+enum NativeDDCRequestChecksumMode: String, Equatable {
+    case legacy = "legacy"
+    case standard = "standard"
 
-    func preferredAddress(for key: NativeDDCReadPreferenceKey,
-                          default defaultAddress: UInt8) -> UInt8 {
-        values[key] ?? defaultAddress
+    var includesDataAddress: Bool { self == .standard }
+
+    var alternate: NativeDDCRequestChecksumMode {
+        self == .standard ? .legacy : .standard
+    }
+}
+
+struct NativeDDCReadPreference: Equatable {
+    let dataAddress: UInt8
+    let checksumMode: NativeDDCRequestChecksumMode
+}
+
+struct NativeDDCReadPreferenceCache {
+    private var values: [NativeDDCReadPreferenceKey: NativeDDCReadPreference] = [:]
+
+    func preferred(for key: NativeDDCReadPreferenceKey,
+                   default defaultPreference: NativeDDCReadPreference) -> NativeDDCReadPreference {
+        values[key] ?? defaultPreference
     }
 
-    mutating func remember(address: UInt8, for key: NativeDDCReadPreferenceKey) {
-        values[key] = address
+    mutating func remember(_ preference: NativeDDCReadPreference,
+                           for key: NativeDDCReadPreferenceKey) {
+        values[key] = preference
     }
 
     mutating func invalidate(selector: String) {
