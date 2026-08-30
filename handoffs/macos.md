@@ -6,8 +6,8 @@
 - 功能：DS-015 / macOS M-008 IOAVService 拓扑绑定
 - 堆叠基线：`codex/macos-ds-014-hdmi-ddc-read-diagnostics@1a15db2`
 - 分支：`codex/macos-ds-015-ioav-topology-binding`
-- 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
-- PR：待创建；不主动触发云端 CI
+- 实现提交：`039466bc0e680a753aa069f1883342d3969dd400`
+- PR：[#55](https://github.com/maizihk/DisplaySwitch/pull/55)；不主动触发云端 CI
 
 ## DS-015 原因与决策
 
