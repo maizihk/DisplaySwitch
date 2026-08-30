@@ -145,6 +145,7 @@ enum NativeDDCOperationCategory: String, Equatable {
     case readResponseFailed = "read-response-failed"
     case readReplyRejected = "read-reply-rejected"
     case readChecksumEstimated = "read-estimated/repeated-consistent/checksum-invalid"
+    case reliableReadUnsupported = "reliable-read-unsupported"
     case writeSucceeded = "write-succeeded"
     case writeTransportFailed = "write-transport-failed"
 }
@@ -184,6 +185,9 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     }
 
     var userFacingDescription: String {
+        if operationCategory == .reliableReadUnsupported {
+            return "当前连接不支持可靠读取"
+        }
         var operation = operationCategory.rawValue
         if operationCategory == .readReplyRejected, let replyIssue {
             operation += "/\(replyIssue.diagnosticCode)"
@@ -223,6 +227,7 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
     case readFailed(stableID: String, command: DDCCommand)
     case writeFailed(stableID: String, command: DDCCommand)
     case invalidReply(command: DDCCommand, issue: NativeDDCReplyIssue)
+    case reliableReadUnsupported(command: DDCCommand)
     case cancelled
 
     var errorDescription: String? {
@@ -237,6 +242,8 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
             return "写入\(command.userFacingName)失败。"
         case let .invalidReply(command, issue):
             return "读取\(command.userFacingName)失败：\(issue.userFacingDescription)。"
+        case .reliableReadUnsupported:
+            return "当前连接不支持可靠读取。"
         case .cancelled:
             return "DDC 操作已取消。"
         }
@@ -481,6 +488,20 @@ enum NativeDDCReadStrategyRunner {
             onlyObservedIssueWasBadChecksum: observedIssues.allSatisfy { $0 == .badChecksum },
             checksumCompatibilityRejection: nil,
             checksumCompatibilityEvidence: nil
+        )
+    }
+}
+
+enum NativeDDCBuiltinHDMIReadPolicy {
+    static func run(
+        readDataAddress: UInt8,
+        exchange: (UInt8, inout [UInt8]) -> Result<DDCReading, NativeDDCReplyIssue>
+    ) -> NativeDDCReadStrategyOutcome {
+        NativeDDCReadStrategyRunner.run(
+            primaryDataAddress: readDataAddress,
+            alternateDataAddress: nil,
+            attemptsPerStrategy: 1,
+            exchange: exchange
         )
     }
 }
@@ -1039,10 +1060,15 @@ enum NativeInputCandidateDiagnosticProjection {
 }
 
 enum DDCSingleRetry {
-    static func perform(operation: () throws -> Void, recover: () throws -> Void) throws {
+    static func perform(
+        operation: () throws -> Void,
+        recover: () throws -> Void,
+        shouldRetry: (Error) -> Bool = { _ in true }
+    ) throws {
         do {
             try operation()
         } catch {
+            guard shouldRetry(error) else { throw error }
             try recover()
             try operation()
         }

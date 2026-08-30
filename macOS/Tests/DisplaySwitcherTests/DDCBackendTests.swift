@@ -158,6 +158,19 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(cache.writeCount, 0)
     }
 
+    func testUnsupportedReliableReadPreservesLastTrustedCache() {
+        let backend = MockDDCBackend()
+        backend.readFailures = ["display-a": [.luminance]]
+        let cache = MockDDCCache(values: ["display-a": [.luminance: 64]])
+        let service = makeService(backend: backend, cache: cache)
+
+        let result = service.read([target(id: "display-a", commands: [.luminance])])
+
+        XCTAssertEqual(result["display-a"]?[.luminance]?.reading.current, 64)
+        XCTAssertTrue(result["display-a"]?[.luminance]?.estimated == true)
+        XCTAssertEqual(cache.writeCount, 0)
+    }
+
     func testSingleNativeBackendSuccessAndFailuresRemainExplicit() throws {
         let native = MockDDCBackend(identifier: "apple-silicon-native")
         native.readings = ["display-a": [.luminance: DDCReading(current: 30, maximum: 100)]]
@@ -587,6 +600,87 @@ final class DDCBackendTests: XCTestCase {
         )
         XCTAssertEqual(result.attempts.count, 7)
         XCTAssertTrue(result.attempts.allSatisfy { $0.reply.count == 11 })
+    }
+
+    func testBuiltinHDMIFormalReadUsesOneStrictAttemptWithoutAlternateProbe() {
+        var addresses: [UInt8] = []
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(readDataAddress: 0) { address, response in
+            addresses.append(address)
+            response = self.badChecksumReply(current: 42, maximum: 100)
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(addresses, [0])
+        XCTAssertEqual(
+            outcome,
+            .failure(
+                .badChecksum,
+                dataAddress: 0,
+                attempts: 1,
+                onlyObservedIssueWasBadChecksum: true
+            )
+        )
+    }
+
+    func testBuiltinHDMIFormalReadAcceptsOnlyStrictValidReply() {
+        let expected = DDCReading(current: 42, maximum: 100)
+        var calls = 0
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(readDataAddress: 0) { _, response in
+            calls += 1
+            response = self.strictReply(current: 42, maximum: 100)
+            return NativeDDCReplyValidator.reading(from: response, command: .luminance)
+        }
+
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(outcome, .success(expected, dataAddress: 0, attempts: 1))
+    }
+
+    func testReliableReadUnsupportedDiagnosticHidesTransportInternals() {
+        let rejectedReply = badChecksumReply(current: 42, maximum: 100)
+        let edidLikeAttempt = NativeDDCReadAttemptDiagnostic(
+            dataAddress: 0,
+            strategyAttempt: 1,
+            delayMicroseconds: 50_000,
+            writeIOReturns: [0],
+            readIOReturn: 0,
+            reply: rejectedReply,
+            validation: .rejected(.badChecksum),
+            edidReferences: [rejectedReply]
+        )
+        XCTAssertEqual(edidLikeAttempt.dataSource, .edidLike)
+        let snapshot = NativeDDCDiagnosticSnapshot(
+            transportPath: .builtinHDMIConverter,
+            serviceMatched: true,
+            operationCategory: .reliableReadUnsupported,
+            rebuildCount: 2,
+            replyIssue: .badChecksum,
+            chipAddress: 0x37,
+            readDataAddress: 0x51,
+            readAttemptCount: 10,
+            hdmiReadDiagnostics: [edidLikeAttempt]
+        )
+
+        XCTAssertEqual(snapshot.userFacingDescription, "当前连接不支持可靠读取")
+        XCTAssertFalse(snapshot.userFacingDescription.contains("chip"))
+        XCTAssertFalse(snapshot.userFacingDescription.contains("offset"))
+        XCTAssertFalse(snapshot.userFacingDescription.contains("attempt"))
+    }
+
+    func testReliableReadUnsupportedSkipsRecoveryRetry() {
+        var operationCount = 0
+        var recoveryCount = 0
+
+        XCTAssertThrowsError(try DDCSingleRetry.perform(operation: {
+            operationCount += 1
+            throw DDCBackendError.reliableReadUnsupported(command: .luminance)
+        }, recover: {
+            recoveryCount += 1
+        }, shouldRetry: { error in
+            if case DDCBackendError.reliableReadUnsupported = error { return false }
+            return true
+        }))
+        XCTAssertEqual(operationCount, 1)
+        XCTAssertEqual(recoveryCount, 0)
     }
 
     func testHDMIDiagnosticRequestWriteFailureNeverProbesOffset51() {

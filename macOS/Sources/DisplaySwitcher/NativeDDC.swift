@@ -171,6 +171,15 @@ final class NativeDDCBackend: DDCBackend {
                 let issue, let dataAddress, let attempts, _,
                 let compatibilityRejection, let compatibilityEvidence
             ):
+                if display.transportPath == .builtinHDMIConverter,
+                   display.chipAddress == 0x37 {
+                    recordDiagnostic(
+                        selector: selector, path: display.transportPath, serviceMatched: true,
+                        category: .reliableReadUnsupported,
+                        hdmiReadDiagnostics: hdmiReadDiagnostics
+                    )
+                    throw DDCBackendError.reliableReadUnsupported(command: command)
+                }
                 recordDiagnostic(
                     selector: selector, path: display.transportPath, serviceMatched: true,
                     category: diagnosticCategory(for: issue), replyIssue: issue,
@@ -187,6 +196,11 @@ final class NativeDDCBackend: DDCBackend {
             incrementRebuild(selector: selector)
             invalidate(selector: selector)
             _ = discover()
+        }, shouldRetry: { error in
+            if case DDCBackendError.reliableReadUnsupported = error {
+                return false
+            }
+            return true
         })
         guard let resolved else { throw DDCBackendError.readFailed(stableID: stableID, command: command) }
         return resolved
@@ -651,17 +665,13 @@ final class NativeDDCBackend: DDCBackend {
         edidReferences: [[UInt8]] = [],
         diagnosticRecorder: (([NativeDDCReadAttemptDiagnostic]) -> Void)? = nil
     ) -> NativeDDCReadStrategyOutcome {
-        if command == .luminance,
-           transportPath == .builtinHDMIConverter,
+        if transportPath == .builtinHDMIConverter,
            chipAddress == 0x37 {
-            let alternateDataAddress: UInt8? = primaryDataAddress == 0 ? 0x51 : nil
-            let diagnosticResult = NativeDDCHDMIReadDiagnosticRunner.run(
-                primaryDataAddress: primaryDataAddress,
-                alternateDataAddress: alternateDataAddress,
-                attemptsPerStrategy: parameters.readAttempts(for: transportPath)
-            ) { readDataAddress, strategyAttempt in
+            var attemptDiagnostic: NativeDDCReadAttemptDiagnostic?
+            let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+                readDataAddress: parameters.readDataAddress(for: transportPath)
+            ) { readDataAddress, response in
                 var request: [UInt8] = [command.rawValue]
-                var response = [UInt8](repeating: 0, count: 11)
                 var communicationTrace: NativeDDCCommunicationTrace?
                 let exchange = communicate(
                     service: service,
@@ -674,19 +684,20 @@ final class NativeDDCBackend: DDCBackend {
                     parameters: parameters,
                     trace: { communicationTrace = $0 }
                 )
-                let validation: NativeDDCStrictReadValidation
-                switch exchange {
-                case .failure(let issue):
-                    validation = .rejected(issue)
-                case .success:
-                    switch NativeDDCReplyValidator.reading(from: response, command: command) {
-                    case .success(let reading): validation = .valid(reading)
-                    case .failure(let issue): validation = .rejected(issue)
-                    }
+                let result: Result<DDCReading, NativeDDCReplyIssue>
+                if case .failure(let issue) = exchange {
+                    result = .failure(issue)
+                } else {
+                    result = NativeDDCReplyValidator.reading(from: response, command: command)
                 }
-                return NativeDDCReadAttemptDiagnostic(
+                let validation: NativeDDCStrictReadValidation
+                switch result {
+                case .success(let reading): validation = .valid(reading)
+                case .failure(let issue): validation = .rejected(issue)
+                }
+                attemptDiagnostic = NativeDDCReadAttemptDiagnostic(
                     dataAddress: readDataAddress,
-                    strategyAttempt: strategyAttempt,
+                    strategyAttempt: 1,
                     delayMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
                     writeIOReturns: communicationTrace?.writeIOReturns ?? [],
                     readIOReturn: communicationTrace?.readIOReturn,
@@ -694,9 +705,10 @@ final class NativeDDCBackend: DDCBackend {
                     validation: validation,
                     edidReferences: edidReferences
                 )
+                return result
             }
-            diagnosticRecorder?(diagnosticResult.attempts)
-            return diagnosticResult.outcome
+            diagnosticRecorder?(attemptDiagnostic.map { [$0] } ?? [])
+            return outcome
         }
         diagnosticRecorder?([])
         let alternateDataAddress: UInt8? = transportPath == .typeCDPAlt

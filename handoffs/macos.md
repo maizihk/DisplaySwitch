@@ -3,11 +3,39 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-014 / macOS 内建 HDMI 原生 DDC 读取根因诊断第二阶段
+- 功能：DS-014 / macOS 内建 HDMI 原生 DDC 读取正式收敛
 - 基线：`0e79c238e563ce594a1012710eec170b98ae9761`
 - 分支：`codex/macos-ds-014-hdmi-ddc-read-diagnostics`
 - 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
-- PR / CI：诊断包阶段不创建 PR、不触发额外云端 CI
+- PR / CI：按任务边界不创建 PR、不触发云端 CI
+
+## DS-014 收敛结论
+
+- 实机已经证明：内建 HDMI 的既定 `chip = 0x37` 下，offset 0 与 0x51 的系统调用虽返回成功，但回复均未通过严格 DDC/CI 校验，其中包含 EDID-like 数据；该连接当前只验证 Set VCP 写入可用，读取不可用。
+- 同一构建中的 Type-C/DP 严格成功样本证明请求格式、validator 和连续缓冲区并非全局失效；另一个 Type-C/DP 失败样本后续单独诊断，不与内建 HDMI 根因合并。
+- 因此停止继续试探 chip、offset、延迟、写周期、回复长度或宽松校验，不把系统调用成功伪装成设备读取成功。
+
+## DS-014 正式实现
+
+- 内建 HDMI Get VCP 只执行一次既定 offset 0 严格事务；失败后不再运行十次诊断循环、不尝试 offset 0x51、不进入 checksum 兼容读取，也不触发 service 重建重试。
+- 失败时保留并显示按稳定显示器 ID 保存的上次可信值；没有缓存则不制造数值。
+- 普通设置页只显示“当前连接不支持可靠读取”或“当前连接不支持可靠读取，显示上次可信值”，不展示 IOReturn、chip、offset、attempts 或原始回复。
+- 保留严格校验、EDID-like 拒绝、显式连续 `withUnsafeBytes`/`withUnsafeMutableBytes` 缓冲区及原始回复不出界面/日志的隐私边界。
+- Type-C/DP 读取策略、Set VCP、输入源切换、显示器匹配、网络和 USB 行为均未改变。
+
+## DS-014 最终自动验证
+
+- DDC 专项 XCTest：50/50。
+- 完整 XCTest：135/135。首次完整运行仅有一项既有跨显示器并发测试因 resolver 调用顺序波动失败；单项复跑及第二次完整运行均通过，本任务未修改该调度逻辑。
+- Debug、Release、`./macOS/scripts/build-app.sh` 与 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 均通过。
+- 使用本机选定的 Xcode 27 Beta 6；命令仅记录通用的 `$DEVELOPER_DIR` 表达。
+- 未执行新的真实 DDC、输入源切换、USB、网络或唤醒；未创建 PR、未触发云端 CI。
+
+## DS-014 后续边界
+
+- 不需要新的内建 HDMI 读取诊断包：本轮已无待验证的新读取变量，继续打包只会重复已确认失败的硬件路径。
+- 如需界面确认，可在后续合并候选中验证安全提示与缓存展示；不作为继续试探读取参数的理由。
+- 第二个 Type-C/DP 失败样本需要独立任务和独立证据范围。
 
 ## DS-014 第二阶段根因证据
 
@@ -23,7 +51,7 @@
 - 原始 11 字节回复仍用于严格校验，但不再进入界面诊断；展示只保留 IOReturn、offset、尝试次数、长度、严格结果及 `ddcci/strict-valid`、`non-ddcci/edid-like` 或未分类来源。
 - 未改变 Set VCP、输入源切换、显示器匹配、Type-C/DP 读取策略、chip、offset、延迟、写周期和回复长度。
 
-## DS-014 第二阶段自动验证
+## DS-014 第二阶段诊断构建自动验证（历史）
 
 - DDC 专项 XCTest：45/45。
 - 完整 XCTest：130/130；存在一条既有 USB 并发测试 QoS 警告，测试本身通过。
@@ -31,11 +59,11 @@
 - Debug、Release、`./macOS/scripts/build-app.sh` 和严格 codesign 验证通过。
 - 未执行真实 DDC、输入源切换、USB、网络或唤醒；未创建 PR、未触发云端 CI。
 
-## DS-014 第二阶段实机待验
+## DS-014 第二阶段实机结果（已完成）
 
-1. 保持目标显示器直连内建 HDMI。
-2. 只点击该显示器一次“读取 DDC 参数”。
-3. 回传不含原始帧的 HDMI 诊断文本，确认来源是严格 DDC/CI、EDID-like 或未分类。
+1. 用户保持目标显示器直连内建 HDMI，完成诊断读取。
+2. offset 0 与 0x51 均未得到严格 DDC/CI 回复；连续缓冲区没有改变结果。
+3. 结果已经用于上方正式安全策略，不再安排新的 HDMI 参数探测。
 
 ## DS-014 第一阶段原因与决策
 

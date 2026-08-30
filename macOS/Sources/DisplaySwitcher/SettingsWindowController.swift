@@ -378,6 +378,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if let skipReason {
             displayStatusLabels[index]?.stringValue = skipReason.userFacingDescription
+        } else if diagnostic?.operationCategory == .reliableReadUnsupported {
+            displayStatusLabels[index]?.stringValue = values.isEmpty
+                ? "当前连接不支持可靠读取"
+                : "当前连接不支持可靠读取，显示上次可信值"
         } else if diagnostic?.operationCategory == .readChecksumEstimated {
             displayStatusLabels[index]?.stringValue = "已读取（弱校验）\(diagnosticSuffix)"
         } else if values.isEmpty {
