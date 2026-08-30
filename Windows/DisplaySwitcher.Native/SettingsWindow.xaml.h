@@ -21,6 +21,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
                 ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
             std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+            std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+                std::function<void(bool, std::wstring const&)>)> checkNetworkAccess,
             std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
                 std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
             std::function<void()> beginUsbLearning,
@@ -80,6 +82,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc_;
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+            std::function<void(bool, std::wstring const&)>)> checkNetworkAccess_;
         std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
             std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile_;
         std::function<void()> beginUsbLearning_;

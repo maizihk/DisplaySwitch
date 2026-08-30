@@ -114,7 +114,10 @@ namespace DisplaySwitcher::Native
         trayIcon_->SetProfiles(std::move(menuProfiles));
         RefreshTrayDdcControls();
         StopPeerHealthCheck();
-        peer_->Stop();
+        {
+            std::scoped_lock lock(peerLifecycleMutex_);
+            peer_->Stop();
+        }
         auto usbConfigured = config.HasUsbDeviceConfiguration();
         auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
             [&](auto const& mapping) { return mapping.targetInput && FindDisplayById(config.displays, mapping.displayId); });
@@ -153,10 +156,13 @@ namespace DisplaySwitcher::Native
         v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
         v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
-        if (auto listenerPort = config.V2ListenerPort()) peer_->Start(*listenerPort);
-        else SetPeerConnectionStatus(!config.ReadonlyEnabledProfiles().empty() ? L"协同配置不完整" : L"协同未启用", false);
+        if (!config.V2ListenerPort()) SetPeerConnectionStatus(!config.ReadonlyEnabledProfiles().empty() ? L"协同配置不完整" : L"协同未启用", false);
         if (hasUnboundV2 && !hasV2) SetPeerConnectionStatus(L"等待首次检测", false);
-        if (hasV2) StartPeerHealthCheck();
+        if (networkAccessPrepared_)
+        {
+            if (auto listenerPort = config.V2ListenerPort(); listenerPort && EnsurePeerListening(*listenerPort) && hasV2)
+                StartPeerHealthCheck();
+        }
         if (applyAutoStart)
         {
             try { ApplyAutoStart(config.startWithWindows); }
@@ -193,7 +199,10 @@ namespace DisplaySwitcher::Native
         ++sideEffectGeneration_;
         sideEffectGate_.Block();
         StopPeerHealthCheck();
-        peer_->Stop();
+        {
+            std::scoped_lock lock(peerLifecycleMutex_);
+            peer_->Stop();
+        }
         usbWatcher_->Reconfigure(-1, -1);
         SetPeerConnectionStatus(L"USB 学习中，协同已暂停", false);
         SetStatus(L"正在学习 USB 设备；自动协同和硬件操作已暂停");
@@ -277,6 +286,20 @@ namespace DisplaySwitcher::Native
 
     void Controller::ApplyV2Actions(std::vector<V2Action> actions)
     {
+        auto makePeerConnectedText = [this](std::wstring const& endpointId) -> std::wstring
+        {
+            auto config = Config();
+            auto profile = std::find_if(config.collaborationProfiles.begin(), config.collaborationProfiles.end(),
+                [&](auto const& candidate)
+                {
+                    return candidate.coordinationEnabled && candidate.peerProtocolVersion == 2 &&
+                        !EqualId(candidate.peerEndpointId, config.localEndpointId) &&
+                        EqualId(candidate.peerEndpointId, endpointId);
+                });
+            if (profile != config.collaborationProfiles.end() && !profile->name.empty())
+                return L"已和对端（" + profile->name + L"）建立连接";
+            return L"已和对端建立连接";
+        };
         if (!sideEffectGate_.AllowsSideEffects() || !v2StateMachine_) return;
         for (auto const& action : actions)
         {
@@ -311,7 +334,7 @@ namespace DisplaySwitcher::Native
             }
             case V2Action::Kind::SetPeerReachable:
                 v2StateMachine_->SetTargetReachable(action.endpointId, action.value);
-                SetPeerConnectionStatus(action.value ? L"已连接到对端" : L"连接已中断", action.value);
+                SetPeerConnectionStatus(action.value ? makePeerConnectedText(action.endpointId) : L"连接已中断", action.value);
                 break;
             case V2Action::Kind::PromptManualSelection:
                 SetStatus(L"对端不可用，请检查协同配置");
@@ -324,6 +347,22 @@ namespace DisplaySwitcher::Native
                 break;
             }
         }
+    }
+
+    bool Controller::EnsurePeerListening(int port)
+    {
+        if (disposed_ || !peer_ || port < 1 || port > 65535 || !sideEffectGate_.AllowsSideEffects()) return false;
+        std::scoped_lock lock(peerLifecycleMutex_);
+        if (peer_->IsRunning() && peer_->LocalPort() == port) return true;
+        peer_->Start(port);
+        return peer_->IsRunning() && peer_->LocalPort() == port;
+    }
+
+    bool Controller::IsPeerListening(int port) const
+    {
+        if (!peer_ || port < 1 || port > 65535) return false;
+        std::scoped_lock lock(peerLifecycleMutex_);
+        return peer_->IsRunning() && peer_->LocalPort() == port;
     }
 
     void Controller::AdvanceStateMachine()
@@ -443,7 +482,7 @@ namespace DisplaySwitcher::Native
             v2HealthProbes_.erase(pending);
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
             v2PeerLastSeenMs_[message.sourceEndpointId] = now;
-            SetPeerConnectionStatus(L"已连接到 " + profile->name, true);
+            SetPeerConnectionStatus(L"已和对端（" + profile->name + L"）建立连接", true);
             return;
         }
         if (message.type == L"wake_display")
@@ -456,7 +495,7 @@ namespace DisplaySwitcher::Native
         {
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
             v2PeerLastSeenMs_[message.sourceEndpointId] = now;
-            SetPeerConnectionStatus(L"已连接到 " + profile->name, true);
+            SetPeerConnectionStatus(L"已和对端（" + profile->name + L"）建立连接", true);
         }
         if (message.type == L"status_probe") actions = v2StateMachine_->OnStatusProbe(now, message.sourceEndpointId, message.eventId, true);
         else if (message.type == L"handover_request") actions = v2StateMachine_->OnHandoverRequest(now, message.sourceEndpointId, message.eventId, true, message.intent.value_or(L"manual"));
@@ -521,6 +560,7 @@ namespace DisplaySwitcher::Native
         if (profile == config.collaborationProfiles.end() || EqualId(profile->peerEndpointId, config.localEndpointId) ||
             std::count_if(config.collaborationProfiles.begin(), config.collaborationProfiles.end(), [&](auto const& candidate)
             { return candidate.coordinationEnabled && candidate.peerProtocolVersion == 2 && EqualId(candidate.peerEndpointId, action.endpointId); }) != 1) return;
+        if (!networkAccessPrepared_ || !IsPeerListening(config.listenPort)) return;
         auto now = static_cast<int64_t>(UdpPeer::TimestampNow());
         for (auto item = v2OutgoingMessages_.begin(); item != v2OutgoingMessages_.end();)
             if (now - item->second.timestamp > 30) item = v2OutgoingMessages_.erase(item); else ++item;
@@ -667,6 +707,34 @@ namespace DisplaySwitcher::Native
         trayIcon_->SetDdcItems(std::move(items));
     }
 
+    void Controller::CheckNetworkAccess(AppConfig const& workingConfig,
+        std::function<void(bool, std::wstring const&)> completed)
+    {
+        if (disposed_ || workingConfig.displayConfigurationSafeMode ||
+            !IsValidDisplayId(workingConfig.localEndpointId) ||
+            workingConfig.listenPort < 1 || workingConfig.listenPort > 65535)
+        {
+            if (completed) completed(false, L"本机协同配置不完整，未启动网络监听。");
+            return;
+        }
+        auto port = workingConfig.listenPort;
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, port, completed = std::move(completed)]() mutable
+        {
+            auto self = weak.lock();
+            auto ready = self && !self->disposed_ && self->EnsurePeerListening(port);
+            if (ready) self->networkAccessPrepared_ = true;
+            auto message = ready
+                ? L"本机 UDP 端口已就绪，可以继续检测连接。若 Windows 弹出提示，请允许专用网络访问。"
+                : L"无法启动本机 UDP 监听。请检查端口占用和 Windows 网络权限。";
+            if (self && !self->disposed_)
+                self->Enqueue([completed = std::move(completed), ready, message = std::move(message)]() mutable
+                {
+                    if (completed) completed(ready, message);
+                });
+        }).detach();
+    }
+
     void Controller::BeginProfileDetection(AppConfig const& workingConfig, std::wstring const& profileId,
         std::function<void(ProfileDetectionResult const&)> completed)
     {
@@ -675,6 +743,11 @@ namespace DisplaySwitcher::Native
         {
             profileDetection_->session.Cancel();
             CompleteProfileDetection({ ProfileDetectionOutcome::NoResponse });
+        }
+        if (!IsPeerListening(workingConfig.listenPort))
+        {
+            if (completed) completed({ ProfileDetectionOutcome::NetworkNotReady });
+            return;
         }
         auto profile = workingConfig.FindCollaborationProfile(profileId);
         auto inspection = workingConfig.InspectProfile(profileId);
@@ -701,8 +774,6 @@ namespace DisplaySwitcher::Native
         // detection completes, so an old timeout cannot fire after the pause.
         ++sideEffectGeneration_;
         StopPeerHealthCheck();
-        profileDetection_->startedPeer = !peer_->IsRunning();
-        if (profileDetection_->startedPeer) peer_->Start(workingConfig.listenPort);
         ApplyProfileDetectionAction(std::move(action));
         auto generation = profileDetection_->generation;
         std::weak_ptr<Controller> weak = shared_from_this();
@@ -730,28 +801,51 @@ namespace DisplaySwitcher::Native
             return;
         }
         if (!peer_ || !peer_->IsRunning()) return;
-        auto const& config = profileDetection_->workingConfig;
-        auto const& profile = profileDetection_->profile;
         if (action.kind != ProfileDetectionAction::Kind::SendV2Probe) return;
-        V2Message message;
-        message.type = L"status_probe";
-        message.eventId = action.eventId;
-        message.sourceEndpointId = config.localEndpointId;
-        if (IsValidDisplayId(profile.peerEndpointId)) message.targetEndpointId = profile.peerEndpointId;
-        message.sourcePlatform = L"windows";
-        message.timestamp = static_cast<int64_t>(UdpPeer::TimestampNow());
-        message.nonce = GenerateV2Nonce();
-        try
+        auto config = profileDetection_->workingConfig;
+        auto profile = profileDetection_->profile;
+        auto generation = profileDetection_->generation;
+        auto eventId = std::move(action.eventId);
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, config = std::move(config), profile = std::move(profile),
+            generation, eventId = std::move(eventId)]() mutable
         {
-            auto secret = NormalizeV2PairingSecret(profile.pairingCode);
-            auto key = DeriveV2AuthenticationKey(secret, config.localEndpointId);
-            message = SignV2Message(std::move(message), key);
-            peer_->SendRaw(SerializeV2Message(message), profile.peerHost, profile.peerPort, false);
-        }
-        catch (...)
-        {
-            CompleteProfileDetection({ ProfileDetectionOutcome::LocalConfigurationIncomplete });
-        }
+            try
+            {
+                V2Message message;
+                message.type = L"status_probe";
+                message.eventId = std::move(eventId);
+                message.sourceEndpointId = config.localEndpointId;
+                if (IsValidDisplayId(profile.peerEndpointId)) message.targetEndpointId = profile.peerEndpointId;
+                message.sourcePlatform = L"windows";
+                message.timestamp = static_cast<int64_t>(UdpPeer::TimestampNow());
+                message.nonce = GenerateV2Nonce();
+                auto secret = NormalizeV2PairingSecret(profile.pairingCode);
+                auto key = DeriveV2AuthenticationKey(secret, config.localEndpointId);
+                message = SignV2Message(std::move(message), key);
+                auto payload = SerializeV2Message(message);
+
+                auto self = weak.lock();
+                if (!self || self->disposed_ || !self->profileDetectionActive_ ||
+                    self->profileDetectionGeneration_.load() != generation || !self->peer_) return;
+                self->peer_->SendRaw(payload, profile.peerHost, profile.peerPort, false, [weak, generation]
+                {
+                    auto current = weak.lock();
+                    return current && !current->disposed_ && current->profileDetectionActive_ &&
+                        current->profileDetectionGeneration_.load() == generation;
+                });
+            }
+            catch (...)
+            {
+                if (auto self = weak.lock(); self && !self->disposed_)
+                    self->Enqueue([weak, generation]
+                    {
+                        if (auto value = weak.lock(); value && value->profileDetection_ &&
+                            value->profileDetection_->generation == generation)
+                            value->CompleteProfileDetection({ ProfileDetectionOutcome::LocalConfigurationIncomplete });
+                    });
+            }
+        }).detach();
     }
 
     void Controller::CompleteProfileDetection(ProfileDetectionResult const& result)
@@ -844,6 +938,10 @@ namespace DisplaySwitcher::Native
                 { std::scoped_lock lock(self->configMutex_); self->config_ = std::move(config); }
                 return true;
             },
+            [weak](AppConfig const& config, std::function<void(bool, std::wstring const&)> completed)
+            {
+                if (auto self = weak.lock()) self->CheckNetworkAccess(config, std::move(completed));
+            },
             [weak](AppConfig const& config, std::wstring const& profileId,
                 std::function<void(ProfileDetectionResult const&)> completed)
             {
@@ -930,7 +1028,11 @@ namespace DisplaySwitcher::Native
     {
         if (disposed_.exchange(true)) return;
         StopPeerHealthCheck();
-        if (peer_) peer_->Stop();
+        if (peer_)
+        {
+            std::scoped_lock lock(peerLifecycleMutex_);
+            peer_->Stop();
+        }
         if (settingsWindow_)
         {
             auto projected = settingsWindow_.as<::winrt::DisplaySwitcher::Native::SettingsWindow>();

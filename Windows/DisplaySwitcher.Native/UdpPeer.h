@@ -23,7 +23,8 @@ namespace DisplaySwitcher::Native
         void Stop();
         bool IsRunning() const;
         int LocalPort() const;
-        void SendRaw(std::string const& data, std::wstring const& host, int port, bool trace = true);
+        void SendRaw(std::string const& data, std::wstring const& host, int port, bool trace = true,
+            std::function<bool()> const& stillValid = {});
         static bool SourceMatches(DatagramSource const& source, std::wstring const& configuredHost, int configuredPort);
         static double TimestampNow();
 

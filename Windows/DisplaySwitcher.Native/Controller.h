@@ -41,6 +41,8 @@ namespace DisplaySwitcher::Native
         void StopPeerHealthCheck();
         void HandleDatagram(UdpPeer::Datagram const& datagram);
         bool HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source);
+        void CheckNetworkAccess(AppConfig const& workingConfig,
+            std::function<void(bool, std::wstring const&)> completed);
         void BeginProfileDetection(AppConfig const& workingConfig, std::wstring const& profileId,
             std::function<void(ProfileDetectionResult const&)> completed);
         void AdvanceProfileDetection(uint64_t generation);
@@ -49,6 +51,8 @@ namespace DisplaySwitcher::Native
         void SendV2(V2Action const& action);
         void SendV2Probe(CollaborationProfile const& profile);
         void ManualSwitch(std::wstring const& profileId);
+        bool EnsurePeerListening(int port);
+        bool IsPeerListening(int port) const;
         void WriteTrayDdc(std::wstring const& displayId, DdcVcpCode code, int value);
         void ProcessTrayDdcWrites();
         void RefreshTrayDdcControls();
@@ -79,17 +83,18 @@ namespace DisplaySwitcher::Native
             CollaborationProfile profile;
             std::function<void(ProfileDetectionResult const&)> completed;
             uint64_t generation{};
-            bool startedPeer{};
         };
         std::optional<PendingProfileDetection> profileDetection_;
         V2ReplayCache profileDetectionReplayCache_;
         std::atomic<bool> profileDetectionActive_{};
-        uint64_t profileDetectionGeneration_{};
+        std::atomic<uint64_t> profileDetectionGeneration_{};
+        std::atomic<bool> networkAccessPrepared_{};
         winrt::Microsoft::UI::Xaml::Window settingsWindow_{ nullptr };
         std::mutex stateMutex_;
         std::wstring peerConnectionStatus_{ L"协同未启用" };
         bool peerConnected_{};
         std::atomic<bool> disposed_{};
+        mutable std::mutex peerLifecycleMutex_;
         RuntimeSafetyGate sideEffectGate_;
         std::atomic<uint64_t> sideEffectGeneration_{ 1 };
         std::atomic<bool> usbLearningActive_{};
