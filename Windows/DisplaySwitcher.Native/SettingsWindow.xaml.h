@@ -4,6 +4,7 @@
 #include "AboutInfo.h"
 #include "AppConfig.h"
 #include "DdcControl.h"
+#include "DiagnosticReport.h"
 #include "ProfileDetection.h"
 #include "SystemActions.h"
 #include "UsbWatcher.h"
@@ -29,6 +30,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::function<void()> cancelProfileDetection,
             std::function<void()> beginUsbLearning,
             std::function<void()> endUsbLearning,
+            std::function<::DisplaySwitcher::Native::DiagnosticSnapshot()> diagnosticSnapshot,
+            std::shared_ptr<::DisplaySwitcher::Native::DisplayOperationTracker> displayDiagnostics,
             std::function<void()> closed);
         void SetConnectionStatus(std::wstring const& status, bool connected);
         void ReloadConfiguration(::DisplaySwitcher::Native::AppConfig const& config);
@@ -74,6 +77,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void CompleteDdcOperation(::DisplaySwitcher::Native::AppConfig const& config,
             ::DisplaySwitcher::Native::DdcControlBatchResult const& result,
             ::DisplaySwitcher::Native::DdcCancellationToken const& cancellation, bool write);
+        void RefreshDiagnosticPreview();
+        void CopyDiagnosticPreview();
         bool Save(bool hideAfterSave = false);
         bool SaveImmediately();
         void ShowValidationError(std::wstring const& message);
@@ -94,6 +99,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<void()> cancelProfileDetection_;
         std::function<void()> beginUsbLearning_;
         std::function<void()> endUsbLearning_;
+        std::function<::DisplaySwitcher::Native::DiagnosticSnapshot()> diagnosticSnapshot_;
+        std::shared_ptr<::DisplaySwitcher::Native::DisplayOperationTracker> displayDiagnostics_;
         std::function<void()> closed_;
         ::DisplaySwitcher::Native::DdcCancellationSource ddcCancellation_;
         ::DisplaySwitcher::Native::UsbLearningSession usbLearning_;
@@ -165,6 +172,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBox diagnosticPreview_{ nullptr };
+        ::DisplaySwitcher::Native::DiagnosticPreviewModel diagnosticPreviewModel_;
         bool initialized_{};
         bool loading_{};
         bool windowClosed_{};

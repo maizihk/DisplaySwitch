@@ -3,6 +3,8 @@
 #include "../DisplaySwitcher.Native/AboutInfo.h"
 #include "../DisplaySwitcher.Native/DdcBackends.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
+#include "../DisplaySwitcher.Native/DiagnosticReport.h"
+#include "../DisplaySwitcher.Native/Diagnostics.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
 #include "../DisplaySwitcher.Native/ProfileDetection.h"
 #include "../DisplaySwitcher.Native/SystemActions.h"
@@ -1498,6 +1500,101 @@ namespace
             L"DS-012: 取消、超时或配置切换后迟到后台结果不得覆盖当前检测");
     }
 
+    void TestDiagnosticSafetyAndDisplayLifecycle()
+    {
+        DiagnosticSnapshot snapshot;
+        snapshot.about = { L"DisplaySwitch", L"2.1.0 (19)", L"Windows x64", L"UDP 协议 v2",
+            L"https://example.invalid/project", L"https://example.invalid/license",
+            L"https://example.invalid/notices", L"测试构建", true };
+        snapshot.schemaVersion = CurrentAppConfigSchemaVersion;
+        snapshot.safeMode = true;
+        snapshot.profiles = {
+            { 1, true, true, true, DiagnosticHeartbeatState::Recent },
+            { 2, false, false, false, DiagnosticHeartbeatState::Never }
+        };
+        snapshot.usb = { true, true, 3, true };
+        snapshot.backend = { DdcAvailability::Available, true, true, true };
+        snapshot.displays = {
+            { 1, DisplayBindingStatus::Resolved, true, false, true, DiagnosticOperationKind::Write, DiagnosticOperationState::Success },
+            { 2, DisplayBindingStatus::Ambiguous, false, false, false, DiagnosticOperationKind::None, DiagnosticOperationState::Ambiguous }
+        };
+        auto injected = SanitizeDiagnosticEvent(
+            "udp.send success=1 host=10.23.45.67 password=TOP-SECRET endpoint=11111111-2222-3333-4444-555555555555 "
+            "path=C:\\Users\\Private\\settings.json monitor=DISPLAY\\SECRET usb=USB\\VID_1234&PID_5678 name=Office-Monitor");
+        snapshot.sessions = { injected };
+
+        int networkCalls{}, usbCalls{}, wakeCalls{}, enumerateCalls{}, readCalls{}, writeCalls{}, inputCalls{}, snapshots{};
+        DiagnosticPreviewModel model;
+        auto provider = [&]
+        {
+            ++snapshots;
+            return snapshot;
+        };
+        auto first = model.Refresh(provider);
+        auto second = model.Refresh(provider);
+        auto copied = model.CopyPayload();
+        Check(first == second && copied == model.VisiblePreview() && snapshots == 2,
+            L"W-203：刷新预览稳定，复制内容必须与当前可见预览完全一致");
+        Check(networkCalls == 0 && usbCalls == 0 && wakeCalls == 0 && enumerateCalls == 0 &&
+            readCalls == 0 && writeCalls == 0 && inputCalls == 0,
+            L"W-203：生成、刷新和复制诊断必须保持全部网络与硬件调用为零");
+        for (auto const& secret : { L"10.23.45.67", L"TOP-SECRET", L"11111111-2222-3333-4444-555555555555",
+            L"C:\\Users\\Private", L"DISPLAY\\SECRET", L"USB\\VID_1234", L"Office-Monitor" })
+            Check(second.find(secret) == std::wstring::npos, L"W-005：诊断预览不得包含注入的本机秘密或设备标识");
+        Check(second.find(L"P1") != std::wstring::npos && second.find(L"D1") != std::wstring::npos &&
+            second.find(L"S1 / O1") != std::wstring::npos && second.find(L"已阻断副作用") != std::wstring::npos &&
+            second.find(L"最后合法心跳=最近合法") != std::wstring::npos,
+            L"W-203：严格脱敏后仍须保留匿名编号和必要的安全状态");
+        Check(injected.find("10.23.45.67") == std::string::npos && injected.find("TOP-SECRET") == std::string::npos &&
+            injected.find("redacted=1") != std::string::npos,
+            L"W-005：日志入口必须用字段白名单移除未知敏感内容");
+        auto secretEventName = SanitizeDiagnosticEvent("10.23.45.67 success=1");
+        Check(secretEventName == "diagnostic.redacted redacted=1",
+            L"W-005：日志事件名也必须使用白名单，不能把地址伪装成事件名");
+
+        auto displays = ConfigWithDisplays(3).displays;
+        for (auto& display : displays) display.topologyGeneration = 7;
+        DisplayOperationTracker tracker;
+        DiagnosticAliasRegistry aliases;
+        auto firstAlias = aliases.Display(displays[0].id);
+        auto secondAlias = aliases.Display(displays[1].id);
+        Check(firstAlias == 1 && secondAlias == 2 && aliases.Display(displays[0].id) == firstAlias,
+            L"W-203：匿名编号必须在当前进程会话内稳定且不依赖后续刷新顺序");
+        tracker.Reconcile(displays);
+        for (auto const& display : displays)
+            tracker.Record(display.id, display.nativeMonitorId, display.topologyGeneration,
+                DiagnosticOperationKind::Write, DiagnosticOperationState::Success);
+        tracker.Reconcile(displays);
+        auto allSucceeded = tracker.Snapshot(displays);
+        Check(allSucceeded.size() == 3 && std::all_of(allSucceeded.begin(), allSucceeded.end(), [](auto const& item)
+            { return item.lastState == DiagnosticOperationState::Success; }),
+            L"W-203：D1、D2、D3 依次成功及相同物理绑定重新枚举后必须同时保留最后状态");
+
+        auto reordered = displays;
+        std::reverse(reordered.begin(), reordered.end());
+        tracker.Reconcile(reordered);
+        auto reorderedState = tracker.Snapshot(reordered);
+        Check(std::all_of(reorderedState.begin(), reorderedState.end(), [](auto const& item)
+            { return item.lastState == DiagnosticOperationState::Success; }),
+            L"W-203：同型号显示器或枚举重排不得按顺序串换最后状态");
+
+        auto changed = displays;
+        changed[1].topologyGeneration = 8;
+        changed[1].nativeMonitorId = L"replacement-binding";
+        tracker.Reconcile(changed);
+        auto changedState = tracker.Snapshot(changed);
+        Check(changedState[0].lastState == DiagnosticOperationState::Success &&
+            changedState[1].lastState == DiagnosticOperationState::Idle &&
+            changedState[2].lastState == DiagnosticOperationState::Success,
+            L"W-203：真实绑定或 topology generation 变化只废弃对应显示器旧状态");
+
+        changed[0].bindingStatus = DisplayBindingStatus::Ambiguous;
+        tracker.Reconcile(changed);
+        auto ambiguous = tracker.Snapshot(changed);
+        Check(ambiguous[0].lastState == DiagnosticOperationState::Ambiguous,
+            L"W-203：物理匹配歧义必须显示安全拒绝，不能继承另一台显示器状态");
+    }
+
     void TestUdpPeerAsymmetricBootstrapLoopback()
     {
         auto senderEndpoint = GenerateIdentifier();
@@ -1618,6 +1715,7 @@ int wmain()
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();
         TestProfileDetectionThreadingAndKeyCache();
+        TestDiagnosticSafetyAndDisplayLifecycle();
         TestUdpPeerAsymmetricBootstrapLoopback();
         if (!failures) std::wcout << L"DS-004 passed C-001 through C-015 local-model scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
@@ -1628,6 +1726,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-009 asymmetric bootstrap and loopback UDP scenarios passed\n";
         if (!failures) std::wcout << L"DS-012 nonblocking detection, cancellation and key-cache scenarios passed\n";
         if (!failures) std::wcout << L"DS-013 logical display binding and topology-generation scenarios passed\n";
+        if (!failures) std::wcout << L"W-005/W-203 diagnostic redaction, zero-side-effect and display-state scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
         failures += RunUsbSwitchVectorTests();
     }
@@ -1645,6 +1744,6 @@ int wmain()
     }
     std::error_code ignored; std::filesystem::remove_all(root, ignored);
     if (failures) { std::wcerr << failures << L" test(s) failed\n"; return 1; }
-    std::wcout << L"Windows automatic tests passed\n";
+    std::wcout << L"Windows automatic tests passed: " << checks << L" checks\n";
     return 0;
 }

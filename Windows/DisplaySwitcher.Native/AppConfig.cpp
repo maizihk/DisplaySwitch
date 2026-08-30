@@ -11,7 +11,7 @@ using namespace Windows::Data::Json;
 
 namespace
 {
-    constexpr int CurrentConfigVersion = 5;
+    constexpr int CurrentConfigVersion = DisplaySwitcher::Native::CurrentAppConfigSchemaVersion;
 
     std::wstring Trim(std::wstring value)
     {

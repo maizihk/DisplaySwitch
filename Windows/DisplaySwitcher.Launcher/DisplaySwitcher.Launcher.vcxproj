@@ -34,7 +34,8 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level4</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalOptions>%(AdditionalOptions) /utf-8</AdditionalOptions>
+      <AdditionalOptions Condition="'$(Configuration)'=='Release'">%(AdditionalOptions) /utf-8 /experimental:deterministic /pathmap:&quot;$(MSBuildProjectDirectory)&quot;=. /pathmap:&quot;$(USERPROFILE)&quot;=.</AdditionalOptions>
+      <AdditionalOptions Condition="'$(Configuration)'!='Release'">%(AdditionalOptions) /utf-8</AdditionalOptions>
       <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
     </ClCompile>
     <Link>
