@@ -561,15 +561,200 @@ final class DDCBackendTests: XCTestCase {
         )
     }
 
+    func testHDMIDiagnosticFallsBackFromOffsetZeroAndRequiresTwoStrictOffset51Replies() {
+        var addresses: [UInt8] = []
+        let valid = DDCReading(current: 42, maximum: 100)
+
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0,
+            alternateDataAddress: 0x51,
+            attemptsPerStrategy: 5
+        ) { address, attempt in
+            addresses.append(address)
+            return readAttempt(
+                address: address,
+                attempt: attempt,
+                reply: address == 0 ? badChecksumReply(current: 42, maximum: 100)
+                    : strictReply(current: 42, maximum: 100),
+                validation: address == 0 ? .rejected(.badChecksum) : .valid(valid)
+            )
+        }
+
+        XCTAssertEqual(addresses, [0, 0, 0, 0, 0, 0x51, 0x51])
+        XCTAssertEqual(
+            result.outcome,
+            .success(valid, dataAddress: 0x51, attempts: 7)
+        )
+        XCTAssertEqual(result.attempts.count, 7)
+        XCTAssertTrue(result.attempts.allSatisfy { $0.reply.count == 11 })
+    }
+
+    func testHDMIDiagnosticRequestWriteFailureNeverProbesOffset51() {
+        var addresses: [UInt8] = []
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0,
+            alternateDataAddress: 0x51,
+            attemptsPerStrategy: 5
+        ) { address, attempt in
+            addresses.append(address)
+            return readAttempt(
+                address: address,
+                attempt: attempt,
+                reply: [UInt8](repeating: 0, count: 11),
+                validation: .rejected(.requestWriteFailed),
+                readIOReturn: nil
+            )
+        }
+
+        XCTAssertEqual(addresses, Array(repeating: 0, count: 5))
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .requestWriteFailed,
+                dataAddress: 0,
+                attempts: 5,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
+    }
+
+    func testConfirmedHDMIOffset51StillRequiresTwoStrictReplies() {
+        var calls = 0
+        let valid = DDCReading(current: 42, maximum: 100)
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0x51,
+            alternateDataAddress: nil,
+            attemptsPerStrategy: 5
+        ) { address, attempt in
+            calls += 1
+            return readAttempt(
+                address: address,
+                attempt: attempt,
+                reply: strictReply(current: 42, maximum: 100),
+                validation: .valid(valid)
+            )
+        }
+
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(result.outcome, .success(valid, dataAddress: 0x51, attempts: 2))
+    }
+
+    func testHDMIDiagnosticStrictlyRejectsShiftedBadChecksumNullAndInconsistentReplies() {
+        var shifted = strictReply(current: 42, maximum: 100)
+        shifted[0] = 0
+        shifted[10] = shifted.dropLast().reduce(UInt8(0x50), ^)
+        let badChecksum = badChecksumReply(current: 42, maximum: 100)
+        let nullReply: [UInt8] = [0x6E, 0x80, 0xBE, 0, 0, 0, 0, 0, 0, 0, 0]
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: shifted, command: .luminance),
+            .failure(.wrongSource)
+        )
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: badChecksum, command: .luminance),
+            .failure(.badChecksum)
+        )
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: nullReply, command: .luminance),
+            .failure(.nullReply)
+        )
+
+        for (reply, issue) in [
+            (shifted, NativeDDCReplyIssue.wrongSource),
+            (badChecksum, .badChecksum),
+            (nullReply, .nullReply)
+        ] {
+            let rejection = NativeDDCHDMIReadDiagnosticRunner.run(
+                primaryDataAddress: 0,
+                alternateDataAddress: 0x51,
+                attemptsPerStrategy: 1
+            ) { address, attempt in
+                readAttempt(
+                    address: address, attempt: attempt, reply: reply,
+                    validation: .rejected(issue)
+                )
+            }
+            guard case .failure = rejection.outcome else {
+                return XCTFail("Strictly rejected reply must never become a reading")
+            }
+        }
+
+        var alternateValues = [
+            DDCReading(current: 41, maximum: 100),
+            DDCReading(current: 42, maximum: 100)
+        ]
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0,
+            alternateDataAddress: 0x51,
+            attemptsPerStrategy: 2
+        ) { address, attempt in
+            if address == 0 {
+                return readAttempt(
+                    address: address, attempt: attempt, reply: nullReply,
+                    validation: .rejected(.wrongSource)
+                )
+            }
+            let reading = alternateValues.removeFirst()
+            return readAttempt(
+                address: address, attempt: attempt,
+                reply: strictReply(current: reading.current, maximum: reading.maximum),
+                validation: .valid(reading)
+            )
+        }
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .inconsistentStrictReplies,
+                dataAddress: 0x51,
+                attempts: 4,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
+    }
+
+    func testHDMIDiagnosticAttemptProjectionContainsOnlyPublicTransactionFields() {
+        let attempt = readAttempt(
+            address: 0x51,
+            attempt: 2,
+            reply: strictReply(current: 42, maximum: 100),
+            validation: .valid(DDCReading(current: 42, maximum: 100))
+        )
+        let description = attempt.diagnosticDescription
+
+        XCTAssertTrue(description.contains("offset 0x51 attempt 2 delay-us 50000"))
+        XCTAssertTrue(description.contains("write-ior=[0x00000000,0x00000000]"))
+        XCTAssertTrue(description.contains("read-ior=0x00000000"))
+        XCTAssertTrue(description.contains("reply=[6E 88 02 00 10 00 00 64 00 2A"))
+        XCTAssertTrue(description.contains("strict-valid"))
+        XCTAssertFalse(description.contains("UUID"))
+        XCTAssertFalse(description.contains("IORegistry"))
+        XCTAssertFalse(description.contains("selector"))
+    }
+
     func testReadOffsetPreferenceIsPerDisplayAndInvalidatedWithService() {
         var cache = NativeDDCReadPreferenceCache()
-        cache.remember(address: 0, selector: "selector-a")
+        let current = NativeDDCReadPreferenceKey(
+            selector: "selector-a", serviceIdentity: 101,
+            transportPath: .builtinHDMIConverter
+        )
+        let replacementService = NativeDDCReadPreferenceKey(
+            selector: "selector-a", serviceIdentity: 202,
+            transportPath: .builtinHDMIConverter
+        )
+        let replacementTransport = NativeDDCReadPreferenceKey(
+            selector: "selector-a", serviceIdentity: 101,
+            transportPath: .typeCDPAlt
+        )
+        cache.remember(address: 0x51, for: current)
 
-        XCTAssertEqual(cache.preferredAddress(selector: "SELECTOR-A", default: 0x51), 0)
-        XCTAssertEqual(cache.preferredAddress(selector: "selector-b", default: 0x51), 0x51)
+        XCTAssertEqual(cache.preferredAddress(for: current, default: 0), 0x51)
+        XCTAssertEqual(cache.preferredAddress(for: replacementService, default: 0), 0)
+        XCTAssertEqual(cache.preferredAddress(for: replacementTransport, default: 0), 0)
+
+        cache.retainOnly([replacementService])
+        XCTAssertEqual(cache.preferredAddress(for: current, default: 0), 0)
 
         cache.invalidate(selector: "selector-a")
-        XCTAssertEqual(cache.preferredAddress(selector: "selector-a", default: 0x51), 0x51)
+        XCTAssertEqual(cache.preferredAddress(for: replacementService, default: 0), 0)
     }
 
     func testNativeDiagnosticsExposeOnlySanitizedTransportState() {
@@ -594,6 +779,7 @@ final class DDCBackendTests: XCTestCase {
 
     func testEveryRejectedReplyReasonHasSanitizedDiagnosticProjection() {
         let issues: [(NativeDDCReplyIssue, String)] = [
+            (.nullReply, "null-reply"),
             (.badChecksum, "bad-checksum"),
             (.wrongSource, "wrong-source"),
             (.wrongLength, "wrong-length"),
@@ -805,6 +991,30 @@ final class DDCBackendTests: XCTestCase {
         ]
         reply[10] = reply.dropLast().reduce(UInt8(0x50), ^) ^ 0xFF
         return reply
+    }
+
+    private func strictReply(current: Int, maximum: Int) -> [UInt8] {
+        var reply = badChecksumReply(current: current, maximum: maximum)
+        reply[10] = reply.dropLast().reduce(UInt8(0x50), ^)
+        return reply
+    }
+
+    private func readAttempt(
+        address: UInt8,
+        attempt: Int,
+        reply: [UInt8],
+        validation: NativeDDCStrictReadValidation,
+        readIOReturn: Int32? = 0
+    ) -> NativeDDCReadAttemptDiagnostic {
+        NativeDDCReadAttemptDiagnostic(
+            dataAddress: address,
+            strategyAttempt: attempt,
+            delayMicroseconds: 50_000,
+            writeIOReturns: [0, 0],
+            readIOReturn: readIOReturn,
+            reply: reply,
+            validation: validation
+        )
     }
 }
 

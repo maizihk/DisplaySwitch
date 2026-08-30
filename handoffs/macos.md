@@ -3,11 +3,40 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-011 / macOS 原生 DDC 单后端清理
-- 基线：`e6655b524cd8c012fcfd1cab2eb465494c96788e`
-- 分支：`codex/macos-ds-011-native-ddc-only`
+- 功能：DS-014 / macOS 内建 HDMI 原生 DDC 读取根因诊断
+- 基线：`0e79c238e563ce594a1012710eec170b98ae9761`
+- 分支：`codex/macos-ds-014-hdmi-ddc-read-diagnostics`
 - 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
-- PR / CI：按任务边界不创建 PR、不触发云端 CI
+- PR / CI：诊断包阶段不创建 PR、不触发额外云端 CI
+
+## DS-014 原因与决策
+
+- 已确认内建 HDMI 的原生 Set VCP 正常，而 Get VCP 在固定 offset 0 下失败；同一显示器经 Type-C/DP 时可以读取，因此本轮只验证 read offset，不改匹配、chip、延迟、写周期或回复长度。
+- 诊断仅适用于当前已唯一匹配、`chip = 0x37`、`builtin-hdmi-converter` 的亮度 `0x10` 读取；明确 MCDP/0xB7、其他 VCP 和 Type-C/DP 保持既有行为。
+- offset 0 严格失败后才诊断 offset 0x51。offset 0x51 必须连续两次产生严格有效且 current/max 一致的回复，才能标记为本次诊断成功；不接受移位、坏 checksum、null reply 或弱校验估算。
+
+## DS-014 实现
+
+- 新增纯 `NativeDDCHDMIReadDiagnosticRunner`，对 offset 0 与 0x51 执行相同的有界次数和 50 ms 延迟；request-write-failed 不进入回退。
+- 每个 attempt 记录 offset、固定延迟、两次写调用的 IOReturn、ReadI2C IOReturn、完整 11 字节回复和严格校验结果；输出只包含 DDC/CI 公共事务字段。
+- 诊断成功显示 `read-diagnostic-succeeded`，不把实验策略描述成正式默认；失败保持精确拒绝原因。
+- 读取偏好缓存从 selector 单键升级为 selector + 当前 IORegistry service identity + transport，重新发现、service 替换、取消和失效会清理旧偏好。
+
+## DS-014 自动验证
+
+- DDC 专项 XCTest：42/42。
+- 完整 XCTest：127/127；Type-C/DP、输入源切换、USB、协同、缓存与安全闸门模拟回归通过。
+- 自动测试覆盖 HDMI offset 0 → 0x51 有界回退、request-write-failed 不回退、移位/坏 checksum/null reply/语义不一致拒绝、连续两次严格成功，以及 service/transport 绑定缓存失效。
+- 未执行真实 DDC、输入源切换、USB、网络或唤醒。
+
+## DS-014 尚需用户实机验证
+
+1. 保持目标显示器直连 Mac mini 内建 HDMI。
+2. 只启用亮度功能并点击该显示器一次“读取 DDC 参数”。
+3. 回传界面中的 `HDMI offset diagnostic` 文本，确认 offset 0 与 0x51 的 IOReturn、11 字节回复和严格校验结果。
+4. 不测试输入源、对比度、音量、USB 或协同；是否采用正式策略等待本轮证据。
+
+## 上一任务：DS-011 原生 DDC 单后端清理
 
 ## DS-011 原因与决策
 

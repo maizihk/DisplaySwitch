@@ -3,8 +3,9 @@
 // https://github.com/waydabber/AppleSiliconDDC
 // Copyright (c) 2021 Istvan T., used under the MIT License.
 // MonitorControl uses a different read offset (0 instead of 0x51). DS-009 keeps
-// both strategies explicit and bounded, and only falls back after a strict
-// Type-C/DP read failure.
+// the Type-C/DP strategies explicit and bounded. DS-014 adds a diagnostic-only
+// HDMI 0 -> 0x51 comparison for chip 0x37 luminance reads; offset 0x51 is only
+// accepted after two consecutive, strictly valid and semantically equal replies.
 
 import CoreGraphics
 import Foundation
@@ -14,6 +15,7 @@ struct NativeDDCDisplay {
     let name: String
     let systemUUID: String
     let serviceLocation: Int
+    let serviceIdentity: UInt64
     let service: IOAVService?
     let chipAddress: UInt32
     let transportPath: NativeDDCTransportPath
@@ -24,6 +26,13 @@ private struct NativeRegistryTransport {
     let metadata: NativeTransportCandidate
     let service: IOAVService
     let chipAddress: UInt32
+    let serviceIdentity: UInt64
+}
+
+private struct NativeDDCCommunicationTrace {
+    let writeIOReturns: [Int32]
+    let readIOReturn: Int32?
+    let response: [UInt8]
 }
 
 final class NativeDDCBackend: DDCBackend {
@@ -70,6 +79,14 @@ final class NativeDDCBackend: DDCBackend {
         let displays = Self.discoverDisplays(knownDisplays: knownDisplays)
         cacheLock.lock()
         displaysByUUID = Dictionary(uniqueKeysWithValues: displays.map { ($0.systemUUID.uppercased(), $0) })
+        readPreferenceCache.retainOnly(Set(displays.compactMap { display in
+            guard display.service != nil, display.serviceIdentity != 0 else { return nil }
+            return NativeDDCReadPreferenceKey(
+                selector: display.systemUUID,
+                serviceIdentity: display.serviceIdentity,
+                transportPath: display.transportPath
+            )
+        }))
         cacheLock.unlock()
         for display in displays {
             recordDiagnostic(
@@ -120,31 +137,33 @@ final class NativeDDCBackend: DDCBackend {
                                  category: .serviceUnmatched)
                 throw DDCBackendError.displayUnavailable(stableID: stableID)
             }
+            var hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
             let readOutcome = hardwareArbiter.withControlOperation(displayKey: selector) {
                 Self.read(
                     service: service,
                     chipAddress: display.chipAddress,
                     command: command,
                     transportPath: display.transportPath,
-                    primaryDataAddress: preferredReadDataAddress(
-                        selector: selector, path: display.transportPath
-                    ),
-                    parameters: transportParameters
+                    primaryDataAddress: preferredReadDataAddress(display: display),
+                    parameters: transportParameters,
+                    diagnosticRecorder: { hdmiReadDiagnostics = $0 }
                 )
             }
             switch readOutcome {
             case .success(let reading, let dataAddress, let attempts):
                 try token.throwIfCancelled()
                 resolved = reading
-                if display.transportPath == .typeCDPAlt,
-                   dataAddress != transportParameters.typeCDPReadDataAddress {
-                    rememberReadDataAddress(dataAddress, selector: selector)
+                if dataAddress != transportParameters.readDataAddress(for: display.transportPath) {
+                    rememberReadDataAddress(dataAddress, display: display)
                 }
                 recordDiagnostic(selector: selector, path: display.transportPath, serviceMatched: true,
-                                 category: reading.estimated ? .readChecksumEstimated : .readSucceeded,
+                                 category: reading.estimated ? .readChecksumEstimated
+                                    : (!hdmiReadDiagnostics.isEmpty && dataAddress == 0x51
+                                        ? .readDiagnosticSucceeded : .readSucceeded),
                                  chipAddress: display.chipAddress,
                                  readDataAddress: dataAddress,
-                                 readAttemptCount: attempts)
+                                 readAttemptCount: attempts,
+                                 hdmiReadDiagnostics: hdmiReadDiagnostics)
             case .failure(
                 let issue, let dataAddress, let attempts, _,
                 let compatibilityRejection, let compatibilityEvidence
@@ -155,7 +174,8 @@ final class NativeDDCBackend: DDCBackend {
                     chipAddress: display.chipAddress, readDataAddress: dataAddress,
                     readAttemptCount: attempts,
                     checksumCompatibilityRejection: compatibilityRejection,
-                    checksumCompatibilityEvidence: compatibilityEvidence
+                    checksumCompatibilityEvidence: compatibilityEvidence,
+                    hdmiReadDiagnostics: hdmiReadDiagnostics
                 )
                 throw DDCBackendError.invalidReply(command: command, issue: issue)
             }
@@ -229,7 +249,8 @@ final class NativeDDCBackend: DDCBackend {
                                   readDataAddress: UInt8? = nil,
                                   readAttemptCount: Int? = nil,
                                   checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
-                                  checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil) {
+                                  checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil,
+                                  hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []) {
         let key = selector.uppercased()
         diagnosticsLock.lock()
         let rebuildCount = diagnosticsBySelector[key]?.rebuildCount ?? 0
@@ -240,7 +261,8 @@ final class NativeDDCBackend: DDCBackend {
             readDataAddress: readDataAddress,
             readAttemptCount: readAttemptCount,
             checksumCompatibilityRejection: checksumCompatibilityRejection,
-            checksumCompatibilityEvidence: checksumCompatibilityEvidence
+            checksumCompatibilityEvidence: checksumCompatibilityEvidence,
+            hdmiReadDiagnostics: hdmiReadDiagnostics
         )
         diagnosticsLock.unlock()
     }
@@ -259,7 +281,8 @@ final class NativeDDCBackend: DDCBackend {
             readDataAddress: current.readDataAddress,
             readAttemptCount: current.readAttemptCount,
             checksumCompatibilityRejection: current.checksumCompatibilityRejection,
-            checksumCompatibilityEvidence: current.checksumCompatibilityEvidence
+            checksumCompatibilityEvidence: current.checksumCompatibilityEvidence,
+            hdmiReadDiagnostics: current.hdmiReadDiagnostics
         )
         diagnosticsLock.unlock()
     }
@@ -290,19 +313,27 @@ final class NativeDDCBackend: DDCBackend {
         cacheLock.unlock()
     }
 
-    private func preferredReadDataAddress(selector: String, path: NativeDDCTransportPath) -> UInt8 {
+    private func preferredReadDataAddress(display: NativeDDCDisplay) -> UInt8 {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         return readPreferenceCache.preferredAddress(
-            selector: selector,
-            default: transportParameters.readDataAddress(for: path)
+            for: readPreferenceKey(for: display),
+            default: transportParameters.readDataAddress(for: display.transportPath)
         )
     }
 
-    private func rememberReadDataAddress(_ address: UInt8, selector: String) {
+    private func rememberReadDataAddress(_ address: UInt8, display: NativeDDCDisplay) {
         cacheLock.lock()
-        readPreferenceCache.remember(address: address, selector: selector)
+        readPreferenceCache.remember(address: address, for: readPreferenceKey(for: display))
         cacheLock.unlock()
+    }
+
+    private func readPreferenceKey(for display: NativeDDCDisplay) -> NativeDDCReadPreferenceKey {
+        NativeDDCReadPreferenceKey(
+            selector: display.systemUUID,
+            serviceIdentity: display.serviceIdentity,
+            transportPath: display.transportPath
+        )
     }
 
     private func display(for selector: String) -> NativeDDCDisplay? {
@@ -393,6 +424,7 @@ final class NativeDDCBackend: DDCBackend {
                 name: name,
                 systemUUID: identity.systemUUID,
                 serviceLocation: transport?.metadata.serviceLocation ?? 0,
+                serviceIdentity: transport?.serviceIdentity ?? 0,
                 service: transport?.service,
                 chipAddress: transport?.chipAddress ?? 0x37,
                 transportPath: transport?.metadata.transportPath ?? .unmatched,
@@ -515,6 +547,8 @@ final class NativeDDCBackend: DDCBackend {
             let addressing = transportAddressing(
                 for: entry, adjacentEndpointToken: currentFramebuffer.endpointToken
             )
+            var registryEntryID: UInt64 = 0
+            _ = IORegistryEntryGetRegistryEntryID(entry, &registryEntryID)
             transports.append(NativeRegistryTransport(
                 metadata: NativeTransportCandidate(
                     serviceLocation: currentFramebuffer.serviceLocation,
@@ -525,7 +559,8 @@ final class NativeDDCBackend: DDCBackend {
                     transportPath: addressing.transportPath
                 ),
                 service: unmanagedService.takeRetainedValue() as IOAVService,
-                chipAddress: addressing.chipAddress
+                chipAddress: addressing.chipAddress,
+                serviceIdentity: registryEntryID
             ))
         }
         return transports
@@ -590,8 +625,56 @@ final class NativeDDCBackend: DDCBackend {
         command: DDCCommand,
         transportPath: NativeDDCTransportPath,
         primaryDataAddress: UInt8,
-        parameters: NativeDDCTransportParameters
+        parameters: NativeDDCTransportParameters,
+        diagnosticRecorder: (([NativeDDCReadAttemptDiagnostic]) -> Void)? = nil
     ) -> NativeDDCReadStrategyOutcome {
+        if command == .luminance,
+           transportPath == .builtinHDMIConverter,
+           chipAddress == 0x37 {
+            let alternateDataAddress: UInt8? = primaryDataAddress == 0 ? 0x51 : nil
+            let diagnosticResult = NativeDDCHDMIReadDiagnosticRunner.run(
+                primaryDataAddress: primaryDataAddress,
+                alternateDataAddress: alternateDataAddress,
+                attemptsPerStrategy: parameters.readAttempts(for: transportPath)
+            ) { readDataAddress, strategyAttempt in
+                var request: [UInt8] = [command.rawValue]
+                var response = [UInt8](repeating: 0, count: 11)
+                var communicationTrace: NativeDDCCommunicationTrace?
+                let exchange = communicate(
+                    service: service,
+                    chipAddress: chipAddress,
+                    request: &request,
+                    response: &response,
+                    attempts: 1,
+                    readDataAddress: readDataAddress,
+                    readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                    parameters: parameters,
+                    trace: { communicationTrace = $0 }
+                )
+                let validation: NativeDDCStrictReadValidation
+                switch exchange {
+                case .failure(let issue):
+                    validation = .rejected(issue)
+                case .success:
+                    switch NativeDDCReplyValidator.reading(from: response, command: command) {
+                    case .success(let reading): validation = .valid(reading)
+                    case .failure(let issue): validation = .rejected(issue)
+                    }
+                }
+                return NativeDDCReadAttemptDiagnostic(
+                    dataAddress: readDataAddress,
+                    strategyAttempt: strategyAttempt,
+                    delayMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                    writeIOReturns: communicationTrace?.writeIOReturns ?? [],
+                    readIOReturn: communicationTrace?.readIOReturn,
+                    reply: communicationTrace?.response ?? response,
+                    validation: validation
+                )
+            }
+            diagnosticRecorder?(diagnosticResult.attempts)
+            return diagnosticResult.outcome
+        }
+        diagnosticRecorder?([])
         let alternateDataAddress: UInt8? = transportPath == .typeCDPAlt
             && primaryDataAddress == parameters.typeCDPReadDataAddress ? 0 : nil
         let strictOutcome = NativeDDCReadStrategyRunner.run(
@@ -731,7 +814,8 @@ final class NativeDDCBackend: DDCBackend {
         readSleepMicroseconds: UInt32?,
         parameters: NativeDDCTransportParameters,
         diagnosticContext: InputSourceDiagnosticContext? = nil,
-        diagnostics: InputSourceDiagnosticRecording? = nil
+        diagnostics: InputSourceDiagnosticRecording? = nil,
+        trace: ((NativeDDCCommunicationTrace) -> Void)? = nil
     ) -> Result<Void, NativeDDCReplyIssue> {
         let dataAddress = parameters.writeDataAddress
         var packet = [UInt8(0x80 | (request.count + 1)), UInt8(request.count)] + request + [0]
@@ -742,6 +826,7 @@ final class NativeDDCBackend: DDCBackend {
 
         for attemptIndex in 0..<attempts {
             var cycleIndex = 0
+            var writeIOReturns: [Int32] = []
             let writeSucceeded = NativeDDCWriteCyclePolicy.perform(
                 cycles: parameters.writeCycles
             ) {
@@ -756,6 +841,7 @@ final class NativeDDCBackend: DDCBackend {
                     &packet,
                     UInt32(packet.count)
                 )
+                writeIOReturns.append(result)
                 let endedNanos = DispatchTime.now().uptimeNanoseconds
                 let endedAt = Date()
                 if let diagnosticContext, let diagnostics, request.first == DDCCommand.input.rawValue {
@@ -787,13 +873,32 @@ final class NativeDDCBackend: DDCBackend {
                     &response,
                     UInt32(response.count)
                 )
+                trace?(NativeDDCCommunicationTrace(
+                    writeIOReturns: writeIOReturns,
+                    readIOReturn: readResult,
+                    response: response
+                ))
                 if readResult == kIOReturnTimeout || readResult == kIOReturnNotResponding {
                     return .failure(.responseTimeout)
                 }
                 if readResult != KERN_SUCCESS { return .failure(.responseReadFailed) }
             }
 
-            if writeSucceeded { return .success(()) }
+            if writeSucceeded {
+                if response.isEmpty {
+                    trace?(NativeDDCCommunicationTrace(
+                        writeIOReturns: writeIOReturns,
+                        readIOReturn: nil,
+                        response: response
+                    ))
+                }
+                return .success(())
+            }
+            trace?(NativeDDCCommunicationTrace(
+                writeIOReturns: writeIOReturns,
+                readIOReturn: nil,
+                response: response
+            ))
             usleep(parameters.retrySleepMicroseconds)
         }
         return .failure(.requestWriteFailed)
