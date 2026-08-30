@@ -19,9 +19,8 @@ namespace DisplaySwitcher::Native
 
     DdcEnumerationResult EnumerateDdcMonitors()
     {
-        AppConfig config; config.displayControlBackend = L"native_ddc";
-        DdcBackendSet backends(config); DdcCancellationSource cancellation;
-        auto backend = backends.Lookup(L"native_ddc");
+        DdcBackendSet backends; DdcCancellationSource cancellation;
+        auto backend = backends.Lookup(NativeDdcBackendKey);
         return backend ? backend->Enumerate(cancellation.Begin()) :
             DdcEnumerationResult{ false, DdcErrorKind::BackendUnavailable, L"Windows 原生 DDC 后端不可用", {}, false };
     }
@@ -31,16 +30,15 @@ namespace DisplaySwitcher::Native
         auto started = GetTickCount64();
         if (!config.HasDisplayConfiguration())
             return { false, L"显示器配置不完整，未执行切换" };
-        DdcBackendSet backends(config); DdcCancellationSource cancellation; auto token = cancellation.Begin();
+        DdcBackendSet backends; DdcCancellationSource cancellation; auto token = cancellation.Begin();
         auto result = ExecuteDisplayActions(config.displays, [&](DisplayConfig const& display)
         {
-            auto backendKey = DdcControlService::BackendKey(config, display);
-            auto backend = backends.Lookup(backendKey);
+            auto backend = backends.Lookup(NativeDdcBackendKey);
             if (!backend) return ActionResult{ false, L"Windows 原生 DDC 后端不可用" };
             auto status = backend->Status();
             if (status.availability != DdcAvailability::Available)
                 return ActionResult{ false, status.message.empty() ? L"Windows 原生 DDC 后端暂时不可用" : status.message };
-            auto monitorId = display.BackendMonitorId(backendKey);
+            auto const& monitorId = display.nativeMonitorId;
             // The backend acquires a fresh handle set on each call. Retry exactly
             // once after an explicit native failure, without a fixed delay.
             auto write = WriteNativeWithOneRefresh(*backend, monitorId,

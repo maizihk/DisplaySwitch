@@ -4,6 +4,8 @@
 
 namespace DisplaySwitcher::Native
 {
+    inline constexpr wchar_t NativeDdcBackendKey[] = L"native_ddc";
+
     enum class DdcVcpCode : uint16_t
     {
         Brightness = 0x10,
@@ -198,11 +200,10 @@ namespace DisplaySwitcher::Native
 
         static int EffectiveMaximum(int current, int reportedMaximum) noexcept;
         static bool FeatureEnabled(DisplayConfig const& display, DdcVcpCode code) noexcept;
-        static std::wstring BackendKey(AppConfig const& config, DisplayConfig const& display);
 
     private:
         bool Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const;
-        IDdcBackend* Backend(AppConfig const& config, DisplayConfig const& display) const;
+        IDdcBackend* Backend() const;
 
         DdcBackendLookup lookup_;
         std::function<bool()> sideEffectsAllowed_;

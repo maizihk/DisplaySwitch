@@ -35,7 +35,6 @@ namespace
     {
         auto display = CreateDisplayConfig(name);
         display.nativeMonitorId = monitor;
-        display.controlMonitorPath = L"path-" + monitor;
         display.macInput = peerInput;
         display.localInput.reset();
         display.readEnabled = true;
@@ -60,7 +59,6 @@ namespace
         config.localEndpointId = GenerateIdentifier();
         config.localDeviceName = L"本机";
         config.listenPort = 49731;
-        config.displayControlBackend = L"native_ddc";
         for (size_t index = 0; index < count; ++index)
             config.displays.push_back(Display(L"显示器 " + std::to_wstring(index + 1), L"monitor-" + std::to_wstring(index), 16 + static_cast<int>(index)));
         auto profile = Profile(L"工作电脑");
@@ -71,7 +69,7 @@ namespace
 
     struct FakeDdcBackend final : IDdcBackend
     {
-        std::wstring key{ L"native_ddc" };
+        std::wstring key{ NativeDdcBackendKey };
         DdcBackendStatus status{ DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
         std::map<std::pair<std::wstring, DdcVcpCode>, DdcValueResult> values;
         std::set<std::pair<std::wstring, DdcVcpCode>> writeFailures;
@@ -119,17 +117,14 @@ namespace
         display.brightnessEnabled = true;
         display.contrastEnabled = true;
         display.volumeEnabled = true;
-        display.backend = L"native_ddc";
     }
 
-    DdcControlService FakeService(FakeDdcBackend& native, FakeDdcBackend* fallback = nullptr,
-        std::function<bool()> allowed = {})
+    DdcControlService FakeService(FakeDdcBackend& native, std::function<bool()> allowed = {})
     {
         auto nativeBackend = &native;
-        return DdcControlService([nativeBackend, fallback](std::wstring const& key) -> IDdcBackend*
+        return DdcControlService([nativeBackend](std::wstring const& key) -> IDdcBackend*
         {
             if (_wcsicmp(key.c_str(), nativeBackend->key.c_str()) == 0) return nativeBackend;
-            if (fallback && _wcsicmp(key.c_str(), fallback->key.c_str()) == 0) return fallback;
             return nullptr;
         }, std::move(allowed));
     }
@@ -189,6 +184,7 @@ namespace
         Check(freshJson.GetNamedNumber(L"schemaVersion") == 5
             && !freshUsb.GetNamedBoolean(L"Enabled")
             && !freshUsb.GetNamedBoolean(L"CollaborationWakeEnabled")
+            && !freshJson.HasKey(L"ControlChannel") && !freshJson.HasKey(L"ControlMyMonitorPath")
             && !freshJson.HasKey(L"CoordinationEnabled") && !freshJson.HasKey(L"PeerHost")
             && !freshJson.HasKey(L"Port") && !freshJson.HasKey(L"PairingCode"),
             L"DS-008: v5 默认配置必须安全关闭且不得保留旧顶层 USB 字段");
@@ -449,8 +445,19 @@ namespace
         auto config = ConfigWithDisplays(1); config.SaveToPath(path);
         auto object = ReadObject(path);
         object.Insert(L"FutureField", JsonValue::CreateStringValue(L"ignored"));
+        object.Insert(L"ControlChannel", JsonValue::CreateStringValue(L"control_my_monitor"));
+        object.Insert(L"ControlMyMonitorPath", JsonValue::CreateStringValue(L"legacy-tool.exe"));
+        auto displayObject = object.GetNamedArray(L"Displays").GetObjectAt(0);
+        displayObject.Insert(L"ControlMonitorPath", JsonValue::CreateStringValue(L"legacy-monitor-path"));
         WriteObject(path, object);
-        Check(!AppConfig::LoadFromPath(path).displayConfigurationSafeMode, L"U-006: v5 未知字段应忽略");
+        auto withoutLegacyBackend = AppConfig::LoadFromPath(path);
+        Check(!withoutLegacyBackend.displayConfigurationSafeMode,
+            L"DS-011: v5 旧 DDC 后端字段应作为未知字段安全忽略");
+        withoutLegacyBackend.SaveToPath(path);
+        auto normalized = ReadObject(path);
+        Check(!normalized.HasKey(L"ControlChannel") && !normalized.HasKey(L"ControlMyMonitorPath")
+            && !normalized.GetNamedArray(L"Displays").GetObjectAt(0).HasKey(L"ControlMonitorPath"),
+            L"DS-011: 成功保存后不得再次写入旧后端选择、路径或显示器兼容字段");
 
         object = ReadObject(path); object.Insert(L"schemaVersion", JsonValue::CreateNumberValue(99)); WriteObject(path, object);
         auto futureBytes = ReadBytes(path);
@@ -801,27 +808,28 @@ namespace
             L"后端不可用时应明确报告暂时失败并仅回退到稳定 ID/VCP 缓存");
         native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
 
-        FakeDdcBackend fallback; fallback.key = L"control_my_monitor";
-        config.displayControlBackend = L"auto";
-        config.controlMyMonitorPath = L"simulated-cmm.exe";
-        SetThreeValues(fallback, L"path-monitor-1", 21, 22, 23);
-        SetThreeValues(fallback, L"path-monitor-0", 11, 12, 13);
         native.status = { DdcAvailability::Unsupported, L"模拟原生通道不可用" };
-        native.reads.clear(); fallback.reads.clear();
-        auto mixed = FakeService(native, &fallback).Read(config, {}, cancellation.Begin());
-        Check(!mixed.success && native.reads.empty() && fallback.reads.empty()
-            && std::all_of(mixed.items.begin(), mixed.items.end(), [](auto const& item) { return !item.success; }),
-            L"W-009: 原生通道不可用时必须明确失败，绝不调用 ControlMyMonitor");
+        native.reads.clear();
+        auto unavailableNative = FakeService(native).Read(config, {}, cancellation.Begin());
+        Check(!unavailableNative.success && native.reads.empty()
+            && std::all_of(unavailableNative.items.begin(), unavailableNative.items.end(), [](auto const& item)
+                { return !item.success && item.availability == DdcAvailability::Unsupported; }),
+            L"DS-011: 原生通道不可用时必须明确失败且不得尝试第二后端");
+
+        DdcBackendSet productionBackends;
+        Check(productionBackends.Lookup(NativeDdcBackendKey) != nullptr
+            && productionBackends.Lookup(L"control_my_monitor") == nullptr
+            && productionBackends.Lookup(L"auto") == nullptr,
+            L"DS-011: 正式后端集合必须只暴露 Windows 原生 Dxva2，不得保留选择或回退入口");
 
         auto reordered = config;
         std::swap(reordered.displays[0], reordered.displays[1]);
         native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
-        native.reads.clear(); fallback.reads.clear();
-        FakeService(native, &fallback).Read(reordered, { firstId }, cancellation.Begin());
-        Check(!native.reads.empty() && fallback.reads.empty() && native.reads.front().first == L"monitor-0",
+        native.reads.clear();
+        FakeService(native).Read(reordered, { firstId }, cancellation.Begin());
+        Check(!native.reads.empty() && native.reads.front().first == L"monitor-0",
             L"显示器枚举重排后仍须按稳定逻辑 ID 关联后端监视器 ID");
 
-        config.displayControlBackend = L"native_ddc";
         native.status = { DdcAvailability::Available, L"模拟硬件 DDC/CI 可用" };
         native.writes.clear(); native.writeFailures = { { L"monitor-1", DdcVcpCode::Brightness } };
         auto oldSecond = config.displays[1].brightnessValue;
@@ -871,7 +879,7 @@ namespace
 
         bool allowed = false;
         native.reads.clear(); native.writes.clear();
-        auto gated = FakeService(native, nullptr, [&] { return allowed; });
+        auto gated = FakeService(native, [&] { return allowed; });
         gated.Read(config, {}, cancellation.Begin()); gated.Write(config, firstId, DdcVcpCode::Brightness, 12, true, cancellation.Begin());
         Check(native.reads.empty() && native.writes.empty(), L"运行时安全门关闭时所有 DDC 调用计数必须为零");
     }

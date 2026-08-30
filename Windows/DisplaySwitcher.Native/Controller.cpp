@@ -93,9 +93,8 @@ namespace DisplaySwitcher::Native
                     config.displays = std::move(reconciled.displays);
                     auto mappingsChanged = RemoveOrphanedDisplayMappings(
                         config.displays, config.collaborationProfiles, config.usbSwitch);
-                    if (reconciled.changed || mappingsChanged || config.displayControlBackend != L"native_ddc")
+                    if (reconciled.changed || mappingsChanged)
                     {
-                        config.displayControlBackend = L"native_ddc";
                         config.Save();
                         std::scoped_lock lock(configMutex_);
                         config_ = config;
@@ -631,7 +630,7 @@ namespace DisplaySwitcher::Native
         {
             if (!AllowsSideEffects(request->generation) || profileDetectionActive_) continue;
             auto config = Config();
-            DdcBackendSet backends(config); DdcCancellationSource cancellation; auto token = cancellation.Begin();
+            DdcBackendSet backends; DdcCancellationSource cancellation; auto token = cancellation.Begin();
             std::weak_ptr<Controller> weak = shared_from_this();
             DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
                 [weak, generation = request->generation]
@@ -802,7 +801,7 @@ namespace DisplaySwitcher::Native
                 if (auto self = weak.lock())
                 {
                     if (self->profileDetectionActive_) { DdcControlBatchResult result; result.canceled = true; return result; }
-                    DdcBackendSet backends(config);
+                    DdcBackendSet backends;
                     DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
                         [weak] { if (auto value = weak.lock()) return value->sideEffectGate_.AllowsSideEffects(); return false; });
                     return service.Read(config, displayIds, cancellation);
@@ -815,7 +814,7 @@ namespace DisplaySwitcher::Native
                 if (auto self = weak.lock())
                 {
                     if (self->profileDetectionActive_) { DdcControlBatchResult result; result.canceled = true; return result; }
-                    DdcBackendSet backends(config);
+                    DdcBackendSet backends;
                     DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
                         [weak] { if (auto current = weak.lock()) return current->sideEffectGate_.AllowsSideEffects(); return false; });
                     return service.Write(config, displayId, code, value, linkAllDisplays, cancellation);

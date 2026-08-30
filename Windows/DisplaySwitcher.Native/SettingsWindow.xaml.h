@@ -61,7 +61,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void DetectProfile(std::wstring const& id);
         void CompleteProfileDetection(std::wstring const& id,
             ::DisplaySwitcher::Native::ProfileDetectionResult const& result);
-        void UpdateDisplayBackendVisibility();
         ::DisplaySwitcher::Native::AppConfig WorkingDdcConfig();
         void ReadDdc(std::wstring const& displayId);
         void WriteDdc(std::wstring const& displayId, ::DisplaySwitcher::Native::DdcVcpCode code, int value);
@@ -151,9 +150,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::wstring selectedUsbName_;
         int selectedUsbVendorId_{ -1 };
         int selectedUsbProductId_{ -1 };
-        Microsoft::UI::Xaml::Controls::ComboBox displayBackend_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox controlMyMonitor_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
