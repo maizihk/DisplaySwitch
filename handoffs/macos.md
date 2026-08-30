@@ -3,11 +3,37 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-018 / IOAVService 生命周期稳定化
-- 堆叠基线：`codex/macos-ds-017-production-read-transactions@180ba01`
+- 功能：DS-019 / 内建 HDMI Get VCP 请求校验和
+- 堆叠基线：`codex/macos-ds-017-production-read-transactions@85691cf`
 - 分支：`codex/macos-ds-017-production-read-transactions`
 - 实现提交：本任务提交，最终 SHA 以分支 HEAD 为准
 - PR：实机验证前不创建，避免把未确认硬件行为带入合并候选
+
+## DS-019 原因与决策
+
+- DS-018 实机中小米内建 HDMI 连续 20 次读取全部失败，同一构建的 Dell C2DP 保持严格成功；service 生命周期假设被否定，因此本任务完整撤回 service 复用实现。
+- 旧公开 AppleSiliconDDC 对单字节 Get VCP 请求使用 `chipWriteAddress` 作为校验和种子，却漏掉实际写入目标地址 `0x51`。当前代码由此发送 `82 01 10 FD`；包含 `0x51` 的标准帧应为 `82 01 10 AC`。
+- 既有 HDMI 诊断曾把回复解析为 `payloadLength=0x82 / opcode=0x01 / result=0x10 / command=0xFD`，字段与本机错误请求逐字对应。这说明显示器没有接受请求，ReadI2C 随后读回了请求或无关数据，不是权限、offset、service 生命周期或严格回复校验问题。
+- 静态审计 BetterDisplay 当前生产二进制确认普通 Get VCP 构造校验和时同时异或 chip 写地址和 `0x51`。动态 interpose 受运行时保护限制，未取得动态调用记录，因此不把动态验证写成已完成。
+
+## DS-019 实现与自动验证
+
+- 新增纯 `NativeDDCRequestPacketBuilder`，由调用点显式决定校验和是否包含数据地址，不再用 `request.count == 1` 隐式推断。
+- 内建 HDMI Get VCP 使用包含 `0x51` 的标准校验和；已实机稳定的 Type-C/DP Get VCP 保留旧 Apple Silicon 兼容帧。Set VCP 一直包含 `0x51`，本轮输出字节不变。
+- 删除 DS-018 的 service 复用模型、发现逻辑和测试，恢复每次显式硬件操作根据当前拓扑新建 service。
+- 帧测试固定 HDMI Get VCP=`82 01 10 AC`、Type-C/DP Get VCP=`82 01 10 FD`、Set VCP 亮度 100=`84 03 10 00 64 CC`。
+- DDC 专项 XCTest 56/56；完整 XCTest 141/141。完整测试仍报告一条既有输入源并发 QoS 警告，测试通过，本任务未修改该调度逻辑。
+- Release `build-app.sh`、adhoc 签名、`codesign --verify --deep --strict` 与 ZIP 完整性验证通过。
+
+## DS-019 测试包与实机边界
+
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-019-hdmi-getvcp-checksum-macOS-test.zip`
+- SHA-256：`f3f3ef2c9f64b2f6480d692a45228da52190ad5750ace79062836ed581b149c4`
+- 大小：656466 bytes。
+- 完全退出 BetterDisplay 后，先对小米内建 HDMI 连续读取 20 次，记录成功次数与 attempt；再对 Dell C2DP 连续读取 3 次，必须保持第 1 次严格成功。
+- 本轮无需输入源切换；Set VCP 字节和写路径未变。小米仍 0 次成功或 Dell 出现回归时不得合并。
+
+## 上一任务：DS-018 IOAVService 生命周期稳定化
 
 ## DS-018 原因与决策
 
@@ -30,6 +56,11 @@
 - SHA-256：`31732e52969bd414af6bd522b22648290925304b18f983bdcb9421591895ade2`
 - 必须完全退出 BetterDisplay，首次启动测试包后保持应用不退出：先对小米内建 HDMI 连续读取 20 次，记录成功次数与 attempt；再对 Dell C2DP 连续读取 3 次，必须保持严格成功。
 - 本轮无需输入源切换；写路径完全未改。任何 C2DP 回归或 HDMI 仍无可靠性改善都不得合并。
+
+## DS-018 实机结果
+
+- 用户完全退出 BetterDisplay 后，对小米内建 HDMI 连续读取 20 次，严格成功 0 次；同一构建中 Dell C2DP 保持严格成功。
+- 结论：持久复用 IOAVService 没有任何改善，service 生命周期不是当前 HDMI 读取失败的根因；实现已由 DS-019 撤回，不得合并 DS-018。
 
 ## 上一任务：DS-017 内建 HDMI 生产读取事务
 

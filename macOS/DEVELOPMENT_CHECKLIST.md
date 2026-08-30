@@ -283,7 +283,7 @@
 - [x] 用户实机确认小米内建 HDMI 偶尔可在第 4/8 次完整事务得到严格有效亮度回复；同一构建中 Dell C2DP 仍可第 1 次严格读取成功。
 - [x] 后续连续 20 次 HDMI 读取全部失败，证明完整事务重试只提高撞到有效帧的机会，并非可靠性根因；本方案不得单独合并。
 
-### DS-018 IOAVService 生命周期稳定化（自动验证完成，实机待验）
+### DS-018 IOAVService 生命周期稳定化（实机否定，代码已撤回）
 
 - [x] 对照 BetterDisplay 当前生产二进制：能力查询是独立的 MCCS `0xF3/0xE3` 分块事务，不是亮度 Get VCP 的必要前置；应用使用全局串行 DDC 队列并长期持有同一 `IOAVService`。
 - [x] 根因审计发现 DS-015 虽在每次操作前正确重验当前拓扑，却也在每次重验时调用 `IOAVServiceCreateWithService` 并替换对象；这是当前与 BetterDisplay 最关键的生命周期差异，也符合“退出重开偶尔恢复、同一连接随机撞到有效帧”的实机现象，是否为根因由本轮实机验证决定。
@@ -291,7 +291,18 @@
 - [x] 热插拔、接口/transport/chip 变化、service identity 变化、离线或既有恢复路径主动失效时不复用，按当前拓扑创建新 service；不按品牌、型号、端口顺序或历史接口猜测。
 - [x] 未改 DDC 帧、offset、重试次数、等待时间、严格校验、Set VCP、输入源切换、USB、网络或共享协议。
 - [x] DDC 专项 XCTest 55/55，完整 XCTest 140/140；Release `build-app.sh`、严格 codesign 与 ZIP 完整性验证通过。
-- [ ] 退出 BetterDisplay 后，用 DS-018 构建对小米内建 HDMI 连续读取 20 次，并对已成功的 Dell C2DP 连续读取 3 次；记录成功次数与 attempt，实机通过前不得合并。
+- [x] 用户实机连续读取小米内建 HDMI 20 次均失败，同一构建中 Dell C2DP 保持严格成功；service 生命周期不是该故障根因。
+- [x] DS-019 已撤回全部 service 复用代码和对应测试，恢复每次操作按当前拓扑创建 service；DS-018 不进入合并候选。
+
+### DS-019 内建 HDMI Get VCP 请求校验和（自动验证完成，实机待验）
+
+- [x] 根因审计发现旧公开 AppleSiliconDDC 对单字节 Get VCP 请求漏算写入目标地址 `0x51`：亮度请求被构造成 `82 01 10 FD`，而标准帧应为 `82 01 10 AC`。
+- [x] 既有 HDMI 诊断中被拒绝回复的 `payloadLength=0x82 / opcode=0x01 / result=0x10 / command=0xFD` 与错误请求帧完全对应，证明驱动读回了未被显示器接受的本机请求，而非有效 DDC/CI 回复。
+- [x] 静态审计 BetterDisplay 当前生产二进制，确认其普通 Get VCP 校验和同时异或 chip 写地址与 `0x51`；其读取地址和完整事务结构与前序审计一致。
+- [x] 仅内建 HDMI Get VCP 改为包含 `0x51` 的校验和；已实机稳定的 Type-C/DP 单字节读取继续使用既有兼容帧，所有 Set VCP 写入继续包含 `0x51`，输入源、USB、网络和共享协议均未改变。
+- [x] 纯帧测试固定 HDMI Get VCP=`82 01 10 AC`、Type-C/DP Get VCP=`82 01 10 FD`、Set VCP 亮度 100=`84 03 10 00 64 CC`。
+- [x] DDC 专项 XCTest 56/56、完整 XCTest 141/141；Release `build-app.sh`、严格 codesign 与 ZIP 完整性验证通过。
+- [ ] 完全退出 BetterDisplay 后，用 DS-019 构建对小米内建 HDMI 连续读取 20 次，并对已成功的 Dell C2DP 连续读取 3 次；实机通过前不得合并。
 
 ### M-203 Bonjour/mDNS 自动发现
 
@@ -326,4 +337,5 @@
 | 2026-08-30 | DS-014 内建 HDMI 原生 DDC 读取诊断 | 正式安全策略完成 | 本任务提交 | 实机确认内建 HDMI 读取不可用后停止参数探测；50 项 DDC、135 项完整 XCTest、Debug/Release、打包和严格验签通过 |
 | 2026-08-30 | M-008 / DS-015 IOAVService 拓扑绑定 | 自动验证完成，实机待验 | 039466b | 移除遍历顺序绑定并按当前 endpoint 一对一解析；54 项 DDC、139 项完整 XCTest、Release 打包和严格验签通过；PR #55 保持开放，未执行硬件动作 |
 | 2026-08-30 | DS-017 内建 HDMI 生产读取事务 | 严格成功已确认，可靠性失败 | 533c507、180ba01 | 小米 HDMI 偶尔可在第 4/8 次严格成功，但随后连续 20 次失败；证明完整事务可读但不是可靠性根因 |
-| 2026-08-30 | DS-018 IOAVService 生命周期稳定化 | 自动验证完成，实机待验 | 本任务提交 | 当前拓扑未变时不再创建/替换 IOAVService；55 项 DDC、140 项完整 XCTest、Release 打包、严格验签和 ZIP 校验通过 |
+| 2026-08-30 | DS-018 IOAVService 生命周期稳定化 | 实机否定，代码已撤回 | 85691cf、后续 DS-019 提交 | 小米 HDMI 20/20 失败而 Dell C2DP 保持成功；证明 service 复用不是根因，不进入合并候选 |
+| 2026-08-30 | DS-019 内建 HDMI Get VCP 请求校验和 | 自动验证完成，实机待验 | 本任务提交 | HDMI 读取帧补入 `0x51`，C2DP 与全部写路径保持原样；56 项 DDC、141 项完整 XCTest、Release 打包、严格验签和 ZIP 校验通过 |

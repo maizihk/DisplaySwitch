@@ -1061,55 +1061,37 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(cache.preferredAddress(for: replacementService, default: 0), 0)
     }
 
-    func testNativeServiceReuseRequiresSameCurrentPhysicalRoute() {
-        let current = NativeDDCServiceReuseIdentity(
-            selector: "selector-a", serviceIdentity: 101,
-            transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+    func testNativeGetVCPPacketsKeepTransportSpecificChecksumBehavior() {
+        XCTAssertEqual(
+            NativeDDCRequestPacketBuilder.packet(
+                request: [DDCCommand.luminance.rawValue],
+                chipAddress: 0x37,
+                dataAddress: 0x51,
+                includesDataAddressInChecksum: true
+            ),
+            [0x82, 0x01, 0x10, 0xAC]
         )
+        XCTAssertEqual(
+            NativeDDCRequestPacketBuilder.packet(
+                request: [DDCCommand.luminance.rawValue],
+                chipAddress: 0x37,
+                dataAddress: 0x51,
+                includesDataAddressInChecksum: false
+            ),
+            [0x82, 0x01, 0x10, 0xFD]
+        )
+    }
 
-        XCTAssertTrue(NativeDDCServiceReusePolicy.shouldReuse(
-            existing: current,
-            current: NativeDDCServiceReuseIdentity(
-                selector: "SELECTOR-A", serviceIdentity: 101,
-                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
-            )
-        ))
-
-        let replacements = [
-            NativeDDCServiceReuseIdentity(
-                selector: "selector-b", serviceIdentity: 101,
-                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+    func testNativeSetVCPPacketStillIncludesDataAddressInChecksum() {
+        XCTAssertEqual(
+            NativeDDCRequestPacketBuilder.packet(
+                request: [DDCCommand.luminance.rawValue, 0x00, 0x64],
+                chipAddress: 0x37,
+                dataAddress: 0x51,
+                includesDataAddressInChecksum: true
             ),
-            NativeDDCServiceReuseIdentity(
-                selector: "selector-a", serviceIdentity: 202,
-                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
-            ),
-            NativeDDCServiceReuseIdentity(
-                selector: "selector-a", serviceIdentity: 101,
-                transportPath: .typeCDPAlt, chipAddress: 0x37, isOnline: true
-            ),
-            NativeDDCServiceReuseIdentity(
-                selector: "selector-a", serviceIdentity: 101,
-                transportPath: .builtinHDMIConverter, chipAddress: 0xB7, isOnline: true
-            ),
-            NativeDDCServiceReuseIdentity(
-                selector: "selector-a", serviceIdentity: 101,
-                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: false
-            )
-        ]
-        for replacement in replacements {
-            XCTAssertFalse(NativeDDCServiceReusePolicy.shouldReuse(
-                existing: current, current: replacement
-            ))
-        }
-
-        XCTAssertFalse(NativeDDCServiceReusePolicy.shouldReuse(
-            existing: NativeDDCServiceReuseIdentity(
-                selector: "selector-a", serviceIdentity: 0,
-                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
-            ),
-            current: current
-        ))
+            [0x84, 0x03, 0x10, 0x00, 0x64, 0xCC]
+        )
     }
 
     func testNativeDiagnosticsExposeOnlySanitizedTransportState() {

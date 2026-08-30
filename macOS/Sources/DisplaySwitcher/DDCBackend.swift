@@ -742,36 +742,6 @@ struct NativeDDCReadPreferenceKey: Hashable {
     }
 }
 
-struct NativeDDCServiceReuseIdentity: Equatable {
-    let selector: String
-    let serviceIdentity: UInt64
-    let transportPath: NativeDDCTransportPath
-    let chipAddress: UInt32
-    let isOnline: Bool
-
-    init(selector: String, serviceIdentity: UInt64,
-         transportPath: NativeDDCTransportPath, chipAddress: UInt32, isOnline: Bool) {
-        self.selector = selector.uppercased()
-        self.serviceIdentity = serviceIdentity
-        self.transportPath = transportPath
-        self.chipAddress = chipAddress
-        self.isOnline = isOnline
-    }
-
-    var permitsReuse: Bool {
-        isOnline && serviceIdentity != 0
-    }
-}
-
-enum NativeDDCServiceReusePolicy {
-    static func shouldReuse(
-        existing: NativeDDCServiceReuseIdentity,
-        current: NativeDDCServiceReuseIdentity
-    ) -> Bool {
-        existing.permitsReuse && current.permitsReuse && existing == current
-    }
-}
-
 struct NativeDDCReadPreferenceCache {
     private var values: [NativeDDCReadPreferenceKey: UInt8] = [:]
 
@@ -841,6 +811,24 @@ struct NativeDDCTransportParameters: Equatable {
         typeCDPReadAttempts: 5,
         builtinHDMIReadAttempts: 8
     )
+}
+
+enum NativeDDCRequestPacketBuilder {
+    static func packet(
+        request: [UInt8],
+        chipAddress: UInt32,
+        dataAddress: UInt8,
+        includesDataAddressInChecksum: Bool
+    ) -> [UInt8] {
+        var packet = [UInt8(0x80 | (request.count + 1)), UInt8(request.count)]
+            + request + [0]
+        var checksumSeed = UInt8(truncatingIfNeeded: chipAddress << 1)
+        if includesDataAddressInChecksum {
+            checksumSeed ^= dataAddress
+        }
+        packet[packet.count - 1] = packet.dropLast().reduce(checksumSeed, ^)
+        return packet
+    }
 }
 
 enum NativeDDCWriteCyclePolicy {
