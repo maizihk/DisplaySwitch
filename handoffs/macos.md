@@ -3,6 +3,37 @@
 ## 当前任务
 
 - 日期：2026-08-30
+- 功能：DS-020 / 扩展坞 HDMI Get VCP 校验策略
+- 基线：`origin/main@edeacd0`
+- 分支：`codex/macos-ds-020-dock-hdmi-read`
+- 实现提交：本提交，最终 SHA 以分支 HEAD 和交付报告为准
+- PR / CI：先交付实机测试包；用户验收前不创建 PR、不合并
+
+## DS-020 原因与决策
+
+- 第二台显示器经 USB-C 扩展坞 HDMI 接入，但当前 IORegistry 拓扑只把上游链路分类为 `typec-dp-alt`。其失败回复包含旧 Get VCP 请求的 `FD` 校验字节，与 DS-019 已确认的“显示器未接受请求、驱动读回请求或无关帧”证据一致。
+- 不能按显示器名称、第二台、扩展坞品牌或枚举顺序写死，也不能把全部 Type-C/DP 改成标准校验，因为第一台直连 C2DP 已连续严格成功。
+- 因此先用当前显示器当前 service 的首选策略；严格失败且请求写入未被拒绝时，再从最后失败 offset 以另一校验方式重试。成功立即停止，并把 offset + 校验策略绑定当前 selector/service/transport 缓存。
+
+## DS-020 实现与验证边界
+
+- 新增纯校验策略 runner：默认保留 Type-C/DP 的 legacy 帧，失败后尝试 DS-019 已验证的 standard 帧；缓存 standard 后下次从该策略起步，失败仍可回到 legacy。
+- service identity 或 transport 变化时既有读取偏好自动失效；同型号显示器仍保持一对一 selector/service 匹配。
+- 设置页诊断增加 `checksum legacy` 或 `checksum standard`，便于实机确认实际胜出策略。
+- 写入、输入源 VCP `0x60`、USB、协同网络和共享协议未修改；自动测试不访问真实显示器。
+- DDC 专项 XCTest 60/60、完整 XCTest 145/145 通过；Release `build-app.sh`、App 与 ZIP 解压后严格 codesign、ZIP 完整性验证通过。
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-020-dock-hdmi-read-macOS-test.zip`；SHA-256 `f85f4637f6a873a5217b460fcb2f3fbd40b0c0351e3466e877f88469e82fb5e3`；大小 660625 bytes。
+
+## DS-020 用户实机验收
+
+1. 完全退出 BetterDisplay，运行 DS-020 测试包。
+2. 第一台直连 C2DP 读取 3 次，应继续显示 `checksum legacy` 且严格成功。
+3. 第二台 USB-C 扩展坞 HDMI 读取 10 次；若 standard 是根因，首次可能先经历 legacy 回退，成功后应显示 `checksum standard`，后续读取从缓存策略起步。
+4. 本轮不需要调节亮度或切换输入源；写路径没有变化。
+
+## 上一任务：DS-019 内建 HDMI Get VCP 请求校验和
+
+- 日期：2026-08-30
 - 功能：DS-019 / 内建 HDMI Get VCP 请求校验和
 - 堆叠基线：`codex/macos-ds-017-production-read-transactions@85691cf`
 - 分支：`codex/macos-ds-017-production-read-transactions`

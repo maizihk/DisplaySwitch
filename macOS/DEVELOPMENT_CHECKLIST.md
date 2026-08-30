@@ -304,6 +304,16 @@
 - [x] DDC 专项 XCTest 56/56、完整 XCTest 141/141；Release `build-app.sh`、严格 codesign 与 ZIP 完整性验证通过。
 - [x] 用户完全退出 BetterDisplay 后实机确认：小米内建 HDMI 连续 20/20 次严格成功，Dell C2DP 连续 3/3 次严格成功；首张截图两者均为 `attempts 1`，无读取回归。
 
+### DS-020 扩展坞 HDMI Get VCP 校验策略（测试版待实机验收）
+
+- [x] 第二台显示器经 USB-C 扩展坞 HDMI 暴露为 `typec-dp-alt`，但失败回复中的 `payloadLength=0x82 / opcode=0x01 / result=0x10 / command=0xFD` 与旧 Get VCP 请求帧一致；链路分类不能单独决定请求校验方式。
+- [x] Type-C/DP 首选当前已验证策略；严格失败后才以失败地址为起点尝试另一种校验和，任一严格成功立即停止，不按品牌、型号、显示名称或枚举序号分支。
+- [x] 成功的 offset 与校验策略按 selector + 当前 service identity + transport 缓存；重新连接、换接口、service 变化或取消时失效，避免把扩展坞策略套到另一条链路。
+- [x] 诊断新增脱敏的 `checksum legacy/standard`，用于区分实际成功策略；不展示 UUID、IORegistry 路径或请求原始字节。
+- [x] 写入、输入源切换、USB、网络、共享协议和内建 HDMI 的标准校验路径均未改变。
+- [x] DDC 专项 XCTest 60/60、完整 XCTest 145/145；Release `build-app.sh`、App 与 ZIP 解压后严格 codesign、ZIP 完整性验证通过。
+- [ ] 第二台扩展坞 HDMI 实机读取仍待用户验证；本任务未执行真实硬件动作，用户验收前不创建 PR、不合并。
+
 ### M-203 Bonjour/mDNS 自动发现
 
 - [ ] 在协议 v2 安全模型确定后实施。
@@ -339,3 +349,4 @@
 | 2026-08-30 | DS-017 内建 HDMI 生产读取事务 | 严格成功已确认，可靠性失败 | 533c507、180ba01 | 小米 HDMI 偶尔可在第 4/8 次严格成功，但随后连续 20 次失败；证明完整事务可读但不是可靠性根因 |
 | 2026-08-30 | DS-018 IOAVService 生命周期稳定化 | 实机否定，代码已撤回 | 85691cf、后续 DS-019 提交 | 小米 HDMI 20/20 失败而 Dell C2DP 保持成功；证明 service 复用不是根因，不进入合并候选 |
 | 2026-08-30 | DS-019 内建 HDMI Get VCP 请求校验和 | 完成 | 8ed8830、验收记录提交 | HDMI 20/20、C2DP 3/3 严格成功；56 项 DDC、141 项完整 XCTest、Release 打包、严格验签和 ZIP 校验通过 |
+| 2026-08-30 | DS-020 扩展坞 HDMI Get VCP 校验策略 | 测试版待实机验收 | 本任务提交 | 保留已成功的旧策略，严格失败后动态尝试标准校验；60 项 DDC、145 项完整 XCTest、Release 打包、严格验签和 ZIP 校验通过 |

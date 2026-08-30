@@ -1048,17 +1048,124 @@ final class DDCBackendTests: XCTestCase {
             selector: "selector-a", serviceIdentity: 101,
             transportPath: .typeCDPAlt
         )
-        cache.remember(address: 0x51, for: current)
+        let preference = NativeDDCReadPreference(
+            dataAddress: 0x51,
+            checksumMode: .standard
+        )
+        let fallback = NativeDDCReadPreference(
+            dataAddress: 0,
+            checksumMode: .legacy
+        )
+        cache.remember(preference, for: current)
 
-        XCTAssertEqual(cache.preferredAddress(for: current, default: 0), 0x51)
-        XCTAssertEqual(cache.preferredAddress(for: replacementService, default: 0), 0)
-        XCTAssertEqual(cache.preferredAddress(for: replacementTransport, default: 0), 0)
+        XCTAssertEqual(cache.preferred(for: current, default: fallback), preference)
+        XCTAssertEqual(cache.preferred(for: replacementService, default: fallback), fallback)
+        XCTAssertEqual(cache.preferred(for: replacementTransport, default: fallback), fallback)
 
         cache.retainOnly([replacementService])
-        XCTAssertEqual(cache.preferredAddress(for: current, default: 0), 0)
+        XCTAssertEqual(cache.preferred(for: current, default: fallback), fallback)
 
         cache.invalidate(selector: "selector-a")
-        XCTAssertEqual(cache.preferredAddress(for: replacementService, default: 0), 0)
+        XCTAssertEqual(cache.preferred(for: replacementService, default: fallback), fallback)
+    }
+
+    func testTypeCChecksumStrategyFallsBackToStandardAndRemembersWinningAddress() {
+        var requests: [(NativeDDCRequestChecksumMode, UInt8)] = []
+        let expected = DDCReading(current: 47, maximum: 100)
+
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .legacy,
+            primaryDataAddress: 0x51,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2
+        ) { mode, address, _ in
+            requests.append((mode, address))
+            if mode == .standard && address == 0 {
+                return .success(expected)
+            }
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(requests.map(\.0), [
+            .legacy, .legacy, .legacy, .legacy, .standard
+        ])
+        XCTAssertEqual(requests.map(\.1), [0x51, 0x51, 0, 0, 0])
+        XCTAssertEqual(result.checksumMode, .standard)
+        XCTAssertEqual(
+            result.outcome,
+            .success(expected, dataAddress: 0, attempts: 5)
+        )
+    }
+
+    func testPreferredStandardChecksumStopsBeforeLegacyFallback() {
+        var modes: [NativeDDCRequestChecksumMode] = []
+        let expected = DDCReading(current: 64, maximum: 100)
+
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .standard,
+            primaryDataAddress: 0,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2
+        ) { mode, address, _ in
+            modes.append(mode)
+            return address == 0 ? .success(expected) : .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(modes, [.standard])
+        XCTAssertEqual(result.checksumMode, .standard)
+        XCTAssertEqual(result.outcome, .success(expected, dataAddress: 0, attempts: 1))
+    }
+
+    func testChecksumFallbackStopsWhenRequestWriteIsRejected() {
+        var modes: [NativeDDCRequestChecksumMode] = []
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .legacy,
+            primaryDataAddress: 0x51,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2
+        ) { mode, _, _ in
+            modes.append(mode)
+            return .failure(.requestWriteFailed)
+        }
+
+        XCTAssertEqual(modes, [.legacy, .legacy])
+        XCTAssertEqual(result.checksumMode, .legacy)
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .requestWriteFailed,
+                dataAddress: 0x51,
+                attempts: 2,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
+    }
+
+    func testChecksumFallbackIsLimitedToTypeCStrategyCallers() {
+        var requests: [(NativeDDCRequestChecksumMode, UInt8)] = []
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .standard,
+            primaryDataAddress: 0,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2,
+            allowsFallback: false
+        ) { mode, address, _ in
+            requests.append((mode, address))
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(requests.map(\.0), [.standard, .standard])
+        XCTAssertEqual(requests.map(\.1), [0, 0])
+        XCTAssertEqual(result.checksumMode, .standard)
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .badChecksum,
+                dataAddress: 0,
+                attempts: 2,
+                onlyObservedIssueWasBadChecksum: true
+            )
+        )
     }
 
     func testNativeGetVCPPacketsKeepTransportSpecificChecksumBehavior() {
@@ -1103,12 +1210,13 @@ final class DDCBackendTests: XCTestCase {
             replyIssue: .responseTimeout,
             chipAddress: 0x37,
             readDataAddress: 0,
-            readAttemptCount: 5
+            readAttemptCount: 5,
+            requestChecksumMode: .standard
         )
 
         XCTAssertEqual(
             snapshot.userFacingDescription,
-            "builtin-hdmi-converter · service matched · read-response-timeout · chip 0x37 · offset 0 · attempts 5 · rebuild 1"
+            "builtin-hdmi-converter · service matched · read-response-timeout · chip 0x37 · offset 0 · attempts 5 · checksum standard · rebuild 1"
         )
         XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
         XCTAssertFalse(snapshot.userFacingDescription.contains("/"))
