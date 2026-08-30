@@ -7,7 +7,7 @@
 - 堆叠基线：`codex/macos-ds-017-production-read-transactions@85691cf`
 - 分支：`codex/macos-ds-017-production-read-transactions`
 - 实现提交：`8ed8830`；实机验收记录为本次后续提交
-- PR：实机验收通过，创建后等待 CI 通过再合并
+- PR：[#56](https://github.com/maizihk/DisplaySwitch/pull/56)，面向 `main` 的最终净状态；等待 CI 通过后 squash 合并
 
 ## DS-019 原因与决策
 
