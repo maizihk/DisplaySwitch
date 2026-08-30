@@ -37,6 +37,13 @@
 4. 依次读取三台显示器，重新打开诊断页；D1、D2、D3 均应保留各自最后一次 `read-succeeded`，而不是只有最后读取的显示器成功。
 5. 本任务未执行真实 USB、唤醒、输入源切换或协同网络探测。
 
+## M-006 实机验收结果
+
+- 用户使用修复版依次读取三台显示器后重新打开诊断页并复制预览，D1、D2、D3 均保留各自的 `read-succeeded`。
+- D1 内建 HDMI 保留 `offset 0 · attempts 1 · checksum standard`；D2 直连 C2DP 保留 `offset 0x51 · attempts 1 · checksum legacy`；D3 扩展坞 HDMI 保留 `offset 0 · attempts 11 · checksum standard`。
+- 导出文本未出现 IP、配对码、endpoint、显示器 UUID、USB 标识或本机路径；对端与显示器继续使用 `P1`、`D1`、`D2`、`D3` 会话匿名编号。
+- 诊断状态生命周期修复复验通过，M-006 满足合并条件；通用浅色/深色、键盘和辅助功能检查仍归 DS-007 总体验收，不伪记为本轮已完成。
+
 ## M-006 修改文件
 
 - `macOS/Sources/DisplaySwitcher/InputSourceSwitching.swift`
