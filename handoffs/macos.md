@@ -24,6 +24,14 @@
 - DDC 专项 XCTest 60/60、完整 XCTest 145/145 通过；Release `build-app.sh`、App 与 ZIP 解压后严格 codesign、ZIP 完整性验证通过。
 - 测试包：`macOS/outputs/DisplaySwitcher-DS-020-dock-hdmi-read-macOS-test.zip`；SHA-256 `f85f4637f6a873a5217b460fcb2f3fbd40b0c0351e3466e877f88469e82fb5e3`；大小 660625 bytes。
 
+## DS-020 实机验收结果
+
+- 用户截图确认内建 HDMI 为 `read-succeeded · offset 0 · attempts 1 · checksum standard`。
+- 第一台直连 C2DP 为 `read-succeeded · offset 0x51 · attempts 1 · checksum legacy`，既有成功路径没有回归。
+- 第二台 USB-C 扩展坞 HDMI 虽枚举为 `typec-dp-alt`，首次读取在 legacy 严格失败后以 `offset 0 · attempts 11 · checksum standard` 成功，证明下游 HDMI 需要标准校验和。
+- 用户继续读取后确认只有第一次较慢、后续明显加快，符合成功的 `standard + offset 0` 偏好在当前 selector/service/transport 上命中缓存。
+- DS-020 满足合并条件；结论是动态链路策略差异，不是显示器型号、枚举序号或固定接口映射。
+
 ## DS-020 用户实机验收
 
 1. 完全退出 BetterDisplay，运行 DS-020 测试包。
