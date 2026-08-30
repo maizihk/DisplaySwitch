@@ -723,11 +723,76 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertTrue(description.contains("offset 0x51 attempt 2 delay-us 50000"))
         XCTAssertTrue(description.contains("write-ior=[0x00000000,0x00000000]"))
         XCTAssertTrue(description.contains("read-ior=0x00000000"))
-        XCTAssertTrue(description.contains("reply=[6E 88 02 00 10 00 00 64 00 2A"))
+        XCTAssertTrue(description.contains("reply-length=11 source=ddcci/strict-valid"))
         XCTAssertTrue(description.contains("strict-valid"))
+        XCTAssertFalse(description.contains("6E 88 02 00 10"))
         XCTAssertFalse(description.contains("UUID"))
         XCTAssertFalse(description.contains("IORegistry"))
         XCTAssertFalse(description.contains("selector"))
+    }
+
+    func testI2CBufferBridgeProvidesContiguousInputAndMutableOutputBytes() {
+        let input: [UInt8] = [0x84, 0x03, 0x60, 0x00, 0x11, 0xC9]
+        var capturedInput: [UInt8] = []
+        let inputLength = NativeDDCI2CBufferBridge.withInputBytes(input) { buffer -> Int in
+            capturedInput = Array(buffer.bindMemory(to: UInt8.self))
+            return buffer.count
+        }
+        XCTAssertEqual(inputLength, input.count)
+        XCTAssertEqual(capturedInput, input)
+
+        var output = [UInt8](repeating: 0, count: 11)
+        let outputLength = NativeDDCI2CBufferBridge.withOutputBytes(&output) { buffer -> Int in
+            let bytes = buffer.bindMemory(to: UInt8.self)
+            bytes[0] = 0x6E
+            bytes[10] = 0xA5
+            return buffer.count
+        }
+        XCTAssertEqual(outputLength, 11)
+        XCTAssertEqual(output[0], 0x6E)
+        XCTAssertEqual(output[10], 0xA5)
+    }
+
+    func testRejectedReplyMatchingEDIDWindowIsClassifiedWithoutExposingBytes() {
+        let reference = Array("SIMULATED PANEL".utf8)
+        let reply: [UInt8] = [0x00, 0xFF, 0x50, 0x41, 0x4E, 0x45, 0x4C, 0x20, 0x00, 0x00, 0x00]
+        let attempt = NativeDDCReadAttemptDiagnostic(
+            dataAddress: 0,
+            strategyAttempt: 1,
+            delayMicroseconds: 50_000,
+            writeIOReturns: [0, 0],
+            readIOReturn: 0,
+            reply: reply,
+            validation: .rejected(.badChecksum),
+            edidReferences: [reference]
+        )
+
+        XCTAssertEqual(attempt.dataSource, .edidLike)
+        XCTAssertEqual(attempt.reply, reply)
+        XCTAssertTrue(attempt.diagnosticDescription.contains("source=non-ddcci/edid-like"))
+        XCTAssertFalse(attempt.diagnosticDescription.contains("PANEL"))
+        XCTAssertFalse(attempt.diagnosticDescription.contains("50 41 4E 45 4C"))
+    }
+
+    func testReplySourceClassificationKeepsStrictAndUnmatchedDataSeparate() {
+        let reference = [UInt8]("SIMULATED PANEL".utf8)
+        let validReply = strictReply(current: 42, maximum: 100)
+        XCTAssertEqual(
+            NativeDDCReplySourceClassifier.classify(
+                reply: validReply,
+                validation: .valid(DDCReading(current: 42, maximum: 100)),
+                edidReferences: [validReply]
+            ),
+            .strictDDCCI
+        )
+        XCTAssertEqual(
+            NativeDDCReplySourceClassifier.classify(
+                reply: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
+                validation: .rejected(.badChecksum),
+                edidReferences: [reference]
+            ),
+            .unclassified
+        )
     }
 
     func testReadOffsetPreferenceIsPerDisplayAndInvalidatedWithService() {

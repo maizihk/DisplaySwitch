@@ -253,15 +253,18 @@
 - [x] 37 项 DDC、17 项配置相关测试及 122 项完整 XCTest 通过；Debug、Release、`build-app.sh` 和严格 codesign 验证通过。
 - [ ] Apple Silicon 原生枚举、显式读取、亮度/对比度/音量写入与输入源切换仍需用户实机回归；本任务未执行硬件动作。
 
-### DS-014 内建 HDMI 原生 DDC 读取诊断（自动验证完成，实机待验）
+### DS-014 内建 HDMI 原生 DDC 读取诊断（第二阶段自动验证完成，实机待验）
 
 - [x] 诊断范围只覆盖已唯一匹配、`chip = 0x37` 的内建 HDMI 显示器亮度 Get VCP；不修改显示器匹配、Set VCP、Type-C/DP、延迟、写周期或回复长度。
 - [x] offset 0 严格失败后，才以相同延迟和有界次数诊断 offset 0x51；读取请求写入失败时不尝试其他 offset，也不探测 0xB7。
 - [x] offset 0x51 只有连续两次严格校验成功、command/current/max 合法且数值一致时，才标记为本次 `read-diagnostic-succeeded`；移位、坏 checksum、DDC null reply、非法范围和语义不一致全部拒绝。
-- [x] 每次诊断记录 offset、策略内尝试次数、固定延迟、Write/Read IOReturn、完整 11 字节 DDC 回复和严格校验结果；不记录显示器 UUID、序列号或 IORegistry 路径。
+- [x] 第一阶段实机确认 offset 0 与 0x51 的系统调用均成功但严格校验全部失败，回复包含当前显示器 EDID 衍生名称片段；这证明返回数据源不是 DDC/CI，不能把 KERN_SUCCESS 当读取成功。
+- [x] `IOAVServiceWriteI2C`/`IOAVServiceReadI2C` 改为显式连续的 `withUnsafeBytes`/`withUnsafeMutableBytes` 缓冲区，并用纯测试验证长度、输入字节及输出写回；Type-C/DP 同调用路径已有严格成功样本，因此不把数组 ABI 当作已确认根因。
+- [x] 原始 11 字节回复只保留在本机内存用于严格验证和 EDID 窗口比对；用户界面只显示 `ddcci/strict-valid`、`non-ddcci/edid-like` 或未分类结果，不再输出原始帧、EDID、产品名或硬件标识。
+- [x] 审计确认 `dispextE`、`DCPAVServiceProxy` 和 `Location=External` 只能证明内建 HDMI 外接显示路由，不能证明该 service 的 ReadI2C 数据源是 DDC/CI；没有证据支持随机尝试其他 chip、offset、延迟或回复长度。
 - [x] 成功读取 offset 偏好只绑定当前 selector、IORegistry service identity 和传输类型；service/transport 变化、取消或失效时清除，不能串到另一台显示器。
-- [x] 42 项 DDC 测试和 127 项完整 XCTest 通过；全部使用纯模拟数据，不访问真实 DDC。
-- [ ] 需要用户只对内建 HDMI 直连显示器点击一次“读取 DDC 参数”，根据 offset 0 与 0x51 的严格回复诊断决定后续正式策略；本任务未执行硬件动作。
+- [x] 45 项 DDC 测试和 130 项完整 XCTest 通过；全部使用纯模拟数据，不访问真实 DDC。
+- [ ] 需要用户只对内建 HDMI 直连显示器点击一次“读取 DDC 参数”，验证显式连续缓冲区后的来源分类；若仍为 `non-ddcci/edid-like`，该原生路径仅确认写入可用，读取安全保留上次可信缓存。本任务未执行硬件动作。
 
 ### M-203 Bonjour/mDNS 自动发现
 
@@ -293,4 +296,4 @@
 | 2026-08-29 | DS-009 macOS 协同检测诊断 | 自动验证完成，双机日志待验 | 本任务提交 | 保留 1 秒超时和协议 v2；24 项相关测试、115 项全部 XCTest、Release 打包和严格验签通过；未执行真实网络或硬件动作 |
 | 2026-08-30 | DS-010 本地网络权限引导 | 自动验证完成，权限实机待验 | 本任务提交 | 11 项相关测试、118 项全部 XCTest、Debug/Release、打包和严格验签通过；普通失败不误报系统拒绝，未访问真实局域网或硬件 |
 | 2026-08-30 | DS-011 原生 DDC 单后端清理 | 自动验证完成，实机待验 | 本任务提交 | 54 项相关测试、122 项全部 XCTest、Debug/Release、打包和严格验签通过；正式运行路径不含外部 DDC 进程或历史后端选择 |
-| 2026-08-30 | DS-014 内建 HDMI 原生 DDC 读取诊断 | 自动验证完成，实机待验 | 本任务提交 | 42 项 DDC 测试、127 项完整 XCTest 通过；只比较 chip 0x37 的亮度读取 offset 0 与 0x51，正式策略待用户实机证据 |
+| 2026-08-30 | DS-014 内建 HDMI 原生 DDC 读取诊断 | 第二阶段自动验证完成，实机待验 | 本任务提交 | 45 项 DDC 测试、130 项完整 XCTest 通过；连续缓冲区消除 ABI 歧义，EDID-like 回复脱敏分类，不增加无证据的读取策略 |

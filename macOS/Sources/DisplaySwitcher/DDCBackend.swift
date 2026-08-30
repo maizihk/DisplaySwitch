@@ -313,6 +313,62 @@ enum NativeDDCStrictReadValidation: Equatable {
     }
 }
 
+enum NativeDDCI2CBufferBridge {
+    static func withInputBytes<Result>(
+        _ bytes: [UInt8],
+        body: (UnsafeRawBufferPointer) -> Result
+    ) -> Result {
+        bytes.withUnsafeBytes(body)
+    }
+
+    static func withOutputBytes<Result>(
+        _ bytes: inout [UInt8],
+        body: (UnsafeMutableRawBufferPointer) -> Result
+    ) -> Result {
+        bytes.withUnsafeMutableBytes(body)
+    }
+}
+
+enum NativeDDCReadDataSource: String, Equatable {
+    case strictDDCCI = "ddcci/strict-valid"
+    case edidLike = "non-ddcci/edid-like"
+    case unclassified = "non-ddcci/unclassified"
+}
+
+enum NativeDDCReplySourceClassifier {
+    static func classify(
+        reply: [UInt8],
+        validation: NativeDDCStrictReadValidation,
+        edidReferences: [[UInt8]]
+    ) -> NativeDDCReadDataSource {
+        if case .valid = validation {
+            return .strictDDCCI
+        }
+        return containsEDIDWindow(reply: reply, references: edidReferences)
+            ? .edidLike : .unclassified
+    }
+
+    private static func containsEDIDWindow(reply: [UInt8], references: [[UInt8]]) -> Bool {
+        let minimumWindowLength = 4
+        guard reply.count >= minimumWindowLength else { return false }
+        for reference in references where reference.count >= minimumWindowLength {
+            let maximumLength = min(reply.count, reference.count)
+            for length in stride(from: maximumLength, through: minimumWindowLength, by: -1) {
+                for replyStart in 0...(reply.count - length) {
+                    let window = Array(reply[replyStart..<(replyStart + length)])
+                    guard Set(window).count >= 3 else { continue }
+                    for referenceStart in 0...(reference.count - length) {
+                        if window.elementsEqual(reference[referenceStart..<(referenceStart + length)]) {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        return false
+    }
+}
+
 struct NativeDDCReadAttemptDiagnostic: Equatable {
     let dataAddress: UInt8
     let strategyAttempt: Int
@@ -321,15 +377,40 @@ struct NativeDDCReadAttemptDiagnostic: Equatable {
     let readIOReturn: Int32?
     let reply: [UInt8]
     let validation: NativeDDCStrictReadValidation
+    let dataSource: NativeDDCReadDataSource
+
+    init(
+        dataAddress: UInt8,
+        strategyAttempt: Int,
+        delayMicroseconds: UInt32,
+        writeIOReturns: [Int32],
+        readIOReturn: Int32?,
+        reply: [UInt8],
+        validation: NativeDDCStrictReadValidation,
+        edidReferences: [[UInt8]] = []
+    ) {
+        self.dataAddress = dataAddress
+        self.strategyAttempt = strategyAttempt
+        self.delayMicroseconds = delayMicroseconds
+        self.writeIOReturns = writeIOReturns
+        self.readIOReturn = readIOReturn
+        self.reply = reply
+        self.validation = validation
+        self.dataSource = NativeDDCReplySourceClassifier.classify(
+            reply: reply,
+            validation: validation,
+            edidReferences: edidReferences
+        )
+    }
 
     var diagnosticDescription: String {
         let offset = dataAddress == 0 ? "0" : String(format: "0x%02X", dataAddress)
         let writeResults = writeIOReturns.map(Self.hexIOReturn).joined(separator: ",")
         let readResult = readIOReturn.map(Self.hexIOReturn) ?? "not-called"
-        let replyHex = reply.map { String(format: "%02X", $0) }.joined(separator: " ")
         return "offset \(offset) attempt \(strategyAttempt) delay-us \(delayMicroseconds)" +
             " write-ior=[\(writeResults)] read-ior=\(readResult)" +
-            " reply=[\(replyHex)] \(validation.diagnosticCode)"
+            " reply-length=\(reply.count) source=\(dataSource.rawValue)" +
+            " \(validation.diagnosticCode)"
     }
 
     private static func hexIOReturn(_ value: Int32) -> String {

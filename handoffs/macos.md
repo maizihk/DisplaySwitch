@@ -3,38 +3,64 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-014 / macOS 内建 HDMI 原生 DDC 读取根因诊断
+- 功能：DS-014 / macOS 内建 HDMI 原生 DDC 读取根因诊断第二阶段
 - 基线：`0e79c238e563ce594a1012710eec170b98ae9761`
 - 分支：`codex/macos-ds-014-hdmi-ddc-read-diagnostics`
 - 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
 - PR / CI：诊断包阶段不创建 PR、不触发额外云端 CI
 
-## DS-014 原因与决策
+## DS-014 第二阶段根因证据
+
+- 第一阶段实机中，内建 HDMI 目标的 offset 0 与 0x51 共十次 WriteI2C/ReadI2C 均返回成功，但全部严格 checksum 失败；回复包含与当前显示器 EDID 衍生名称一致的连续窗口。原始字节和真实名称未写入本文件。
+- 同一构建中另一条 Type-C/DP 样本可一次严格读取成功，证明 Get VCP 请求格式、严格 validator 和 Swift/C 桥接路径并非全局失效；另一个 Type-C/DP 失败样本继续单列，不与 HDMI 数据源问题混合。
+- 当前枚举只证明选中了 `DCPAVServiceProxy`、`Location=External` 且相邻 endpoint 为 `dispextE`；这些证据能确认内建 HDMI 路由和 `chip=0x37` 写入路径，但不能证明私有 ReadI2C 被驱动复用到 DDC/CI 数据源。
+- 因此本阶段不新增 chip、offset、延迟、写周期或回复长度探测。若连续缓冲区实验后仍分类为 `non-ddcci/edid-like`，结论是该内建 HDMI 原生路径当前只验证写入，读取不可用并安全显示上次可信值。
+
+## DS-014 第二阶段实现
+
+- `NativeDDCBridge.h` 将 WriteI2C 输入声明为只读指针；Swift 调用统一使用 `withUnsafeBytes`/`withUnsafeMutableBytes`，明确传入连续缓冲区的首地址和实际长度。
+- 枚举仅在本机内存中保留当前 service/framebuffer 的原始 EDID（若系统提供）及 EDID 衍生产品名字节，拒绝回复只做连续窗口比对。
+- 原始 11 字节回复仍用于严格校验，但不再进入界面诊断；展示只保留 IOReturn、offset、尝试次数、长度、严格结果及 `ddcci/strict-valid`、`non-ddcci/edid-like` 或未分类来源。
+- 未改变 Set VCP、输入源切换、显示器匹配、Type-C/DP 读取策略、chip、offset、延迟、写周期和回复长度。
+
+## DS-014 第二阶段自动验证
+
+- DDC 专项 XCTest：45/45。
+- 完整 XCTest：130/130；存在一条既有 USB 并发测试 QoS 警告，测试本身通过。
+- 纯测试覆盖连续输入/输出缓冲区长度与字节、EDID-like 窗口分类、严格 DDC/CI 优先、未匹配数据隔离及原始回复不出现在用户诊断。
+- Debug、Release、`./macOS/scripts/build-app.sh` 和严格 codesign 验证通过。
+- 未执行真实 DDC、输入源切换、USB、网络或唤醒；未创建 PR、未触发云端 CI。
+
+## DS-014 第二阶段实机待验
+
+1. 保持目标显示器直连内建 HDMI。
+2. 只点击该显示器一次“读取 DDC 参数”。
+3. 回传不含原始帧的 HDMI 诊断文本，确认来源是严格 DDC/CI、EDID-like 或未分类。
+
+## DS-014 第一阶段原因与决策
 
 - 已确认内建 HDMI 的原生 Set VCP 正常，而 Get VCP 在固定 offset 0 下失败；同一显示器经 Type-C/DP 时可以读取，因此本轮只验证 read offset，不改匹配、chip、延迟、写周期或回复长度。
 - 诊断仅适用于当前已唯一匹配、`chip = 0x37`、`builtin-hdmi-converter` 的亮度 `0x10` 读取；明确 MCDP/0xB7、其他 VCP 和 Type-C/DP 保持既有行为。
 - offset 0 严格失败后才诊断 offset 0x51。offset 0x51 必须连续两次产生严格有效且 current/max 一致的回复，才能标记为本次诊断成功；不接受移位、坏 checksum、null reply 或弱校验估算。
 
-## DS-014 实现
+## DS-014 第一阶段实现
 
 - 新增纯 `NativeDDCHDMIReadDiagnosticRunner`，对 offset 0 与 0x51 执行相同的有界次数和 50 ms 延迟；request-write-failed 不进入回退。
 - 每个 attempt 记录 offset、固定延迟、两次写调用的 IOReturn、ReadI2C IOReturn、完整 11 字节回复和严格校验结果；输出只包含 DDC/CI 公共事务字段。
 - 诊断成功显示 `read-diagnostic-succeeded`，不把实验策略描述成正式默认；失败保持精确拒绝原因。
 - 读取偏好缓存从 selector 单键升级为 selector + 当前 IORegistry service identity + transport，重新发现、service 替换、取消和失效会清理旧偏好。
 
-## DS-014 自动验证
+## DS-014 第一阶段自动验证
 
 - DDC 专项 XCTest：42/42。
 - 完整 XCTest：127/127；Type-C/DP、输入源切换、USB、协同、缓存与安全闸门模拟回归通过。
 - 自动测试覆盖 HDMI offset 0 → 0x51 有界回退、request-write-failed 不回退、移位/坏 checksum/null reply/语义不一致拒绝、连续两次严格成功，以及 service/transport 绑定缓存失效。
 - 未执行真实 DDC、输入源切换、USB、网络或唤醒。
 
-## DS-014 尚需用户实机验证
+## DS-014 第一阶段实机验证（已完成）
 
-1. 保持目标显示器直连 Mac mini 内建 HDMI。
-2. 只启用亮度功能并点击该显示器一次“读取 DDC 参数”。
-3. 回传界面中的 `HDMI offset diagnostic` 文本，确认 offset 0 与 0x51 的 IOReturn、11 字节回复和严格校验结果。
-4. 不测试输入源、对比度、音量、USB 或协同；是否采用正式策略等待本轮证据。
+1. 用户已按要求完成内建 HDMI 亮度读取诊断。
+2. offset 0 与 0x51 均未得到严格 DDC/CI 回复；原始回复暴露问题已在第二阶段修复。
 
 ## 上一任务：DS-011 原生 DDC 单后端清理
 

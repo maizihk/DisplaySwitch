@@ -17,6 +17,7 @@ struct NativeDDCDisplay {
     let serviceLocation: Int
     let serviceIdentity: UInt64
     let service: IOAVService?
+    let edidReferences: [[UInt8]]
     let chipAddress: UInt32
     let transportPath: NativeDDCTransportPath
     let isOnline: Bool
@@ -25,6 +26,7 @@ struct NativeDDCDisplay {
 private struct NativeRegistryTransport {
     let metadata: NativeTransportCandidate
     let service: IOAVService
+    let edidReferences: [[UInt8]]
     let chipAddress: UInt32
     let serviceIdentity: UInt64
 }
@@ -146,6 +148,7 @@ final class NativeDDCBackend: DDCBackend {
                     transportPath: display.transportPath,
                     primaryDataAddress: preferredReadDataAddress(display: display),
                     parameters: transportParameters,
+                    edidReferences: display.edidReferences,
                     diagnosticRecorder: { hdmiReadDiagnostics = $0 }
                 )
             }
@@ -426,6 +429,7 @@ final class NativeDDCBackend: DDCBackend {
                 serviceLocation: transport?.metadata.serviceLocation ?? 0,
                 serviceIdentity: transport?.serviceIdentity ?? 0,
                 service: transport?.service,
+                edidReferences: transport?.edidReferences ?? [],
                 chipAddress: transport?.chipAddress ?? 0x37,
                 transportPath: transport?.metadata.transportPath ?? .unmatched,
                 isOnline: true
@@ -512,7 +516,8 @@ final class NativeDDCBackend: DDCBackend {
             serialNumber: Int64,
             edidUUID: String,
             serviceLocation: Int,
-            endpointToken: String?
+            endpointToken: String?,
+            edidReferences: [[UInt8]]
         )?
         var serviceLocation = 0
         while true {
@@ -528,13 +533,15 @@ final class NativeDDCBackend: DDCBackend {
             if isFramebuffer {
                 serviceLocation += 1
                 let path = registryPath(entry)
+                let productName = productName(for: entry) ?? ""
                 currentFramebuffer = (
                     ioDisplayLocation: path,
-                    productName: productName(for: entry) ?? "",
+                    productName: productName,
                     serialNumber: productSerialNumber(for: entry),
                     edidUUID: property(entry: entry, key: "EDID UUID") as? String ?? "",
                     serviceLocation: serviceLocation,
-                    endpointToken: NativeDisplayEndpointToken.extract(from: [path, entryName])
+                    endpointToken: NativeDisplayEndpointToken.extract(from: [path, entryName]),
+                    edidReferences: edidReferences(for: entry, productName: productName)
                 )
                 continue
             }
@@ -559,6 +566,8 @@ final class NativeDDCBackend: DDCBackend {
                     transportPath: addressing.transportPath
                 ),
                 service: unmanagedService.takeRetainedValue() as IOAVService,
+                edidReferences: edidReferences(for: entry, productName: currentFramebuffer.productName)
+                    + currentFramebuffer.edidReferences,
                 chipAddress: addressing.chipAddress,
                 serviceIdentity: registryEntryID
             ))
@@ -610,6 +619,19 @@ final class NativeDDCBackend: DDCBackend {
         return product["SerialNumber"] as? Int64 ?? 0
     }
 
+    private static func edidReferences(for entry: io_registry_entry_t,
+                                       productName: String) -> [[UInt8]] {
+        var references: [[UInt8]] = []
+        if let data = property(entry: entry, key: "IODisplayEDID") as? Data,
+           !data.isEmpty {
+            references.append(Array(data))
+        }
+        if !productName.isEmpty {
+            references.append(Array(productName.utf8))
+        }
+        return references
+    }
+
     private static func property(entry: io_registry_entry_t, key: String) -> Any? {
         IORegistryEntryCreateCFProperty(
             entry,
@@ -626,6 +648,7 @@ final class NativeDDCBackend: DDCBackend {
         transportPath: NativeDDCTransportPath,
         primaryDataAddress: UInt8,
         parameters: NativeDDCTransportParameters,
+        edidReferences: [[UInt8]] = [],
         diagnosticRecorder: (([NativeDDCReadAttemptDiagnostic]) -> Void)? = nil
     ) -> NativeDDCReadStrategyOutcome {
         if command == .luminance,
@@ -668,7 +691,8 @@ final class NativeDDCBackend: DDCBackend {
                     writeIOReturns: communicationTrace?.writeIOReturns ?? [],
                     readIOReturn: communicationTrace?.readIOReturn,
                     reply: communicationTrace?.response ?? response,
-                    validation: validation
+                    validation: validation,
+                    edidReferences: edidReferences
                 )
             }
             diagnosticRecorder?(diagnosticResult.attempts)
@@ -834,13 +858,15 @@ final class NativeDDCBackend: DDCBackend {
                 usleep(parameters.writeSleepMicroseconds)
                 let startedAt = Date()
                 let startedNanos = DispatchTime.now().uptimeNanoseconds
-                let result = IOAVServiceWriteI2C(
-                    service,
-                    chipAddress,
-                    UInt32(dataAddress),
-                    &packet,
-                    UInt32(packet.count)
-                )
+                let result = NativeDDCI2CBufferBridge.withInputBytes(packet) { buffer in
+                    IOAVServiceWriteI2C(
+                        service,
+                        chipAddress,
+                        UInt32(dataAddress),
+                        buffer.baseAddress,
+                        UInt32(buffer.count)
+                    )
+                }
                 writeIOReturns.append(result)
                 let endedNanos = DispatchTime.now().uptimeNanoseconds
                 let endedAt = Date()
@@ -866,13 +892,15 @@ final class NativeDDCBackend: DDCBackend {
 
             if writeSucceeded, !response.isEmpty {
                 usleep(readSleepMicroseconds ?? parameters.typeCDPReadSleepMicroseconds)
-                let readResult = IOAVServiceReadI2C(
-                    service,
-                    chipAddress,
-                    UInt32(readDataAddress ?? parameters.typeCDPReadDataAddress),
-                    &response,
-                    UInt32(response.count)
-                )
+                let readResult = NativeDDCI2CBufferBridge.withOutputBytes(&response) { buffer in
+                    IOAVServiceReadI2C(
+                        service,
+                        chipAddress,
+                        UInt32(readDataAddress ?? parameters.typeCDPReadDataAddress),
+                        buffer.baseAddress,
+                        UInt32(buffer.count)
+                    )
+                }
                 trace?(NativeDDCCommunicationTrace(
                     writeIOReturns: writeIOReturns,
                     readIOReturn: readResult,
