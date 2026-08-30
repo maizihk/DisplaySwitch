@@ -8,7 +8,8 @@
 - 堆叠基线：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) head `12598853571ea601b838e4748f93d52a79fdee00`
 - PR base：`codex/windows-ds-013-display-binding`；保留 PR #54 及其 DS-011/DS-012/DS-013 堆叠历史，不合并或 retarget 到 main
 - 实现提交：`befd20f49cc11d535bcc3dc8bee0036e1a4550e3`
-- CI：等待本任务 PR；本节所列结果均为 Windows 本机验证
+- PR：[#60](https://github.com/maizihk/DisplaySwitch/pull/60)，base 为 `codex/windows-ds-013-display-binding`；未合并
+- CI：等待 PR #60 最新 head；本节所列构建和测试结果均为 Windows 本机验证
 
 ## 根因与设计
 
