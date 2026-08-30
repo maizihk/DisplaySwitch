@@ -906,7 +906,7 @@ final class NativeDDCBackend: DDCBackend {
             var cycleIndex = 0
             var writeIOReturns: [Int32] = []
             let writeSucceeded = NativeDDCWriteCyclePolicy.perform(
-                cycles: parameters.writeCycles
+                cycles: parameters.writeCycleCount(expectsResponse: !response.isEmpty)
             ) {
                 cycleIndex += 1
                 usleep(parameters.writeSleepMicroseconds)
