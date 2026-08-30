@@ -139,7 +139,8 @@ namespace DisplaySwitcher::Native
         return matched;
     }
 
-    void UdpPeer::SendRaw(std::string const& data, std::wstring const& host, int port, bool trace)
+    void UdpPeer::SendRaw(std::string const& data, std::wstring const& host, int port, bool trace,
+        std::function<bool()> const& stillValid)
     {
         if (host.empty()) return;
         auto started = std::chrono::steady_clock::now();
@@ -163,6 +164,11 @@ namespace DisplaySwitcher::Native
         {
             if (trace) WriteDiagnostic("udp.send resolve_ok=0 resolve_ms=" + std::to_string(resolvedMilliseconds));
             Report(L"发送失败：无法解析主机 " + host);
+            return;
+        }
+        if (stillValid && !stillValid())
+        {
+            FreeAddrInfoW(addresses);
             return;
         }
         auto sent = sendto(socket, data.data(), static_cast<int>(data.size()), 0,

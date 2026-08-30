@@ -1309,6 +1309,7 @@ namespace
         std::atomic<bool> responseDelivered{};
         std::atomic<int> routeStatus{ -1 };
         std::atomic<int> socketErrors{};
+        std::atomic<int> receiverDatagrams{};
         int usbCalls{}, wakeCalls{}, ddcCalls{}, inputSwitchCalls{};
 
         UdpPeer sender([&](UdpPeer::Datagram const& datagram)
@@ -1329,6 +1330,7 @@ namespace
         std::unique_ptr<UdpPeer> receiver;
         receiver = std::make_unique<UdpPeer>([&](UdpPeer::Datagram const& datagram)
         {
+            ++receiverDatagrams;
             V2Message received;
             if (!IsV2Datagram(datagram.data) || !ParseV2Message(datagram.data, received).accepted) return;
             auto match = MatchUnboundStatusProbe({ boundProfile }, receiverEndpoint, datagram.source, received,
@@ -1377,6 +1379,16 @@ namespace
         Check(boundProfile.peerEndpointId == originalBoundEndpoint && usbCalls == 0 && wakeCalls == 0 &&
             ddcCalls == 0 && inputSwitchCalls == 0,
             L"UDP loopback：非对称 bootstrap 不得重绑、保存或触发硬件副作用");
+        auto receivedBeforeCanceledSend = receiverDatagrams.load();
+        std::atomic<bool> cancellationChecked{};
+        sender.SendRaw("canceled", L"127.0.0.1", receiverPort, false, [&]
+        {
+            cancellationChecked = true;
+            return false;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        Check(cancellationChecked && receiverDatagrams.load() == receivedBeforeCanceledSend,
+            L"UDP 发送：检测取消或代次变化后不得发送迟到的数据报");
         receiver->Stop();
         sender.Stop();
     }

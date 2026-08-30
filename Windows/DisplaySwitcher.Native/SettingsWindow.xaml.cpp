@@ -97,6 +97,7 @@ namespace
     {
         if (auto textBox = control.try_as<TextBox>()) textBox.Header(nullptr);
         else if (auto passwordBox = control.try_as<PasswordBox>()) passwordBox.Header(nullptr);
+        else if (auto comboBox = control.try_as<ComboBox>()) comboBox.Header(nullptr);
         control.HorizontalAlignment(HorizontalAlignment::Stretch);
         AutomationProperties::SetName(control, text);
 
@@ -213,6 +214,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+            std::function<void(bool, std::wstring const&)>)> checkNetworkAccess,
         std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
             std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
         std::function<void()> cancelProfileDetection,
@@ -224,6 +227,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         initialized_ = true;
         original_ = config; saved_ = std::move(saved); readDdc_ = std::move(readDdc);
         writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache);
+        checkNetworkAccess_ = std::move(checkNetworkAccess);
         detectProfile_ = std::move(detectProfile); cancelProfileDetection_ = std::move(cancelProfileDetection);
         beginUsbLearning_ = std::move(beginUsbLearning); endUsbLearning_ = std::move(endUsbLearning);
         closed_ = std::move(closed);
@@ -313,12 +317,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
         auto usbMappingTitle = CreateSubheading(L"对端输入源");
-        usbTab.Content(CreatePage({ CreateSection({
-            LabeledToggleRow(L"自动切换", usbAutomation_),
-            UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_),
-            usbMappingTitle, usbMappingsPanel_,
-            LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同"),
-            usbHint }) }));
+        usbTab.Content(CreatePage({
+            CreateSection({
+                LabeledToggleRow(L"自动切换", usbAutomation_),
+                UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_) }),
+            CreateSection({ usbMappingTitle, usbMappingsPanel_ }),
+            CreateSection({
+                LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同") }),
+            usbHint }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         peerTab.Header(CreateTabHeader(L"\uE968", L"协同"));
@@ -327,8 +333,34 @@ namespace winrt::DisplaySwitcher::Native::implementation
         connectionStatus_ = TextBlock(); connectionStatus_.VerticalAlignment(VerticalAlignment::Center);
         peerStatus.Children().Append(connectionDot_); peerStatus.Children().Append(connectionStatus_);
         SetConnectionStatus(L"协同未启用", false);
-        auto peerHint = TextBlock(); peerHint.Text(L"可保存多个目标配置并同时开启。检测只发送 v2 状态探测，不执行 USB、唤醒或显示器操作。");
+        auto peerHint = TextBlock(); peerHint.Text(L"先检查网络权限，再检测连接。两项操作都不会执行 USB、唤醒或显示器操作。");
         peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
+        auto checkNetwork = Button(); checkNetwork.Content(box_value(L"检查网络权限"));
+        checkNetwork.Click([this](auto const&, auto const&)
+        {
+            if (!checkNetworkAccess_) { ShowValidationError(L"网络权限检查服务不可用。"); return; }
+            CaptureDisplayEditors(); CaptureProfileEditors();
+            auto config = original_; config.displays = workingDisplays_; config.collaborationProfiles = workingProfiles_;
+            validation_.Text(L"正在检查本机 UDP 监听；若 Windows 弹出提示，请允许专用网络访问。");
+            validation_.Visibility(Visibility::Visible);
+            auto weak = get_weak();
+            checkNetworkAccess_(config, [weak](bool ready, std::wstring const& message)
+            {
+                if (auto self = weak.get(); self && !self->windowClosed_)
+                {
+                    self->validation_.Text(message); self->validation_.Visibility(Visibility::Visible);
+                    if (!ready) self->SetConnectionStatus(L"网络权限未就绪", false);
+                }
+            });
+        });
+        detectProfileButton_ = Button(); detectProfileButton_.Content(box_value(L"检测连接"));
+        detectProfileButton_.Click([this](auto const&, auto const&)
+        {
+            CaptureProfileEditors();
+            if (!selectedProfileId_.empty()) DetectProfile(selectedProfileId_);
+        });
+        auto peerActions = StackPanel(); peerActions.Orientation(Orientation::Horizontal); peerActions.Spacing(8);
+        peerActions.Children().Append(checkNetwork); peerActions.Children().Append(detectProfileButton_);
         auto addProfile = Button(); addProfile.Content(box_value(L"添加配置"));
         addProfile.VerticalAlignment(VerticalAlignment::Bottom);
         addProfile.Click([this](auto const&, auto const&)
@@ -357,8 +389,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             RebuildProfileEditors();
         });
         profileEditorsPanel_ = StackPanel(); profileEditorsPanel_.Spacing(14);
-        peerTab.Content(CreatePage({ CreateSection({
-            peerStatus, peerHint, CreateTwoColumn(profileSelector_, addProfile), profileEditorsPanel_ }) }));
+        peerTab.Content(CreatePage({
+            CreateSection({ CreateTwoColumn(peerStatus, peerActions), peerHint }),
+            CreateSection({ CreateTwoColumn(LabeledWideControlRow(L"当前配置", profileSelector_), addProfile) }),
+            profileEditorsPanel_ }));
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
@@ -959,28 +993,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto triggerSummary = TextBlock();
             triggerSummary.Text(profile.triggerDevices.empty() ? L"未引用本机触发设备" : L"已引用 " + std::to_wstring(profile.triggerDevices.size()) + L" 个本机触发设备");
             triggerSummary.Opacity(0.72); fields.Children().Append(triggerSummary);
-            controls.detect = Button(); controls.detect.Content(box_value(L"检测"));
-            controls.detect.Click([this, id = profile.id](auto const&, auto const&) { DetectProfile(id); });
-            auto up = Button(); up.Content(box_value(L"上移")); up.IsEnabled(index > 0);
-            up.Click([this, id = profile.id](auto const&, auto const&)
-            {
-                CaptureProfileEditors();
-                auto found = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item) { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
-                if (found != workingProfiles_.end() && found != workingProfiles_.begin()) std::iter_swap(found, found - 1); RebuildProfileEditors(); SaveImmediately();
-            });
-            auto down = Button(); down.Content(box_value(L"下移")); down.IsEnabled(index + 1 < workingProfiles_.size());
-            down.Click([this, id = profile.id](auto const&, auto const&)
-            {
-                CaptureProfileEditors();
-                auto found = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item) { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
-                if (found != workingProfiles_.end() && found + 1 != workingProfiles_.end()) std::iter_swap(found, found + 1); RebuildProfileEditors(); SaveImmediately();
-            });
-            auto remove = Button(); remove.Content(box_value(L"删除")); remove.IsEnabled(workingProfiles_.size() > 1);
+            auto remove = Button(); remove.Content(box_value(L"删除配置")); remove.IsEnabled(workingProfiles_.size() > 1);
             remove.Click([this, id = profile.id](auto const&, auto const&) { RemoveProfile(id); });
-            auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(8);
-            buttons.Children().Append(controls.detect);
-            buttons.Children().Append(up); buttons.Children().Append(down); buttons.Children().Append(remove);
-            fields.Children().Append(buttons); profileEditorsPanel_.Children().Append(CreateCard(fields));
+            auto autoSave = TextBlock(); autoSave.Text(L"修改已自动保存"); autoSave.Opacity(0.72);
+            autoSave.VerticalAlignment(VerticalAlignment::Center);
+            fields.Children().Append(CreateTwoColumn(remove, autoSave));
+            profileEditorsPanel_.Children().Append(CreateCard(fields));
             profileEditors_.push_back(std::move(controls));
         }
     }
@@ -1092,6 +1110,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         detectingProfileId_.clear();
         SetProfileDetectionBusy(id, false);
         using Outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome;
+        if (result.outcome == Outcome::NetworkNotReady)
+        {
+            SetConnectionStatus(L"网络权限未就绪", false);
+            ShowValidationError(L"请先点击“检查网络权限”，确认本机 UDP 监听已就绪后再检测连接。"); return;
+        }
         if (result.outcome == Outcome::LocalConfigurationIncomplete)
         {
             SetConnectionStatus(L"本机配置不完整", false); ShowValidationError(L"本机配置不完整，未发送探测消息。"); return;
@@ -1164,13 +1187,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::SetProfileDetectionBusy(std::wstring const& id, bool busy)
     {
-        for (auto const& controls : profileEditors_)
-        {
-            if (!controls.detect) continue;
-            controls.detect.IsEnabled(!busy);
-            if (_wcsicmp(controls.id.c_str(), id.c_str()) == 0)
-                controls.detect.Content(box_value(busy ? L"正在检测…" : L"检测"));
-        }
+        static_cast<void>(id);
+        if (!detectProfileButton_) return;
+        detectProfileButton_.IsEnabled(!busy);
+        detectProfileButton_.Content(box_value(busy ? L"正在检测…" : L"检测连接"));
     }
 
     ::DisplaySwitcher::Native::AppConfig SettingsWindow::WorkingDdcConfig()

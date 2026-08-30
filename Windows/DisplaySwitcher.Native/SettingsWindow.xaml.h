@@ -21,6 +21,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
                 ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
             std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+            std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+                std::function<void(bool, std::wstring const&)>)> checkNetworkAccess,
             std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
                 std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
             std::function<void()> cancelProfileDetection,
@@ -82,6 +84,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc_;
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+            std::function<void(bool, std::wstring const&)>)> checkNetworkAccess_;
         std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
             std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile_;
         std::function<void()> cancelProfileDetection_;
@@ -128,7 +132,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
             Microsoft::UI::Xaml::Controls::TextBox peerHost{ nullptr };
             Microsoft::UI::Xaml::Controls::TextBox peerPort{ nullptr };
             Microsoft::UI::Xaml::Controls::PasswordBox pairingCode{ nullptr };
-            Microsoft::UI::Xaml::Controls::Button detect{ nullptr };
             std::vector<ProfileMappingControls> mappings;
         };
         std::vector<ProfileEditorControls> profileEditors_;
@@ -141,6 +144,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbSwitchDisplaysOnArrival_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel profileEditorsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox profileSelector_{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button detectProfileButton_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbProfileSelector_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbDevices_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock usbDeviceStatus_{ nullptr };

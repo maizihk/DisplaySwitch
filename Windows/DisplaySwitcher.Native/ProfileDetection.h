@@ -17,6 +17,7 @@ namespace DisplaySwitcher::Native
         V2Available,
         AuthenticationFailed,
         NoResponse,
+        NetworkNotReady,
         LocalConfigurationIncomplete,
     };
 
