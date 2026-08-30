@@ -48,6 +48,12 @@ private struct NativeRegistryService {
     let serviceIdentity: UInt64
 }
 
+private struct NativeIOAVServiceReuseKey: Hashable {
+    let serviceIdentity: UInt64
+    let transportPath: NativeDDCTransportPath
+    let chipAddress: UInt32
+}
+
 private struct NativeDDCCommunicationTrace {
     let writeIOReturns: [Int32]
     let readIOReturn: Int32?
@@ -94,8 +100,64 @@ final class NativeDDCBackend: DDCBackend {
         #if arch(arm64)
         cacheLock.lock()
         let knownDisplays = self.knownDisplays
+        let existingDisplays = displaysByUUID
         cacheLock.unlock()
-        let displays = Self.discoverDisplays(knownDisplays: knownDisplays)
+        var reusableServices: [NativeIOAVServiceReuseKey: IOAVService] = [:]
+        var reusableIdentities: [NativeIOAVServiceReuseKey: NativeDDCServiceReuseIdentity] = [:]
+        for display in existingDisplays.values {
+            guard display.isOnline, display.serviceIdentity != 0,
+                  let service = display.service else { continue }
+            let reuseKey = Self.serviceReuseKey(for: display)
+            reusableServices[reuseKey] = service
+            reusableIdentities[reuseKey] = Self.serviceReuseIdentity(for: display)
+        }
+        var discoveredDisplays = Self.discoverDisplays(
+            knownDisplays: knownDisplays,
+            reusableServices: reusableServices
+        )
+        var invalidatedReuseKeys: Set<NativeIOAVServiceReuseKey> = []
+        for current in discoveredDisplays {
+            let reuseKey = Self.serviceReuseKey(for: current)
+            guard let existingIdentity = reusableIdentities[reuseKey],
+                  !NativeDDCServiceReusePolicy.shouldReuse(
+                    existing: existingIdentity,
+                    current: Self.serviceReuseIdentity(for: current)
+                  ) else { continue }
+            invalidatedReuseKeys.insert(reuseKey)
+        }
+        if !invalidatedReuseKeys.isEmpty {
+            discoveredDisplays = Self.discoverDisplays(
+                knownDisplays: knownDisplays,
+                reusableServices: reusableServices.filter {
+                    !invalidatedReuseKeys.contains($0.key)
+                }
+            )
+        }
+        let displays = discoveredDisplays.map { current in
+            let key = current.systemUUID.uppercased()
+            guard let existing = existingDisplays[key],
+                  let existingService = existing.service,
+                  current.service != nil,
+                  NativeDDCServiceReusePolicy.shouldReuse(
+                    existing: Self.serviceReuseIdentity(for: existing),
+                    current: Self.serviceReuseIdentity(for: current)
+                  ) else { return current }
+            // Discovery still revalidates the live framebuffer/service topology
+            // before every operation. When the physical route is unchanged,
+            // preserve the long-lived IOAVService object so HDMI reads do not
+            // restart the driver's private reply channel for every VCP command.
+            return NativeDDCDisplay(
+                name: current.name,
+                systemUUID: current.systemUUID,
+                serviceLocation: current.serviceLocation,
+                serviceIdentity: current.serviceIdentity,
+                service: existingService,
+                edidReferences: current.edidReferences,
+                chipAddress: current.chipAddress,
+                transportPath: current.transportPath,
+                isOnline: current.isOnline
+            )
+        }
         cacheLock.lock()
         displaysByUUID = Dictionary(uniqueKeysWithValues: displays.map { ($0.systemUUID.uppercased(), $0) })
         readPreferenceCache.retainOnly(Set(displays.compactMap { display in
@@ -119,6 +181,26 @@ final class NativeDDCBackend: DDCBackend {
         #else
         return []
         #endif
+    }
+
+    private static func serviceReuseIdentity(for display: NativeDDCDisplay)
+        -> NativeDDCServiceReuseIdentity {
+        NativeDDCServiceReuseIdentity(
+            selector: display.systemUUID,
+            serviceIdentity: display.serviceIdentity,
+            transportPath: display.transportPath,
+            chipAddress: display.chipAddress,
+            isOnline: display.isOnline
+        )
+    }
+
+    private static func serviceReuseKey(for display: NativeDDCDisplay)
+        -> NativeIOAVServiceReuseKey {
+        NativeIOAVServiceReuseKey(
+            serviceIdentity: display.serviceIdentity,
+            transportPath: display.transportPath,
+            chipAddress: display.chipAddress
+        )
     }
 
     func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
@@ -386,11 +468,13 @@ final class NativeDDCBackend: DDCBackend {
         knownDisplays: [DDCKnownDisplay],
         diagnosticSelector: String? = nil,
         diagnosticContext: InputSourceDiagnosticContext? = nil,
-        diagnostics: InputSourceDiagnosticRecording? = nil
+        diagnostics: InputSourceDiagnosticRecording? = nil,
+        reusableServices: [NativeIOAVServiceReuseKey: IOAVService] = [:]
     ) -> [NativeDDCDisplay] {
         let identities = onlineExternalDisplayIDs().compactMap(displayInfo(for:))
         let transports = registryTransports(
-            ioDisplayLocations: Set(identities.map(\.ioLocation))
+            ioDisplayLocations: Set(identities.map(\.ioLocation)),
+            reusableServices: reusableServices
         )
         let matches = NativeDisplayMatcher.matches(
             identities: identities.map {
@@ -525,7 +609,10 @@ final class NativeDDCBackend: DDCBackend {
         return product["ProductName"] as? String
     }
 
-    private static func registryTransports(ioDisplayLocations: Set<String>)
+    private static func registryTransports(
+        ioDisplayLocations: Set<String>,
+        reusableServices: [NativeIOAVServiceReuseKey: IOAVService]
+    )
         -> [NativeRegistryTransport] {
         let root = IORegistryGetRootEntry(kIOMainPortDefault)
         guard root != IO_OBJECT_NULL else { return [] }
@@ -574,21 +661,33 @@ final class NativeDDCBackend: DDCBackend {
                 ))
                 continue
             }
-            guard
-                entryName == "DCPAVServiceProxy",
-                property(entry: entry, key: "Location") as? String == "External",
-                let unmanagedService = IOAVServiceCreateWithService(kCFAllocatorDefault, entry)
+            guard entryName == "DCPAVServiceProxy",
+                  property(entry: entry, key: "Location") as? String == "External"
             else { continue }
             serviceLocation += 1
             let topology = transportTopology(for: entry)
             var registryEntryID: UInt64 = 0
             _ = IORegistryEntryGetRegistryEntryID(entry, &registryEntryID)
+            let reuseKey = NativeIOAVServiceReuseKey(
+                serviceIdentity: registryEntryID,
+                transportPath: topology.addressing.transportPath,
+                chipAddress: topology.addressing.chipAddress
+            )
+            let service: IOAVService
+            if let reusableService = reusableServices[reuseKey] {
+                service = reusableService
+            } else {
+                guard let unmanagedService = IOAVServiceCreateWithService(
+                    kCFAllocatorDefault, entry
+                ) else { continue }
+                service = unmanagedService.takeRetainedValue() as IOAVService
+            }
             services.append(NativeRegistryService(
                 topology: NativeServiceTopologyNode(
                     location: serviceLocation,
                     endpointToken: topology.endpointToken
                 ),
-                service: unmanagedService.takeRetainedValue() as IOAVService,
+                service: service,
                 edidReferences: edidReferences(for: entry, productName: ""),
                 addressing: topology.addressing,
                 serviceIdentity: registryEntryID

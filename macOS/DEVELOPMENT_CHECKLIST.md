@@ -273,15 +273,25 @@
 - [x] 54 项 DDC 专项和 139 项完整 XCTest 通过；Release `build-app.sh`、打包与严格 codesign 验证通过。
 - [ ] 小米内建 HDMI 显式读取、两台同型号显示器物理目标、热插拔和 HDMI/USB-C/DP 接口变化仍需用户实机验证；本任务未执行硬件动作。
 
-### DS-017 内建 HDMI 生产读取事务（根因实机确认，可靠性待验）
+### DS-017 内建 HDMI 生产读取事务（严格成功已确认，可靠性失败）
 
 - [x] 静态审计当前 BetterDisplay 生产二进制，确认普通 Get VCP 使用标准 `0x51` 请求寻址；`0x50` 是明确的 `ddc2ab` 备用寻址，不用于普通亮度读取。
 - [x] 内建 HDMI 改为最多 8 次完整的“单次 WriteI2C → 10 ms → 单次 ReadI2C”事务，严格失败之间等待 5 ms；每次回复缓冲区重新清零。
 - [x] Type-C/DP 继续使用已验证的双写、50 ms 与既有 read offset；Set VCP、输入源切换、service 匹配、USB、网络和协议均未改变。
 - [x] 严格 checksum 与语义校验保持不变；失败不接受随机数据，也不覆盖上次可信缓存。
 - [x] 54 项 DDC 专项和 139 项完整 XCTest 通过；Release `build-app.sh`、打包与严格 codesign 验证通过。
-- [x] 用户实机确认小米内建 HDMI 前三次收到非 DDC 数据后，第 4 次完整事务得到严格有效亮度回复；同一构建中 Dell C2DP 仍在第 1 次严格读取成功，事务结构根因与传输隔离成立。
-- [ ] 小米内建 HDMI 的连续读取成功率仍需统计；单次严格成功不能证明长期可靠，统计前不得合并。
+- [x] 用户实机确认小米内建 HDMI 偶尔可在第 4/8 次完整事务得到严格有效亮度回复；同一构建中 Dell C2DP 仍可第 1 次严格读取成功。
+- [x] 后续连续 20 次 HDMI 读取全部失败，证明完整事务重试只提高撞到有效帧的机会，并非可靠性根因；本方案不得单独合并。
+
+### DS-018 IOAVService 生命周期稳定化（自动验证完成，实机待验）
+
+- [x] 对照 BetterDisplay 当前生产二进制：能力查询是独立的 MCCS `0xF3/0xE3` 分块事务，不是亮度 Get VCP 的必要前置；应用使用全局串行 DDC 队列并长期持有同一 `IOAVService`。
+- [x] 根因审计发现 DS-015 虽在每次操作前正确重验当前拓扑，却也在每次重验时调用 `IOAVServiceCreateWithService` 并替换对象；这是当前与 BetterDisplay 最关键的生命周期差异，也符合“退出重开偶尔恢复、同一连接随机撞到有效帧”的实机现象，是否为根因由本轮实机验证决定。
+- [x] 每次显式硬件操作仍重新枚举在线显示器及当前 registry 拓扑；只有 selector、registry service identity、transport、chip 和在线状态均未变化时复用现有 service，且枚举位置变化不使稳定 service 失效。
+- [x] 热插拔、接口/transport/chip 变化、service identity 变化、离线或既有恢复路径主动失效时不复用，按当前拓扑创建新 service；不按品牌、型号、端口顺序或历史接口猜测。
+- [x] 未改 DDC 帧、offset、重试次数、等待时间、严格校验、Set VCP、输入源切换、USB、网络或共享协议。
+- [x] DDC 专项 XCTest 55/55，完整 XCTest 140/140；Release `build-app.sh`、严格 codesign 与 ZIP 完整性验证通过。
+- [ ] 退出 BetterDisplay 后，用 DS-018 构建对小米内建 HDMI 连续读取 20 次，并对已成功的 Dell C2DP 连续读取 3 次；记录成功次数与 attempt，实机通过前不得合并。
 
 ### M-203 Bonjour/mDNS 自动发现
 
@@ -315,4 +325,5 @@
 | 2026-08-30 | DS-011 原生 DDC 单后端清理 | 自动验证完成，实机待验 | 本任务提交 | 54 项相关测试、122 项全部 XCTest、Debug/Release、打包和严格验签通过；正式运行路径不含外部 DDC 进程或历史后端选择 |
 | 2026-08-30 | DS-014 内建 HDMI 原生 DDC 读取诊断 | 正式安全策略完成 | 本任务提交 | 实机确认内建 HDMI 读取不可用后停止参数探测；50 项 DDC、135 项完整 XCTest、Debug/Release、打包和严格验签通过 |
 | 2026-08-30 | M-008 / DS-015 IOAVService 拓扑绑定 | 自动验证完成，实机待验 | 039466b | 移除遍历顺序绑定并按当前 endpoint 一对一解析；54 项 DDC、139 项完整 XCTest、Release 打包和严格验签通过；PR #55 保持开放，未执行硬件动作 |
-| 2026-08-30 | DS-017 内建 HDMI 生产读取事务 | 根因实机确认，可靠性待验 | 本任务提交 | 小米 HDMI 第 4 次完整事务严格成功，Dell C2DP 第 1 次成功；54 项 DDC、139 项完整 XCTest、Release 打包和严格验签通过 |
+| 2026-08-30 | DS-017 内建 HDMI 生产读取事务 | 严格成功已确认，可靠性失败 | 533c507、180ba01 | 小米 HDMI 偶尔可在第 4/8 次严格成功，但随后连续 20 次失败；证明完整事务可读但不是可靠性根因 |
+| 2026-08-30 | DS-018 IOAVService 生命周期稳定化 | 自动验证完成，实机待验 | 本任务提交 | 当前拓扑未变时不再创建/替换 IOAVService；55 项 DDC、140 项完整 XCTest、Release 打包、严格验签和 ZIP 校验通过 |

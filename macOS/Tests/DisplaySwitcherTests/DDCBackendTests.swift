@@ -1061,6 +1061,57 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(cache.preferredAddress(for: replacementService, default: 0), 0)
     }
 
+    func testNativeServiceReuseRequiresSameCurrentPhysicalRoute() {
+        let current = NativeDDCServiceReuseIdentity(
+            selector: "selector-a", serviceIdentity: 101,
+            transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+        )
+
+        XCTAssertTrue(NativeDDCServiceReusePolicy.shouldReuse(
+            existing: current,
+            current: NativeDDCServiceReuseIdentity(
+                selector: "SELECTOR-A", serviceIdentity: 101,
+                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+            )
+        ))
+
+        let replacements = [
+            NativeDDCServiceReuseIdentity(
+                selector: "selector-b", serviceIdentity: 101,
+                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+            ),
+            NativeDDCServiceReuseIdentity(
+                selector: "selector-a", serviceIdentity: 202,
+                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+            ),
+            NativeDDCServiceReuseIdentity(
+                selector: "selector-a", serviceIdentity: 101,
+                transportPath: .typeCDPAlt, chipAddress: 0x37, isOnline: true
+            ),
+            NativeDDCServiceReuseIdentity(
+                selector: "selector-a", serviceIdentity: 101,
+                transportPath: .builtinHDMIConverter, chipAddress: 0xB7, isOnline: true
+            ),
+            NativeDDCServiceReuseIdentity(
+                selector: "selector-a", serviceIdentity: 101,
+                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: false
+            )
+        ]
+        for replacement in replacements {
+            XCTAssertFalse(NativeDDCServiceReusePolicy.shouldReuse(
+                existing: current, current: replacement
+            ))
+        }
+
+        XCTAssertFalse(NativeDDCServiceReusePolicy.shouldReuse(
+            existing: NativeDDCServiceReuseIdentity(
+                selector: "selector-a", serviceIdentity: 0,
+                transportPath: .builtinHDMIConverter, chipAddress: 0x37, isOnline: true
+            ),
+            current: current
+        ))
+    }
+
     func testNativeDiagnosticsExposeOnlySanitizedTransportState() {
         let snapshot = NativeDDCDiagnosticSnapshot(
             transportPath: .builtinHDMIConverter,

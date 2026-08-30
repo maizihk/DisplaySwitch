@@ -742,6 +742,36 @@ struct NativeDDCReadPreferenceKey: Hashable {
     }
 }
 
+struct NativeDDCServiceReuseIdentity: Equatable {
+    let selector: String
+    let serviceIdentity: UInt64
+    let transportPath: NativeDDCTransportPath
+    let chipAddress: UInt32
+    let isOnline: Bool
+
+    init(selector: String, serviceIdentity: UInt64,
+         transportPath: NativeDDCTransportPath, chipAddress: UInt32, isOnline: Bool) {
+        self.selector = selector.uppercased()
+        self.serviceIdentity = serviceIdentity
+        self.transportPath = transportPath
+        self.chipAddress = chipAddress
+        self.isOnline = isOnline
+    }
+
+    var permitsReuse: Bool {
+        isOnline && serviceIdentity != 0
+    }
+}
+
+enum NativeDDCServiceReusePolicy {
+    static func shouldReuse(
+        existing: NativeDDCServiceReuseIdentity,
+        current: NativeDDCServiceReuseIdentity
+    ) -> Bool {
+        existing.permitsReuse && current.permitsReuse && existing == current
+    }
+}
+
 struct NativeDDCReadPreferenceCache {
     private var values: [NativeDDCReadPreferenceKey: UInt8] = [:]
 

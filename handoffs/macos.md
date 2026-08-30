@@ -3,11 +3,35 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-017 / 内建 HDMI 生产读取事务
-- 堆叠基线：`codex/macos-ds-015-ioav-topology-binding@76ddf4b`
+- 功能：DS-018 / IOAVService 生命周期稳定化
+- 堆叠基线：`codex/macos-ds-017-production-read-transactions@180ba01`
 - 分支：`codex/macos-ds-017-production-read-transactions`
 - 实现提交：本任务提交，最终 SHA 以分支 HEAD 为准
 - PR：实机验证前不创建，避免把未确认硬件行为带入合并候选
+
+## DS-018 原因与决策
+
+- DS-017 已证明内建 HDMI 能偶尔得到严格 DDC/CI 回复，但随后连续 20 次失败；增加完整事务重试只是在随机数据流中提高撞帧概率，不是可靠性根因。
+- BetterDisplay 的能力查询是独立的 MCCS `0xF3/0xE3` 分块事务。它能获得能力表不能证明该查询是亮度读取前置，因此本轮不加入“能力预热”或宽松校验。
+- 更关键差异是 service 生命周期：BetterDisplay 在全局串行 DDC 队列中长期持有同一 `IOAVService`；DS-015 为防止旧拓扑串台，在每次操作前重验拓扑时也每次重新创建并替换 service。退出重开偶尔恢复及第 8 次才撞到有效帧均与该差异一致，但是否为根因仍以本轮实机结果为准。
+
+## DS-018 实现与自动验证
+
+- 每次显式 DDC 操作仍重新枚举在线 CoreDisplay 与 IORegistry 当前拓扑，不回退到历史品牌、名称、端口或枚举顺序匹配。
+- 当前 selector、registry service identity、transport、chip 与在线状态均未变化时，枚举阶段直接沿用现有 `IOAVService`，不再调用 `IOAVServiceCreateWithService`；仅 service 枚举位置变化不会触发替换。
+- 热插拔、接口/transport/chip、registry identity、在线状态变化，或现有失败恢复主动失效后，才按当前拓扑创建新 service。
+- DDC 请求帧、offset、重试和等待、严格 validator、Set VCP、输入源、USB、网络与协议均未修改。
+- DDC 专项 XCTest 55/55；完整 XCTest 140/140。首次完整运行有一项既有输入并发顺序测试波动失败，单项复跑及第二次完整运行通过；本任务未修改该调度逻辑。
+- Release `build-app.sh`、adhoc 签名、`codesign --verify --deep --strict` 与 ZIP 完整性验证通过。
+
+## DS-018 测试包与实机边界
+
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-018-persistent-service-macOS-test.zip`
+- SHA-256：`31732e52969bd414af6bd522b22648290925304b18f983bdcb9421591895ade2`
+- 必须完全退出 BetterDisplay，首次启动测试包后保持应用不退出：先对小米内建 HDMI 连续读取 20 次，记录成功次数与 attempt；再对 Dell C2DP 连续读取 3 次，必须保持严格成功。
+- 本轮无需输入源切换；写路径完全未改。任何 C2DP 回归或 HDMI 仍无可靠性改善都不得合并。
+
+## 上一任务：DS-017 内建 HDMI 生产读取事务
 
 ## DS-017 原因与决策
 
