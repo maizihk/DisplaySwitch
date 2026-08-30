@@ -1237,6 +1237,67 @@ namespace
             L"首次 endpoint：匹配、拒绝和回复过程必须保持零硬件副作用");
     }
 
+    void TestProfileDetectionThreadingAndKeyCache()
+    {
+        std::atomic<int> derivations{};
+        V2AuthenticationKeyCache cache(2, [&](std::span<uint8_t const> secret, std::wstring const& endpoint)
+        {
+            ++derivations;
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            std::array<uint8_t, 32> key{};
+            key[0] = static_cast<uint8_t>(secret.size());
+            key[1] = static_cast<uint8_t>(endpoint.size());
+            return key;
+        });
+        auto endpointA = GenerateIdentifier();
+        auto endpointB = GenerateIdentifier();
+        static_cast<void>(cache.Get(L"thread-test-password", endpointA));
+        auto cachedStarted = std::chrono::steady_clock::now();
+        static_cast<void>(cache.Get(L"thread-test-password", endpointA));
+        auto cachedElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - cachedStarted).count();
+        Check(derivations == 1 && cachedElapsed < 30,
+            L"DS-012: 相同配对密码和 endpoint 必须命中有界派生密钥缓存");
+        static_cast<void>(cache.Get(L"thread-test-password", endpointB));
+        static_cast<void>(cache.Get(L"changed-thread-password", endpointB));
+        Check(derivations == 3 && cache.Size() == 2,
+            L"DS-012: endpoint 或配对密码变化必须派生新密钥且缓存保持有界");
+        cache.Clear();
+        static_cast<void>(cache.Get(L"changed-thread-password", endpointB));
+        Check(derivations == 4, L"DS-012: 配置代次失效必须清除派生密钥缓存");
+
+        ProfileDetectionAsyncOperation operation;
+        auto completed = std::make_shared<std::promise<bool>>();
+        auto future = completed->get_future();
+        auto started = std::chrono::steady_clock::now();
+        operation.Start(
+            [&](ProfileDetectionAsyncOperation::IsCanceled const& canceled)
+            {
+                static_cast<void>(cache.Get(L"slow-kdf-password", GenerateIdentifier()));
+                if (canceled()) return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(80)); // injected slow resolver/send
+                return !canceled();
+            },
+            [](std::function<void()> callback) { callback(); },
+            [completed](bool result) { completed->set_value(result); });
+        auto startElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        Check(startElapsed < 30, L"DS-012: 检测调用不得等待慢 KDF 或慢地址解析完成");
+        Check(future.wait_for(std::chrono::seconds(2)) == std::future_status::ready && future.get(),
+            L"DS-012: 后台检测完成后必须通过 dispatcher 回调结果");
+
+        std::atomic<int> staleCallbacks{};
+        operation.Start(
+            [](ProfileDetectionAsyncOperation::IsCanceled const&)
+            { std::this_thread::sleep_for(std::chrono::milliseconds(120)); return true; },
+            [](std::function<void()> callback) { callback(); },
+            [&](bool) { ++staleCallbacks; });
+        operation.Cancel();
+        std::this_thread::sleep_for(std::chrono::milliseconds(180));
+        Check(staleCallbacks == 0,
+            L"DS-012: 取消、超时或配置切换后迟到后台结果不得覆盖当前检测");
+    }
+
     void TestUdpPeerAsymmetricBootstrapLoopback()
     {
         auto senderEndpoint = GenerateIdentifier();
@@ -1344,6 +1405,7 @@ int wmain()
         TestDdcControls();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();
+        TestProfileDetectionThreadingAndKeyCache();
         TestUdpPeerAsymmetricBootstrapLoopback();
         if (!failures) std::wcout << L"DS-004 passed C-001 through C-015 local-model scenarios\n";
         if (!failures) std::wcout << L"DS-004 passed C-016 through C-020 and C-024 DDC-control scenarios\n";
@@ -1352,6 +1414,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-007 Windows-applicable settings, v2-only, DDC and tray scenarios passed\n";
         if (!failures) std::wcout << L"DS-009 USB trigger stability scenarios passed\n";
         if (!failures) std::wcout << L"DS-009 asymmetric bootstrap and loopback UDP scenarios passed\n";
+        if (!failures) std::wcout << L"DS-012 nonblocking detection, cancellation and key-cache scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
         failures += RunUsbSwitchVectorTests();
     }

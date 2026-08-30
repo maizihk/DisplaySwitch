@@ -78,6 +78,8 @@ namespace DisplaySwitcher::Native
 
     void Controller::ApplyConfiguration(bool applyAutoStart)
     {
+        ++configurationGeneration_;
+        v2KeyCache_.Clear();
         ++sideEffectGeneration_;
         sideEffectGate_.Block();
         trayDdcWrites_.CancelPending();
@@ -149,7 +151,9 @@ namespace DisplaySwitcher::Native
             std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
         if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
         else usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
-        v2ReplayCache_.Clear(); v2OutgoingMessages_.clear(); v2PeerLastSeenMs_.clear();
+        v2ReplayCache_.Clear();
+        { std::scoped_lock lock(v2OutgoingMutex_); v2OutgoingMessages_.clear(); }
+        v2PeerLastSeenMs_.clear();
         v2HealthProbes_.clear();
         if (!config.displayConfigurationSafeMode) sideEffectGate_.Allow();
         if (auto listenerPort = config.V2ListenerPort()) peer_->Start(*listenerPort);
@@ -391,32 +395,69 @@ namespace DisplaySwitcher::Native
         if (!sideEffectGate_.AllowsSideEffects()) return;
         if (!IsV2Datagram(datagram.data)) return;
         V2Message message; auto parsed = ParseV2Message(datagram.data, message); if (!parsed.accepted) return;
+        auto config = Config();
+        auto configurationGeneration = configurationGeneration_.load();
         if (profileDetection_ && profileDetection_->session.WaitingForV2() && message.type == L"status_response" &&
             EqualId(message.eventId, profileDetection_->session.PendingEventId()))
         {
-            bool authenticated{};
-            try
+            auto detectionGeneration = profileDetection_->generation;
+            auto localEndpointId = profileDetection_->workingConfig.localEndpointId;
+            auto pairingCode = profileDetection_->profile.pairingCode;
+            std::weak_ptr<Controller> weak = shared_from_this();
+            std::thread([weak, message = std::move(message), detectionGeneration,
+                localEndpointId = std::move(localEndpointId), pairingCode = std::move(pairingCode)]
             {
-                auto secret = NormalizeV2PairingSecret(profileDetection_->profile.pairingCode);
-                auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
-                auto validation = ValidateV2Message(message, profileDetection_->workingConfig.localEndpointId,
-                    message.sourceEndpointId, key, static_cast<int64_t>(UdpPeer::TimestampNow()),
-                    &profileDetectionReplayCache_, NowMilliseconds());
-                authenticated = validation.accepted;
-                if (!authenticated && validation.reason != L"authentication_failed") return;
-            }
-            catch (...) { return; }
-            ApplyProfileDetectionAction(profileDetection_->session.OnV2StatusResponse(
-                NowMilliseconds(), message.eventId, message.sourceEndpointId, authenticated));
+                auto self = weak.lock();
+                if (!self || self->disposed_ || self->profileDetectionGeneration_ != detectionGeneration) return;
+                V2ValidationResult validation;
+                try
+                {
+                    auto key = self->v2KeyCache_.Get(pairingCode, message.sourceEndpointId);
+                    validation = ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
+                        static_cast<int64_t>(UdpPeer::TimestampNow()), &self->profileDetectionReplayCache_, NowMilliseconds());
+                }
+                catch (...) { return; }
+                if (!validation.accepted && validation.reason != L"authentication_failed") return;
+                self->Enqueue([weak, message = std::move(message), detectionGeneration,
+                    authenticated = validation.accepted]
+                {
+                    if (auto value = weak.lock(); value && !value->disposed_ && value->profileDetection_ &&
+                        value->profileDetection_->generation == detectionGeneration &&
+                        value->profileDetection_->session.WaitingForV2() &&
+                        EqualId(value->profileDetection_->session.PendingEventId(), message.eventId))
+                        value->ApplyProfileDetectionAction(value->profileDetection_->session.OnV2StatusResponse(
+                            NowMilliseconds(), message.eventId, message.sourceEndpointId, authenticated));
+                });
+            }).detach();
             return;
         }
         if (message.type == L"status_probe" && !message.targetEndpointId)
         {
-            HandleUnboundStatusProbe(message, datagram.source);
+            std::vector<CollaborationProfile> candidates = config.UnboundBootstrapProfiles();
+            for (auto const& profile : config.collaborationProfiles)
+                if (!profile.peerEndpointId.empty()) candidates.push_back(profile);
+            if (profileDetection_)
+            {
+                auto const& draft = profileDetection_->profile;
+                auto inspection = profileDetection_->workingConfig.InspectProfile(draft.id);
+                if (inspection.complete && draft.peerEndpointId.empty() &&
+                    (!draft.peerProtocolVersion || *draft.peerProtocolVersion == 2))
+                {
+                    auto existing = std::find_if(candidates.begin(), candidates.end(), [&](auto const& profile)
+                    { return EqualId(profile.id, draft.id); });
+                    if (existing == candidates.end()) candidates.push_back(draft); else *existing = draft;
+                }
+            }
+            std::weak_ptr<Controller> weak = shared_from_this();
+            std::thread([weak, message = std::move(message), source = datagram.source,
+                config = std::move(config), candidates = std::move(candidates), configurationGeneration]
+            {
+                if (auto self = weak.lock(); self && !self->disposed_)
+                    self->HandleUnboundStatusProbe(message, source, config, candidates, configurationGeneration);
+            }).detach();
             return;
         }
         if (!v2StateMachine_) return;
-        auto config = Config();
         auto matches = std::count_if(config.collaborationProfiles.begin(), config.collaborationProfiles.end(), [&](auto const& candidate)
         {
             return candidate.coordinationEnabled && candidate.peerProtocolVersion == 2 && !EqualId(candidate.peerEndpointId, config.localEndpointId) && EqualId(candidate.peerEndpointId, message.sourceEndpointId);
@@ -427,13 +468,43 @@ namespace DisplaySwitcher::Native
             return candidate.coordinationEnabled && candidate.peerProtocolVersion == 2 && !EqualId(candidate.peerEndpointId, config.localEndpointId) && EqualId(candidate.peerEndpointId, message.sourceEndpointId);
         });
         if (profile == config.collaborationProfiles.end()) return;
-        std::vector<uint8_t> secret;
-        try { secret = NormalizeV2PairingSecret(profile->pairingCode); }
-        catch (...) { return; }
-        auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
-        auto validated = ValidateV2Message(message, config.localEndpointId, profile->peerEndpointId, key,
-            static_cast<int64_t>(UdpPeer::TimestampNow()), &v2ReplayCache_, NowMilliseconds());
-        if (!validated.accepted) return;
+        auto profileId = profile->id;
+        auto pairingCode = profile->pairingCode;
+        auto localEndpointId = config.localEndpointId;
+        auto peerEndpointId = profile->peerEndpointId;
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, message = std::move(message), profileId = std::move(profileId),
+            pairingCode = std::move(pairingCode), localEndpointId = std::move(localEndpointId),
+            peerEndpointId = std::move(peerEndpointId), configurationGeneration]
+        {
+            auto self = weak.lock();
+            if (!self || self->disposed_ || self->configurationGeneration_.load() != configurationGeneration) return;
+            V2ValidationResult validation;
+            try
+            {
+                auto key = self->v2KeyCache_.Get(pairingCode, message.sourceEndpointId);
+                validation = ValidateV2Message(message, localEndpointId, peerEndpointId, key,
+                    static_cast<int64_t>(UdpPeer::TimestampNow()), &self->v2ReplayCache_, NowMilliseconds());
+            }
+            catch (...) { return; }
+            if (!validation.accepted) return;
+            self->Enqueue([weak, message = std::move(message), profileId = std::move(profileId),
+                validation, configurationGeneration]
+            {
+                if (auto value = weak.lock())
+                    value->HandleValidatedDatagram(message, profileId, validation, configurationGeneration);
+            });
+        }).detach();
+    }
+
+    void Controller::HandleValidatedDatagram(V2Message const& message, std::wstring const& profileId,
+        V2ValidationResult const& validated, uint64_t configurationGeneration)
+    {
+        if (disposed_ || configurationGeneration_.load() != configurationGeneration || !v2StateMachine_) return;
+        auto config = Config();
+        auto profile = config.FindCollaborationProfile(profileId);
+        if (!profile || !profile->coordinationEnabled || profile->peerProtocolVersion != 2 ||
+            !EqualId(profile->peerEndpointId, message.sourceEndpointId)) return;
         auto now = NowMilliseconds(); std::vector<V2Action> actions;
         if (message.type == L"status_response")
         {
@@ -465,32 +536,23 @@ namespace DisplaySwitcher::Native
         ApplyV2Actions(std::move(actions));
     }
 
-    bool Controller::HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source)
+    bool Controller::HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source,
+        AppConfig const& config, std::vector<CollaborationProfile> const& candidates,
+        uint64_t configurationGeneration)
     {
-        auto config = Config();
-        std::vector<CollaborationProfile> candidates = config.UnboundBootstrapProfiles();
-        for (auto const& profile : config.collaborationProfiles)
-            if (!profile.peerEndpointId.empty()) candidates.push_back(profile);
-        if (profileDetection_)
-        {
-            auto const& draft = profileDetection_->profile;
-            auto inspection = profileDetection_->workingConfig.InspectProfile(draft.id);
-            if (inspection.complete && draft.peerEndpointId.empty() && (!draft.peerProtocolVersion || *draft.peerProtocolVersion == 2))
-            {
-                auto existing = std::find_if(candidates.begin(), candidates.end(), [&](auto const& profile)
-                { return EqualId(profile.id, draft.id); });
-                if (existing == candidates.end()) candidates.push_back(draft); else *existing = draft;
-            }
-        }
+        if (disposed_ || configurationGeneration_.load() != configurationGeneration) return false;
         auto match = MatchUnboundStatusProbe(candidates, config.localEndpointId, source, message,
             static_cast<int64_t>(UdpPeer::TimestampNow()), NowMilliseconds(),
             [](CollaborationProfile const& profile, DatagramSource const& sender)
-            { return UdpPeer::SourceMatches(sender, profile.peerHost, profile.peerPort); }, &v2ReplayCache_);
+            { return UdpPeer::SourceMatches(sender, profile.peerHost, profile.peerPort); }, &v2ReplayCache_,
+            [this](std::wstring const& pairingCode, std::wstring const& endpointId)
+            { return v2KeyCache_.Get(pairingCode, endpointId); });
         if (match.status != UnboundProbeMatchStatus::Matched || !match.profileIndex) return false;
         auto const& profile = candidates[*match.profileIndex];
         try
         {
             auto now = static_cast<int64_t>(UdpPeer::TimestampNow());
+            std::scoped_lock lock(v2OutgoingMutex_);
             for (auto item = v2OutgoingMessages_.begin(); item != v2OutgoingMessages_.end();)
                 if (now - item->second.timestamp > 30) item = v2OutgoingMessages_.erase(item); else ++item;
             auto cacheKey = L"unbound_status_response|" + message.eventId + L"|" + message.sourceEndpointId;
@@ -500,9 +562,12 @@ namespace DisplaySwitcher::Native
             else
             {
                 response = CreateUnboundStatusResponse(message, config.localEndpointId, now,
-                    GenerateV2Nonce(), profile.pairingCode);
+                    GenerateV2Nonce(), profile.pairingCode,
+                    [this](std::wstring const& pairingCode, std::wstring const& endpointId)
+                    { return v2KeyCache_.Get(pairingCode, endpointId); });
                 v2OutgoingMessages_.emplace(cacheKey, response);
             }
+            if (configurationGeneration_.load() != configurationGeneration) return false;
             peer_->SendRaw(SerializeV2Message(response), source.address, source.port, false);
             return true;
         }
@@ -520,33 +585,44 @@ namespace DisplaySwitcher::Native
         if (profile == config.collaborationProfiles.end() || EqualId(profile->peerEndpointId, config.localEndpointId) ||
             std::count_if(config.collaborationProfiles.begin(), config.collaborationProfiles.end(), [&](auto const& candidate)
             { return candidate.coordinationEnabled && candidate.peerProtocolVersion == 2 && EqualId(candidate.peerEndpointId, action.endpointId); }) != 1) return;
-        auto now = static_cast<int64_t>(UdpPeer::TimestampNow());
-        for (auto item = v2OutgoingMessages_.begin(); item != v2OutgoingMessages_.end();)
-            if (now - item->second.timestamp > 30) item = v2OutgoingMessages_.erase(item); else ++item;
-        auto cacheKey = action.type + L"|" + action.eventId + L"|" + action.endpointId;
-        auto cached = v2OutgoingMessages_.find(cacheKey);
-        V2Message message;
-        if (cached != v2OutgoingMessages_.end()) message = cached->second;
-        else
+        auto selectedProfile = *profile;
+        auto configurationGeneration = configurationGeneration_.load();
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak, action, config = std::move(config), profile = std::move(selectedProfile),
+            configurationGeneration]
         {
-            message.type = action.type; message.eventId = action.eventId; message.sourceEndpointId = config.localEndpointId;
-            message.targetEndpointId = profile->peerEndpointId;
-            message.sourcePlatform = L"windows"; message.timestamp = now; message.nonce = GenerateV2Nonce();
-            if (!action.intent.empty()) message.intent = action.intent;
-            if (action.wakeSucceeded) message.wakeSucceeded = action.wakeSucceeded;
-            if (action.switchSucceeded) message.switchSucceeded = action.switchSucceeded;
-            if (!action.reason.empty()) message.reason = action.reason;
+            auto self = weak.lock();
+            if (!self || self->disposed_ || self->configurationGeneration_.load() != configurationGeneration) return;
+            auto now = static_cast<int64_t>(UdpPeer::TimestampNow());
+            auto cacheKey = action.type + L"|" + action.eventId + L"|" + action.endpointId;
+            V2Message message;
             try
             {
-                auto secret = NormalizeV2PairingSecret(profile->pairingCode);
-                auto key = DeriveV2AuthenticationKey(secret, config.localEndpointId);
-                message = SignV2Message(std::move(message), key);
+                std::scoped_lock lock(self->v2OutgoingMutex_);
+                for (auto item = self->v2OutgoingMessages_.begin(); item != self->v2OutgoingMessages_.end();)
+                    if (now - item->second.timestamp > 30) item = self->v2OutgoingMessages_.erase(item); else ++item;
+                auto cached = self->v2OutgoingMessages_.find(cacheKey);
+                if (cached != self->v2OutgoingMessages_.end()) message = cached->second;
+                else
+                {
+                    message.type = action.type; message.eventId = action.eventId;
+                    message.sourceEndpointId = config.localEndpointId;
+                    message.targetEndpointId = profile.peerEndpointId;
+                    message.sourcePlatform = L"windows"; message.timestamp = now; message.nonce = GenerateV2Nonce();
+                    if (!action.intent.empty()) message.intent = action.intent;
+                    if (action.wakeSucceeded) message.wakeSucceeded = action.wakeSucceeded;
+                    if (action.switchSucceeded) message.switchSucceeded = action.switchSucceeded;
+                    if (!action.reason.empty()) message.reason = action.reason;
+                    auto key = self->v2KeyCache_.Get(profile.pairingCode, config.localEndpointId);
+                    message = SignV2Message(std::move(message), key);
+                    self->v2OutgoingMessages_.emplace(cacheKey, message);
+                }
             }
             catch (...) { return; }
-            v2OutgoingMessages_.emplace(cacheKey, message);
-        }
-        peer_->SendRaw(SerializeV2Message(message), profile->peerHost, profile->peerPort,
-            action.type != L"status_probe" && action.type != L"status_response");
+            if (self->disposed_ || self->configurationGeneration_.load() != configurationGeneration) return;
+            self->peer_->SendRaw(SerializeV2Message(message), profile.peerHost, profile.peerPort,
+                action.type != L"status_probe" && action.type != L"status_response");
+        }).detach();
     }
 
     void Controller::SendV2Probe(CollaborationProfile const& profile)
@@ -685,6 +761,7 @@ namespace DisplaySwitcher::Native
         pending.completed = std::move(completed);
         pending.generation = ++profileDetectionGeneration_;
         profileDetection_ = std::move(pending);
+        v2KeyCache_.Clear();
         profileDetectionReplayCache_.Clear();
         auto action = profileDetection_->session.Start(NowMilliseconds(), complete,
             profile ? profile->peerEndpointId : std::wstring{}, NewEventId());
@@ -729,8 +806,9 @@ namespace DisplaySwitcher::Native
             return;
         }
         if (!peer_ || !peer_->IsRunning()) return;
-        auto const& config = profileDetection_->workingConfig;
-        auto const& profile = profileDetection_->profile;
+        auto config = profileDetection_->workingConfig;
+        auto profile = profileDetection_->profile;
+        auto generation = profileDetection_->generation;
         if (action.kind != ProfileDetectionAction::Kind::SendV2Probe) return;
         V2Message message;
         message.type = L"status_probe";
@@ -740,17 +818,30 @@ namespace DisplaySwitcher::Native
         message.sourcePlatform = L"windows";
         message.timestamp = static_cast<int64_t>(UdpPeer::TimestampNow());
         message.nonce = GenerateV2Nonce();
-        try
-        {
-            auto secret = NormalizeV2PairingSecret(profile.pairingCode);
-            auto key = DeriveV2AuthenticationKey(secret, config.localEndpointId);
-            message = SignV2Message(std::move(message), key);
-            peer_->SendRaw(SerializeV2Message(message), profile.peerHost, profile.peerPort, false);
-        }
-        catch (...)
-        {
-            CompleteProfileDetection({ ProfileDetectionOutcome::LocalConfigurationIncomplete });
-        }
+        std::weak_ptr<Controller> weak = shared_from_this();
+        profileDetectionProbeOperation_.Start(
+            [weak, message = std::move(message), profile = std::move(profile), generation]
+            (ProfileDetectionAsyncOperation::IsCanceled const& canceled) mutable
+            {
+                auto self = weak.lock();
+                if (!self || self->disposed_ || self->profileDetectionGeneration_ != generation || canceled()) return true;
+                auto key = self->v2KeyCache_.Get(profile.pairingCode, message.sourceEndpointId);
+                message = SignV2Message(std::move(message), key);
+                if (self->disposed_ || self->profileDetectionGeneration_ != generation || canceled()) return true;
+                self->peer_->SendRaw(SerializeV2Message(message), profile.peerHost, profile.peerPort, false);
+                return true;
+            },
+            [weak](std::function<void()> completion)
+            {
+                if (auto self = weak.lock()) self->Enqueue(std::move(completion));
+            },
+            [weak, generation](bool succeeded)
+            {
+                if (!succeeded)
+                    if (auto value = weak.lock(); value && value->profileDetection_ &&
+                        value->profileDetection_->generation == generation)
+                        value->CompleteProfileDetection({ ProfileDetectionOutcome::LocalConfigurationIncomplete });
+            });
     }
 
     void Controller::CompleteProfileDetection(ProfileDetectionResult const& result)
@@ -758,9 +849,12 @@ namespace DisplaySwitcher::Native
         if (!profileDetection_) return;
         auto completed = std::move(profileDetection_->completed);
         auto wasActive = profileDetectionActive_.load();
+        ++profileDetectionGeneration_;
+        profileDetectionProbeOperation_.Cancel();
         profileDetection_->session.Cancel();
         profileDetection_.reset();
         profileDetectionReplayCache_.Clear();
+        v2KeyCache_.Clear();
         if (wasActive) ApplyConfiguration(false);
         profileDetectionActive_ = false;
         if (completed) completed(result);
@@ -847,6 +941,14 @@ namespace DisplaySwitcher::Native
                 std::function<void(ProfileDetectionResult const&)> completed)
             {
                 if (auto self = weak.lock()) self->BeginProfileDetection(config, profileId, std::move(completed));
+            },
+            [weak]
+            {
+                if (auto self = weak.lock(); self && self->profileDetection_)
+                {
+                    self->profileDetection_->completed = {};
+                    self->CompleteProfileDetection({ ProfileDetectionOutcome::NoResponse });
+                }
             },
             [weak] { if (auto self = weak.lock()) self->BeginUsbLearning(); },
             [weak] { if (auto self = weak.lock()) self->EndUsbLearning(); },

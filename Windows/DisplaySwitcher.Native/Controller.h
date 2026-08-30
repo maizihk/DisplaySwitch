@@ -40,7 +40,11 @@ namespace DisplaySwitcher::Native
         void StartPeerHealthCheck();
         void StopPeerHealthCheck();
         void HandleDatagram(UdpPeer::Datagram const& datagram);
-        bool HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source);
+        void HandleValidatedDatagram(V2Message const& message, std::wstring const& profileId,
+            V2ValidationResult const& validation, uint64_t configurationGeneration);
+        bool HandleUnboundStatusProbe(V2Message const& message, DatagramSource const& source,
+            AppConfig const& config, std::vector<CollaborationProfile> const& candidates,
+            uint64_t configurationGeneration);
         void BeginProfileDetection(AppConfig const& workingConfig, std::wstring const& profileId,
             std::function<void(ProfileDetectionResult const&)> completed);
         void AdvanceProfileDetection(uint64_t generation);
@@ -69,6 +73,8 @@ namespace DisplaySwitcher::Native
         std::unique_ptr<UsbSwitchCoordinator> usbSwitchCoordinator_;
         std::unique_ptr<V2StateMachine> v2StateMachine_;
         V2ReplayCache v2ReplayCache_;
+        V2AuthenticationKeyCache v2KeyCache_;
+        std::mutex v2OutgoingMutex_;
         std::map<std::wstring, V2Message> v2OutgoingMessages_;
         std::map<std::wstring, int64_t> v2PeerLastSeenMs_;
         std::map<std::wstring, PendingStatusProbe> v2HealthProbes_;
@@ -84,7 +90,9 @@ namespace DisplaySwitcher::Native
         std::optional<PendingProfileDetection> profileDetection_;
         V2ReplayCache profileDetectionReplayCache_;
         std::atomic<bool> profileDetectionActive_{};
-        uint64_t profileDetectionGeneration_{};
+        std::atomic<uint64_t> profileDetectionGeneration_{};
+        ProfileDetectionAsyncOperation profileDetectionProbeOperation_;
+        std::atomic<uint64_t> configurationGeneration_{ 1 };
         winrt::Microsoft::UI::Xaml::Window settingsWindow_{ nullptr };
         std::mutex stateMutex_;
         std::wstring peerConnectionStatus_{ L"协同未启用" };

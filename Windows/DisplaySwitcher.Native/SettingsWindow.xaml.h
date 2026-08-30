@@ -23,6 +23,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
             std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
                 std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
+            std::function<void()> cancelProfileDetection,
             std::function<void()> beginUsbLearning,
             std::function<void()> endUsbLearning,
             std::function<void()> closed);
@@ -61,6 +62,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void DetectProfile(std::wstring const& id);
         void CompleteProfileDetection(std::wstring const& id,
             ::DisplaySwitcher::Native::ProfileDetectionResult const& result);
+        void CancelProfileDetection();
+        void SetProfileDetectionBusy(std::wstring const& id, bool busy);
         ::DisplaySwitcher::Native::AppConfig WorkingDdcConfig();
         void ReadDdc(std::wstring const& displayId);
         void WriteDdc(std::wstring const& displayId, ::DisplaySwitcher::Native::DdcVcpCode code, int value);
@@ -81,6 +84,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
         std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
             std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile_;
+        std::function<void()> cancelProfileDetection_;
         std::function<void()> beginUsbLearning_;
         std::function<void()> endUsbLearning_;
         std::function<void()> closed_;
@@ -124,6 +128,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             Microsoft::UI::Xaml::Controls::TextBox peerHost{ nullptr };
             Microsoft::UI::Xaml::Controls::TextBox peerPort{ nullptr };
             Microsoft::UI::Xaml::Controls::PasswordBox pairingCode{ nullptr };
+            Microsoft::UI::Xaml::Controls::Button detect{ nullptr };
             std::vector<ProfileMappingControls> mappings;
         };
         std::vector<ProfileEditorControls> profileEditors_;
@@ -155,6 +160,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
         bool loading_{};
+        bool windowClosed_{};
+        uint64_t profileDetectionGeneration_{};
+        std::wstring detectingProfileId_;
     };
 }
 

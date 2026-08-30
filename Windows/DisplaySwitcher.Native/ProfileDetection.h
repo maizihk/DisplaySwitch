@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -74,5 +77,23 @@ namespace DisplaySwitcher::Native
         int64_t deadlineMilliseconds_{};
         std::wstring pendingEventId_;
         std::wstring savedEndpointId_;
+    };
+
+    class ProfileDetectionAsyncOperation final
+    {
+    public:
+        using IsCanceled = std::function<bool()>;
+        using Work = std::function<bool(IsCanceled const&)>;
+        using Dispatch = std::function<void(std::function<void()>)>;
+        using Completion = std::function<void(bool)>;
+
+        ProfileDetectionAsyncOperation();
+        ~ProfileDetectionAsyncOperation();
+        void Start(Work work, Dispatch dispatch, Completion completion);
+        void Cancel() noexcept;
+
+    private:
+        struct State { std::atomic<uint64_t> generation{}; };
+        std::shared_ptr<State> state_;
     };
 }

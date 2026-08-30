@@ -215,6 +215,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
         std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
             std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
+        std::function<void()> cancelProfileDetection,
         std::function<void()> beginUsbLearning,
         std::function<void()> endUsbLearning,
         std::function<void()> closed)
@@ -223,7 +224,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         initialized_ = true;
         original_ = config; saved_ = std::move(saved); readDdc_ = std::move(readDdc);
         writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache);
-        detectProfile_ = std::move(detectProfile);
+        detectProfile_ = std::move(detectProfile); cancelProfileDetection_ = std::move(cancelProfileDetection);
         beginUsbLearning_ = std::move(beginUsbLearning); endUsbLearning_ = std::move(endUsbLearning);
         closed_ = std::move(closed);
         Title(L"常规");
@@ -233,7 +234,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (auto root = content.try_as<FrameworkElement>())
             root.ActualThemeChanged([this](auto const&, auto const&) { ApplyTitleBarTheme(); });
         LoadValues(config); ResizeAndCenter(); ApplyTitleBarTheme();
-        Closed([this](auto const&, auto const&) { ddcCancellation_.Cancel(); EndUsbLearning(); if (closed_) closed_(); });
+        Closed([this](auto const&, auto const&)
+        {
+            windowClosed_ = true; ++profileDetectionGeneration_; CancelProfileDetection();
+            ddcCancellation_.Cancel(); EndUsbLearning(); if (closed_) closed_();
+        });
         LoadUsbDevices();
         LoadDdcMonitors();
     }
@@ -344,6 +349,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         profileSelector_.SelectionChanged([this](auto const&, auto const&)
         {
             if (loading_) return;
+            CancelProfileDetection();
             CaptureProfileEditors();
             auto index = profileSelector_.SelectedIndex();
             selectedProfileId_ = index >= 0 && static_cast<size_t>(index) < workingProfiles_.size()
@@ -953,7 +959,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto triggerSummary = TextBlock();
             triggerSummary.Text(profile.triggerDevices.empty() ? L"未引用本机触发设备" : L"已引用 " + std::to_wstring(profile.triggerDevices.size()) + L" 个本机触发设备");
             triggerSummary.Opacity(0.72); fields.Children().Append(triggerSummary);
-            auto detect = Button(); detect.Content(box_value(L"检测")); detect.Click([this, id = profile.id](auto const&, auto const&) { DetectProfile(id); });
+            controls.detect = Button(); controls.detect.Content(box_value(L"检测"));
+            controls.detect.Click([this, id = profile.id](auto const&, auto const&) { DetectProfile(id); });
             auto up = Button(); up.Content(box_value(L"上移")); up.IsEnabled(index > 0);
             up.Click([this, id = profile.id](auto const&, auto const&)
             {
@@ -971,7 +978,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto remove = Button(); remove.Content(box_value(L"删除")); remove.IsEnabled(workingProfiles_.size() > 1);
             remove.Click([this, id = profile.id](auto const&, auto const&) { RemoveProfile(id); });
             auto buttons = StackPanel(); buttons.Orientation(Orientation::Horizontal); buttons.Spacing(8);
-            buttons.Children().Append(detect);
+            buttons.Children().Append(controls.detect);
             buttons.Children().Append(up); buttons.Children().Append(down); buttons.Children().Append(remove);
             fields.Children().Append(buttons); profileEditorsPanel_.Children().Append(CreateCard(fields));
             profileEditors_.push_back(std::move(controls));
@@ -1044,6 +1051,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::DetectProfile(std::wstring const& id)
     {
+        if (!detectingProfileId_.empty()) return;
         CaptureDisplayEditors(); CaptureProfileEditors();
         auto config = original_; config.displays = workingDisplays_; config.collaborationProfiles = workingProfiles_;
         auto result = config.InspectProfile(id);
@@ -1064,12 +1072,25 @@ namespace winrt::DisplaySwitcher::Native::implementation
         validation_.Text(L"正在检测；不会执行 USB、蓝牙、唤醒或显示器操作。");
         validation_.Visibility(Visibility::Visible);
         SetConnectionStatus(L"正在检测…", false);
-        detectProfile_(config, id, [this, id](auto const& detection) { CompleteProfileDetection(id, detection); });
+        detectingProfileId_ = id;
+        auto generation = ++profileDetectionGeneration_;
+        SetProfileDetectionBusy(id, true);
+        auto weak = get_weak();
+        detectProfile_(config, id, [weak, id, generation](auto const& detection)
+        {
+            if (auto self = weak.get(); self && !self->windowClosed_ &&
+                self->profileDetectionGeneration_ == generation)
+                self->CompleteProfileDetection(id, detection);
+        });
     }
 
     void SettingsWindow::CompleteProfileDetection(std::wstring const& id,
         ::DisplaySwitcher::Native::ProfileDetectionResult const& result)
     {
+        if (windowClosed_ || detectingProfileId_.empty() ||
+            _wcsicmp(detectingProfileId_.c_str(), id.c_str()) != 0) return;
+        detectingProfileId_.clear();
+        SetProfileDetectionBusy(id, false);
         using Outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome;
         if (result.outcome == Outcome::LocalConfigurationIncomplete)
         {
@@ -1105,26 +1126,51 @@ namespace winrt::DisplaySwitcher::Native::implementation
         dialog.PrimaryButtonText(L"确认对端"); dialog.CloseButtonText(L"保留原值"); dialog.DefaultButton(ContentDialogButton::Close);
         dialog.XamlRoot(Content().XamlRoot());
         auto observed = result.observedEndpointId;
-        dialog.ShowAsync().Completed([this, id, observed, dialog](auto const& operation, auto const& status)
+        auto generation = profileDetectionGeneration_;
+        auto weak = get_weak();
+        dialog.ShowAsync().Completed([weak, id, observed, dialog, generation](auto const& operation, auto const& status)
         {
+            auto self = weak.get();
+            if (!self || self->windowClosed_ || self->profileDetectionGeneration_ != generation) return;
             if (status != Windows::Foundation::AsyncStatus::Completed || operation.GetResults() != ContentDialogResult::Primary)
             {
-                SetConnectionStatus(L"v2 可用，对端身份未确认", false);
-                validation_.Text(L"未确认对端身份；原配置保持不变。"); validation_.Visibility(Visibility::Visible); return;
+                self->SetConnectionStatus(L"v2 可用，对端身份未确认", false);
+                self->validation_.Text(L"未确认对端身份；原配置保持不变。"); self->validation_.Visibility(Visibility::Visible); return;
             }
-            auto target = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
+            auto target = std::find_if(self->workingProfiles_.begin(), self->workingProfiles_.end(), [&](auto const& item)
             { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
-            if (target == workingProfiles_.end()) return;
+            if (target == self->workingProfiles_.end()) return;
             ::DisplaySwitcher::Native::ProfileDetectionResult confirmed;
             confirmed.outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome::V2Available;
             confirmed.observedEndpointId = observed; confirmed.endpointConfirmationRequired = true;
             ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*target, confirmed, true);
-            if (SaveImmediately())
+            if (self->SaveImmediately())
             {
-                SetConnectionStatus(L"v2 可用，对端身份已确认", true);
-                validation_.Text(L"对端身份已确认并保存。"); validation_.Visibility(Visibility::Visible);
+                self->SetConnectionStatus(L"v2 可用，对端身份已确认", true);
+                self->validation_.Text(L"对端身份已确认并保存。"); self->validation_.Visibility(Visibility::Visible);
             }
         });
+    }
+
+    void SettingsWindow::CancelProfileDetection()
+    {
+        if (detectingProfileId_.empty()) return;
+        auto id = std::move(detectingProfileId_);
+        detectingProfileId_.clear();
+        ++profileDetectionGeneration_;
+        SetProfileDetectionBusy(id, false);
+        if (cancelProfileDetection_) cancelProfileDetection_();
+    }
+
+    void SettingsWindow::SetProfileDetectionBusy(std::wstring const& id, bool busy)
+    {
+        for (auto const& controls : profileEditors_)
+        {
+            if (!controls.detect) continue;
+            controls.detect.IsEnabled(!busy);
+            if (_wcsicmp(controls.id.c_str(), id.c_str()) == 0)
+                controls.detect.Content(box_value(busy ? L"正在检测…" : L"检测"));
+        }
     }
 
     ::DisplaySwitcher::Native::AppConfig SettingsWindow::WorkingDdcConfig()
@@ -1334,6 +1380,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     bool SettingsWindow::SaveImmediately()
     {
+        if (!detectingProfileId_.empty()) CancelProfileDetection();
         return !loading_ && Save(false);
     }
 

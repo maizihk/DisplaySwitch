@@ -103,6 +103,61 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
+    V2AuthenticationKeyCache::V2AuthenticationKeyCache(size_t capacity, Deriver deriver) :
+        capacity_(std::max<size_t>(1, capacity)),
+        deriver_(deriver ? std::move(deriver) : DeriveV2AuthenticationKey)
+    {
+    }
+
+    std::array<uint8_t, 32> V2AuthenticationKeyCache::Get(std::wstring const& pairingCode,
+        std::wstring const& sourceEndpointId)
+    {
+        auto secret = NormalizeV2PairingSecret(pairingCode);
+        auto endpoint = sourceEndpointId;
+        std::transform(endpoint.begin(), endpoint.end(), endpoint.begin(), ::towlower);
+        std::scoped_lock lock(mutex_);
+        auto found = std::find_if(entries_.begin(), entries_.end(), [&](Entry const& entry)
+        { return entry.secret == secret && entry.sourceEndpointId == endpoint; });
+        if (found != entries_.end())
+        {
+            auto result = found->key;
+            if (found != entries_.begin())
+            {
+                auto entry = std::move(*found);
+                entries_.erase(found);
+                entries_.push_front(std::move(entry));
+            }
+            return result;
+        }
+        auto key = deriver_(secret, endpoint);
+        entries_.push_front({ std::move(secret), std::move(endpoint), key });
+        while (entries_.size() > capacity_) entries_.pop_back();
+        return key;
+    }
+
+    void V2AuthenticationKeyCache::Clear() noexcept
+    {
+        std::scoped_lock lock(mutex_);
+        for (auto& entry : entries_)
+        {
+            std::fill(entry.secret.begin(), entry.secret.end(), uint8_t{});
+            entry.key.fill(0);
+        }
+        entries_.clear();
+    }
+
+    size_t V2AuthenticationKeyCache::Size() const noexcept
+    {
+        std::scoped_lock lock(mutex_);
+        return entries_.size();
+    }
+
+    void V2ReplayCache::Clear() noexcept
+    {
+        std::scoped_lock lock(mutex_);
+        entries_.clear();
+    }
+
     std::optional<int> ParseProtocolVersion(std::string_view json)
     {
         try
@@ -329,6 +384,7 @@ namespace DisplaySwitcher::Native
 
     V2ReplayResult V2ReplayCache::CheckAndRemember(V2Message const& message, int64_t nowMilliseconds)
     {
+        std::scoped_lock lock(mutex_);
         while (!entries_.empty() && nowMilliseconds - entries_.front().seenAtMilliseconds > ReplayRetentionMilliseconds) entries_.pop_front();
         auto source = Lower(message.sourceEndpointId);
         auto canonical = CanonicalV2AuthenticationInput(message);
