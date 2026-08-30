@@ -568,15 +568,42 @@ enum NativeDDCReadStrategyRunner {
 }
 
 enum NativeDDCBuiltinHDMIReadPolicy {
+    // A Get VCP retry must repeat the complete request/reply exchange. Repeating
+    // only the request writes can leave the HDMI service returning a stale or
+    // unrelated frame while still reporting KERN_SUCCESS.
     static func run(
         readDataAddress: UInt8,
+        attempts: Int,
+        responseLength: Int = 11,
+        retry: () -> Void,
         exchange: (UInt8, inout [UInt8]) -> Result<DDCReading, NativeDDCReplyIssue>
     ) -> NativeDDCReadStrategyOutcome {
-        NativeDDCReadStrategyRunner.run(
-            primaryDataAddress: readDataAddress,
-            alternateDataAddress: nil,
-            attemptsPerStrategy: 1,
-            exchange: exchange
+        let attemptLimit = max(attempts, 1)
+        var lastIssue = NativeDDCReplyIssue.responseReadFailed
+        var onlyObservedIssueWasBadChecksum = true
+
+        for attempt in 1...attemptLimit {
+            var response = [UInt8](repeating: 0, count: responseLength)
+            switch exchange(readDataAddress, &response) {
+            case .success(let reading):
+                return .success(reading, dataAddress: readDataAddress, attempts: attempt)
+            case .failure(let issue):
+                lastIssue = issue
+                onlyObservedIssueWasBadChecksum = onlyObservedIssueWasBadChecksum
+                    && issue == .badChecksum
+                if attempt < attemptLimit {
+                    retry()
+                }
+            }
+        }
+
+        return .failure(
+            lastIssue,
+            dataAddress: readDataAddress,
+            attempts: attemptLimit,
+            onlyObservedIssueWasBadChecksum: onlyObservedIssueWasBadChecksum,
+            checksumCompatibilityRejection: nil,
+            checksumCompatibilityEvidence: nil
         )
     }
 }
@@ -748,8 +775,10 @@ struct NativeDDCTransportParameters: Equatable {
     let writeSleepMicroseconds: UInt32
     let typeCDPReadSleepMicroseconds: UInt32
     let builtinHDMIReadSleepMicroseconds: UInt32
+    let builtinHDMIReadRetrySleepMicroseconds: UInt32
     let retrySleepMicroseconds: UInt32
     let writeCycles: Int
+    let builtinHDMIReadRequestWriteCycles: Int
     let writeAttempts: Int
     let typeCDPReadAttempts: Int
     let builtinHDMIReadAttempts: Int
@@ -773,12 +802,14 @@ struct NativeDDCTransportParameters: Equatable {
         builtinHDMIReadDataAddress: 0x00,
         writeSleepMicroseconds: 10_000,
         typeCDPReadSleepMicroseconds: 50_000,
-        builtinHDMIReadSleepMicroseconds: 50_000,
+        builtinHDMIReadSleepMicroseconds: 10_000,
+        builtinHDMIReadRetrySleepMicroseconds: 5_000,
         retrySleepMicroseconds: 20_000,
         writeCycles: 2,
+        builtinHDMIReadRequestWriteCycles: 1,
         writeAttempts: 5,
         typeCDPReadAttempts: 5,
-        builtinHDMIReadAttempts: 5
+        builtinHDMIReadAttempts: 8
     )
 }
 

@@ -3,11 +3,35 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-015 / macOS M-008 IOAVService 拓扑绑定
-- 堆叠基线：`codex/macos-ds-014-hdmi-ddc-read-diagnostics@1a15db2`
-- 分支：`codex/macos-ds-015-ioav-topology-binding`
-- 实现提交：`039466bc0e680a753aa069f1883342d3969dd400`
-- PR：[#55](https://github.com/maizihk/DisplaySwitch/pull/55)；不主动触发云端 CI
+- 功能：DS-017 / 内建 HDMI 生产读取事务
+- 堆叠基线：`codex/macos-ds-015-ioav-topology-binding@76ddf4b`
+- 分支：`codex/macos-ds-017-production-read-transactions`
+- 实现提交：本任务提交，最终 SHA 以分支 HEAD 为准
+- PR：实机验证前不创建，避免把未确认硬件行为带入合并候选
+
+## DS-017 原因与决策
+
+- 当前公开 AppleSiliconDDC 源码仍是旧的“双写后单读”实现，但 BetterDisplay 5.0.3 生产二进制已经改成最多 8 次完整的“单写、等待、单读”事务；此前只改写次数的 DS-016 没有复刻这个状态机，不能用于否定该根因。
+- 生产二进制中的 `0x50` 是独立的 `ddc2ab` 备用寻址，说明文字明确主要用于部分 LG 输入源控制；普通亮度 Get VCP 继续使用标准 `0x51` 请求寻址，未增加盲探。
+- 用户当前的 Dell C2DP 已恢复严格读取，因此本轮只修改内建 HDMI；Type-C/DP 和所有纯写路径保持原样。
+
+## DS-017 实现与自动验证
+
+- 内建 HDMI 最多执行 8 次完整事务：每次单次 WriteI2C，等待 10 ms，再单次 ReadI2C；严格失败后等待 5 ms 再重试，每次使用全新 11 字节零缓冲区。
+- 收到首个严格有效回复立即结束；失败继续保留严格 checksum、opcode、command、范围校验，不接受坏回复，不覆盖可信缓存。
+- DDC 专项 XCTest 54/54，完整 XCTest 139/139；既有 USB 并发测试有 QoS 提示但通过。
+- Release `build-app.sh`、adhoc 签名及 `codesign --verify --deep --strict` 通过。
+- 未执行真实 DDC、输入源切换、USB、网络或唤醒；未修改协议或系统权限。
+
+## DS-017 测试包与实机边界
+
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-017-hdmi-production-read-macOS-test.zip`
+- SHA-256：`9f11ca8deca75c7d3edb87bee324cb7e0997ecd2a4de54f94f57339d72fd1a3d`
+- 大小：661152 bytes。
+- 先对 Dell C2DP 连续读取 3 次，必须保持严格成功；再对小米内建 HDMI 连续读取 10 次，记录严格成功次数与数值。最后做一次输入源切换，确认纯写路径无回归。
+- 任一已成功路径回归时立即停止，不合并；只有小米获得严格 DDC/CI 回复才确认本根因。
+
+## 上一任务：DS-015 IOAVService 拓扑绑定
 
 ## DS-015 原因与决策
 

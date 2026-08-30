@@ -451,10 +451,12 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
         XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0x00)
         XCTAssertEqual(parameters.readSleepMicroseconds(for: .typeCDPAlt), 50_000)
-        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 50_000)
+        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 10_000)
+        XCTAssertEqual(parameters.builtinHDMIReadRetrySleepMicroseconds, 5_000)
         XCTAssertEqual(parameters.readAttempts(for: .typeCDPAlt), 5)
-        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 5)
+        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 8)
         XCTAssertEqual(parameters.writeCycles, 2)
+        XCTAssertEqual(parameters.builtinHDMIReadRequestWriteCycles, 1)
         XCTAssertEqual(parameters.writeAttempts, 5)
     }
 
@@ -730,21 +732,30 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertTrue(result.attempts.allSatisfy { $0.reply.count == 11 })
     }
 
-    func testBuiltinHDMIFormalReadUsesOneStrictAttemptWithoutAlternateProbe() {
+    func testBuiltinHDMIFormalReadRetriesCompleteTransactionsWithoutAlternateProbe() {
         var addresses: [UInt8] = []
-        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(readDataAddress: 0) { address, response in
+        var retryCount = 0
+        var buffersWereFresh: [Bool] = []
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 8,
+            retry: { retryCount += 1 }
+        ) { address, response in
             addresses.append(address)
+            buffersWereFresh.append(response.allSatisfy { $0 == 0 })
             response = self.badChecksumReply(current: 42, maximum: 100)
             return .failure(.badChecksum)
         }
 
-        XCTAssertEqual(addresses, [0])
+        XCTAssertEqual(addresses, Array(repeating: 0, count: 8))
+        XCTAssertEqual(retryCount, 7)
+        XCTAssertTrue(buffersWereFresh.allSatisfy { $0 })
         XCTAssertEqual(
             outcome,
             .failure(
                 .badChecksum,
                 dataAddress: 0,
-                attempts: 1,
+                attempts: 8,
                 onlyObservedIssueWasBadChecksum: true
             )
         )
@@ -753,13 +764,19 @@ final class DDCBackendTests: XCTestCase {
     func testBuiltinHDMIFormalReadAcceptsOnlyStrictValidReply() {
         let expected = DDCReading(current: 42, maximum: 100)
         var calls = 0
-        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(readDataAddress: 0) { _, response in
+        var retryCount = 0
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 8,
+            retry: { retryCount += 1 }
+        ) { _, response in
             calls += 1
             response = self.strictReply(current: 42, maximum: 100)
             return NativeDDCReplyValidator.reading(from: response, command: .luminance)
         }
 
         XCTAssertEqual(calls, 1)
+        XCTAssertEqual(retryCount, 0)
         XCTAssertEqual(outcome, .success(expected, dataAddress: 0, attempts: 1))
     }
 

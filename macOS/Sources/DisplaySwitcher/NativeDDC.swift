@@ -704,10 +704,16 @@ final class NativeDDCBackend: DDCBackend {
     ) -> NativeDDCReadStrategyOutcome {
         if transportPath == .builtinHDMIConverter,
            chipAddress == 0x37 {
-            var attemptDiagnostic: NativeDDCReadAttemptDiagnostic?
+            var attemptDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
+            var strategyAttempt = 0
             let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
-                readDataAddress: parameters.readDataAddress(for: transportPath)
+                readDataAddress: parameters.readDataAddress(for: transportPath),
+                attempts: parameters.readAttempts(for: transportPath),
+                retry: {
+                    usleep(parameters.builtinHDMIReadRetrySleepMicroseconds)
+                }
             ) { readDataAddress, response in
+                strategyAttempt += 1
                 var request: [UInt8] = [command.rawValue]
                 var communicationTrace: NativeDDCCommunicationTrace?
                 let exchange = communicate(
@@ -718,6 +724,7 @@ final class NativeDDCBackend: DDCBackend {
                     attempts: 1,
                     readDataAddress: readDataAddress,
                     readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                    requestWriteCycles: parameters.builtinHDMIReadRequestWriteCycles,
                     parameters: parameters,
                     trace: { communicationTrace = $0 }
                 )
@@ -732,19 +739,19 @@ final class NativeDDCBackend: DDCBackend {
                 case .success(let reading): validation = .valid(reading)
                 case .failure(let issue): validation = .rejected(issue)
                 }
-                attemptDiagnostic = NativeDDCReadAttemptDiagnostic(
+                attemptDiagnostics.append(NativeDDCReadAttemptDiagnostic(
                     dataAddress: readDataAddress,
-                    strategyAttempt: 1,
+                    strategyAttempt: strategyAttempt,
                     delayMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
                     writeIOReturns: communicationTrace?.writeIOReturns ?? [],
                     readIOReturn: communicationTrace?.readIOReturn,
                     reply: communicationTrace?.response ?? response,
                     validation: validation,
                     edidReferences: edidReferences
-                )
+                ))
                 return result
             }
-            diagnosticRecorder?(attemptDiagnostic.map { [$0] } ?? [])
+            diagnosticRecorder?(attemptDiagnostics)
             return outcome
         }
         diagnosticRecorder?([])
@@ -764,6 +771,7 @@ final class NativeDDCBackend: DDCBackend {
                 attempts: 1,
                 readDataAddress: readDataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                requestWriteCycles: parameters.writeCycles,
                 parameters: parameters
             )
             if case .failure(let issue) = exchange {
@@ -791,6 +799,7 @@ final class NativeDDCBackend: DDCBackend {
                 attempts: 1,
                 readDataAddress: dataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                requestWriteCycles: parameters.writeCycles,
                 parameters: parameters
             )
         }
@@ -830,6 +839,7 @@ final class NativeDDCBackend: DDCBackend {
             attempts: parameters.writeAttempts,
             readDataAddress: nil,
             readSleepMicroseconds: nil,
+            requestWriteCycles: parameters.writeCycles,
             parameters: parameters,
             diagnosticContext: diagnosticContext,
             diagnostics: diagnostics
@@ -885,6 +895,7 @@ final class NativeDDCBackend: DDCBackend {
         attempts: Int,
         readDataAddress: UInt8?,
         readSleepMicroseconds: UInt32?,
+        requestWriteCycles: Int,
         parameters: NativeDDCTransportParameters,
         diagnosticContext: InputSourceDiagnosticContext? = nil,
         diagnostics: InputSourceDiagnosticRecording? = nil,
@@ -901,7 +912,7 @@ final class NativeDDCBackend: DDCBackend {
             var cycleIndex = 0
             var writeIOReturns: [Int32] = []
             let writeSucceeded = NativeDDCWriteCyclePolicy.perform(
-                cycles: parameters.writeCycles
+                cycles: requestWriteCycles
             ) {
                 cycleIndex += 1
                 usleep(parameters.writeSleepMicroseconds)
