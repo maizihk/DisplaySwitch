@@ -2,10 +2,9 @@
 // Discovery and I2C packet handling are derived from AppleSiliconDDC:
 // https://github.com/waydabber/AppleSiliconDDC
 // Copyright (c) 2021 Istvan T., used under the MIT License.
-// MonitorControl uses a different read offset (0 instead of 0x51). DS-009 keeps
-// the Type-C/DP strategies explicit and bounded. DS-014 adds a diagnostic-only
-// HDMI 0 -> 0x51 comparison for chip 0x37 luminance reads; offset 0x51 is only
-// accepted after two consecutive, strictly valid and semantically equal replies.
+// Type-C/DP and built-in HDMI keep separate, bounded read policies. Built-in
+// HDMI uses the observed IOAVService timing without weakening strict DDC/CI
+// validation or probing alternate chip/offset combinations.
 
 import CoreGraphics
 import Foundation
@@ -704,10 +703,16 @@ final class NativeDDCBackend: DDCBackend {
     ) -> NativeDDCReadStrategyOutcome {
         if transportPath == .builtinHDMIConverter,
            chipAddress == 0x37 {
-            var attemptDiagnostic: NativeDDCReadAttemptDiagnostic?
+            var attemptDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
+            var strategyAttempt = 0
             let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
-                readDataAddress: parameters.readDataAddress(for: transportPath)
+                readDataAddress: parameters.readDataAddress(for: transportPath),
+                attempts: parameters.readAttempts(for: transportPath),
+                retry: {
+                    usleep(parameters.builtinHDMIReadRetrySleepMicroseconds)
+                }
             ) { readDataAddress, response in
+                strategyAttempt += 1
                 var request: [UInt8] = [command.rawValue]
                 var communicationTrace: NativeDDCCommunicationTrace?
                 let exchange = communicate(
@@ -732,19 +737,19 @@ final class NativeDDCBackend: DDCBackend {
                 case .success(let reading): validation = .valid(reading)
                 case .failure(let issue): validation = .rejected(issue)
                 }
-                attemptDiagnostic = NativeDDCReadAttemptDiagnostic(
+                attemptDiagnostics.append(NativeDDCReadAttemptDiagnostic(
                     dataAddress: readDataAddress,
-                    strategyAttempt: 1,
+                    strategyAttempt: strategyAttempt,
                     delayMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
                     writeIOReturns: communicationTrace?.writeIOReturns ?? [],
                     readIOReturn: communicationTrace?.readIOReturn,
                     reply: communicationTrace?.response ?? response,
                     validation: validation,
                     edidReferences: edidReferences
-                )
+                ))
                 return result
             }
-            diagnosticRecorder?(attemptDiagnostic.map { [$0] } ?? [])
+            diagnosticRecorder?(attemptDiagnostics)
             return outcome
         }
         diagnosticRecorder?([])

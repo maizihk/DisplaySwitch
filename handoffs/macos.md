@@ -3,11 +3,54 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-015 / macOS M-008 IOAVService 拓扑绑定
-- 堆叠基线：`codex/macos-ds-014-hdmi-ddc-read-diagnostics@1a15db2`
-- 分支：`codex/macos-ds-015-ioav-topology-binding`
-- 实现提交：`039466bc0e680a753aa069f1883342d3969dd400`
-- PR：[#55](https://github.com/maizihk/DisplaySwitch/pull/55)；不主动触发云端 CI
+- 功能：DS-016 / macOS 内建 HDMI DDC 读取时序对齐
+- 堆叠基线：`codex/macos-ds-015-ioav-topology-binding@76ddf4b`
+- 分支：`codex/macos-ds-016-hdmi-read-timing`
+- 实现提交：本任务提交，最终 SHA 以分支 HEAD 为准
+- PR：实机验证前不创建以避免触发 main PR CI
+
+## DS-016 原因与决策
+
+- 对已验证第三方二进制的静态核对表明，其 M4 内建 HDMI Get VCP 与本项目使用相同的 `IOAVService`、chip `0x37`、写地址 `0x51`、读 offset `0`、11 字节回复和默认严格 checksum。
+- 实际差异是第三方在双写后约 10 ms 读取，并使用有限重试；本项目在 50 ms 后只读取一次。此前 DS-014 的 50 ms 诊断没有验证这个时序变量，因此“当前原生路径不可读”不能排除错过回复窗口。
+- 本轮只对齐这一变量，不通过忽略 checksum、扫描 chip/offset 或接受移位数据来制造成功。
+
+## DS-016 实现
+
+- 内建 HDMI 读取等待从 50 ms 改为 10 ms；最多 4 次完整严格事务，失败事务之间等待 5 ms。
+- 每次事务重新清零 11 字节回复缓冲区；首次严格成功立即停止，最终失败继续走既有“可靠读取不可用/上次可信值”安全路径。
+- 诊断在内存中保留每次脱敏结果，但普通设置页不展示原始回复、IORegistry 路径或硬件标识。
+- Type-C/DP、Set VCP、输入源切换、拓扑绑定、USB、网络与协议均未改变。
+
+## DS-016 自动验证
+
+- DDC 专项 XCTest：55/55。
+- 完整 XCTest：140/140；一条既有 USB 并发测试产生 QoS 性能提示，测试通过。
+- `./macOS/scripts/build-app.sh` Release 构建、打包、解压验签和 `codesign --verify --deep --strict` 通过。
+- 未执行真实 DDC、输入源切换、USB、网络或唤醒，未修改系统权限。
+
+## DS-016 测试包
+
+- `macOS/outputs/DisplaySwitcher-DS-016-hdmi-read-timing-macOS-test.zip`
+- SHA-256：`cf685b52e423e95ab6ff0add582a2acf29447fb787bdd35bcb93d522f4ef77da`
+- 大小：656928 bytes
+
+## DS-016 尚需用户实机验证
+
+1. 保持目标显示器直连 M4 mini 内建 HDMI，退出旧版后启动测试版。
+2. 显示器页只开启亮度，连续点击“读取 DDC 参数”5次，记录成功次数和读数是否与显示器当前亮度一致。
+3. 读取失败应继续显示“当前连接不支持可靠读取”或上次可信值；任何坏 checksum 数据都不能成为新读数。
+4. 本轮不需要测试输入源切换；其实现未改。
+
+## DS-016 修改范围
+
+- `macOS/Sources/DisplaySwitcher/DDCBackend.swift`
+- `macOS/Sources/DisplaySwitcher/NativeDDC.swift`
+- `macOS/Tests/DisplaySwitcherTests/DDCBackendTests.swift`
+- `macOS/DEVELOPMENT_CHECKLIST.md`
+- `handoffs/macos.md`
+
+## 上一任务：DS-015 IOAVService 拓扑绑定
 
 ## DS-015 原因与决策
 

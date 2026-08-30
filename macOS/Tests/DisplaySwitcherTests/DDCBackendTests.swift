@@ -451,9 +451,10 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
         XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0x00)
         XCTAssertEqual(parameters.readSleepMicroseconds(for: .typeCDPAlt), 50_000)
-        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 50_000)
+        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 10_000)
+        XCTAssertEqual(parameters.builtinHDMIReadRetrySleepMicroseconds, 5_000)
         XCTAssertEqual(parameters.readAttempts(for: .typeCDPAlt), 5)
-        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 5)
+        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 4)
         XCTAssertEqual(parameters.writeCycles, 2)
         XCTAssertEqual(parameters.writeAttempts, 5)
     }
@@ -730,37 +731,77 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertTrue(result.attempts.allSatisfy { $0.reply.count == 11 })
     }
 
-    func testBuiltinHDMIFormalReadUsesOneStrictAttemptWithoutAlternateProbe() {
+    func testBuiltinHDMIReadUsesFourFreshStrictAttemptsWithoutAlternateProbe() {
         var addresses: [UInt8] = []
-        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(readDataAddress: 0) { address, response in
+        var buffersWereFresh: [Bool] = []
+        var retryCount = 0
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 4,
+            retry: { retryCount += 1 }
+        ) { address, response in
             addresses.append(address)
+            buffersWereFresh.append(response.allSatisfy { $0 == 0 })
             response = self.badChecksumReply(current: 42, maximum: 100)
             return .failure(.badChecksum)
         }
 
-        XCTAssertEqual(addresses, [0])
+        XCTAssertEqual(addresses, Array(repeating: 0, count: 4))
+        XCTAssertTrue(buffersWereFresh.allSatisfy { $0 })
+        XCTAssertEqual(retryCount, 3)
         XCTAssertEqual(
             outcome,
             .failure(
                 .badChecksum,
                 dataAddress: 0,
-                attempts: 1,
+                attempts: 4,
                 onlyObservedIssueWasBadChecksum: true
             )
         )
     }
 
-    func testBuiltinHDMIFormalReadAcceptsOnlyStrictValidReply() {
+    func testBuiltinHDMIReadStopsAtFirstStrictValidReply() {
         let expected = DDCReading(current: 42, maximum: 100)
         var calls = 0
-        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(readDataAddress: 0) { _, response in
+        var retryCount = 0
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 4,
+            retry: { retryCount += 1 }
+        ) { _, response in
             calls += 1
             response = self.strictReply(current: 42, maximum: 100)
             return NativeDDCReplyValidator.reading(from: response, command: .luminance)
         }
 
         XCTAssertEqual(calls, 1)
+        XCTAssertEqual(retryCount, 0)
         XCTAssertEqual(outcome, .success(expected, dataAddress: 0, attempts: 1))
+    }
+
+    func testBuiltinHDMIReadRetriesAfterMixedStrictFailuresAndKeepsLastIssue() {
+        var issues: [NativeDDCReplyIssue] = [
+            .responseTimeout, .badChecksum, .wrongSource, .responseReadFailed
+        ]
+        var retryCount = 0
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 4,
+            retry: { retryCount += 1 }
+        ) { _, _ in
+            .failure(issues.removeFirst())
+        }
+
+        XCTAssertEqual(retryCount, 3)
+        XCTAssertEqual(
+            outcome,
+            .failure(
+                .responseReadFailed,
+                dataAddress: 0,
+                attempts: 4,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
     }
 
     func testReliableReadUnsupportedDiagnosticHidesTransportInternals() {
