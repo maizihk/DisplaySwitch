@@ -773,7 +773,8 @@ struct NativeDDCTransportParameters: Equatable {
     let builtinHDMIReadRetrySleepMicroseconds: UInt32
     let retrySleepMicroseconds: UInt32
     let writeCycles: Int
-    let readRequestWriteCycles: Int
+    let typeCDPReadRequestWriteCycles: Int
+    let builtinHDMIReadRequestWriteCycles: Int
     let writeAttempts: Int
     let typeCDPReadAttempts: Int
     let builtinHDMIReadAttempts: Int
@@ -791,8 +792,9 @@ struct NativeDDCTransportParameters: Equatable {
         path == .builtinHDMIConverter ? builtinHDMIReadAttempts : typeCDPReadAttempts
     }
 
-    func writeCycleCount(expectsResponse: Bool) -> Int {
-        expectsResponse ? readRequestWriteCycles : writeCycles
+    func readRequestWriteCycles(for path: NativeDDCTransportPath) -> Int {
+        path == .builtinHDMIConverter
+            ? builtinHDMIReadRequestWriteCycles : typeCDPReadRequestWriteCycles
     }
 
     static let appleSiliconDDCCompatible = NativeDDCTransportParameters(
@@ -805,7 +807,8 @@ struct NativeDDCTransportParameters: Equatable {
         builtinHDMIReadRetrySleepMicroseconds: 5_000,
         retrySleepMicroseconds: 20_000,
         writeCycles: 2,
-        readRequestWriteCycles: 1,
+        typeCDPReadRequestWriteCycles: 2,
+        builtinHDMIReadRequestWriteCycles: 1,
         writeAttempts: 5,
         typeCDPReadAttempts: 5,
         builtinHDMIReadAttempts: 4

@@ -723,6 +723,7 @@ final class NativeDDCBackend: DDCBackend {
                     attempts: 1,
                     readDataAddress: readDataAddress,
                     readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                    requestWriteCycles: parameters.readRequestWriteCycles(for: transportPath),
                     parameters: parameters,
                     trace: { communicationTrace = $0 }
                 )
@@ -769,6 +770,7 @@ final class NativeDDCBackend: DDCBackend {
                 attempts: 1,
                 readDataAddress: readDataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                requestWriteCycles: parameters.readRequestWriteCycles(for: transportPath),
                 parameters: parameters
             )
             if case .failure(let issue) = exchange {
@@ -796,6 +798,7 @@ final class NativeDDCBackend: DDCBackend {
                 attempts: 1,
                 readDataAddress: dataAddress,
                 readSleepMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                requestWriteCycles: parameters.readRequestWriteCycles(for: transportPath),
                 parameters: parameters
             )
         }
@@ -835,6 +838,7 @@ final class NativeDDCBackend: DDCBackend {
             attempts: parameters.writeAttempts,
             readDataAddress: nil,
             readSleepMicroseconds: nil,
+            requestWriteCycles: parameters.writeCycles,
             parameters: parameters,
             diagnosticContext: diagnosticContext,
             diagnostics: diagnostics
@@ -890,6 +894,7 @@ final class NativeDDCBackend: DDCBackend {
         attempts: Int,
         readDataAddress: UInt8?,
         readSleepMicroseconds: UInt32?,
+        requestWriteCycles: Int,
         parameters: NativeDDCTransportParameters,
         diagnosticContext: InputSourceDiagnosticContext? = nil,
         diagnostics: InputSourceDiagnosticRecording? = nil,
@@ -906,7 +911,7 @@ final class NativeDDCBackend: DDCBackend {
             var cycleIndex = 0
             var writeIOReturns: [Int32] = []
             let writeSucceeded = NativeDDCWriteCyclePolicy.perform(
-                cycles: parameters.writeCycleCount(expectsResponse: !response.isEmpty)
+                cycles: requestWriteCycles
             ) {
                 cycleIndex += 1
                 usleep(parameters.writeSleepMicroseconds)

@@ -3,7 +3,7 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-016 / macOS DDC 读取请求单写事务
+- 功能：DS-016 / macOS DDC 读取请求按传输路径分流
 - 堆叠基线：`codex/macos-ds-015-ioav-topology-binding@76ddf4b`
 - 分支：`codex/macos-ds-016-hdmi-read-timing`
 - 实现提交：本任务提交，最终 SHA 以分支 HEAD 为准
@@ -13,12 +13,12 @@
 
 - 第一阶段仅对齐内建 HDMI 的等待与有限重试，用户实测没有改善，因此时序不足以解释失败。
 - 后续对当前第三方进程的实测确认：它在本机通过同一 HDMI service 执行一次 Get VCP 时，底层命令计数只增加 2，对应一次 WriteI2C 和一次 ReadI2C；本项目公共 `communicate()` 此前对所有事务都套用双写，导致 Get VCP 实际为“重复写入两个相同请求，只读取一个回复”。
-- 重复请求可能让显示器或 HDMI 转换链路排队两个回复，使随后单次读取拿到残留、回显或错位帧；这与实机随机 11 字节坏 checksum 数据一致。该判断仍需单写测试包实机确认，不能仅凭自动测试宣布根因修复。
-- 本轮只拆分读取请求与纯写命令的写周期，不忽略 checksum、不扫描 chip/offset，也不改变 service 匹配。
+- 首个测试包把单写错误地应用于所有传输路径；用户实测原本可读的 Type-C/DP 显示器在 10 次尝试、2 次 service rebuild 后仍为 `read-reply-rejected/null-reply`。这直接证明读取事务形状依赖传输路径，全局单写实现已作废。
+- 当前只按 transport 拆分读取请求写周期，不忽略 checksum、不扫描 chip/offset，也不改变 service 匹配。HDMI 单写能否解决读取仍需实机确认。
 
 ## DS-016 实现
 
-- 读取事务每次尝试只执行一次 WriteI2C，再执行一次 ReadI2C；严格失败后的有限重试重新执行完整的一写一读。
+- 内建 HDMI 读取每次尝试执行一次 WriteI2C、一次 ReadI2C；Type-C/DP 读取恢复为两次 WriteI2C、一次 ReadI2C。严格失败后的有限重试重新执行各自完整事务。
 - 纯 Set VCP 和输入源写入仍执行两个写周期，并继续保留“任一周期成功即接受”，避免输入切换后链路立即消失使后一次失败覆盖前一次成功。
 - 第一阶段已对齐的 HDMI 10 ms 等待、4 次上限和 5 ms 间隔保持不变；Type-C/DP 读取仍保留原等待和策略。
 - chip、offset、严格校验、回复缓冲区、拓扑绑定、USB、网络与协议均未改变。
@@ -27,21 +27,22 @@
 
 - DDC 专项 XCTest：55/55。
 - 完整 XCTest：140/140；一条既有 USB 并发测试产生 QoS 性能提示，测试通过。
-- 纯测试明确验证期待回复时写周期为 1，纯写命令写周期为 2；既有双写任一成功聚合测试继续通过。
+- 纯测试明确验证 HDMI 读取写周期为 1、Type-C/DP 读取和纯写命令写周期为 2；既有双写任一成功聚合测试继续通过。
 - `./macOS/scripts/build-app.sh` Release 构建、打包、解压验签和 `codesign --verify --deep --strict` 通过。
 - 未执行真实 DDC、输入源切换、USB、网络或唤醒，未修改系统权限。
 
 ## DS-016 测试包
 
-- `macOS/outputs/DisplaySwitcher-DS-016-single-read-request-macOS-test.zip`
-- SHA-256：`877688370f69bc588a890e4e7a4322903a686d370d08c474ee302f57c80f8d1d`
-- 大小：656877 bytes
+- `macOS/outputs/DisplaySwitcher-DS-016-hdmi-single-typec-double-macOS-test.zip`
+- SHA-256：`00012454ca6544ed8a14297485b638b469ba90400b9fa408330e826a40835114`
+- 大小：656996 bytes
+- `DisplaySwitcher-DS-016-single-read-request-macOS-test.zip` 已因 Type-C/DP 回归作废，不得继续测试或合并。
 
 ## DS-016 尚需用户实机验证
 
-1. 保持目标显示器直连 M4 mini 内建 HDMI，彻底退出旧版后启动测试版。
-2. 显示器页只开启亮度，连续点击“读取 DDC 参数”10 次，记录严格成功次数和读数是否与显示器当前亮度一致。
-3. 分别对两台 Type-C/DP 显示器读取一次，确认没有读取回归或串台。
+1. 彻底退出旧版后启动新测试版，先对原本可读的 Type-C/DP 显示器连续读取 3 次，必须恢复严格成功；若仍为 `null-reply`，立即停止本轮。
+2. Type-C/DP 恢复后，再保持目标显示器直连 M4 mini 内建 HDMI，连续点击“读取 DDC 参数”10 次，记录严格成功次数和读数是否与当前亮度一致。
+3. 对第二台同型号 Type-C/DP 显示器读取一次，确认没有串台。
 4. 做一次最小输入源切换回归，确认纯写路径仍正常；不要连续拖动其他 DDC 项干扰读取结论。
 5. 读取失败必须继续显示“当前连接不支持可靠读取”或上次可信值，坏 checksum 数据不能成为新读数。
 

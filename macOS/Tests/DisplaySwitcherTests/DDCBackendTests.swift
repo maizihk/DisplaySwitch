@@ -456,9 +456,10 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(parameters.readAttempts(for: .typeCDPAlt), 5)
         XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 4)
         XCTAssertEqual(parameters.writeCycles, 2)
-        XCTAssertEqual(parameters.readRequestWriteCycles, 1)
-        XCTAssertEqual(parameters.writeCycleCount(expectsResponse: true), 1)
-        XCTAssertEqual(parameters.writeCycleCount(expectsResponse: false), 2)
+        XCTAssertEqual(parameters.typeCDPReadRequestWriteCycles, 2)
+        XCTAssertEqual(parameters.builtinHDMIReadRequestWriteCycles, 1)
+        XCTAssertEqual(parameters.readRequestWriteCycles(for: .typeCDPAlt), 2)
+        XCTAssertEqual(parameters.readRequestWriteCycles(for: .builtinHDMIConverter), 1)
         XCTAssertEqual(parameters.writeAttempts, 5)
     }
 
