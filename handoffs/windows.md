@@ -8,7 +8,7 @@
 - 堆叠基线：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) head `12598853571ea601b838e4748f93d52a79fdee00`
 - PR base：`codex/windows-ds-013-display-binding`；保留 PR #54 及其 DS-011/DS-012/DS-013 堆叠历史，不合并或 retarget 到 main
 - 实现提交：`befd20f49cc11d535bcc3dc8bee0036e1a4550e3`
-- PR #60 评审修复：本次提交补齐 DDC 批量聚合、心跳诊断生命周期和只读 snapshot provider 边界；完整 SHA 在提交后记录
+- PR #60 评审修复提交：`9bfa6d546ae6cc3a9a9284bd01b55b7d55b1582e`，补齐 DDC 批量聚合、心跳诊断生命周期和只读 snapshot provider 边界
 - PR：[#60](https://github.com/maizihk/DisplaySwitch/pull/60)，base 为 `codex/windows-ds-013-display-binding`；未合并
 - CI：PR #60 是堆叠 PR，当前 Windows workflow 仅响应 base 为 `main` 的 PR，因此本 PR 没有 GitHub 托管 run；本节所列构建和测试结果均为 Windows 本机验证
 
