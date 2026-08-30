@@ -85,6 +85,7 @@ namespace DisplaySwitcher::Native
         std::mutex v2OutgoingMutex_;
         std::map<std::wstring, V2Message> v2OutgoingMessages_;
         std::map<std::wstring, int64_t> v2PeerLastSeenMs_;
+        DiagnosticHeartbeatTracker diagnosticHeartbeats_;
         std::map<std::wstring, PendingStatusProbe> v2HealthProbes_;
         struct PendingProfileDetection
         {

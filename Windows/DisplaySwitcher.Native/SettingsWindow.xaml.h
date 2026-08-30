@@ -99,7 +99,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<void()> cancelProfileDetection_;
         std::function<void()> beginUsbLearning_;
         std::function<void()> endUsbLearning_;
-        std::function<::DisplaySwitcher::Native::DiagnosticSnapshot()> diagnosticSnapshot_;
+        std::unique_ptr<::DisplaySwitcher::Native::IDiagnosticSnapshotProvider> diagnosticSnapshotProvider_;
         std::shared_ptr<::DisplaySwitcher::Native::DisplayOperationTracker> displayDiagnostics_;
         std::function<void()> closed_;
         ::DisplaySwitcher::Native::DdcCancellationSource ddcCancellation_;

@@ -2,12 +2,13 @@
 
 ## 当前任务
 
-- 日期：2026-08-30
+- 日期：2026-08-31
 - 功能：W-005 文档与诊断安全、W-203 诊断页面与脱敏日志
 - 分支：`codex/windows-w005-w203-diagnostics`
 - 堆叠基线：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) head `12598853571ea601b838e4748f93d52a79fdee00`
 - PR base：`codex/windows-ds-013-display-binding`；保留 PR #54 及其 DS-011/DS-012/DS-013 堆叠历史，不合并或 retarget 到 main
 - 实现提交：`befd20f49cc11d535bcc3dc8bee0036e1a4550e3`
+- PR #60 评审修复：本次提交补齐 DDC 批量聚合、心跳诊断生命周期和只读 snapshot provider 边界；完整 SHA 在提交后记录
 - PR：[#60](https://github.com/maizihk/DisplaySwitch/pull/60)，base 为 `codex/windows-ds-013-display-binding`；未合并
 - CI：PR #60 是堆叠 PR，当前 Windows workflow 仅响应 base 为 `main` 的 PR，因此本 PR 没有 GitHub 托管 run；本节所列构建和测试结果均为 Windows 本机验证
 
@@ -18,6 +19,9 @@
 - 新增“诊断”标签。报告只投影配置快照、缓存的公开应用元数据和已有内存状态；协同配置、显示器、会话及操作使用 `P1`、`D1`、`S1`、`O1` 临时编号。
 - 预览不包含配置名称、地址、配对密码、endpoint、认证/消息标识、用户路径、显示器与 USB 原始身份或友好名称。匿名映射不写配置、不落盘、不跨端同步。
 - “刷新预览”不会调用网络检测、USB 枚举/交接、DDC 枚举/读写、唤醒或输入源切换；“复制诊断”仅复制当前可见文本，不刷新也没有第二条导出路径。
+- 评审发现 `DisplayOperationTracker::RecordBatch` 曾逐项覆盖同一显示器状态，导致亮度失败后对比度/音量成功可能误报整批成功；现在先按目标显示器聚合，只有全部请求项成功且可信才记录成功，失败、不可信和歧义均安全保留。
+- 在线运行态仍按 6 秒窗口从 `v2PeerLastSeenMs_` 失效，但诊断改用独立的会话跟踪器保存最后合法心跳事实，因此会稳定显示 `Never -> Recent -> Expired`；profile/endpoint/地址/端口/认证身份变化、配置删除、安全会话或应用会话重置会清除旧状态，报告不含身份和原始时间。
+- 诊断预览正式边界改为 `IDiagnosticSnapshotProvider`：WinUI 预览模型只持有 `ReadSnapshot()`，不能访问 UDP、USB、wake、DDC 或 input-source 接口；刷新调用注入 provider，复制只返回当前可见文本。
 
 ## 修改范围
 
@@ -30,12 +34,14 @@
 
 ## 自动验证
 
-- `Windows/build-windows.ps1` x64 Release 已编译原生应用、绿色版启动器与测试，并真实运行完整 `DisplaySwitcher.Tests.exe`；共通过 227 项检查。
+- `Windows/build-windows.ps1` x64 Release 已编译原生应用、绿色版启动器与测试，并真实运行完整 `DisplaySwitcher.Tests.exe`；共通过 236 项检查。
 - W-005/W-203 测试向报告注入私网地址、密码、endpoint、合成 Windows 路径、显示器/USB 标识和设备名称，确认全部不存在，同时保留安全状态和匿名编号。
-- 刷新与复制测试确认文本逐字一致；模拟网络、USB、唤醒、DDC 枚举/读写和输入源调用均为 0。
+- 可注入 snapshot provider 测试确认刷新只调用 `ReadSnapshot()`，复制不再次读取且文本逐字一致；该纯投影边界不暴露网络、USB、唤醒、DDC 枚举/读写或输入源接口。
+- DDC 批处理测试覆盖亮度失败后对比度/音量成功、不可信估计值和歧义优先级，最终状态分别保持失败/失败/歧义，不再误报 `读取：成功`。
+- 模拟时钟覆盖心跳 `Never -> Recent -> Expired`，并验证同一身份重新应用保留 Expired，认证身份/endpoint 变化、配置删除和会话重置安全清除。
 - D1、D2、D3 依次成功、相同绑定重枚举、同型号/重排、绑定及 generation 变化和歧义隔离均通过。
 - 既有 DS-004、DS-005、DS-007、DS-008、DS-009、DS-012、DS-013 回归通过；v2 公共向量为 1 条规范化、4 条认证、20 条消息、6 条状态机；USB-001 至 USB-016 全部通过。
-- dist 绿色版为 framework-dependent，完整目录 1,815,493 字节（1.73 MiB）。未签名测试 ZIP 为 `DisplaySwitch-Windows-x64-unsigned-framework-dependent-W005-W203.zip`，846,172 字节，SHA-256 `3FB47D393130A3846AA863A498A7DB0AD5B41C08EDED8A8483071E6527F3AD2B`。
+- dist 绿色版为 framework-dependent，完整目录 1,820,613 字节（1.74 MiB）。未签名测试 ZIP 为 `DisplaySwitch-Windows-x64-unsigned-framework-dependent-PR60.zip`，849,286 字节，SHA-256 `C8870D61F791880C7A5792C862A71CF1FC7A36349C33695B2F9C89131111F575`。
 - Release 编译启用基于 MSBuild 变量的路径映射；对 dist 扫描确认没有配置/日志、测试秘密、当前 Windows 用户目录或仓库绝对路径。
 - NuGet 漏洞索引在受限网络下产生 NU1900 警告；缓存依赖还原、编译、链接、测试和产物检查均成功。
 

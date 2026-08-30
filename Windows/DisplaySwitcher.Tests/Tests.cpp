@@ -1502,6 +1502,15 @@ namespace
 
     void TestDiagnosticSafetyAndDisplayLifecycle()
     {
+        class DiagnosticRuntimeSpy final : public IDiagnosticSnapshotProvider
+        {
+        public:
+            DiagnosticSnapshot snapshot;
+            int snapshotReads{};
+
+            DiagnosticSnapshot ReadSnapshot() override { ++snapshotReads; return snapshot; }
+        };
+
         DiagnosticSnapshot snapshot;
         snapshot.about = { L"DisplaySwitch", L"2.1.0 (19)", L"Windows x64", L"UDP 协议 v2",
             L"https://example.invalid/project", L"https://example.invalid/license",
@@ -1523,21 +1532,16 @@ namespace
             "path=C:\\Users\\Private\\settings.json monitor=DISPLAY\\SECRET usb=USB\\VID_1234&PID_5678 name=Office-Monitor");
         snapshot.sessions = { injected };
 
-        int networkCalls{}, usbCalls{}, wakeCalls{}, enumerateCalls{}, readCalls{}, writeCalls{}, inputCalls{}, snapshots{};
+        DiagnosticRuntimeSpy provider;
+        provider.snapshot = snapshot;
         DiagnosticPreviewModel model;
-        auto provider = [&]
-        {
-            ++snapshots;
-            return snapshot;
-        };
         auto first = model.Refresh(provider);
         auto second = model.Refresh(provider);
+        auto readsBeforeCopy = provider.snapshotReads;
         auto copied = model.CopyPayload();
-        Check(first == second && copied == model.VisiblePreview() && snapshots == 2,
-            L"W-203：刷新预览稳定，复制内容必须与当前可见预览完全一致");
-        Check(networkCalls == 0 && usbCalls == 0 && wakeCalls == 0 && enumerateCalls == 0 &&
-            readCalls == 0 && writeCalls == 0 && inputCalls == 0,
-            L"W-203：生成、刷新和复制诊断必须保持全部网络与硬件调用为零");
+        Check(first == second && copied == model.VisiblePreview() && provider.snapshotReads == 2 &&
+            provider.snapshotReads == readsBeforeCopy,
+            L"W-203：刷新只调用只读快照 provider，复制不再次读取且文本与当前可见预览完全一致");
         for (auto const& secret : { L"10.23.45.67", L"TOP-SECRET", L"11111111-2222-3333-4444-555555555555",
             L"C:\\Users\\Private", L"DISPLAY\\SECRET", L"USB\\VID_1234", L"Office-Monitor" })
             Check(second.find(secret) == std::wstring::npos, L"W-005：诊断预览不得包含注入的本机秘密或设备标识");
@@ -1593,6 +1597,68 @@ namespace
         auto ambiguous = tracker.Snapshot(changed);
         Check(ambiguous[0].lastState == DiagnosticOperationState::Ambiguous,
             L"W-203：物理匹配歧义必须显示安全拒绝，不能继承另一台显示器状态");
+
+        auto batchDisplays = ConfigWithDisplays(1).displays;
+        batchDisplays[0].topologyGeneration = 9;
+        DisplayOperationTracker batchTracker;
+        batchTracker.Reconcile(batchDisplays);
+        DdcControlBatchResult mixedRead;
+        mixedRead.items = {
+            { batchDisplays[0].id, DdcVcpCode::Brightness, false, false, false, false, {}, {},
+                DdcAvailability::Available, DdcErrorKind::ReadFailed, L"模拟亮度读取失败" },
+            { batchDisplays[0].id, DdcVcpCode::Contrast, true, false, true, false, 40, 100,
+                DdcAvailability::Available, DdcErrorKind::None, {} },
+            { batchDisplays[0].id, DdcVcpCode::Volume, true, false, true, false, 20, 100,
+                DdcAvailability::Available, DdcErrorKind::None, {} }
+        };
+        batchTracker.RecordBatch(batchDisplays, mixedRead, DiagnosticOperationKind::Read);
+        auto mixedState = batchTracker.Snapshot(batchDisplays);
+        Check(mixedState.size() == 1 && mixedState[0].lastState == DiagnosticOperationState::Failed &&
+            DescribeDiagnosticOperation(mixedState[0]) != L"读取：成功",
+            L"W-203：同一显示器亮度失败后对比度和音量成功不得覆盖整批读取失败");
+        mixedRead.items[0] = { batchDisplays[0].id, DdcVcpCode::Brightness, true, false, false, true, 30, 100,
+            DdcAvailability::Available, DdcErrorKind::None, L"模拟不可信估计值" };
+        batchTracker.RecordBatch(batchDisplays, mixedRead, DiagnosticOperationKind::Read);
+        Check(batchTracker.Snapshot(batchDisplays)[0].lastState == DiagnosticOperationState::Failed,
+            L"W-203：任一请求项不可信时整台显示器的批量结果必须为失败");
+        mixedRead.items[0] = { batchDisplays[0].id, DdcVcpCode::Brightness, false, false, false, false, {}, {},
+            DdcAvailability::TemporarilyUnavailable, DdcErrorKind::AmbiguousMonitor, L"模拟歧义" };
+        batchTracker.RecordBatch(batchDisplays, mixedRead, DiagnosticOperationKind::Read);
+        Check(batchTracker.Snapshot(batchDisplays)[0].lastState == DiagnosticOperationState::Ambiguous,
+            L"W-203：任一请求项匹配歧义时整台显示器的批量结果必须为歧义");
+
+        DiagnosticHeartbeatTracker heartbeat;
+        auto heartbeatConfig = ConfigWithDisplays(0);
+        auto& heartbeatProfile = heartbeatConfig.collaborationProfiles[0];
+        heartbeatProfile.peerEndpointId = GenerateIdentifier();
+        heartbeatProfile.peerProtocolVersion = 2;
+        heartbeat.Reconcile(heartbeatConfig.localEndpointId, heartbeatConfig.collaborationProfiles);
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 1000) == DiagnosticHeartbeatState::Never,
+            L"W-203：会话未收到合法心跳时诊断必须为 Never");
+        heartbeat.Observe(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 1000);
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 7000) == DiagnosticHeartbeatState::Recent &&
+            heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 7001) == DiagnosticHeartbeatState::Expired,
+            L"W-203：模拟时钟必须覆盖 Never 到 Recent 再到 Expired，过期后保留会话事实");
+        heartbeat.Reconcile(heartbeatConfig.localEndpointId, heartbeatConfig.collaborationProfiles);
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9000) == DiagnosticHeartbeatState::Expired,
+            L"W-203：相同配置身份重新应用时必须保留已过期心跳状态");
+        heartbeatProfile.pairingCode = L"CHANGED-CODE-0002";
+        heartbeat.Reconcile(heartbeatConfig.localEndpointId, heartbeatConfig.collaborationProfiles);
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9000) == DiagnosticHeartbeatState::Never,
+            L"W-203：配置认证身份变化时必须安全清除旧心跳诊断");
+        heartbeat.Observe(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9000);
+        heartbeatProfile.peerEndpointId = GenerateIdentifier();
+        heartbeat.Reconcile(heartbeatConfig.localEndpointId, heartbeatConfig.collaborationProfiles);
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9000) == DiagnosticHeartbeatState::Never,
+            L"W-203：配置 endpoint 身份变化时必须安全清除旧心跳诊断");
+        heartbeat.Observe(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9000);
+        heartbeatConfig.collaborationProfiles.clear();
+        heartbeat.Reconcile(heartbeatConfig.localEndpointId, heartbeatConfig.collaborationProfiles);
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9001) == DiagnosticHeartbeatState::Never,
+            L"W-203：配置删除必须清除对应心跳诊断");
+        heartbeat.Reset();
+        Check(heartbeat.State(heartbeatProfile.id, heartbeatProfile.peerEndpointId, 9001) == DiagnosticHeartbeatState::Never,
+            L"W-203：会话重置必须清空最后合法心跳状态");
     }
 
     void TestUdpPeerAsymmetricBootstrapLoopback()

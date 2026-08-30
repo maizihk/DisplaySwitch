@@ -125,10 +125,63 @@ namespace DisplaySwitcher::Native
         return out.str();
     }
 
-    std::wstring DiagnosticPreviewModel::Refresh(std::function<DiagnosticSnapshot()> const& provider)
+    std::wstring DiagnosticPreviewModel::Refresh(IDiagnosticSnapshotProvider& provider)
     {
-        preview_ = provider ? BuildDiagnosticPreview(provider()) : L"诊断快照不可用。";
+        preview_ = BuildDiagnosticPreview(provider.ReadSnapshot());
         return preview_;
+    }
+
+    void DiagnosticHeartbeatTracker::Reconcile(std::wstring const& localEndpointId,
+        std::vector<CollaborationProfile> const& profiles)
+    {
+        std::scoped_lock lock(mutex_);
+        std::map<std::wstring, Entry> next;
+        for (auto const& profile : profiles)
+        {
+            auto found = entries_.find(profile.id);
+            auto pairingCodeFingerprint = std::hash<std::wstring>{}(profile.pairingCode);
+            Entry entry{ localEndpointId, profile.peerEndpointId, profile.peerHost, profile.peerPort,
+                pairingCodeFingerprint, profile.peerProtocolVersion, 0 };
+            if (found != entries_.end())
+            {
+                auto const& existing = found->second;
+                if (EqualId(existing.localEndpointId, localEndpointId) &&
+                    EqualId(existing.peerEndpointId, profile.peerEndpointId) &&
+                    _wcsicmp(existing.peerHost.c_str(), profile.peerHost.c_str()) == 0 &&
+                    existing.peerPort == profile.peerPort && existing.pairingCodeFingerprint == pairingCodeFingerprint &&
+                    existing.peerProtocolVersion == profile.peerProtocolVersion)
+                    entry.lastSeenMilliseconds = existing.lastSeenMilliseconds;
+            }
+            next.emplace(profile.id, std::move(entry));
+        }
+        entries_ = std::move(next);
+    }
+
+    void DiagnosticHeartbeatTracker::Observe(std::wstring const& profileId,
+        std::wstring const& peerEndpointId, int64_t nowMilliseconds)
+    {
+        std::scoped_lock lock(mutex_);
+        auto found = entries_.find(profileId);
+        if (found == entries_.end() || !EqualId(found->second.peerEndpointId, peerEndpointId)) return;
+        found->second.lastSeenMilliseconds = nowMilliseconds;
+    }
+
+    DiagnosticHeartbeatState DiagnosticHeartbeatTracker::State(std::wstring const& profileId,
+        std::wstring const& peerEndpointId, int64_t nowMilliseconds, int64_t recentWindowMilliseconds) const
+    {
+        std::scoped_lock lock(mutex_);
+        auto found = entries_.find(profileId);
+        if (found == entries_.end() || !EqualId(found->second.peerEndpointId, peerEndpointId) ||
+            found->second.lastSeenMilliseconds <= 0)
+            return DiagnosticHeartbeatState::Never;
+        return nowMilliseconds - found->second.lastSeenMilliseconds <= recentWindowMilliseconds
+            ? DiagnosticHeartbeatState::Recent : DiagnosticHeartbeatState::Expired;
+    }
+
+    void DiagnosticHeartbeatTracker::Reset()
+    {
+        std::scoped_lock lock(mutex_);
+        entries_.clear();
     }
 
     size_t DiagnosticAliasRegistry::Resolve(std::map<std::wstring, size_t>& values, std::wstring const& stableId)
@@ -183,13 +236,28 @@ namespace DisplaySwitcher::Native
     void DisplayOperationTracker::RecordBatch(std::vector<DisplayConfig> const& displays,
         DdcControlBatchResult const& result, DiagnosticOperationKind kind)
     {
+        struct Aggregate
+        {
+            bool sawItem{};
+            bool allTrustedSuccess{ true };
+            bool ambiguous{};
+        };
+        std::map<size_t, Aggregate> aggregates;
         for (auto const& item : result.items)
         {
             auto index = FindDisplayById(displays, item.displayId);
             if (!index) continue;
-            auto const& display = displays[*index];
-            auto state = item.error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
-                (item.success && item.trusted ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed);
+            auto& aggregate = aggregates[*index];
+            aggregate.sawItem = true;
+            aggregate.ambiguous = aggregate.ambiguous || item.error == DdcErrorKind::AmbiguousMonitor;
+            aggregate.allTrustedSuccess = aggregate.allTrustedSuccess && item.success && item.trusted && !item.skipped;
+        }
+        for (auto const& [index, aggregate] : aggregates)
+        {
+            if (!aggregate.sawItem) continue;
+            auto const& display = displays[index];
+            auto state = aggregate.ambiguous ? DiagnosticOperationState::Ambiguous :
+                (aggregate.allTrustedSuccess ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed);
             Record(display.id, display.nativeMonitorId, display.topologyGeneration, kind, state);
         }
     }

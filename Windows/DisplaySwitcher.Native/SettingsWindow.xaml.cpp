@@ -234,7 +234,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         checkNetworkAccess_ = std::move(checkNetworkAccess);
         detectProfile_ = std::move(detectProfile); cancelProfileDetection_ = std::move(cancelProfileDetection);
         beginUsbLearning_ = std::move(beginUsbLearning); endUsbLearning_ = std::move(endUsbLearning);
-        diagnosticSnapshot_ = std::move(diagnosticSnapshot);
+        diagnosticSnapshotProvider_ = std::make_unique<::DisplaySwitcher::Native::CallbackDiagnosticSnapshotProvider>(
+            std::move(diagnosticSnapshot));
         displayDiagnostics_ = std::move(displayDiagnostics);
         closed_ = std::move(closed);
         Title(L"常规");
@@ -1457,7 +1458,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::RefreshDiagnosticPreview()
     {
         if (!diagnosticPreview_) return;
-        diagnosticPreview_.Text(diagnosticPreviewModel_.Refresh(diagnosticSnapshot_));
+        if (diagnosticSnapshotProvider_)
+            diagnosticPreview_.Text(diagnosticPreviewModel_.Refresh(*diagnosticSnapshotProvider_));
     }
 
     void SettingsWindow::CopyDiagnosticPreview()

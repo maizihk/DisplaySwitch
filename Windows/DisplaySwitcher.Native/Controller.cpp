@@ -117,6 +117,8 @@ namespace DisplaySwitcher::Native
             peer_->Stop();
         }
         displayDiagnostics_->Reconcile(config.displays);
+        if (config.displayConfigurationSafeMode) diagnosticHeartbeats_.Reset();
+        else diagnosticHeartbeats_.Reconcile(config.localEndpointId, config.collaborationProfiles);
         auto usbConfigured = config.HasUsbDeviceConfiguration();
         auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
             [&](auto const& mapping) { return mapping.targetInput && FindDisplayById(config.displays, mapping.displayId); });
@@ -562,6 +564,7 @@ namespace DisplaySwitcher::Native
             v2HealthProbes_.erase(pending);
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
             v2PeerLastSeenMs_[message.sourceEndpointId] = now;
+            diagnosticHeartbeats_.Observe(profile->id, message.sourceEndpointId, now);
             SetPeerConnectionStatus(L"已和对端（" + profile->name + L"）建立连接", true);
             return;
         }
@@ -575,6 +578,7 @@ namespace DisplaySwitcher::Native
         {
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
             v2PeerLastSeenMs_[message.sourceEndpointId] = now;
+            diagnosticHeartbeats_.Observe(profile->id, message.sourceEndpointId, now);
             SetPeerConnectionStatus(L"已和对端（" + profile->name + L"）建立连接", true);
         }
         if (message.type == L"status_probe") actions = v2StateMachine_->OnStatusProbe(now, message.sourceEndpointId, message.eventId, true);
@@ -815,12 +819,8 @@ namespace DisplaySwitcher::Native
             item.anonymousIndex = diagnosticAliases_.Profile(profile.id);
             item.enabled = profile.coordinationEnabled;
             item.endpointBound = !profile.peerEndpointId.empty();
-            auto seen = v2PeerLastSeenMs_.find(profile.peerEndpointId);
-            if (seen != v2PeerLastSeenMs_.end())
-            {
-                item.connected = now - seen->second <= 6000;
-                item.heartbeat = item.connected ? DiagnosticHeartbeatState::Recent : DiagnosticHeartbeatState::Expired;
-            }
+            item.heartbeat = diagnosticHeartbeats_.State(profile.id, profile.peerEndpointId, now);
+            item.connected = item.heartbeat == DiagnosticHeartbeatState::Recent;
             snapshot.profiles.push_back(item);
         }
         snapshot.usb = { config.usbSwitch.enabled, !config.usbSwitch.deviceLocalReference.empty(),
@@ -1206,6 +1206,7 @@ namespace DisplaySwitcher::Native
     void Controller::Dispose()
     {
         if (disposed_.exchange(true)) return;
+        diagnosticHeartbeats_.Reset();
         StopPeerHealthCheck();
         if (peer_)
         {

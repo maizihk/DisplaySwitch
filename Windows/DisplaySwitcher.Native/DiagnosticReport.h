@@ -61,6 +61,23 @@ namespace DisplaySwitcher::Native
     std::wstring BuildDiagnosticPreview(DiagnosticSnapshot const& snapshot);
     std::wstring DescribeDiagnosticOperation(DiagnosticDisplaySummary const& display);
 
+    class IDiagnosticSnapshotProvider
+    {
+    public:
+        virtual ~IDiagnosticSnapshotProvider() = default;
+        virtual DiagnosticSnapshot ReadSnapshot() = 0;
+    };
+
+    class CallbackDiagnosticSnapshotProvider final : public IDiagnosticSnapshotProvider
+    {
+    public:
+        explicit CallbackDiagnosticSnapshotProvider(std::function<DiagnosticSnapshot()> callback) :
+            callback_(std::move(callback)) {}
+        DiagnosticSnapshot ReadSnapshot() override { return callback_ ? callback_() : DiagnosticSnapshot{}; }
+    private:
+        std::function<DiagnosticSnapshot()> callback_;
+    };
+
     class DiagnosticAliasRegistry final
     {
     public:
@@ -76,11 +93,38 @@ namespace DisplaySwitcher::Native
     class DiagnosticPreviewModel final
     {
     public:
-        std::wstring Refresh(std::function<DiagnosticSnapshot()> const& provider);
+        std::wstring Refresh(IDiagnosticSnapshotProvider& provider);
         std::wstring const& VisiblePreview() const noexcept { return preview_; }
         std::wstring CopyPayload() const { return preview_; }
     private:
         std::wstring preview_;
+    };
+
+    class DiagnosticHeartbeatTracker final
+    {
+    public:
+        void Reconcile(std::wstring const& localEndpointId,
+            std::vector<CollaborationProfile> const& profiles);
+        void Observe(std::wstring const& profileId, std::wstring const& peerEndpointId,
+            int64_t nowMilliseconds);
+        DiagnosticHeartbeatState State(std::wstring const& profileId,
+            std::wstring const& peerEndpointId, int64_t nowMilliseconds,
+            int64_t recentWindowMilliseconds = 6000) const;
+        void Reset();
+
+    private:
+        struct Entry
+        {
+            std::wstring localEndpointId;
+            std::wstring peerEndpointId;
+            std::wstring peerHost;
+            int peerPort{};
+            size_t pairingCodeFingerprint{};
+            std::optional<int> peerProtocolVersion;
+            int64_t lastSeenMilliseconds{};
+        };
+        mutable std::mutex mutex_;
+        std::map<std::wstring, Entry> entries_;
     };
 
     class DisplayOperationTracker final
