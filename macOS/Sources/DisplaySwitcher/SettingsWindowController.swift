@@ -841,10 +841,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         ]))
 
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
+            let readControls = displayReadControls(index: configuration.index, name: configuration.name)
             displayStack.addArrangedSubview(module(
                 title: configuration.name,
-                headerAccessory: displayHeaderAccessory(index: configuration.index, name: configuration.name),
-                views: [displayForm(index: configuration.index)]
+                headerAccessory: readControls.button,
+                views: [readControls.status, separator(), displayForm(index: configuration.index)]
             ))
         }
 
@@ -950,7 +951,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func displayHeaderAccessory(index: Int, name: String) -> NSView {
+    private func displayReadControls(index: Int, name: String) -> (button: NSButton, status: NSTextField) {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         readButton.tag = index
         readButton.setAccessibilityLabel("读取\(name) DDC 参数")
@@ -960,13 +961,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         status.maximumNumberOfLines = DisplayDiagnosticLayout.maximumNumberOfLines
         status.lineBreakMode = DisplayDiagnosticLayout.wraps ? .byWordWrapping : .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        status.widthAnchor.constraint(equalToConstant: 590).isActive = true
         displayStatusLabels[index] = status
-        let toolbar = NSStackView(views: [readButton, status])
-        toolbar.orientation = .horizontal
-        toolbar.alignment = .centerY
-        toolbar.spacing = 10
-        status.widthAnchor.constraint(lessThanOrEqualToConstant: 250).isActive = true
-        return toolbar
+        return (readButton, status)
     }
 
     private func displayForm(index: Int) -> NSView {
