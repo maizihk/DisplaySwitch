@@ -5,9 +5,9 @@
 - 日期：2026-08-30
 - 功能：DS-020 / 扩展坞 HDMI Get VCP 校验策略
 - 基线：`origin/main@edeacd0`
-- 分支：`codex/macos-ds-020-dock-hdmi-read`
-- 实现提交：本提交，最终 SHA 以分支 HEAD 和交付报告为准
-- PR / CI：先交付实机测试包；用户验收前不创建 PR、不合并
+- 实现提交：`b2f22d7`；实机验收记录：`71081ab`
+- PR：[#57](https://github.com/maizihk/DisplaySwitch/pull/57)，已 squash 合并为 `aeadc9d`
+- CI：macOS run `33313325787` 全绿；Debug、145 项 XCTest、Release 打包、验签和 artifact 均通过
 
 ## DS-020 原因与决策
 
