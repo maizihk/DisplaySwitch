@@ -121,8 +121,43 @@ struct NativeDDCTransportAddressing: Equatable {
 
 enum NativeDisplayEndpointToken {
     static func extract(from values: [String]) -> String? {
-        let expression = try? NSRegularExpression(
+        extractService(from: values)
+    }
+
+    static func extractFramebuffer(from values: [String]) -> String? {
+        extract(
+            from: values,
+            pattern: "(?i)(?:^|[^a-z0-9])((?:dispext[0-9]+)|(?:disp[0-9]+))(?=$|[^a-z0-9])"
+        )
+    }
+
+    static func extractService(from values: [String]) -> String? {
+        extract(
+            from: values,
             pattern: "(?i)(?:^|[^a-z0-9])(dispext(?:e|[0-9]+))(?=$|[^a-z0-9])"
+        )
+    }
+
+    static func serviceEndpoint(forFramebuffer endpoint: String?) -> String? {
+        guard let endpoint else { return nil }
+        let normalized = endpoint.lowercased()
+        if normalized == "disp0" {
+            // Apple Silicon's built-in HDMI framebuffer is exposed as disp0,
+            // while its current DCP AV service endpoint is exposed as dispextE.
+            // This is a platform topology relationship, not a display-model rule.
+            return "dispextE"
+        }
+        if normalized.hasPrefix("dispext"),
+           !normalized.dropFirst("dispext".count).isEmpty,
+           normalized.dropFirst("dispext".count).allSatisfy(\.isNumber) {
+            return normalized
+        }
+        return nil
+    }
+
+    private static func extract(from values: [String], pattern: String) -> String? {
+        let expression = try? NSRegularExpression(
+            pattern: pattern
         )
         for value in values {
             let range = NSRange(value.startIndex..<value.endIndex, in: value)
@@ -132,6 +167,46 @@ enum NativeDisplayEndpointToken {
             return token == "dispexte" ? "dispextE" : token
         }
         return nil
+    }
+}
+
+struct NativeFramebufferTopologyNode: Equatable {
+    let location: Int
+    let endpointToken: String?
+}
+
+struct NativeServiceTopologyNode: Equatable {
+    let location: Int
+    let endpointToken: String?
+}
+
+enum NativeServiceTopologyMatcher {
+    static func matches(
+        framebuffers: [NativeFramebufferTopologyNode],
+        services: [NativeServiceTopologyNode]
+    ) -> [Int: Int] {
+        let requestedServiceEndpoints = framebuffers.reduce(into: [String: [Int]]()) {
+            result, framebuffer in
+            guard let endpoint = NativeDisplayEndpointToken.serviceEndpoint(
+                forFramebuffer: framebuffer.endpointToken
+            ) else { return }
+            result[endpoint.lowercased(), default: []].append(framebuffer.location)
+        }
+        let servicesByEndpoint = services.reduce(into: [String: [Int]]()) { result, service in
+            guard let endpoint = service.endpointToken?.lowercased() else { return }
+            result[endpoint, default: []].append(service.location)
+        }
+
+        var result: [Int: Int] = [:]
+        for (endpoint, framebufferLocations) in requestedServiceEndpoints {
+            guard framebufferLocations.count == 1,
+                  let serviceLocations = servicesByEndpoint[endpoint],
+                  serviceLocations.count == 1,
+                  let framebufferLocation = framebufferLocations.first,
+                  let serviceLocation = serviceLocations.first else { continue }
+            result[framebufferLocation] = serviceLocation
+        }
+        return result
     }
 }
 
@@ -999,18 +1074,20 @@ enum NativeDisplayMatcher {
                 // location, serial, or multiple independent EDID/product characteristics.
                 return score < 2 ? nil : (identity.stableID, candidate.serviceLocation, score)
             }
-        }.sorted { lhs, rhs in
-            if lhs.2 != rhs.2 { return lhs.2 > rhs.2 }
-            if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
-            return lhs.1 < rhs.1
         }
-        var usedDisplays = Set<String>()
-        var usedServices = Set<Int>()
+        let uniqueBestByDisplay = Dictionary(grouping: scored, by: { $0.0 }).compactMapValues {
+            edges -> (String, Int, Int)? in
+            guard let bestScore = edges.map(\.2).max() else { return nil }
+            let bestEdges = edges.filter { $0.2 == bestScore }
+            return bestEdges.count == 1 ? bestEdges[0] : nil
+        }
+        let uniqueBestByService = Dictionary(
+            grouping: uniqueBestByDisplay.values,
+            by: { $0.1 }
+        )
         var result: [String: Int] = [:]
-        for (displayID, serviceLocation, _) in scored {
-            guard !usedDisplays.contains(displayID), !usedServices.contains(serviceLocation) else { continue }
-            usedDisplays.insert(displayID)
-            usedServices.insert(serviceLocation)
+        for (displayID, serviceLocation, _) in uniqueBestByDisplay.values {
+            guard uniqueBestByService[serviceLocation]?.count == 1 else { continue }
             result[displayID] = serviceLocation
         }
         return result

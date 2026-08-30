@@ -31,6 +31,23 @@ private struct NativeRegistryTransport {
     let serviceIdentity: UInt64
 }
 
+private struct NativeRegistryFramebuffer {
+    let topology: NativeFramebufferTopologyNode
+    let ioDisplayLocation: String
+    let productName: String
+    let serialNumber: Int64
+    let edidUUID: String
+    let edidReferences: [[UInt8]]
+}
+
+private struct NativeRegistryService {
+    let topology: NativeServiceTopologyNode
+    let service: IOAVService
+    let edidReferences: [[UInt8]]
+    let addressing: NativeDDCTransportAddressing
+    let serviceIdentity: UInt64
+}
+
 private struct NativeDDCCommunicationTrace {
     let writeIOReturns: [Int32]
     let readIOReturn: Int32?
@@ -355,16 +372,13 @@ final class NativeDDCBackend: DDCBackend {
 
     private func display(for selector: String) -> NativeDDCDisplay? {
         let key = selector.uppercased()
+        // IOAVService objects are tied to the current physical route. Re-resolve
+        // before each explicit hardware operation so reconnects and interface
+        // changes cannot silently reuse a service from an older topology.
+        _ = discover()
         cacheLock.lock()
-        var display = displaysByUUID[key]
+        let display = displaysByUUID[key]
         cacheLock.unlock()
-
-        if display == nil {
-            _ = discover()
-            cacheLock.lock()
-            display = displaysByUUID[key]
-            cacheLock.unlock()
-        }
         return display
     }
 
@@ -375,7 +389,9 @@ final class NativeDDCBackend: DDCBackend {
         diagnostics: InputSourceDiagnosticRecording? = nil
     ) -> [NativeDDCDisplay] {
         let identities = onlineExternalDisplayIDs().compactMap(displayInfo(for:))
-        let transports = registryTransports()
+        let transports = registryTransports(
+            ioDisplayLocations: Set(identities.map(\.ioLocation))
+        )
         let matches = NativeDisplayMatcher.matches(
             identities: identities.map {
                 NativeDisplayIdentity(
@@ -509,7 +525,8 @@ final class NativeDDCBackend: DDCBackend {
         return product["ProductName"] as? String
     }
 
-    private static func registryTransports() -> [NativeRegistryTransport] {
+    private static func registryTransports(ioDisplayLocations: Set<String>)
+        -> [NativeRegistryTransport] {
         let root = IORegistryGetRootEntry(kIOMainPortDefault)
         guard root != IO_OBJECT_NULL else { return [] }
         defer { IOObjectRelease(root) }
@@ -523,16 +540,9 @@ final class NativeDDCBackend: DDCBackend {
         ) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
 
-        var transports: [NativeRegistryTransport] = []
-        var currentFramebuffer: (
-            ioDisplayLocation: String,
-            productName: String,
-            serialNumber: Int64,
-            edidUUID: String,
-            serviceLocation: Int,
-            endpointToken: String?,
-            edidReferences: [[UInt8]]
-        )?
+        var framebuffers: [NativeRegistryFramebuffer] = []
+        var services: [NativeRegistryService] = []
+        var framebufferLocation = 0
         var serviceLocation = 0
         while true {
             let entry = IOIteratorNext(iterator)
@@ -545,57 +555,82 @@ final class NativeDDCBackend: DDCBackend {
                 || entryName.contains("IOMobileFramebufferShim")
                 || IOObjectConformsTo(entry, "IOMobileFramebuffer") != 0
             if isFramebuffer {
-                serviceLocation += 1
                 let path = registryPath(entry)
+                guard ioDisplayLocations.contains(path) else { continue }
+                framebufferLocation += 1
                 let productName = productName(for: entry) ?? ""
-                currentFramebuffer = (
+                framebuffers.append(NativeRegistryFramebuffer(
+                    topology: NativeFramebufferTopologyNode(
+                        location: framebufferLocation,
+                        endpointToken: NativeDisplayEndpointToken.extractFramebuffer(
+                            from: [path, entryName]
+                        )
+                    ),
                     ioDisplayLocation: path,
                     productName: productName,
                     serialNumber: productSerialNumber(for: entry),
                     edidUUID: property(entry: entry, key: "EDID UUID") as? String ?? "",
-                    serviceLocation: serviceLocation,
-                    endpointToken: NativeDisplayEndpointToken.extract(from: [path, entryName]),
                     edidReferences: edidReferences(for: entry, productName: productName)
-                )
+                ))
                 continue
             }
             guard
                 entryName == "DCPAVServiceProxy",
-                let currentFramebuffer,
                 property(entry: entry, key: "Location") as? String == "External",
                 let unmanagedService = IOAVServiceCreateWithService(kCFAllocatorDefault, entry)
             else { continue }
-            let addressing = transportAddressing(
-                for: entry, adjacentEndpointToken: currentFramebuffer.endpointToken
-            )
+            serviceLocation += 1
+            let topology = transportTopology(for: entry)
             var registryEntryID: UInt64 = 0
             _ = IORegistryEntryGetRegistryEntryID(entry, &registryEntryID)
-            transports.append(NativeRegistryTransport(
-                metadata: NativeTransportCandidate(
-                    serviceLocation: currentFramebuffer.serviceLocation,
-                    ioDisplayLocation: currentFramebuffer.ioDisplayLocation,
-                    productName: currentFramebuffer.productName,
-                    serialNumber: currentFramebuffer.serialNumber,
-                    edidUUID: currentFramebuffer.edidUUID,
-                    transportPath: addressing.transportPath
+            services.append(NativeRegistryService(
+                topology: NativeServiceTopologyNode(
+                    location: serviceLocation,
+                    endpointToken: topology.endpointToken
                 ),
                 service: unmanagedService.takeRetainedValue() as IOAVService,
-                edidReferences: edidReferences(for: entry, productName: currentFramebuffer.productName)
-                    + currentFramebuffer.edidReferences,
-                chipAddress: addressing.chipAddress,
+                edidReferences: edidReferences(for: entry, productName: ""),
+                addressing: topology.addressing,
                 serviceIdentity: registryEntryID
             ))
         }
-        return transports
+
+        let topologyMatches = NativeServiceTopologyMatcher.matches(
+            framebuffers: framebuffers.map(\.topology),
+            services: services.map(\.topology)
+        )
+        let servicesByLocation = Dictionary(uniqueKeysWithValues: services.map {
+            ($0.topology.location, $0)
+        })
+        return framebuffers.compactMap { framebuffer in
+            guard let matchedServiceLocation = topologyMatches[framebuffer.topology.location],
+                  let service = servicesByLocation[matchedServiceLocation] else { return nil }
+            return NativeRegistryTransport(
+                metadata: NativeTransportCandidate(
+                    serviceLocation: service.topology.location,
+                    ioDisplayLocation: framebuffer.ioDisplayLocation,
+                    productName: framebuffer.productName,
+                    serialNumber: framebuffer.serialNumber,
+                    edidUUID: framebuffer.edidUUID,
+                    transportPath: service.addressing.transportPath
+                ),
+                service: service.service,
+                edidReferences: service.edidReferences + framebuffer.edidReferences,
+                chipAddress: service.addressing.chipAddress,
+                serviceIdentity: service.serviceIdentity
+            )
+        }
     }
 
-    private static func transportAddressing(for proxy: io_registry_entry_t,
-                                            adjacentEndpointToken: String?)
-        -> NativeDDCTransportAddressing {
+    private static func transportTopology(for proxy: io_registry_entry_t)
+        -> (addressing: NativeDDCTransportAddressing, endpointToken: String?) {
         var parent: io_registry_entry_t = 0
         guard IORegistryEntryGetParentEntry(proxy, kIOServicePlane, &parent) == KERN_SUCCESS else {
-            return NativeDDCTransportAddressing(
-                transportPath: .unknownExternal, chipAddress: 0x37
+            return (
+                NativeDDCTransportAddressing(
+                    transportPath: .unknownExternal, chipAddress: 0x37
+                ),
+                nil
             )
         }
         defer { IOObjectRelease(parent) }
@@ -606,16 +641,18 @@ final class NativeDDCBackend: DDCBackend {
         var parentNameBuffer = [CChar](repeating: 0, count: 128)
         let parentName = IORegistryEntryGetName(parent, &parentNameBuffer) == KERN_SUCCESS
             ? String(cString: parentNameBuffer) : ""
-        let endpointToken = NativeDisplayEndpointToken.extract(from: [
+        let endpointToken = NativeDisplayEndpointToken.extractService(from: [
             registryPath(proxy),
             registryPath(parent),
-            parentName,
-            adjacentEndpointToken ?? ""
+            parentName
         ])
-        return NativeDDCTransportAddressing.resolve(
-            endpointToken: endpointToken,
-            epicProviderClass: provider,
-            transportDescription: descriptions.joined(separator: " ")
+        return (
+            NativeDDCTransportAddressing.resolve(
+                endpointToken: endpointToken,
+                epicProviderClass: provider,
+                transportDescription: descriptions.joined(separator: " ")
+            ),
+            endpointToken
         )
     }
 

@@ -3,11 +3,50 @@
 ## 当前任务
 
 - 日期：2026-08-30
-- 功能：DS-014 / macOS 内建 HDMI 原生 DDC 读取正式收敛
-- 基线：`0e79c238e563ce594a1012710eec170b98ae9761`
-- 分支：`codex/macos-ds-014-hdmi-ddc-read-diagnostics`
+- 功能：DS-015 / macOS M-008 IOAVService 拓扑绑定
+- 堆叠基线：`codex/macos-ds-014-hdmi-ddc-read-diagnostics@1a15db2`
+- 分支：`codex/macos-ds-015-ioav-topology-binding`
 - 实现提交：本提交，最终完整 SHA 以分支 HEAD 和交付报告为准
-- PR / CI：按任务边界不创建 PR、不触发云端 CI
+- PR：待创建；不主动触发云端 CI
+
+## DS-015 原因与决策
+
+- 旧枚举在整棵 IORegistry 上递归遍历，并用一个可变的 `currentFramebuffer` 把随后遇到的 `DCPAVServiceProxy` 归给“最近出现”的 framebuffer；结果依赖遍历顺序，接口变化或同型号多屏时可能选错 service。
+- CoreDisplay 当前 framebuffer 与 IOAVService 当前 endpoint 是更强的系统拓扑证据。实现只接受当前在线 `IODisplayLocation`，并按 endpoint 一对一匹配；缺失、重复或歧义时明确不可用，不用名称、品牌、顺序或历史缓存猜测。
+- Apple Silicon 当前系统拓扑中，内建 HDMI framebuffer `disp0` 对应 service endpoint `dispextE`；数字 `dispextN` 仅对应同名 service。这是平台节点关系，不是显示器型号规则。
+
+## DS-015 实现
+
+- framebuffer 与 DCPAV service 分别独立枚举，再由纯拓扑匹配器关联，删除“相邻节点”推断。
+- CoreDisplay `IODisplayLocation` 必须精确命中当前 framebuffer；匹配后的 service metadata 才参与稳定显示器身份匹配。
+- 显示器身份匹配改为双向唯一最佳：同型号等分候选、同一 service 被多个显示器竞争时均安全拒绝。
+- 每次设置页显式 DDC 读写前重新发现当前 service；重连或接口变化不会继续使用旧 IOAVService、transport 或读取偏好。
+- DDC/CI 请求格式、chip/offset、读取安全策略、Set VCP、输入源切换、USB、网络与协议均未改变。
+
+## DS-015 自动验证
+
+- DDC 专项 XCTest：54/54。
+- 完整 XCTest：139/139；一条既有 USB 测试产生 QoS 性能提示，测试通过。
+- `./macOS/scripts/build-app.sh` Release 构建、打包及 `codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 通过。
+- 自动测试覆盖 M4 `disp0 -> dispextE`、数字 `dispextN`、枚举反序、同型号歧义、重复/未知 endpoint、安全拒绝以及接口变化后的重新绑定。
+- 未执行真实 DDC、输入源切换、USB、网络或唤醒，未修改系统权限。
+
+## DS-015 尚需用户实机验证
+
+1. 小米显示器保持内建 HDMI，连续执行多次显式“读取 DDC 参数”，确认绑定到当前 HDMI service；读取协议是否受系统限制仍与 service 绑定分开判断。
+2. 两台同型号显示器分别读写一次，确认操作始终落到目标物理显示器，不串台。
+3. 热插拔或把同一显示器在 HDMI、USB-C/DP 间切换后刷新，再执行显式读取，确认旧 service 失效且重新绑定。
+4. 输入源切换路径不属于本次修改，但应做一次最小回归，确认现有同时切换行为未退化。
+
+## DS-015 修改范围
+
+- `macOS/Sources/DisplaySwitcher/DDCBackend.swift`
+- `macOS/Sources/DisplaySwitcher/NativeDDC.swift`
+- `macOS/Tests/DisplaySwitcherTests/DDCBackendTests.swift`
+- `macOS/DEVELOPMENT_CHECKLIST.md`
+- `handoffs/macos.md`
+
+## 上一任务：DS-014 内建 HDMI 原生 DDC 读取收敛
 
 ## DS-014 收敛结论
 

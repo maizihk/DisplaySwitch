@@ -273,6 +273,41 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(Set(matches.values).count, matches.count)
     }
 
+    func testNativeServiceMatchingRejectsTiedSameModelCandidates() {
+        let identities = [
+            NativeDisplayIdentity(
+                stableID: "display-a", ioDisplayLocation: "",
+                productName: "Same Model", serialNumber: 0,
+                edidSearchKeys: [
+                    NativeEDIDSearchKey(value: "AAAA", offset: 0),
+                    NativeEDIDSearchKey(value: "BBBB", offset: 4)
+                ]
+            ),
+            NativeDisplayIdentity(
+                stableID: "display-b", ioDisplayLocation: "",
+                productName: "Same Model", serialNumber: 0,
+                edidSearchKeys: [
+                    NativeEDIDSearchKey(value: "AAAA", offset: 0),
+                    NativeEDIDSearchKey(value: "BBBB", offset: 4)
+                ]
+            )
+        ]
+        let candidates = [
+            NativeTransportCandidate(
+                serviceLocation: 1, ioDisplayLocation: "candidate-a",
+                productName: "Same Model", serialNumber: 0, edidUUID: "AAAABBBB"
+            ),
+            NativeTransportCandidate(
+                serviceLocation: 2, ioDisplayLocation: "candidate-b",
+                productName: "Same Model", serialNumber: 0, edidUUID: "AAAABBBB"
+            )
+        ]
+
+        XCTAssertTrue(
+            NativeDisplayMatcher.matches(identities: identities, candidates: candidates).isEmpty
+        )
+    }
+
     func testNativeGetVCPReplyValidationRejectsWrongOrLateFrames() throws {
         var reply: [UInt8] = [0x6E, 0x88, 0x02, 0x00, DDCCommand.luminance.rawValue,
                               0x00, 0x00, 0x64, 0x00, 0x2A, 0x00]
@@ -425,6 +460,18 @@ final class DDCBackendTests: XCTestCase {
 
     func testNativeTransportPathClassificationIsDeterministicAndSanitized() {
         XCTAssertEqual(
+            NativeDisplayEndpointToken.extractFramebuffer(
+                from: ["synthetic/disp0@8000000/IOMobileFramebufferShim"]
+            ),
+            "disp0"
+        )
+        XCTAssertEqual(
+            NativeDisplayEndpointToken.extractFramebuffer(
+                from: ["synthetic/dispext1@88000000/IOMobileFramebufferShim"]
+            ),
+            "dispext1"
+        )
+        XCTAssertEqual(
             NativeDisplayEndpointToken.extract(from: ["synthetic/dispextE:/proxy"]),
             "dispextE"
         )
@@ -469,6 +516,87 @@ final class DDCBackendTests: XCTestCase {
         let parameters = NativeDDCTransportParameters.appleSiliconDDCCompatible
         XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0)
         XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
+    }
+
+    func testNativeServiceTopologyMatchesM4HDMIAndExternalEndpointsIndependentOfOrder() {
+        let framebuffers = [
+            NativeFramebufferTopologyNode(location: 1, endpointToken: "disp0"),
+            NativeFramebufferTopologyNode(location: 2, endpointToken: "dispext0"),
+            NativeFramebufferTopologyNode(location: 3, endpointToken: "dispext1")
+        ]
+        let services = [
+            NativeServiceTopologyNode(location: 30, endpointToken: "dispext1"),
+            NativeServiceTopologyNode(location: 10, endpointToken: "dispextE"),
+            NativeServiceTopologyNode(location: 20, endpointToken: "dispext0")
+        ]
+
+        let expected = [1: 10, 2: 20, 3: 30]
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: framebuffers, services: services
+            ),
+            expected
+        )
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: Array(framebuffers.reversed()),
+                services: Array(services.reversed())
+            ),
+            expected
+        )
+    }
+
+    func testNativeServiceTopologyRejectsAmbiguityAndUnknownEndpoints() {
+        XCTAssertTrue(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "dispext0"),
+                    NativeFramebufferTopologyNode(location: 2, endpointToken: "dispext0"),
+                    NativeFramebufferTopologyNode(location: 3, endpointToken: nil),
+                    NativeFramebufferTopologyNode(location: 4, endpointToken: "disp1")
+                ],
+                services: [
+                    NativeServiceTopologyNode(location: 10, endpointToken: "dispext0"),
+                    NativeServiceTopologyNode(location: 11, endpointToken: nil)
+                ]
+            ).isEmpty
+        )
+        XCTAssertTrue(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "disp0")
+                ],
+                services: [
+                    NativeServiceTopologyNode(location: 10, endpointToken: "dispextE"),
+                    NativeServiceTopologyNode(location: 11, endpointToken: "dispextE")
+                ]
+            ).isEmpty
+        )
+    }
+
+    func testNativeServiceTopologyRebindsAfterInterfaceChangeWithoutHistoricalGuessing() {
+        let services = [
+            NativeServiceTopologyNode(location: 10, endpointToken: "dispextE"),
+            NativeServiceTopologyNode(location: 20, endpointToken: "dispext2")
+        ]
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "disp0")
+                ],
+                services: services
+            ),
+            [1: 10]
+        )
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "dispext2")
+                ],
+                services: services
+            ),
+            [1: 20]
+        )
     }
 
     func testNativeTransportAddressingSeparatesEndpointPathFromConverterChip() {

@@ -263,6 +263,16 @@
 - [x] 50 项 DDC 测试和 135 项完整 XCTest 通过；Debug、Release、`build-app.sh` 与严格 codesign 通过。
 - [ ] 第二个 Type-C/DP 失败样本后续单独立项诊断，不与内建 HDMI 根因合并；本任务未执行新的硬件动作。
 
+### M-008 / DS-015 IOAVService 拓扑绑定（自动验证完成，实机待验）
+
+- [x] 移除依赖 IORegistry 遍历先后顺序的 framebuffer/service 关联；只使用当前在线 CoreDisplay 的精确 `IODisplayLocation` 与 DCPAV endpoint 拓扑建立一对一绑定。
+- [x] Apple Silicon 平台拓扑按当前节点动态解析：内建 HDMI `disp0` 对应 `dispextE`，数字 `dispextN` 只对应同名 endpoint；不按品牌、型号、枚举顺序或历史接口猜测。
+- [x] 同型号、重复 endpoint、未知 endpoint 或多 service 歧义均安全拒绝，不把 DDC 操作发送到另一台显示器。
+- [x] 每次显式 DDC 读写前重新发现当前 service；重连、接口变化或旧 service 失效后不复用旧 transport、service identity 或读取偏好。
+- [x] 未修改 DDC/CI 帧、chip、offset、重试时序、Set VCP、输入源切换、USB、网络或协议。
+- [x] 54 项 DDC 专项和 139 项完整 XCTest 通过；Release `build-app.sh`、打包与严格 codesign 验证通过。
+- [ ] 小米内建 HDMI 显式读取、两台同型号显示器物理目标、热插拔和 HDMI/USB-C/DP 接口变化仍需用户实机验证；本任务未执行硬件动作。
+
 ### M-203 Bonjour/mDNS 自动发现
 
 - [ ] 在协议 v2 安全模型确定后实施。
@@ -294,3 +304,4 @@
 | 2026-08-30 | DS-010 本地网络权限引导 | 自动验证完成，权限实机待验 | 本任务提交 | 11 项相关测试、118 项全部 XCTest、Debug/Release、打包和严格验签通过；普通失败不误报系统拒绝，未访问真实局域网或硬件 |
 | 2026-08-30 | DS-011 原生 DDC 单后端清理 | 自动验证完成，实机待验 | 本任务提交 | 54 项相关测试、122 项全部 XCTest、Debug/Release、打包和严格验签通过；正式运行路径不含外部 DDC 进程或历史后端选择 |
 | 2026-08-30 | DS-014 内建 HDMI 原生 DDC 读取诊断 | 正式安全策略完成 | 本任务提交 | 实机确认内建 HDMI 读取不可用后停止参数探测；50 项 DDC、135 项完整 XCTest、Debug/Release、打包和严格验签通过 |
+| 2026-08-30 | M-008 / DS-015 IOAVService 拓扑绑定 | 自动验证完成，实机待验 | 本任务提交 | 移除遍历顺序绑定并按当前 endpoint 一对一解析；54 项 DDC、139 项完整 XCTest、Release 打包和严格验签通过；未执行硬件动作 |
