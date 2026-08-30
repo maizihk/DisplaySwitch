@@ -208,6 +208,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::Initialize(::DisplaySwitcher::Native::AppConfig const& config,
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
+        std::function<::DisplaySwitcher::Native::DdcEnumerationResult()> enumerateDdc,
         std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
             std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc,
         std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
@@ -225,7 +226,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (initialized_) return;
         initialized_ = true;
-        original_ = config; saved_ = std::move(saved); readDdc_ = std::move(readDdc);
+        original_ = config; saved_ = std::move(saved); enumerateDdc_ = std::move(enumerateDdc);
+        readDdc_ = std::move(readDdc);
         writeDdc_ = std::move(writeDdc); commitDdcCache_ = std::move(commitDdcCache);
         checkNetworkAccess_ = std::move(checkNetworkAccess);
         detectProfile_ = std::move(detectProfile); cancelProfileDetection_ = std::move(cancelProfileDetection);
@@ -245,6 +247,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
         });
         LoadUsbDevices();
         LoadDdcMonitors();
+    }
+
+    void SettingsWindow::ReloadConfiguration(::DisplaySwitcher::Native::AppConfig const& config)
+    {
+        if (windowClosed_) return;
+        ddcCancellation_.Cancel();
+        LoadValues(config);
     }
 
     UIElement SettingsWindow::BuildContent()
@@ -724,7 +733,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         CaptureDisplayEditors();
         try
         {
-            auto enumeration = ::DisplaySwitcher::Native::EnumerateDdcMonitors();
+            auto enumeration = enumerateDdc_ ? enumerateDdc_()
+                : ::DisplaySwitcher::Native::DdcEnumerationResult{ false,
+                    ::DisplaySwitcher::Native::DdcErrorKind::BackendUnavailable,
+                    L"Windows 原生 DDC 后端不可用", {}, false };
             if (!enumeration.success)
             {
                 ShowValidationError(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message);
@@ -741,13 +753,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
                 workingDisplays_, ddcMonitors_, true);
             workingDisplays_ = std::move(reconciled.displays);
-            auto usbSwitch = original_.usbSwitch;
-            auto mappingsChanged = ::DisplaySwitcher::Native::RemoveOrphanedDisplayMappings(
-                workingDisplays_, workingProfiles_, usbSwitch);
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
             RebuildProfileEditors();
-            if (reconciled.changed || mappingsChanged) SaveImmediately();
+            if (reconciled.changed) SaveImmediately();
             if (ddcMonitors_.empty())
                 ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
             else if (!enumeration.message.empty()) ShowValidationError(enumeration.message);
@@ -824,10 +833,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.brightness = Slider(); configureSlider(controls.brightness, display.brightnessValue, display.brightnessMax);
             controls.contrast = Slider(); configureSlider(controls.contrast, display.contrastValue, display.contrastMax);
             controls.volume = Slider(); configureSlider(controls.volume, display.volumeValue, display.volumeMax);
-            controls.status = TextBlock(); controls.status.Text(L"状态尚未读取"); controls.status.Opacity(0.72);
+            controls.status = TextBlock();
+            controls.status.Text(display.bindingMessage.empty() ? L"状态尚未读取" : display.bindingMessage);
+            controls.status.Opacity(0.72);
             controls.status.TextWrapping(TextWrapping::Wrap);
 
             auto read = Button(); read.Content(box_value(L"读取 DDC 参数"));
+            read.IsEnabled(::DisplaySwitcher::Native::IsDisplayDdcResolved(display));
             AutomationProperties::SetName(read, L"读取 " + display.name + L" 的 DDC 参数");
             read.Click([this, id = display.id](auto const&, auto const&) { ReadDdc(id); });
             auto controlsGrid = Grid();

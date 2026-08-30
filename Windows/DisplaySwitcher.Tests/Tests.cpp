@@ -5,6 +5,7 @@
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
 #include "../DisplaySwitcher.Native/ProfileDetection.h"
+#include "../DisplaySwitcher.Native/SystemActions.h"
 #include "../DisplaySwitcher.Native/UnboundProbeRouter.h"
 #include "../DisplaySwitcher.Native/UdpPeer.h"
 #include "../DisplaySwitcher.Native/UsbLearning.h"
@@ -38,6 +39,8 @@ namespace
         display.macInput = peerInput;
         display.localInput.reset();
         display.readEnabled = true;
+        display.bindingStatus = DisplayBindingStatus::Resolved;
+        display.bindingMessage = L"模拟拓扑已绑定";
         return display;
     }
 
@@ -78,10 +81,13 @@ namespace
         std::vector<std::tuple<std::wstring, DdcVcpCode, int>> writes;
         std::function<void()> onRead;
         std::function<void()> onWrite;
+        std::atomic<uint64_t> topologyGeneration{ 1 };
 
         std::wstring Key() const override { return key; }
         std::wstring DisplayName() const override { return L"模拟硬件 DDC/CI"; }
         DdcBackendStatus Status() const override { return status; }
+        uint64_t TopologyGeneration() const noexcept override { return topologyGeneration.load(); }
+        void InvalidateTopology() noexcept override { ++topologyGeneration; }
         DdcEnumerationResult Enumerate(DdcCancellationToken const&) override
         { return { true, DdcErrorKind::None, {}, {}, true }; }
         DdcCapabilities Capabilities(std::wstring const&, DdcCancellationToken const&) override
@@ -91,15 +97,20 @@ namespace
         DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
             DdcCancellationToken const& cancellation) override
         {
+            auto generation = TopologyGeneration();
             reads.emplace_back(monitorId, code);
             if (onRead) onRead();
             if (cancellation.IsCanceled()) return { false, 0, 0, DdcErrorKind::Canceled, L"已取消" };
             auto found = values.find({ monitorId, code });
-            return found == values.end() ? DdcValueResult{ false, 0, 0, DdcErrorKind::ReadFailed, L"模拟读取失败" } : found->second;
+            if (found == values.end()) return { false, 0, 0, DdcErrorKind::ReadFailed, L"模拟读取失败" };
+            auto result = found->second;
+            if (result.success) result.topologyGeneration = generation;
+            return result;
         }
         DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
             DdcCancellationToken const& cancellation) override
         {
+            auto generation = TopologyGeneration();
             writes.emplace_back(monitorId, code, value);
             if (onWrite) onWrite();
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"已取消" };
@@ -107,7 +118,7 @@ namespace
             if (transient != transientWriteFailures.end() && transient->second-- > 0)
                 return { false, DdcErrorKind::WriteFailed, L"模拟句柄失效" };
             if (writeFailures.contains({ monitorId, code })) return { false, DdcErrorKind::WriteFailed, L"模拟写入失败" };
-            return { true, DdcErrorKind::None, {} };
+            return { true, DdcErrorKind::None, {}, generation };
         }
     };
 
@@ -638,6 +649,145 @@ namespace
         Check(released == 2, L"W-009: 每个唯一物理监视器句柄必须在所有路径恰好释放一次");
     }
 
+    void TestDisplayTopologyBinding()
+    {
+        auto monitor = [](std::wstring strongId, std::wstring targetId, std::wstring name,
+            std::wstring gdi, size_t physicalHandles, std::vector<std::wstring> legacy = {})
+        {
+            DdcMonitorInfo value;
+            value.id = std::move(strongId);
+            value.logicalTargetId = std::move(targetId);
+            value.displayName = std::move(name);
+            value.gdiName = std::move(gdi);
+            value.physicalHandleCount = physicalHandles;
+            value.legacyIds = std::move(legacy);
+            return value;
+        };
+
+        auto fourHandles = NormalizeDdcMonitorCollection({
+            monitor(L"ds13:identity-a", L"adapter-a:1", L"相同型号", L"DISPLAY1", 2),
+            monitor(L"ds13:identity-b", L"adapter-a:2", L"相同型号", L"DISPLAY2", 2),
+        });
+        Check(fourHandles.size() == 2 && fourHandles[0].ambiguous && fourHandles[1].ambiguous,
+            L"DS-013: 两个逻辑 target 的四个底层句柄只能显示两个逻辑项并标记歧义");
+        auto fourReconciled = ReconcileDisplayConfigurations({}, fourHandles, true);
+        Check(fourReconciled.displays.size() == 2
+            && std::all_of(fourReconciled.displays.begin(), fourReconciled.displays.end(), [](auto const& display)
+                { return display.bindingStatus == DisplayBindingStatus::Ambiguous; }),
+            L"DS-013: 多物理句柄不得生成重复逻辑显示器或选择第一个句柄");
+        AppConfig ambiguousConfig; ambiguousConfig.displays = fourReconciled.displays;
+        for (auto& display : ambiguousConfig.displays) EnableDdcControls(display);
+        FakeDdcBackend ambiguousBackend; DdcCancellationSource ambiguousCancellation;
+        auto ambiguousRead = FakeService(ambiguousBackend).Read(ambiguousConfig, {}, ambiguousCancellation.Begin());
+        auto ambiguousWrite = FakeService(ambiguousBackend).Write(ambiguousConfig,
+            ambiguousConfig.displays[0].id, DdcVcpCode::Brightness, 40, false, ambiguousCancellation.Begin());
+        for (auto& display : ambiguousConfig.displays) display.macInput = 18;
+        auto ambiguousInput = SwitchDisplaysToMac(ambiguousConfig, &ambiguousBackend);
+        Check(!ambiguousRead.success && !ambiguousWrite.success && !ambiguousInput.success && ambiguousBackend.reads.empty()
+            && ambiguousBackend.writes.empty(),
+            L"DS-013: 歧义 target 必须保持亮度、对比度、音量和输入源 DDC 调用为零");
+
+        auto duplicatePhysical = NormalizeDdcMonitorCollection({
+            monitor(L"ds13:identity-c", L"adapter-b:1", L"目标", L"DISPLAY3", 1),
+            monitor(L"ds13:identity-c", L"adapter-b:1", L"目标", L"DISPLAY3", 1),
+        });
+        Check(duplicatePhysical.size() == 1 && duplicatePhysical[0].physicalHandleCount == 2
+            && duplicatePhysical[0].ambiguous,
+            L"DS-013: 同一 target 的重复底层句柄必须合并为一个不可操作逻辑项");
+
+        auto noSerial = NormalizeDdcMonitorCollection({
+            monitor({}, L"adapter-c:1", L"相同型号", L"DISPLAY4", 1),
+            monitor({}, L"adapter-c:2", L"相同型号", L"DISPLAY5", 1),
+        });
+        auto noSerialFirst = ReconcileDisplayConfigurations({}, noSerial, true);
+        std::reverse(noSerial.begin(), noSerial.end());
+        auto noSerialReordered = ReconcileDisplayConfigurations(noSerialFirst.displays, noSerial, true);
+        Check(noSerialReordered.displays.size() == 2
+            && std::all_of(noSerialReordered.displays.begin(), noSerialReordered.displays.end(), [](auto const& display)
+                { return display.bindingStatus != DisplayBindingStatus::Resolved; }),
+            L"DS-013: 同型号且无强身份时不得按友好名称或枚举顺序猜测绑定");
+
+        auto strong = NormalizeDdcMonitorCollection({
+            monitor(L"ds13:strong-a", L"adapter-d:1", L"相同型号", L"DISPLAY6", 1),
+            monitor(L"ds13:strong-b", L"adapter-d:2", L"相同型号", L"DISPLAY7", 1),
+        });
+        auto strongFirst = ReconcileDisplayConfigurations({}, strong, true);
+        auto firstLogicalIds = std::map<std::wstring, std::wstring>{};
+        for (auto const& display : strongFirst.displays) firstLogicalIds[display.nativeMonitorId] = display.id;
+        auto switchedPorts = NormalizeDdcMonitorCollection({
+            monitor(L"ds13:strong-b", L"adapter-e:9", L"相同型号", L"DISPLAY9", 1),
+            monitor(L"ds13:strong-a", L"adapter-e:8", L"相同型号", L"DISPLAY8", 1),
+        });
+        auto strongRebound = ReconcileDisplayConfigurations(strongFirst.displays, switchedPorts, true);
+        Check(strongRebound.displays.size() == 2
+            && std::all_of(strongRebound.displays.begin(), strongRebound.displays.end(), [&](auto const& display)
+                { return display.bindingStatus == DisplayBindingStatus::Resolved
+                    && firstLogicalIds[display.nativeMonitorId] == display.id; }),
+            L"DS-013: 强身份唯一时接口切换和枚举重排必须保持全局一对一逻辑绑定");
+
+        CollaborationProfile transientProfile = Profile(L"短暂断开保留");
+        UsbSwitchConfig transientUsb;
+        for (auto const& display : strongFirst.displays)
+        {
+            transientProfile.displayInputs.push_back({ display.id, 24 });
+            transientUsb.displayInputs.push_back({ display.id, 25 });
+        }
+        auto partial = ReconcileDisplayConfigurations(strongFirst.displays,
+            { monitor(L"ds13:strong-a", L"adapter-d:1", L"相同型号", L"DISPLAY6", 1) }, false);
+        auto empty = ReconcileDisplayConfigurations(partial.displays, {}, false);
+        auto wakeRecovery = ReconcileDisplayConfigurations(empty.displays, switchedPorts, true);
+        Check(!partial.changed && !empty.changed && partial.displays.size() == 2 && empty.displays.size() == 2
+            && wakeRecovery.displays.size() == 2 && transientProfile.displayInputs.size() == 2
+            && transientUsb.displayInputs.size() == 2,
+            L"DS-013: 部分失败、空集合和休眠恢复不得破坏配置或任何显示器映射");
+
+        auto legacy = Display(L"旧配置", L"legacy-interface-a", 16);
+        auto legacyId = legacy.id;
+        auto uniqueMigration = ReconcileDisplayConfigurations({ legacy }, {
+            monitor(L"ds13:migrated-a", L"adapter-f:1", L"迁移目标", L"DISPLAY10", 1,
+                { L"legacy-interface-a" }) }, true);
+        Check(uniqueMigration.displays.size() == 1 && uniqueMigration.displays[0].id == legacyId
+            && uniqueMigration.displays[0].nativeMonitorId == L"ds13:migrated-a"
+            && uniqueMigration.displays[0].bindingStatus == DisplayBindingStatus::Resolved,
+            L"DS-013: 旧接口 ID 仅有唯一强候选时才能迁移并保留逻辑 ID");
+        auto ambiguousMigration = ReconcileDisplayConfigurations({ legacy }, {
+            monitor(L"ds13:migrated-b", L"adapter-f:2", L"相同型号", L"DISPLAY11", 1,
+                { L"legacy-interface-a" }),
+            monitor(L"ds13:migrated-c", L"adapter-f:3", L"相同型号", L"DISPLAY12", 1,
+                { L"legacy-interface-a" }) }, true);
+        auto retainedLegacy = std::find_if(ambiguousMigration.displays.begin(), ambiguousMigration.displays.end(),
+            [&](auto const& display) { return display.id == legacyId; });
+        Check(retainedLegacy != ambiguousMigration.displays.end()
+            && retainedLegacy->nativeMonitorId == L"legacy-interface-a"
+            && retainedLegacy->bindingStatus == DisplayBindingStatus::NeedsConfirmation,
+            L"DS-013: 旧配置有多个候选时必须保留原值并安全拒绝，不得选择第一项");
+
+        auto offlineConfig = strongFirst.displays;
+        auto offlineId = firstLogicalIds[L"ds13:strong-a"];
+        CollaborationProfile profile = Profile(L"保留映射");
+        for (auto const& display : offlineConfig) profile.displayInputs.push_back({ display.id, 20 });
+        UsbSwitchConfig usb;
+        for (auto const& display : offlineConfig) usb.displayInputs.push_back({ display.id, 21 });
+        auto partialTopology = ReconcileDisplayConfigurations(offlineConfig,
+            { monitor(L"ds13:strong-b", L"adapter-d:2", L"相同型号", L"DISPLAY7", 1) }, true);
+        auto offline = std::find_if(partialTopology.displays.begin(), partialTopology.displays.end(),
+            [&](auto const& display) { return display.id == offlineId; });
+        Check(partialTopology.displays.size() == 2 && partialTopology.removed == 0
+            && offline != partialTopology.displays.end() && offline->bindingStatus == DisplayBindingStatus::Offline
+            && profile.displayInputs.size() == 2 && usb.displayInputs.size() == 2,
+            L"DS-013: 暂时离线不得删除显示器配置、USB 绑定或协同输入映射");
+
+        int released{};
+        {
+            NativeMonitorHandleLease handles([&](HANDLE) { ++released; });
+            auto one = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+            auto two = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(2));
+            handles.Add(one); handles.Add(one); handles.Add(two);
+            Check(handles.Handles().size() == 2, L"DS-013: 物理句柄所有权必须去重");
+        }
+        Check(released == 2, L"DS-013: 拓扑销毁时每个唯一物理句柄必须恰好释放一次");
+    }
+
     void TestUsbTriggerStability()
     {
         UsbSwitchInitialState initial;
@@ -767,6 +917,17 @@ namespace
             && std::get<1>(native.writes[0]) == DdcVcpCode::Brightness && config.displays[0].brightnessValue == 36,
             L"U-010: 托盘滑杆只写对应显示器和项目，成功后才提交缓存");
 
+        native.writes.clear();
+        auto inputSwitch = SwitchDisplaysToMac(config, &native);
+        Check(inputSwitch.success && native.writes.size() == 2
+            && std::get<0>(native.writes[0]) == config.displays[0].nativeMonitorId
+            && std::get<1>(native.writes[0]) == DdcVcpCode::InputSource
+            && std::get<2>(native.writes[0]) == config.displays[0].macInput
+            && std::get<0>(native.writes[1]) == config.displays[1].nativeMonitorId
+            && std::get<1>(native.writes[1]) == DdcVcpCode::InputSource
+            && std::get<2>(native.writes[1]) == config.displays[1].macInput,
+            L"DS-013: 输入源写入必须与亮度、对比度和音量共用同一逻辑显示器绑定");
+
         auto cachedFirst = config.displays[0];
         SetThreeValues(native, L"monitor-0", 0, 0, 0);
         auto allZero = service.Read(config, { firstId }, cancellation.Begin());
@@ -821,6 +982,10 @@ namespace
             && productionBackends.Lookup(L"control_my_monitor") == nullptr
             && productionBackends.Lookup(L"auto") == nullptr,
             L"DS-011: 正式后端集合必须只暴露 Windows 原生 Dxva2，不得保留选择或回退入口");
+        auto topologyBeforeInvalidation = productionBackends.TopologyGeneration();
+        productionBackends.InvalidateTopology();
+        Check(productionBackends.TopologyGeneration() > topologyBeforeInvalidation,
+            L"DS-013: WM_DISPLAYCHANGE/热插拔入口必须立即递增 topology generation 并失效旧缓存");
 
         auto reordered = config;
         std::swap(reordered.displays[0], reordered.displays[1]);
@@ -875,6 +1040,31 @@ namespace
         auto lateWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 77, false, cancellation.Begin());
         Check(lateWrite.canceled && config.displays[0].brightnessValue == oldBrightness,
             L"写入完成后的迟到取消必须阻断缓存提交");
+        native.onWrite = {};
+
+        native.writes.clear();
+        auto beforeTopologyChange = config.displays[0].brightnessValue;
+        native.onWrite = [&] { ++native.topologyGeneration; };
+        auto staleSuccess = service.Write(config, firstId, DdcVcpCode::Brightness, 78, false, cancellation.Begin());
+        Check(staleSuccess.canceled && native.writes.size() == 1
+            && config.displays[0].brightnessValue == beforeTopologyChange,
+            L"DS-013: 旧句柄即使模拟返回成功，topology generation 变化后也不得提交结果");
+        native.onWrite = {};
+
+        native.reads.clear();
+        auto beforeStaleRead = config.displays[0].brightnessValue;
+        native.onRead = [&] { ++native.topologyGeneration; };
+        auto staleRead = service.Read(config, { firstId }, cancellation.Begin());
+        Check(staleRead.canceled && native.reads.size() == 1
+            && config.displays[0].brightnessValue == beforeStaleRead,
+            L"DS-013: 拓扑变化必须丢弃旧句柄的迟到读取并停止剩余项目");
+        native.onRead = {};
+
+        native.writes.clear();
+        native.onWrite = [&] { ++native.topologyGeneration; };
+        auto stoppedBatch = service.Write(config, firstId, DdcVcpCode::Brightness, 79, true, cancellation.Begin());
+        Check(stoppedBatch.canceled && native.writes.size() == 1,
+            L"DS-013: 联动批处理中 topology generation 变化必须停止剩余显示器操作");
         native.onWrite = {};
 
         bool allowed = false;
@@ -1422,7 +1612,7 @@ int wmain()
         TestNormalV4SaveFailureSafety(root);
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
-        TestNativeDisplayCollection();
+        TestDisplayTopologyBinding();
         TestUsbTriggerStability();
         TestDdcControls();
         TestUsbLearningAndAbout();
@@ -1437,6 +1627,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-009 USB trigger stability scenarios passed\n";
         if (!failures) std::wcout << L"DS-009 asymmetric bootstrap and loopback UDP scenarios passed\n";
         if (!failures) std::wcout << L"DS-012 nonblocking detection, cancellation and key-cache scenarios passed\n";
+        if (!failures) std::wcout << L"DS-013 logical display binding and topology-generation scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
         failures += RunUsbSwitchVectorTests();
     }

@@ -1,6 +1,7 @@
 #pragma once
 #include "AppConfig.h"
 #include "DdcControl.h"
+#include "DdcBackends.h"
 #include "ProfileDetection.h"
 #include "UdpPeer.h"
 #include "V2Protocol.h"
@@ -60,6 +61,7 @@ namespace DisplaySwitcher::Native
         void WriteTrayDdc(std::wstring const& displayId, DdcVcpCode code, int value);
         void ProcessTrayDdcWrites();
         void RefreshTrayDdcControls();
+        void OnDisplayTopologyChanged();
         void ShowSettings();
         void SetStatus(std::wstring const& text);
         void SetPeerConnectionStatus(std::wstring const& text, bool connected);
@@ -108,5 +110,6 @@ namespace DisplaySwitcher::Native
         std::atomic<bool> usbLearningActive_{};
         std::jthread peerHealthThread_;
         DdcWriteQueue trayDdcWrites_;
+        DdcBackendSet ddcBackends_;
     };
 }

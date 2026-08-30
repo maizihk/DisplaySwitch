@@ -62,6 +62,7 @@ namespace DisplaySwitcher::Native
         };
         for (auto const& display : config.displays)
         {
+            if (!IsDisplayDdcResolved(display)) continue;
             append(display, DdcVcpCode::Brightness, L"亮度", display.brightnessEnabled,
                 display.brightnessShowInTray, display.brightnessValue, display.brightnessMax);
             append(display, DdcVcpCode::Contrast, L"对比度", display.contrastEnabled,
@@ -172,6 +173,11 @@ namespace DisplaySwitcher::Native
         return lookup_ ? lookup_(NativeDdcBackendKey) : nullptr;
     }
 
+    bool DdcControlService::TopologyUnchanged(IDdcBackend const& backend, uint64_t generation) noexcept
+    {
+        return backend.TopologyGeneration() == generation;
+    }
+
     DdcControlBatchResult DdcControlService::Read(AppConfig& config,
         std::vector<std::wstring> const& displayIds, DdcCancellationToken const& cancellation) const
     {
@@ -187,6 +193,19 @@ namespace DisplaySwitcher::Native
         {
             if (!requested(display) || !display.readEnabled) continue;
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
+            if (!IsDisplayDdcResolved(display))
+            {
+                auto ambiguous = display.bindingStatus == DisplayBindingStatus::Ambiguous
+                    || display.bindingStatus == DisplayBindingStatus::NeedsConfirmation;
+                auto error = ambiguous ? DdcErrorKind::AmbiguousMonitor : DdcErrorKind::MonitorUnavailable;
+                auto message = display.bindingMessage.empty()
+                    ? (ambiguous ? L"显示器绑定不明确，需要重新确认" : L"显示器当前离线")
+                    : display.bindingMessage;
+                for (auto code : ControlCodes()) if (FeatureEnabled(display, code))
+                    batch.items.push_back(Failure(display, code,
+                        { DdcAvailability::TemporarilyUnavailable, message }, error, message));
+                continue;
+            }
             auto backend = Backend();
             DdcBackendStatus status;
             if (!backend)
@@ -207,6 +226,7 @@ namespace DisplaySwitcher::Native
             }
             auto const& monitorId = display.nativeMonitorId;
             auto capabilities = backend->Capabilities(monitorId, cancellation);
+            auto topologyGeneration = backend->TopologyGeneration();
             std::vector<DdcControlItemResult> displayResults;
             for (auto code : ControlCodes())
             {
@@ -219,6 +239,10 @@ namespace DisplaySwitcher::Native
                     continue;
                 }
                 auto value = backend->Read(monitorId, code, cancellation);
+                if (!TopologyUnchanged(*backend, topologyGeneration)
+                    || (value.success && value.topologyGeneration != 0
+                        && value.topologyGeneration != backend->TopologyGeneration()))
+                { batch.canceled = true; break; }
                 DdcControlItemResult item{ display.id, code, value.success, false, value.success, false,
                     value.success ? std::optional<int>{ value.current } : std::nullopt,
                     value.success ? std::optional<int>{ EffectiveMaximum(value.current, value.maximum) } : std::nullopt,
@@ -291,6 +315,18 @@ namespace DisplaySwitcher::Native
         {
             auto& display = config.displays[index];
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
+            if (!IsDisplayDdcResolved(display))
+            {
+                auto ambiguous = display.bindingStatus == DisplayBindingStatus::Ambiguous
+                    || display.bindingStatus == DisplayBindingStatus::NeedsConfirmation;
+                auto error = ambiguous ? DdcErrorKind::AmbiguousMonitor : DdcErrorKind::MonitorUnavailable;
+                auto message = display.bindingMessage.empty()
+                    ? (ambiguous ? L"显示器绑定不明确，需要重新确认" : L"显示器当前离线")
+                    : display.bindingMessage;
+                batch.items.push_back(Failure(display, code,
+                    { DdcAvailability::TemporarilyUnavailable, message }, error, message));
+                continue;
+            }
             auto backend = Backend();
             if (!backend)
             {
@@ -306,6 +342,7 @@ namespace DisplaySwitcher::Native
             }
             auto const& monitorId = display.nativeMonitorId;
             auto capabilities = backend->Capabilities(monitorId, cancellation);
+            auto topologyGeneration = backend->TopologyGeneration();
             if (!capabilities.CanWrite(code))
             {
                 batch.items.push_back(Failure(display, code, capabilities.status, DdcErrorKind::Unsupported,
@@ -315,6 +352,18 @@ namespace DisplaySwitcher::Native
             auto result = Allowed(config, cancellation)
                 ? WriteNativeWithOneRefresh(*backend, monitorId, code, value, cancellation)
                 : DdcWriteResult{ false, DdcErrorKind::Canceled, L"操作已取消" };
+            auto topologyChangedDuringWrite = !TopologyUnchanged(*backend, topologyGeneration);
+            if (topologyChangedDuringWrite || (result.success && result.topologyGeneration != 0
+                && result.topologyGeneration != backend->TopologyGeneration()))
+            {
+                result = { false, DdcErrorKind::TopologyChanged, L"显示拓扑已变化，旧句柄结果已丢弃" };
+                topologyChangedDuringWrite = true;
+            }
+            if (topologyChangedDuringWrite)
+            {
+                batch.canceled = true;
+                break;
+            }
             DdcControlItemResult item{ display.id, code, result.success, false, result.success, false,
                 result.success ? std::optional<int>{ value } : std::nullopt,
                 result.success ? std::optional<int>{ EffectiveMaximum(value, CachedMaximum(display, code).value_or(100)) } : std::nullopt,

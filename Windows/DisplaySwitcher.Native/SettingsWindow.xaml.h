@@ -15,6 +15,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         SettingsWindow();
         void Initialize(::DisplaySwitcher::Native::AppConfig const& config,
             std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
+            std::function<::DisplaySwitcher::Native::DdcEnumerationResult()> enumerateDdc,
             std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
                 std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc,
             std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
@@ -30,6 +31,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             std::function<void()> endUsbLearning,
             std::function<void()> closed);
         void SetConnectionStatus(std::wstring const& status, bool connected);
+        void ReloadConfiguration(::DisplaySwitcher::Native::AppConfig const& config);
         void ShowWindow();
         void CloseForExit();
 
@@ -78,6 +80,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
         ::DisplaySwitcher::Native::AppConfig original_;
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved_;
+        std::function<::DisplaySwitcher::Native::DdcEnumerationResult()> enumerateDdc_;
         std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
             std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc_;
         std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,

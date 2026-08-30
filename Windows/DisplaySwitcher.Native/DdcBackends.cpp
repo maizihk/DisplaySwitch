@@ -1,10 +1,245 @@
 #include "pch.h"
 #include "DdcBackends.h"
 #include "Diagnostics.h"
+#include <devpkey.h>
 
 namespace
 {
     using namespace DisplaySwitcher::Native;
+
+    constexpr GUID MonitorInterfaceClass{
+        0xe6f07b5f, 0xee97, 0x4a90, { 0xb0, 0x76, 0x33, 0xf5, 0x7b, 0xf4, 0xea, 0xa7 } };
+    constexpr DEVPROPKEY DeviceContainerIdKey{
+        { 0x8c7ed206, 0x3f8a, 0x4827, { 0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c } }, 2 };
+
+    bool EqualInsensitive(std::wstring const& left, std::wstring const& right) noexcept
+    {
+        return _wcsicmp(left.c_str(), right.c_str()) == 0;
+    }
+
+    std::wstring LuidText(LUID const& luid)
+    {
+        wchar_t value[32]{};
+        swprintf_s(value, L"%08x%08x", static_cast<unsigned>(luid.HighPart), luid.LowPart);
+        return value;
+    }
+
+    bool EmptyGuid(GUID const& value) noexcept
+    {
+        static constexpr GUID empty{};
+        return InlineIsEqualGUID(value, empty) != FALSE;
+    }
+
+    std::wstring Sha256Token(std::vector<BYTE> const& bytes)
+    {
+        BCRYPT_ALG_HANDLE algorithm{};
+        BCRYPT_HASH_HANDLE hash{};
+        DWORD objectLength{}, resultLength{};
+        std::vector<BYTE> object;
+        std::vector<BYTE> digest(32);
+        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return {};
+        auto close = [&]
+        {
+            if (hash) BCryptDestroyHash(hash);
+            if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+        };
+        if (BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, reinterpret_cast<PUCHAR>(&objectLength),
+            sizeof(objectLength), &resultLength, 0) < 0)
+        {
+            close(); return {};
+        }
+        object.resize(objectLength);
+        if (BCryptCreateHash(algorithm, &hash, object.data(), objectLength, nullptr, 0, 0) < 0
+            || (!bytes.empty() && BCryptHashData(hash, const_cast<PUCHAR>(bytes.data()),
+                static_cast<ULONG>(bytes.size()), 0) < 0)
+            || BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) < 0)
+        {
+            close(); return {};
+        }
+        close();
+        constexpr wchar_t hex[] = L"0123456789abcdef";
+        std::wstring result = L"ds13:";
+        result.reserve(result.size() + digest.size() * 2);
+        for (auto byte : digest)
+        {
+            result.push_back(hex[byte >> 4]);
+            result.push_back(hex[byte & 0x0f]);
+        }
+        return result;
+    }
+
+    void AppendBytes(std::vector<BYTE>& target, void const* data, size_t size)
+    {
+        auto first = static_cast<BYTE const*>(data);
+        target.insert(target.end(), first, first + size);
+    }
+
+    struct InterfaceIdentity
+    {
+        std::wstring strongId;
+        std::vector<std::wstring> legacyIds;
+    };
+
+    InterfaceIdentity ReadInterfaceIdentity(std::wstring const& monitorDevicePath)
+    {
+        InterfaceIdentity result;
+        auto set = SetupDiGetClassDevsW(&MonitorInterfaceClass, nullptr, nullptr,
+            DIGCF_DEVICEINTERFACE | DIGCF_PRESENT);
+        if (set == INVALID_HANDLE_VALUE) return result;
+
+        for (DWORD index = 0;; ++index)
+        {
+            SP_DEVICE_INTERFACE_DATA interfaceData{ sizeof(interfaceData) };
+            if (!SetupDiEnumDeviceInterfaces(set, nullptr, &MonitorInterfaceClass, index, &interfaceData))
+            {
+                if (GetLastError() == ERROR_NO_MORE_ITEMS) break;
+                continue;
+            }
+            DWORD required{};
+            SetupDiGetDeviceInterfaceDetailW(set, &interfaceData, nullptr, 0, &required, nullptr);
+            if (!required) continue;
+            std::vector<BYTE> detailBytes(required);
+            auto detail = reinterpret_cast<SP_DEVICE_INTERFACE_DETAIL_DATA_W*>(detailBytes.data());
+            detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W);
+            SP_DEVINFO_DATA deviceInfo{ sizeof(deviceInfo) };
+            if (!SetupDiGetDeviceInterfaceDetailW(set, &interfaceData, detail, required, nullptr, &deviceInfo)) continue;
+            if (!EqualInsensitive(detail->DevicePath, monitorDevicePath)) continue;
+
+            result.legacyIds.push_back(detail->DevicePath);
+            wchar_t instanceId[MAX_DEVICE_ID_LEN]{};
+            if (CM_Get_Device_IDW(deviceInfo.DevInst, instanceId, ARRAYSIZE(instanceId), 0) == CR_SUCCESS)
+                result.legacyIds.push_back(instanceId);
+
+            GUID container{};
+            DEVPROPTYPE propertyType{};
+            DWORD propertySize = sizeof(container);
+            auto hasContainer = SetupDiGetDevicePropertyW(set, &deviceInfo, &DeviceContainerIdKey,
+                &propertyType, reinterpret_cast<PBYTE>(&container), propertySize, &propertySize, 0)
+                && propertyType == DEVPROP_TYPE_GUID && !EmptyGuid(container);
+
+            std::vector<BYTE> edid;
+            auto key = SetupDiOpenDevRegKey(set, &deviceInfo, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+            if (key != INVALID_HANDLE_VALUE)
+            {
+                DWORD type{}, size{};
+                if (RegQueryValueExW(key, L"EDID", nullptr, &type, nullptr, &size) == ERROR_SUCCESS
+                    && type == REG_BINARY && size >= 16)
+                {
+                    edid.resize(size);
+                    if (RegQueryValueExW(key, L"EDID", nullptr, &type, edid.data(), &size) != ERROR_SUCCESS)
+                        edid.clear();
+                }
+                RegCloseKey(key);
+            }
+            uint32_t serial{};
+            if (edid.size() >= 16)
+                serial = static_cast<uint32_t>(edid[12]) | (static_cast<uint32_t>(edid[13]) << 8)
+                    | (static_cast<uint32_t>(edid[14]) << 16) | (static_cast<uint32_t>(edid[15]) << 24);
+
+            // Friendly name/model is never identity. Only a nonzero Container ID
+            // or EDID serial contributes to the opaque persisted binding token.
+            if (hasContainer || serial != 0)
+            {
+                std::vector<BYTE> material;
+                // Prefer the monitor-owned EDID identity so HDMI/DP/USB-C port
+                // changes do not replace it with a connection-specific container.
+                if (serial != 0) AppendBytes(material, edid.data(), edid.size());
+                else AppendBytes(material, &container, sizeof(container));
+                result.strongId = Sha256Token(material);
+            }
+            break;
+        }
+        SetupDiDestroyDeviceInfoList(set);
+        return result;
+    }
+
+    struct ActiveTarget
+    {
+        std::wstring logicalTargetId;
+        std::wstring gdiName;
+        std::wstring monitorDevicePath;
+        std::wstring friendlyName;
+    };
+
+    bool QueryActiveTargets(std::vector<ActiveTarget>& targets, DWORD& error, bool& partialFailure)
+    {
+        UINT32 pathCount{}, modeCount{};
+        auto status = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
+        if (status != ERROR_SUCCESS) { error = status; return false; }
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        status = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr);
+        if (status != ERROR_SUCCESS) { error = status; return false; }
+        paths.resize(pathCount);
+
+        for (auto const& path : paths)
+        {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+            source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            source.header.size = sizeof(source);
+            source.header.adapterId = path.sourceInfo.adapterId;
+            source.header.id = path.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS)
+            {
+                partialFailure = true;
+                continue;
+            }
+
+            DISPLAYCONFIG_TARGET_DEVICE_NAME target{};
+            target.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            target.header.size = sizeof(target);
+            target.header.adapterId = path.targetInfo.adapterId;
+            target.header.id = path.targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&target.header) != ERROR_SUCCESS)
+            {
+                partialFailure = true;
+                continue;
+            }
+
+            ActiveTarget item;
+            item.logicalTargetId = LuidText(path.targetInfo.adapterId) + L":" + std::to_wstring(path.targetInfo.id);
+            item.gdiName = source.viewGdiDeviceName;
+            item.monitorDevicePath = target.monitorDevicePath;
+            item.friendlyName = target.monitorFriendlyDeviceName;
+            if (item.friendlyName.empty()) item.friendlyName = L"显示器";
+            if (std::none_of(targets.begin(), targets.end(), [&](auto const& value)
+                { return EqualInsensitive(value.logicalTargetId, item.logicalTargetId); }))
+                targets.push_back(std::move(item));
+        }
+        return true;
+    }
+
+    struct LogicalMonitor
+    {
+        HMONITOR handle{};
+        std::wstring gdiName;
+        std::wstring friendlyName;
+        std::vector<std::wstring> legacyIds;
+    };
+
+    std::vector<LogicalMonitor> EnumerateLogicalMonitors(bool& partialFailure)
+    {
+        std::vector<LogicalMonitor> result;
+        std::pair<std::vector<LogicalMonitor>*, bool*> state{ &result, &partialFailure };
+        if (!EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM parameter) -> BOOL
+        {
+            auto& callbackState = *reinterpret_cast<std::pair<std::vector<LogicalMonitor>*, bool*>*>(parameter);
+            MONITORINFOEXW monitorInfo{ sizeof(monitorInfo) };
+            if (!GetMonitorInfoW(monitor, &monitorInfo)) { *callbackState.second = true; return TRUE; }
+            DISPLAY_DEVICEW device{ sizeof(device) };
+            if (!EnumDisplayDevicesW(monitorInfo.szDevice, 0, &device, EDD_GET_DEVICE_INTERFACE_NAME))
+            { *callbackState.second = true; return TRUE; }
+            LogicalMonitor item;
+            item.handle = monitor;
+            item.gdiName = monitorInfo.szDevice;
+            item.friendlyName = device.DeviceString[0] ? device.DeviceString : monitorInfo.szDevice;
+            if (device.DeviceID[0]) item.legacyIds.push_back(device.DeviceID);
+            if (device.DeviceKey[0]) item.legacyIds.push_back(device.DeviceKey);
+            callbackState.first->push_back(std::move(item));
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&state))) partialFailure = true;
+        return result;
+    }
 
     struct NativeMonitor
     {
@@ -18,6 +253,7 @@ namespace
         bool partialFailure{};
         DWORD error{};
         std::vector<NativeMonitor> monitors;
+        std::wstring fingerprint;
     };
 
     std::mutex nativeDdcMutex;
@@ -25,96 +261,87 @@ namespace
     NativeEnumeration EnumerateNativeMonitors()
     {
         NativeEnumeration result;
-        SetLastError(ERROR_SUCCESS);
-        auto enumerated = EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM parameter) -> BOOL
-        {
-            auto& state = *reinterpret_cast<NativeEnumeration*>(parameter);
-            MONITORINFOEXW monitorInfo{ sizeof(monitorInfo) };
-            if (!GetMonitorInfoW(monitor, &monitorInfo)) { state.partialFailure = true; return TRUE; }
-            DISPLAY_DEVICEW displayDevice{ sizeof(displayDevice) };
-            if (!EnumDisplayDevicesW(monitorInfo.szDevice, 0, &displayDevice, EDD_GET_DEVICE_INTERFACE_NAME))
-            { state.partialFailure = true; return TRUE; }
-            std::wstring baseId = CanonicalDdcMonitorId(displayDevice.DeviceID[0] ? displayDevice.DeviceID : displayDevice.DeviceKey);
-            std::wstring friendlyName = displayDevice.DeviceString[0] ? displayDevice.DeviceString : monitorInfo.szDevice;
-            DWORD count{};
-            if (baseId.empty()) { state.partialFailure = true; return TRUE; }
-            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(monitor, &count))
-            { state.partialFailure = true; state.error = GetLastError(); return TRUE; }
-            if (count == 0) return TRUE;
-            std::vector<PHYSICAL_MONITOR> physical(count);
-            if (!GetPhysicalMonitorsFromHMONITOR(monitor, count, physical.data()))
-            { state.partialFailure = true; state.error = GetLastError(); return TRUE; }
-
-            auto found = std::find_if(state.monitors.begin(), state.monitors.end(), [&](auto const& item)
-                { return _wcsicmp(item.info.id.c_str(), baseId.c_str()) == 0; });
-            if (found == state.monitors.end())
-            {
-                NativeMonitor item;
-                item.info = { baseId, friendlyName, monitorInfo.szDevice };
-                state.monitors.push_back(std::move(item));
-                found = std::prev(state.monitors.end());
-            }
-            for (DWORD index = 0; index < count; ++index)
-            {
-                if (physical[index].szPhysicalMonitorDescription[0]
-                    && (_wcsicmp(friendlyName.c_str(), L"Generic PnP Monitor") == 0 || friendlyName == monitorInfo.szDevice))
-                    found->info.displayName = physical[index].szPhysicalMonitorDescription;
-                found->handles.Add(physical[index].hPhysicalMonitor);
-            }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&result));
-        if (!enumerated)
+        std::vector<ActiveTarget> targets;
+        if (!QueryActiveTargets(targets, result.error, result.partialFailure))
         {
             result.success = false;
-            result.error = GetLastError();
+            return result;
         }
+        auto logical = EnumerateLogicalMonitors(result.partialFailure);
+
+        for (auto const& target : targets)
+        {
+            NativeMonitor item;
+            item.info.logicalTargetId = target.logicalTargetId;
+            item.info.gdiName = target.gdiName;
+            item.info.displayName = target.friendlyName;
+            item.info.legacyIds.push_back(target.monitorDevicePath);
+            auto identity = ReadInterfaceIdentity(target.monitorDevicePath);
+            item.info.id = std::move(identity.strongId);
+            item.info.legacyIds.insert(item.info.legacyIds.end(), identity.legacyIds.begin(), identity.legacyIds.end());
+
+            auto current = std::find_if(logical.begin(), logical.end(), [&](auto const& value)
+                { return EqualInsensitive(value.gdiName, target.gdiName); });
+            if (current == logical.end())
+            {
+                result.partialFailure = true;
+                item.info.physicalHandleCount = 0;
+                item.info.ambiguous = true;
+                result.monitors.push_back(std::move(item));
+                continue;
+            }
+            item.info.legacyIds.insert(item.info.legacyIds.end(), current->legacyIds.begin(), current->legacyIds.end());
+            if ((item.info.displayName.empty() || EqualInsensitive(item.info.displayName, L"Generic PnP Monitor"))
+                && !current->friendlyName.empty()) item.info.displayName = current->friendlyName;
+
+            DWORD count{};
+            if (!GetNumberOfPhysicalMonitorsFromHMONITOR(current->handle, &count))
+            {
+                result.partialFailure = true;
+                item.info.physicalHandleCount = 0;
+                item.info.ambiguous = true;
+                result.monitors.push_back(std::move(item));
+                continue;
+            }
+            if (count)
+            {
+                std::vector<PHYSICAL_MONITOR> physical(count);
+                if (!GetPhysicalMonitorsFromHMONITOR(current->handle, count, physical.data()))
+                {
+                    result.partialFailure = true;
+                    item.info.physicalHandleCount = 0;
+                }
+                else for (auto const& physicalMonitor : physical) item.handles.Add(physicalMonitor.hPhysicalMonitor);
+            }
+            item.info.physicalHandleCount = item.handles.Handles().size();
+            item.info.ambiguous = item.info.id.empty() || item.info.physicalHandleCount != 1;
+            result.monitors.push_back(std::move(item));
+        }
+
+        for (auto& monitor : result.monitors)
+            if (!monitor.info.id.empty() && std::count_if(result.monitors.begin(), result.monitors.end(), [&](auto const& other)
+                { return EqualInsensitive(other.info.id, monitor.info.id); }) != 1)
+                monitor.info.ambiguous = true;
+
+        std::vector<std::wstring> fingerprintItems;
+        for (auto const& monitor : result.monitors)
+            fingerprintItems.push_back(monitor.info.logicalTargetId + L"|" + monitor.info.id + L"|"
+                + std::to_wstring(monitor.info.physicalHandleCount) + L"|" + (monitor.info.ambiguous ? L"1" : L"0"));
+        std::sort(fingerprintItems.begin(), fingerprintItems.end());
+        for (auto const& value : fingerprintItems) result.fingerprint += value + L"\n";
         return result;
     }
 
-    std::vector<DdcMonitorInfo> PublicMonitorInfo(std::vector<NativeMonitor> const& native)
+    std::vector<DdcMonitorInfo> PublicMonitorInfo(NativeEnumeration const& native, uint64_t generation)
     {
         std::vector<DdcMonitorInfo> result;
-        for (auto const& monitor : native) result.push_back(monitor.info);
+        for (auto const& monitor : native.monitors)
+        {
+            auto info = monitor.info;
+            info.topologyGeneration = generation;
+            result.push_back(std::move(info));
+        }
         return NormalizeDdcMonitorCollection(std::move(result));
-    }
-
-    template<typename Action>
-    auto WithNativeMonitor(std::wstring const& monitorId, Action const& action,
-        std::optional<NativeEnumeration>* cachedEnumeration = nullptr)
-    {
-        std::scoped_lock lock(nativeDdcMutex);
-        NativeEnumeration current;
-        NativeEnumeration* enumeration = &current;
-        if (cachedEnumeration)
-        {
-            if (!*cachedEnumeration) cachedEnumeration->emplace(EnumerateNativeMonitors());
-            enumeration = &cachedEnumeration->value();
-        }
-        else current = EnumerateNativeMonitors();
-        auto canonicalId = CanonicalDdcMonitorId(monitorId);
-        auto found = std::find_if(enumeration->monitors.begin(), enumeration->monitors.end(), [&](auto const& monitor)
-        { return _wcsicmp(monitor.info.id.c_str(), canonicalId.c_str()) == 0; });
-        if (!enumeration->success || found == enumeration->monitors.end() || found->handles.Handles().empty())
-        {
-            using Result = decltype(action(HANDLE{}));
-            auto message = !enumeration->success ? L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(enumeration->error)
-                : L"找不到按稳定 ID 配置的原生 DDC/CI 显示器";
-            if (cachedEnumeration) cachedEnumeration->reset();
-            if constexpr (std::is_same_v<Result, DdcValueResult>)
-                return Result{ false, 0, 0, DdcErrorKind::MonitorUnavailable, std::move(message) };
-            else
-                return Result{ false, DdcErrorKind::MonitorUnavailable, std::move(message) };
-        }
-        using Result = decltype(action(HANDLE{}));
-        Result result{};
-        for (auto handle : found->handles.Handles())
-        {
-            result = action(handle);
-            if (result.success || result.error == DdcErrorKind::Canceled) break;
-        }
-        if (cachedEnumeration && !result.success && result.error != DdcErrorKind::Canceled)
-            cachedEnumeration->reset();
-        return result;
     }
 
     class NativeDdcBackend final : public IDdcBackend
@@ -123,17 +350,27 @@ namespace
         std::wstring Key() const override { return NativeDdcBackendKey; }
         std::wstring DisplayName() const override { return L"Windows 原生 DDC/CI"; }
         DdcBackendStatus Status() const override { return { DdcAvailability::Available, L"Windows 物理显示器 DDC/CI" }; }
+        uint64_t TopologyGeneration() const noexcept override { return generation_.load(std::memory_order_acquire); }
+
+        void InvalidateTopology() noexcept override
+        {
+            generation_.fetch_add(1, std::memory_order_acq_rel);
+            std::scoped_lock lock(nativeDdcMutex);
+            cached_.reset();
+        }
 
         DdcEnumerationResult Enumerate(DdcCancellationToken const& cancellation) override
         {
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {}, false };
             std::scoped_lock lock(nativeDdcMutex);
-            auto native = EnumerateNativeMonitors();
+            auto& native = RefreshLocked(true);
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {}, false };
-            if (!native.success || (native.partialFailure && native.monitors.empty())) return { false, DdcErrorKind::BackendUnavailable,
-                L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(native.error), {}, false };
-            auto monitors = PublicMonitorInfo(native.monitors);
-            return { true, DdcErrorKind::None, native.partialFailure ? L"部分显示器无法通过 Windows 原生接口枚举" : L"",
+            if (!native.success || (native.partialFailure && native.monitors.empty()))
+                return { false, DdcErrorKind::BackendUnavailable,
+                    L"Windows 当前显示拓扑枚举失败，错误 " + std::to_wstring(native.error), {}, false };
+            auto monitors = PublicMonitorInfo(native, TopologyGeneration());
+            return { true, DdcErrorKind::None,
+                native.partialFailure ? L"部分显示目标无法完整解析；已阻止不明确的 DDC 操作" : L"",
                 std::move(monitors), !native.partialFailure };
         }
 
@@ -143,16 +380,10 @@ namespace
             if (cancellation.IsCanceled())
                 return { { DdcAvailability::TemporarilyUnavailable, L"操作已取消" }, true, {}, {} };
             std::scoped_lock lock(nativeDdcMutex);
-            auto enumeration = EnumerateNativeMonitors();
-            if (!enumeration.success) return { { DdcAvailability::TemporarilyUnavailable,
-                L"Windows 原生显示器枚举失败，错误 " + std::to_wstring(enumeration.error) }, true, {}, {} };
-            auto canonicalId = CanonicalDdcMonitorId(monitorId);
-            auto found = std::find_if(enumeration.monitors.begin(), enumeration.monitors.end(), [&](auto const& monitor)
-            { return _wcsicmp(monitor.info.id.c_str(), canonicalId.c_str()) == 0; });
-            auto available = found != enumeration.monitors.end() && !found->handles.Handles().empty();
-            if (!available) return { { DdcAvailability::TemporarilyUnavailable, L"显示器当前未连接" }, true, {}, {} };
-            // MCCS capability strings are optional and frequently incomplete. Unknown means
-            // that the actual Get/Set VCP call is the authoritative capability probe.
+            auto& native = RefreshLocked(false);
+            DdcErrorKind error{}; std::wstring message;
+            auto monitor = ResolveLocked(native, monitorId, error, message);
+            if (!monitor) return { { DdcAvailability::TemporarilyUnavailable, std::move(message) }, true, {}, {} };
             return { { DdcAvailability::Available, L"原生硬件 DDC/CI 可用" }, false, {}, {} };
         }
 
@@ -160,50 +391,116 @@ namespace
             DdcCancellationToken const& cancellation) override
         {
             if (cancellation.IsCanceled()) return { false, 0, 0, DdcErrorKind::Canceled, L"操作已取消" };
-            return WithNativeMonitor(monitorId, [&](HANDLE handle)
+            std::scoped_lock lock(nativeDdcMutex);
+            auto& native = RefreshLocked(false);
+            auto operationGeneration = TopologyGeneration();
+            DdcErrorKind error{}; std::wstring message;
+            auto monitor = ResolveLocked(native, monitorId, error, message);
+            if (!monitor) return { false, 0, 0, error, std::move(message) };
+            DWORD current{}, maximum{}; MC_VCP_CODE_TYPE type{}; SetLastError(ERROR_SUCCESS);
+            auto success = GetVCPFeatureAndVCPFeatureReply(monitor->handles.Handles().front(),
+                static_cast<BYTE>(code), &type, &current, &maximum) != FALSE;
+            auto nativeError = GetLastError();
+            if (cancellation.IsCanceled()) return { false, 0, 0, DdcErrorKind::Canceled, L"操作已取消" };
+            if (operationGeneration != TopologyGeneration())
+                return { false, 0, 0, DdcErrorKind::TopologyChanged, L"显示拓扑已变化，旧句柄结果已丢弃" };
+            if (!success)
             {
-                DWORD current{}, maximum{}; MC_VCP_CODE_TYPE type{}; SetLastError(ERROR_SUCCESS);
-                auto success = GetVCPFeatureAndVCPFeatureReply(handle, static_cast<BYTE>(code), &type, &current, &maximum) != FALSE;
-                auto error = GetLastError();
-                if (cancellation.IsCanceled()) return DdcValueResult{ false, 0, 0, DdcErrorKind::Canceled, L"操作已取消" };
-                if (!success) return DdcValueResult{ false, 0, 0, DdcErrorKind::ReadFailed,
-                    L"原生硬件 DDC/CI 读取失败，错误 " + std::to_wstring(error) };
-                return DdcValueResult{ true, static_cast<int>(current), static_cast<int>(maximum), DdcErrorKind::None, {} };
-            }, &cachedEnumeration_);
+                InvalidateLocked();
+                return { false, 0, 0, DdcErrorKind::ReadFailed,
+                    L"原生硬件 DDC/CI 读取失败，错误 " + std::to_wstring(nativeError) };
+            }
+            return { true, static_cast<int>(current), static_cast<int>(maximum), DdcErrorKind::None, {}, operationGeneration };
         }
 
         DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
             DdcCancellationToken const& cancellation) override
         {
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消" };
-            return WithNativeMonitor(monitorId, [&](HANDLE handle)
+            std::scoped_lock lock(nativeDdcMutex);
+            auto& native = RefreshLocked(false);
+            auto operationGeneration = TopologyGeneration();
+            DdcErrorKind error{}; std::wstring message;
+            auto monitor = ResolveLocked(native, monitorId, error, message);
+            if (!monitor) return { false, error, std::move(message) };
+            SetLastError(ERROR_SUCCESS);
+            auto success = SetVCPFeature(monitor->handles.Handles().front(),
+                static_cast<BYTE>(code), static_cast<DWORD>(value)) != FALSE;
+            auto nativeError = GetLastError();
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消" };
+            if (operationGeneration != TopologyGeneration())
+                return { false, DdcErrorKind::TopologyChanged, L"显示拓扑已变化，旧句柄结果已丢弃" };
+            if (!success)
             {
-                SetLastError(ERROR_SUCCESS);
-                auto success = SetVCPFeature(handle, static_cast<BYTE>(code), static_cast<DWORD>(value)) != FALSE;
-                auto error = GetLastError();
-                if (cancellation.IsCanceled()) return DdcWriteResult{ false, DdcErrorKind::Canceled, L"操作已取消" };
-                if (!success) return DdcWriteResult{ false, DdcErrorKind::WriteFailed,
-                    L"原生硬件 DDC/CI 写入失败，错误 " + std::to_wstring(error) };
-                return DdcWriteResult{ true, DdcErrorKind::None, {} };
-            }, &cachedEnumeration_);
+                InvalidateLocked();
+                return { false, DdcErrorKind::WriteFailed,
+                    L"原生硬件 DDC/CI 写入失败，错误 " + std::to_wstring(nativeError) };
+            }
+            return { true, DdcErrorKind::None, {}, operationGeneration };
         }
 
     private:
-        std::optional<NativeEnumeration> cachedEnumeration_;
-    };
+        NativeEnumeration& RefreshLocked(bool force)
+        {
+            if (!force && cached_ && cached_->success) return *cached_;
+            auto current = EnumerateNativeMonitors();
+            if (cached_ && cached_->success && current.success && cached_->fingerprint == current.fingerprint)
+                return *cached_;
+            generation_.fetch_add(1, std::memory_order_acq_rel);
+            cached_ = std::move(current);
+            return *cached_;
+        }
 
+        void InvalidateLocked()
+        {
+            generation_.fetch_add(1, std::memory_order_acq_rel);
+            cached_.reset();
+        }
+
+        NativeMonitor* ResolveLocked(NativeEnumeration& native, std::wstring const& monitorId,
+            DdcErrorKind& error, std::wstring& message)
+        {
+            if (!native.success)
+            {
+                error = DdcErrorKind::BackendUnavailable;
+                message = L"Windows 当前显示拓扑不可用";
+                return nullptr;
+            }
+            std::vector<NativeMonitor*> matches;
+            for (auto& monitor : native.monitors)
+                if (EqualInsensitive(monitor.info.id, monitorId)) matches.push_back(&monitor);
+            if (matches.size() != 1 || matches.front()->info.ambiguous
+                || matches.front()->handles.Handles().size() != 1)
+            {
+                error = matches.empty() ? DdcErrorKind::MonitorUnavailable : DdcErrorKind::AmbiguousMonitor;
+                message = matches.empty() ? L"已绑定显示器当前未连接"
+                    : L"当前逻辑显示目标无法唯一解析到一个物理 DDC 句柄";
+                return nullptr;
+            }
+            return matches.front();
+        }
+
+        std::atomic<uint64_t> generation_{ 1 };
+        std::optional<NativeEnumeration> cached_;
+    };
 }
 
 namespace DisplaySwitcher::Native
 {
-    DdcBackendSet::DdcBackendSet() :
-        native_(std::make_unique<NativeDdcBackend>())
-    {
-    }
+    DdcBackendSet::DdcBackendSet() : native_(std::make_unique<NativeDdcBackend>()) {}
 
     IDdcBackend* DdcBackendSet::Lookup(std::wstring const& key) const noexcept
     {
-        if (key == NativeDdcBackendKey) return native_.get();
-        return nullptr;
+        return key == NativeDdcBackendKey ? native_.get() : nullptr;
+    }
+
+    void DdcBackendSet::InvalidateTopology() noexcept
+    {
+        if (native_) native_->InvalidateTopology();
+    }
+
+    uint64_t DdcBackendSet::TopologyGeneration() const noexcept
+    {
+        return native_ ? native_->TopologyGeneration() : 0;
     }
 }

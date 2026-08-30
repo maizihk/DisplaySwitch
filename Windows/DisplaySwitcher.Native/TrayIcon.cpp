@@ -330,8 +330,10 @@ namespace
 namespace DisplaySwitcher::Native
 {
     TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch,
-        std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc, std::function<void()> exit) :
-        showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)), writeDdc_(std::move(writeDdc)), exit_(std::move(exit))
+        std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc,
+        std::function<void()> topologyChanged, std::function<void()> exit) :
+        showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)),
+        writeDdc_(std::move(writeDdc)), topologyChanged_(std::move(topologyChanged)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
         icon_ = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON));
@@ -421,6 +423,11 @@ namespace DisplaySwitcher::Native
 
     LRESULT TrayIcon::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     {
+        if (message == WM_DISPLAYCHANGE)
+        {
+            if (topologyChanged_) topologyChanged_();
+            return 0;
+        }
         if (message == PopupCommandMessage)
         {
             auto command = static_cast<UINT>(wParam);

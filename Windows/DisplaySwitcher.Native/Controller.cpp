@@ -63,6 +63,7 @@ namespace DisplaySwitcher::Native
             [weak](std::wstring const& profileId) { if (auto self = weak.lock()) self->ManualSwitch(profileId); },
             [weak](std::wstring const& displayId, DdcVcpCode code, int value)
             { if (auto self = weak.lock()) self->WriteTrayDdc(displayId, code, value); },
+            [weak] { if (auto self = weak.lock()) self->OnDisplayTopologyChanged(); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
         if (firstRun_) ShowSettings();
@@ -88,19 +89,14 @@ namespace DisplaySwitcher::Native
         {
             try
             {
-                auto enumeration = EnumerateDdcMonitors();
+                auto enumeration = EnumerateDdcMonitors(ddcBackends_.Lookup(NativeDdcBackendKey));
                 if (enumeration.IsTrustedNonEmptySnapshot())
                 {
                     auto reconciled = ReconcileDisplayConfigurations(config.displays, enumeration.monitors, true);
                     config.displays = std::move(reconciled.displays);
-                    auto mappingsChanged = RemoveOrphanedDisplayMappings(
-                        config.displays, config.collaborationProfiles, config.usbSwitch);
-                    if (reconciled.changed || mappingsChanged)
-                    {
-                        config.Save();
-                        std::scoped_lock lock(configMutex_);
-                        config_ = config;
-                    }
+                    if (reconciled.changed) config.Save();
+                    std::scoped_lock lock(configMutex_);
+                    config_ = config;
                 }
             }
             catch (...)
@@ -149,7 +145,7 @@ namespace DisplaySwitcher::Native
             config.displayConfigurationSafeMode, std::nullopt, config.usbSwitch.collaborationWakeEnabled, collaborationValid };
         for (auto const& display : config.displays)
             usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
-                !display.nativeMonitorId.empty(), true });
+                IsDisplayDdcResolved(display), true });
         usbInitial.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
             std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
         if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
@@ -267,7 +263,7 @@ namespace DisplaySwitcher::Native
             {
                 auto self = weak.lock();
                 if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
-                auto result = SwitchDisplaysToMac(actionConfig);
+                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.Lookup(NativeDdcBackendKey));
                 if (auto current = weak.lock(); current && current->AllowsSideEffects(generation))
                     current->Enqueue([weak, generation, result]
                     {
@@ -699,7 +695,7 @@ namespace DisplaySwitcher::Native
         {
             auto controller = weak.lock();
             if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
-            auto result = SwitchDisplaysToMac(actionConfig);
+            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.Lookup(NativeDdcBackendKey));
             if (auto self = weak.lock(); self && !self->disposed_)
                 self->Enqueue([weak, result, name, missing, generation, eventId]
                 {
@@ -750,9 +746,9 @@ namespace DisplaySwitcher::Native
         {
             if (!AllowsSideEffects(request->generation) || profileDetectionActive_) continue;
             auto config = Config();
-            DdcBackendSet backends; DdcCancellationSource cancellation; auto token = cancellation.Begin();
+            DdcCancellationSource cancellation; auto token = cancellation.Begin();
             std::weak_ptr<Controller> weak = shared_from_this();
-            DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
+            DdcControlService service([this](std::wstring const& key) { return ddcBackends_.Lookup(key); },
                 [weak, generation = request->generation]
                 { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
             auto result = service.Write(config, request->displayId, request->code, request->value,
@@ -784,6 +780,20 @@ namespace DisplaySwitcher::Native
             items.push_back({ control.displayId, control.displayName, control.code, control.label,
                 control.value, control.maximum, control.hasValue });
         trayIcon_->SetDdcItems(std::move(items));
+    }
+
+    void Controller::OnDisplayTopologyChanged()
+    {
+        if (disposed_) return;
+        ++sideEffectGeneration_;
+        trayDdcWrites_.CancelPending();
+        ddcBackends_.InvalidateTopology();
+        ApplyConfiguration(false);
+        if (settingsWindow_)
+        {
+            auto projected = settingsWindow_.as<::winrt::DisplaySwitcher::Native::SettingsWindow>();
+            get_self<::winrt::DisplaySwitcher::Native::implementation::SettingsWindow>(projected)->ReloadConfiguration(Config());
+        }
     }
 
     void Controller::CheckNetworkAccess(AppConfig const& workingConfig,
@@ -981,14 +991,19 @@ namespace DisplaySwitcher::Native
                 }
                 return false;
             },
+            [weak]
+            {
+                if (auto self = weak.lock())
+                    return EnumerateDdcMonitors(self->ddcBackends_.Lookup(NativeDdcBackendKey));
+                return DdcEnumerationResult{ false, DdcErrorKind::Canceled, L"应用正在退出", {}, false };
+            },
             [weak](AppConfig& config, std::vector<std::wstring> const& displayIds,
                 DdcCancellationToken const& cancellation)
             {
                 if (auto self = weak.lock())
                 {
                     if (self->profileDetectionActive_) { DdcControlBatchResult result; result.canceled = true; return result; }
-                    DdcBackendSet backends;
-                    DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
+                    DdcControlService service([self](std::wstring const& key) { return self->ddcBackends_.Lookup(key); },
                         [weak] { if (auto value = weak.lock()) return value->sideEffectGate_.AllowsSideEffects(); return false; });
                     return service.Read(config, displayIds, cancellation);
                 }
@@ -1000,8 +1015,7 @@ namespace DisplaySwitcher::Native
                 if (auto self = weak.lock())
                 {
                     if (self->profileDetectionActive_) { DdcControlBatchResult result; result.canceled = true; return result; }
-                    DdcBackendSet backends;
-                    DdcControlService service([&](std::wstring const& key) { return backends.Lookup(key); },
+                    DdcControlService service([self](std::wstring const& key) { return self->ddcBackends_.Lookup(key); },
                         [weak] { if (auto current = weak.lock()) return current->sideEffectGate_.AllowsSideEffects(); return false; });
                     return service.Write(config, displayId, code, value, linkAllDisplays, cancellation);
                 }

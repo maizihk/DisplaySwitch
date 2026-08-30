@@ -5,6 +5,6 @@
 namespace DisplaySwitcher::Native
 {
     bool WakeDisplay();
-    DdcEnumerationResult EnumerateDdcMonitors();
-    ActionResult SwitchDisplaysToMac(AppConfig const& config);
+    DdcEnumerationResult EnumerateDdcMonitors(IDdcBackend* backend = nullptr);
+    ActionResult SwitchDisplaysToMac(AppConfig const& config, IDdcBackend* backend = nullptr);
 }

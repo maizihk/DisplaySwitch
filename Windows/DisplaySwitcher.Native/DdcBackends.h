@@ -45,6 +45,8 @@ namespace DisplaySwitcher::Native
     public:
         DdcBackendSet();
         IDdcBackend* Lookup(std::wstring const& key) const noexcept;
+        void InvalidateTopology() noexcept;
+        uint64_t TopologyGeneration() const noexcept;
 
     private:
         std::unique_ptr<IDdcBackend> native_;

@@ -6,7 +6,6 @@
 namespace
 {
     using namespace DisplaySwitcher::Native;
-
 }
 
 namespace DisplaySwitcher::Native
@@ -17,36 +16,79 @@ namespace DisplaySwitcher::Native
         return SetThreadExecutionState(required) != 0;
     }
 
-    DdcEnumerationResult EnumerateDdcMonitors()
+    DdcEnumerationResult EnumerateDdcMonitors(IDdcBackend* backend)
     {
-        DdcBackendSet backends; DdcCancellationSource cancellation;
-        auto backend = backends.Lookup(NativeDdcBackendKey);
+        DdcBackendSet ownedBackends;
+        DdcCancellationSource cancellation;
+        if (!backend) backend = ownedBackends.Lookup(NativeDdcBackendKey);
         return backend ? backend->Enumerate(cancellation.Begin()) :
             DdcEnumerationResult{ false, DdcErrorKind::BackendUnavailable, L"Windows 原生 DDC 后端不可用", {}, false };
     }
 
-    ActionResult SwitchDisplaysToMac(AppConfig const& config)
+    ActionResult SwitchDisplaysToMac(AppConfig const& config, IDdcBackend* backend)
     {
         auto started = GetTickCount64();
         if (!config.HasDisplayConfiguration())
             return { false, L"显示器配置不完整，未执行切换" };
-        DdcBackendSet backends; DdcCancellationSource cancellation; auto token = cancellation.Begin();
-        auto result = ExecuteDisplayActions(config.displays, [&](DisplayConfig const& display)
+        DdcBackendSet ownedBackends;
+        DdcCancellationSource cancellation;
+        auto token = cancellation.Begin();
+        if (!backend) backend = ownedBackends.Lookup(NativeDdcBackendKey);
+        std::wstring errors;
+        bool topologyChanged{};
+        size_t completed{};
+        for (auto const& display : config.displays)
         {
-            auto backend = backends.Lookup(NativeDdcBackendKey);
-            if (!backend) return ActionResult{ false, L"Windows 原生 DDC 后端不可用" };
-            auto status = backend->Status();
-            if (status.availability != DdcAvailability::Available)
-                return ActionResult{ false, status.message.empty() ? L"Windows 原生 DDC 后端暂时不可用" : status.message };
-            auto const& monitorId = display.nativeMonitorId;
-            // The backend acquires a fresh handle set on each call. Retry exactly
-            // once after an explicit native failure, without a fixed delay.
-            auto write = WriteNativeWithOneRefresh(*backend, monitorId,
-                DdcVcpCode::InputSource, display.macInput, token);
-            return ActionResult{ write.success, write.message };
-        });
+            if (topologyChanged) break;
+            ActionResult item;
+            if (!IsDisplayDdcResolved(display))
+                item = { false, display.bindingMessage.empty() ? L"显示器未唯一绑定到当前物理目标" : display.bindingMessage };
+            else if (!backend)
+            {
+                item = { false, L"Windows 原生 DDC 后端不可用" };
+            }
+            else
+            {
+                auto status = backend->Status();
+                if (status.availability != DdcAvailability::Available)
+                    item = { false, status.message.empty() ? L"Windows 原生 DDC 后端暂时不可用" : status.message };
+                else
+                {
+                    auto capabilities = backend->Capabilities(display.nativeMonitorId, token);
+                    if (!capabilities.CanWrite(DdcVcpCode::InputSource))
+                    {
+                        item = { false, capabilities.status.message.empty()
+                            ? L"显示器输入源控制当前不可用" : capabilities.status.message };
+                    }
+                    else
+                    {
+                        auto generation = backend->TopologyGeneration();
+                        auto write = WriteNativeWithOneRefresh(*backend, display.nativeMonitorId,
+                            DdcVcpCode::InputSource, display.macInput, token);
+                        topologyChanged = backend->TopologyGeneration() != generation
+                            || (write.success && write.topologyGeneration != 0
+                                && write.topologyGeneration != backend->TopologyGeneration());
+                        item = topologyChanged
+                            ? ActionResult{ false, L"显示拓扑已变化，旧句柄结果已丢弃" }
+                            : ActionResult{ write.success, write.message };
+                    }
+                }
+            }
+            ++completed;
+            if (!item.success)
+            {
+                if (!errors.empty()) errors += L"；";
+                errors += (display.name.empty() ? L"显示器" : display.name) + L"：" + item.error;
+            }
+        }
+        if (topologyChanged && completed < config.displays.size())
+        {
+            if (!errors.empty()) errors += L"；";
+            errors += L"显示拓扑已变化，剩余操作已停止";
+        }
+        auto result = ActionResult{ errors.empty() && completed == config.displays.size(), std::move(errors) };
         WriteDiagnostic("display.switch_complete success=" + std::to_string(result.success ? 1 : 0)
-            + " count=" + std::to_string(config.displays.size())
+            + " count=" + std::to_string(completed)
             + " duration_ms=" + std::to_string(GetTickCount64() - started));
         return result;
     }

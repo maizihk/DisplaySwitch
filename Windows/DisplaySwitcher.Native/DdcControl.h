@@ -27,6 +27,8 @@ namespace DisplaySwitcher::Native
         Unsupported,
         BackendUnavailable,
         MonitorUnavailable,
+        AmbiguousMonitor,
+        TopologyChanged,
         ReadFailed,
         WriteFailed,
         InvalidValue,
@@ -57,6 +59,7 @@ namespace DisplaySwitcher::Native
         int maximum{};
         DdcErrorKind error{ DdcErrorKind::None };
         std::wstring message;
+        uint64_t topologyGeneration{};
     };
 
     struct DdcWriteResult
@@ -64,6 +67,7 @@ namespace DisplaySwitcher::Native
         bool success{};
         DdcErrorKind error{ DdcErrorKind::None };
         std::wstring message;
+        uint64_t topologyGeneration{};
     };
 
     struct DdcEnumerationResult
@@ -124,6 +128,8 @@ namespace DisplaySwitcher::Native
             DdcCancellationToken const& cancellation) = 0;
         virtual DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
             DdcCancellationToken const& cancellation) = 0;
+        virtual uint64_t TopologyGeneration() const noexcept { return 0; }
+        virtual void InvalidateTopology() noexcept {}
     };
 
     using DdcBackendLookup = std::function<IDdcBackend*(std::wstring const& key)>;
@@ -204,6 +210,7 @@ namespace DisplaySwitcher::Native
     private:
         bool Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const;
         IDdcBackend* Backend() const;
+        static bool TopologyUnchanged(IDdcBackend const& backend, uint64_t generation) noexcept;
 
         DdcBackendLookup lookup_;
         std::function<bool()> sideEffectsAllowed_;
