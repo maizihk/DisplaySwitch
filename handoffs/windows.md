@@ -7,7 +7,7 @@
 - 分支：`codex/windows-ds-013-display-binding`
 - 父分支：`codex/windows-ds-011-native-ddc-only-windows-host`
 - 承接基线：`8451110a579b8ea79775ec1dc97492ee995121d3`
-- 实现提交：待完成提交后回填
+- 实现提交：`8b01943add8151176e85fcbcd1b2b7941b138a42`
 - PR：待创建，base 为上述父分支
 - CI：只执行 Windows 本机测试和构建，不主动触发额外云端 CI
 
@@ -44,4 +44,4 @@
 ## 范围与工作区
 
 - 仅修改 `Windows/` 和本文件；未修改旧 C# 参照、macOS、共享协议/提案/合约、GitHub Actions、版本号、tag 或 Release。
-- 最终提交、PR 和 `git status` 待 push 后回填。
+- 该实现提交后工作区干净；PR 与最终交接提交待 push 后回填。
