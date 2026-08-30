@@ -697,8 +697,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayStack.translatesAutoresizingMaskIntoConstraints = false
         documentView.addSubview(displayStack)
         scrollView.documentView = documentView
-        displayStack.addArrangedSubview(module(title: "显示器控制", views: [
-            refreshDisplaysButton,
+        displayStack.addArrangedSubview(module(title: "显示器控制", headerAccessory: refreshDisplaysButton, views: [
             separator(),
             switchRow(
                 button: linkedCheckbox,
@@ -835,8 +834,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
 
-        displayStack.addArrangedSubview(module(title: "显示器控制", views: [
-            refreshDisplaysButton,
+        displayStack.addArrangedSubview(module(title: "显示器控制", headerAccessory: refreshDisplaysButton, views: [
             separator(),
             switchRow(button: linkedCheckbox, title: "联动调节所有显示器",
                       description: "只联动同时开启相同控制项的显示器。", symbolName: "link")
@@ -845,7 +843,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
             displayStack.addArrangedSubview(module(
                 title: configuration.name,
-                views: [displayForm(index: configuration.index, name: configuration.name)]
+                headerAccessory: displayHeaderAccessory(index: configuration.index, name: configuration.name),
+                views: [displayForm(index: configuration.index)]
             ))
         }
 
@@ -860,8 +859,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func module(title: String, views: [NSView]) -> NSView {
+    private func module(title: String, headerAccessory: NSView? = nil, views: [NSView]) -> NSView {
         let heading = sectionTitle(title)
+        let header: NSView
+        if let headerAccessory {
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let headerRow = NSStackView(views: [heading, spacer, headerAccessory])
+            headerRow.orientation = .horizontal
+            headerRow.alignment = .centerY
+            headerRow.spacing = 10
+            headerRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
+            header = headerRow
+        } else {
+            header = heading
+        }
         let card = AppearanceBackgroundView()
         card.translatesAutoresizingMaskIntoConstraints = false
 
@@ -879,7 +892,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)
         ])
 
-        let wrapper = NSStackView(views: [heading, card])
+        let wrapper = NSStackView(views: [header, card])
         wrapper.orientation = .vertical
         wrapper.alignment = .leading
         wrapper.spacing = 8
@@ -937,7 +950,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
-    private func displayForm(index: Int, name: String) -> NSView {
+    private func displayHeaderAccessory(index: Int, name: String) -> NSView {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         readButton.tag = index
         readButton.setAccessibilityLabel("读取\(name) DDC 参数")
@@ -950,10 +963,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayStatusLabels[index] = status
         let toolbar = NSStackView(views: [readButton, status])
         toolbar.orientation = .horizontal
-        toolbar.alignment = .top
+        toolbar.alignment = .centerY
         toolbar.spacing = 10
-        status.widthAnchor.constraint(lessThanOrEqualToConstant: 460).isActive = true
+        status.widthAnchor.constraint(lessThanOrEqualToConstant: 250).isActive = true
+        return toolbar
+    }
 
+    private func displayForm(index: Int) -> NSView {
         let headings = NSStackView(views: [
             fixedLabel("", width: 64), fixedLabel("功能", width: 44),
             fixedLabel("在托盘显示", width: 82), fixedLabel("", width: 300),
@@ -993,7 +1009,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             return row
         }
 
-        let form = NSStackView(views: [toolbar, headings] + rows)
+        let form = NSStackView(views: [headings] + rows)
         form.orientation = .vertical
         form.alignment = .leading
         form.spacing = 8
