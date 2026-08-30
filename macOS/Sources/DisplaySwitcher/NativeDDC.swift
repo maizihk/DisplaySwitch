@@ -54,32 +54,6 @@ private struct NativeDDCCommunicationTrace {
     let response: [UInt8]
 }
 
-struct NativeDDCDiagnosticBinding: Equatable {
-    let transportPath: NativeDDCTransportPath
-    let serviceMatched: Bool
-    let serviceIdentity: UInt64
-}
-
-struct NativeDDCDiagnosticDiscoveryState {
-    private var bindingsBySelector: [String: NativeDDCDiagnosticBinding] = [:]
-
-    mutating func replacementSnapshot(
-        selector: String,
-        binding: NativeDDCDiagnosticBinding,
-        current: NativeDDCDiagnosticSnapshot?
-    ) -> NativeDDCDiagnosticSnapshot? {
-        let key = selector.uppercased()
-        let previousBinding = bindingsBySelector.updateValue(binding, forKey: key)
-        guard current == nil || previousBinding != binding else { return nil }
-        return NativeDDCDiagnosticSnapshot(
-            transportPath: binding.transportPath,
-            serviceMatched: binding.serviceMatched,
-            operationCategory: binding.serviceMatched ? .idle : .serviceUnmatched,
-            rebuildCount: current?.rebuildCount ?? 0
-        )
-    }
-}
-
 final class NativeDDCBackend: DDCBackend {
     let identifier = "apple-silicon-native"
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)

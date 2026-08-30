@@ -302,6 +302,32 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     }
 }
 
+struct NativeDDCDiagnosticBinding: Equatable {
+    let transportPath: NativeDDCTransportPath
+    let serviceMatched: Bool
+    let serviceIdentity: UInt64
+}
+
+struct NativeDDCDiagnosticDiscoveryState {
+    private var bindingsBySelector: [String: NativeDDCDiagnosticBinding] = [:]
+
+    mutating func replacementSnapshot(
+        selector: String,
+        binding: NativeDDCDiagnosticBinding,
+        current: NativeDDCDiagnosticSnapshot?
+    ) -> NativeDDCDiagnosticSnapshot? {
+        let key = selector.uppercased()
+        let previousBinding = bindingsBySelector.updateValue(binding, forKey: key)
+        guard current == nil || previousBinding != binding else { return nil }
+        return NativeDDCDiagnosticSnapshot(
+            transportPath: binding.transportPath,
+            serviceMatched: binding.serviceMatched,
+            operationCategory: binding.serviceMatched ? .idle : .serviceUnmatched,
+            rebuildCount: current?.rebuildCount ?? 0
+        )
+    }
+}
+
 enum DDCBackendError: Error, Equatable, LocalizedError {
     case unavailable(backend: String)
     case displayUnavailable(stableID: String)
