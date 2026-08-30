@@ -432,10 +432,15 @@ final class InputSourceSwitchingTests: XCTestCase {
         XCTAssertEqual(recorder.writes.map(\.value), [17])
         let text = diagnostics.exportText()
         XCTAssertTrue(text.contains("stage=target-queued origin=usb vcp=0x60 value=17"))
+        XCTAssertTrue(text.contains("op=O1 display=D1"))
         XCTAssertTrue(text.contains("stage=resolver-started"))
         XCTAssertTrue(text.contains("stage=write-adapter-reached vcp=0x60"))
         XCTAssertTrue(text.contains("kern-success-observed=true device-executed=unknown"))
         XCTAssertFalse(text.contains("private-display-id"))
+        XCTAssertNil(text.range(
+            of: #"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"#,
+            options: .regularExpression
+        ))
     }
 
     func testCandidateEvidenceRecordsSelectionWithoutPrivateIdentity() {

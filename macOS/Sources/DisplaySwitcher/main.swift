@@ -241,6 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.cachedDDCValue = { [weak self] stableID, command in
             self?.ddcController.cachedValue(stableID: stableID, command: command)
         }
+        controller.diagnosticReportProvider = { [weak self] in
+            self?.makeDiagnosticReport()
+                ?? DiagnosticReport(text: "诊断状态暂不可用。")
+        }
         controller.onWriteDDC = { [weak self] stableID, command, value in
             guard let self,
                   let entry = self.configurations.first(where: {
@@ -335,21 +339,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        let copyInputDiagnosticItem = NSMenuItem(
-            title: "复制输入切换诊断",
-            action: #selector(copyInputSwitchDiagnostics),
+        let diagnosticItem = NSMenuItem(
+            title: "查看诊断预览…",
+            action: #selector(showDiagnosticPreview),
             keyEquivalent: ""
         )
-        copyInputDiagnosticItem.target = self
-        menu.addItem(copyInputDiagnosticItem)
-
-        let copyPeerDiagnosticItem = NSMenuItem(
-            title: "复制协同检测诊断",
-            action: #selector(copyPeerInspectionDiagnostics),
-            keyEquivalent: ""
-        )
-        copyPeerDiagnosticItem.target = self
-        menu.addItem(copyPeerDiagnosticItem)
+        diagnosticItem.target = self
+        menu.addItem(diagnosticItem)
 
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -1150,16 +1146,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    @objc private func copyInputSwitchDiagnostics() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(inputSourceDiagnostics.exportText(), forType: .string)
+    @objc private func showDiagnosticPreview() {
+        settingsWindowHasBeenShown = true
+        settingsWindowController.showDiagnosticPreview()
     }
 
-    @objc private func copyPeerInspectionDiagnostics() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(peerInspectionDiagnostics.exportText(), forType: .string)
+    private func makeDiagnosticReport() -> DiagnosticReport {
+        let document = AppPreferences.localConfiguration
+        let now = currentTimeMs()
+        let collaborationStates = document.collaborationProfiles.map {
+            collaborationStatusStore.state(for: $0, displays: document.displays, nowMs: now)
+        }
+        let diagnostics = document.displays.map {
+            ddcController.diagnostic(selector: $0.selector)
+        }
+        return DiagnosticReport.make(
+            metadata: Bundle.main,
+            architecture: AboutPageContent.currentArchitecture,
+            document: document,
+            safetyState: configurationSafetyGate.state,
+            collaborationStates: collaborationStates,
+            ddcBackendSummary: DDCController.backendSummaryWithoutHardwareAccess,
+            ddcAvailability: ddcController.availability,
+            ddcCapabilities: ddcController.capabilities,
+            ddcDiagnostics: diagnostics,
+            peerInspectionText: peerInspectionDiagnostics.exportText(),
+            inputSourceText: inputSourceDiagnostics.exportText()
+        )
     }
 
     private func reloadSettings() {

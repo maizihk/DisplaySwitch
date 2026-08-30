@@ -266,6 +266,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
     var cachedDDCValue: ((String, DDCCommand) -> Int?)?
+    var diagnosticReportProvider: (() -> DiagnosticReport)?
 
     var isSettingsVisible: Bool { window?.isVisible == true }
 
@@ -295,6 +296,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         action: #selector(requestLocalNetworkPermission)
     )
     private lazy var refreshDisplaysButton = NSButton(title: "检测/刷新", target: self, action: #selector(refreshDisplays))
+    private lazy var refreshDiagnosticPreviewButton = NSButton(
+        title: "刷新预览", target: self, action: #selector(refreshDiagnosticPreview)
+    )
+    private lazy var copyDiagnosticPreviewButton = NSButton(
+        title: "复制诊断", target: self, action: #selector(copyDiagnosticPreview)
+    )
+    private let diagnosticTextView = NSTextView()
+    private let diagnosticCopyStatusLabel = NSTextField(labelWithString: "")
     private let usbDeviceLabel = NSTextField(wrappingLabelWithString: "未选择触发设备")
     private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
     private let usbMappingStack = NSStackView()
@@ -347,6 +356,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         showWindow(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func showDiagnosticPreview() {
+        show(tabIndex: 4)
     }
 
     func updatePeerConnectionStatus(_ text: String, connected: Bool) {
@@ -442,6 +455,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             ("USB 切换", "cable.connector"),
             ("协同", "network"),
             ("显示器", "display.2"),
+            ("诊断", "stethoscope"),
             ("关于", "info.circle")
         ]
         tabButtons = tabs.enumerated().map { index, tab in
@@ -623,6 +637,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayStack.alignment = .leading
         displayStack.spacing = 12
         tabView.addTabViewItem(makeDisplayPage())
+        tabView.addTabViewItem(makeDiagnosticPage())
         tabView.addTabViewItem(makeAboutPage())
 
         NSLayoutConstraint.activate([
@@ -664,6 +679,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         tabView.selectTabViewItem(at: index)
         tabButtons.enumerated().forEach { $0.element.state = $0.offset == index ? .on : .off }
         window?.title = tabView.tabViewItem(at: index).label
+        if tabView.tabViewItem(at: index).label == "诊断" {
+            refreshDiagnosticPreview()
+        }
     }
 
     private func makePage(label: String, views: [NSView]) -> NSTabViewItem {
@@ -719,6 +737,46 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         ])
         item.view = scrollView
         return item
+    }
+
+    private func makeDiagnosticPage() -> NSTabViewItem {
+        diagnosticTextView.isEditable = false
+        diagnosticTextView.isSelectable = true
+        diagnosticTextView.isVerticallyResizable = true
+        diagnosticTextView.isHorizontallyResizable = false
+        diagnosticTextView.autoresizingMask = [.width]
+        diagnosticTextView.textContainer?.widthTracksTextView = true
+        diagnosticTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        diagnosticTextView.textContainerInset = NSSize(width: 8, height: 8)
+        diagnosticTextView.string = "打开此页面后生成会话内脱敏预览。"
+        diagnosticTextView.setAccessibilityLabel("诊断预览")
+
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .bezelBorder
+        scrollView.documentView = diagnosticTextView
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.widthAnchor.constraint(equalToConstant: 602).isActive = true
+        scrollView.heightAnchor.constraint(equalToConstant: 430).isActive = true
+
+        diagnosticCopyStatusLabel.font = .systemFont(ofSize: 11)
+        diagnosticCopyStatusLabel.textColor = .secondaryLabelColor
+        let actions = NSStackView(views: [refreshDiagnosticPreviewButton, copyDiagnosticPreviewButton,
+                                          diagnosticCopyStatusLabel])
+        actions.orientation = .horizontal
+        actions.alignment = .centerY
+        actions.spacing = 10
+
+        let explanation = NSTextField(wrappingLabelWithString:
+            "预览只读取当前内存与配置状态，不执行网络检测、USB、唤醒、DDC 或输入源切换。复制内容与下方预览完全一致。")
+        explanation.font = .systemFont(ofSize: 11)
+        explanation.textColor = .secondaryLabelColor
+        explanation.maximumNumberOfLines = 2
+
+        return makePage(label: "诊断", views: [
+            module(title: "诊断与隐私", views: [explanation, actions, scrollView])
+        ])
     }
 
     private func makeAboutPage() -> NSTabViewItem {
@@ -1224,6 +1282,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func openThirdPartyNotices() {
         NSWorkspace.shared.open(AboutPageContent.thirdPartyURL)
+    }
+
+    @objc private func refreshDiagnosticPreview() {
+        diagnosticTextView.string = diagnosticReportProvider?().text
+            ?? "诊断状态暂不可用。"
+        diagnosticCopyStatusLabel.stringValue = ""
+    }
+
+    @objc private func copyDiagnosticPreview() {
+        let preview = diagnosticTextView.string
+        guard !preview.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(preview, forType: .string)
+        diagnosticCopyStatusLabel.stringValue = "已复制当前预览"
     }
 
     private func reloadLaunchAtLoginState() {

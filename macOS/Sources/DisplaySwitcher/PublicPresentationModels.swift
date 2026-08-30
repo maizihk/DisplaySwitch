@@ -114,7 +114,7 @@ struct AboutPageContent: Equatable {
         )
     }
 
-    private static var currentArchitecture: String {
+    static var currentArchitecture: String {
 #if arch(arm64)
         return "Apple Silicon (arm64)"
 #elseif arch(x86_64)
@@ -122,6 +122,109 @@ struct AboutPageContent: Equatable {
 #else
         return "未知架构"
 #endif
+    }
+}
+
+struct DiagnosticReport: Equatable {
+    let text: String
+
+    static func make(
+        metadata: AboutBundleMetadataSource,
+        architecture: String,
+        document: DisplayConfigurationStoreV5Document,
+        safetyState: DisplayConfigurationSafetyState,
+        collaborationStates: [CollaborationConnectionState],
+        ddcBackendSummary: String,
+        ddcAvailability: DDCBackendAvailability,
+        ddcCapabilities: DDCBackendCapabilities,
+        ddcDiagnostics: [NativeDDCDiagnosticSnapshot?],
+        peerInspectionText: String,
+        inputSourceText: String
+    ) -> DiagnosticReport {
+        let about = AboutPageContent.make(metadata: metadata, architecture: architecture)
+        var lines = [
+            "DisplaySwitcher diagnostic preview",
+            "Session-only anonymized data. No pairing code, IP, path, endpoint ID, display UUID, or USB identifier.",
+            "Generating this preview does not access the network or perform USB, wake, DDC, or input-source operations.",
+            "",
+            "[Application]",
+            "product=\(about.productName)",
+            "version=\(about.versionText.replacingOccurrences(of: "版本 ", with: ""))",
+            "platform=macOS architecture=\(architecture)",
+            "protocol=v2 schema=\(document.schemaVersion)",
+            "configuration-safety=\(safetyState == .ready ? "ready" : "user-review-required")",
+            "",
+            "[Collaboration]"
+        ]
+
+        if document.collaborationProfiles.isEmpty {
+            lines.append("profiles=0")
+        } else {
+            for (index, profile) in document.collaborationProfiles.enumerated() {
+                let state = collaborationStates.indices.contains(index)
+                    ? collaborationStates[index].text : "未知"
+                lines.append(
+                    "profile=P\(index + 1) enabled=\(profile.coordinationEnabled)"
+                        + " endpoint-bound=\(profile.peerEndpointID != nil) status=\(state)"
+                )
+            }
+        }
+
+        lines += [
+            "",
+            "[USB]",
+            "enabled=\(document.usbSwitch.enabled)"
+                + " trigger-configured=\(document.usbSwitch.triggerDevice != nil)"
+                + " display-mappings=\(document.usbSwitch.displayInputs.count)"
+                + " collaboration-wake=\(document.usbSwitch.collaborationWakeEnabled)",
+            "",
+            "[DDC]",
+            "backend=\(ddcBackendSummary)",
+            "availability=\(availabilityText(ddcAvailability))"
+                + " enumerate=\(ddcCapabilities.canEnumerate)"
+                + " read=\(ddcCapabilities.canReadVCP)"
+                + " write=\(ddcCapabilities.canWriteVCP)"
+        ]
+
+        if document.displays.isEmpty {
+            lines.append("displays=0")
+        } else {
+            for (index, display) in document.displays.enumerated() {
+                let diagnostic = ddcDiagnostics.indices.contains(index)
+                    ? ddcDiagnostics[index] : nil
+                let enabled = DisplaySettingsSemantics.enabledCommands(for: display)
+                    .map(\.cacheKeyComponent).sorted().joined(separator: ",")
+                let state = diagnostic.map(\.userFacingDescription) ?? "not-checked"
+                lines.append(
+                    "display=D\(index + 1) controls=\(enabled.isEmpty ? "none" : enabled)"
+                        + " state=\(state)"
+                )
+            }
+        }
+
+        lines += [
+            "",
+            "[Collaboration session]",
+            normalizedSessionText(peerInspectionText),
+            "",
+            "[Input-source session]",
+            normalizedSessionText(inputSourceText)
+        ]
+        return DiagnosticReport(text: lines.joined(separator: "\n"))
+    }
+
+    private static func availabilityText(_ availability: DDCBackendAvailability) -> String {
+        switch availability {
+        case .available:
+            return "available"
+        case .unavailable:
+            return "unavailable"
+        }
+    }
+
+    private static func normalizedSessionText(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "no-session-data" : trimmed
     }
 }
 

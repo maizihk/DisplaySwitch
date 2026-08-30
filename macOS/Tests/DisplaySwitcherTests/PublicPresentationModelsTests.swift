@@ -245,6 +245,94 @@ final class PublicPresentationModelsTests: XCTestCase {
         ])
     }
 
+    func testM006DiagnosticReportPreviewsOnlyAnonymizedReadOnlyState() {
+        let privateValues = [
+            "192.0.2.44",
+            "private-pairing-code",
+            "11111111-2222-4333-8444-555555555555",
+            "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+            "private-usb-reference",
+            "Private Monitor Name",
+            "Private Profile Name"
+        ]
+        let display = DisplayConfigurationV4Display(
+            id: privateValues[2], name: privateValues[5], selector: privateValues[3],
+            localInput: 17, readEnabled: true, brightnessEnabled: true,
+            contrastEnabled: false, volumeEnabled: false
+        )
+        let profile = CollaborationProfile(
+            id: "99999999-8888-4777-8666-555555555555",
+            name: privateValues[6], peerHost: privateValues[0], peerPort: 49_731,
+            pairingCode: privateValues[1],
+            peerEndpointID: "77777777-6666-4555-8444-333333333333",
+            peerProtocolVersion: 2, coordinationEnabled: true,
+            displayInputs: [DisplayInputMapping(displayID: display.id, peerInput: 15)],
+            triggerDevices: []
+        )
+        let document = DisplayConfigurationStoreV5Document(
+            schemaVersion: 5,
+            localEndpointID: "12345678-1234-4234-8234-123456789012",
+            localDeviceName: "Private Mac",
+            listenPort: 49_731,
+            linkAllDisplays: false,
+            displays: [display],
+            collaborationProfiles: [profile],
+            usbSwitch: USBSwitchConfiguration(
+                enabled: true,
+                triggerDevice: CollaborationTriggerDevice(
+                    kind: "usb", localReference: privateValues[4], displayName: "Private USB"
+                ),
+                collaborationWakeEnabled: true,
+                collaborationProfileID: profile.id,
+                displayInputs: [USBDisplayInputMapping(displayID: display.id, targetInput: 15)]
+            )
+        )
+        let diagnostic = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 0,
+            chipAddress: 0x37,
+            readDataAddress: 0x51,
+            readAttemptCount: 1,
+            requestChecksumMode: .legacy
+        )
+
+        let report = DiagnosticReport.make(
+            metadata: RecordingAboutMetadata(values: [
+                "CFBundleName": "DisplaySwitcher",
+                "CFBundleShortVersionString": "2.1.0",
+                "CFBundleVersion": "19"
+            ]),
+            architecture: "simulated-arch",
+            document: document,
+            safetyState: .ready,
+            collaborationStates: [.connected],
+            ddcBackendSummary: "Apple Silicon 原生 DDC",
+            ddcAvailability: .available,
+            ddcCapabilities: DDCBackendCapabilities(
+                canEnumerate: true, canReadVCP: true, canWriteVCP: true
+            ),
+            ddcDiagnostics: [diagnostic],
+            peerInspectionText: "inspection=I1 stage=completed result=v2-available",
+            inputSourceText: "op=O1 display=D1 stage=write-transport-result"
+        ).text
+
+        XCTAssertTrue(report.contains("protocol=v2 schema=5"))
+        XCTAssertTrue(report.contains("profile=P1 enabled=true endpoint-bound=true status=已连接"))
+        XCTAssertTrue(report.contains("trigger-configured=true"))
+        XCTAssertTrue(report.contains("display=D1 controls=luminance"))
+        XCTAssertTrue(report.contains("checksum legacy"))
+        XCTAssertTrue(report.contains("does not access the network"))
+        for privateValue in privateValues {
+            XCTAssertFalse(report.contains(privateValue))
+        }
+        XCTAssertFalse(report.contains(profile.id))
+        XCTAssertFalse(report.contains(document.localEndpointID))
+        XCTAssertFalse(report.contains("Private Mac"))
+        XCTAssertFalse(report.contains("Private USB"))
+    }
+
     private func mappingDisplay(id: String, name: String) -> DisplayConfigurationV4Display {
         DisplayConfigurationV4Display(
             id: id, name: name, selector: "selector-\(id)", localInput: nil,
