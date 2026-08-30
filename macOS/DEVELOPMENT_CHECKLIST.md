@@ -244,7 +244,7 @@
 ### DS-011 原生 DDC 单后端清理（自动验证完成，实机待验）
 
 - [x] 删除正式 macOS 运行时中的外部 DDC 进程、可执行路径检测、专属错误和历史回退路由；原生失败明确失败。
-- [x] 设置页移除后端选择器，只读显示 Apple Silicon 原生 DDC；Intel Mac 明确显示不支持。
+- [x] 设置页移除后端选择器和冗余的单后端说明；Intel Mac 在原生后端不可用时明确显示不支持。
 - [x] 配置文档不再读取或写入历史后端选择字段；旧字段作为未知字段安全忽略，其他 schemaVersion 5 数据保持不变。
 - [x] VCP/cache 字段改为平台无关命名，保留既有 `LastValue.stable.*` 键和值，避免清空可信缓存。
 - [x] 37 项 DDC、14 项配置相关测试及 119 项完整 XCTest 通过；Debug、Release、`build-app.sh` 和严格 codesign 验证通过。

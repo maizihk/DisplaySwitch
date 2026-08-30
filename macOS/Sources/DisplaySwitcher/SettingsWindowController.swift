@@ -270,7 +270,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var isSettingsVisible: Bool { window?.isVisible == true }
 
     private let linkedCheckbox = NSSwitch()
-    private let nativeDDCStatusLabel = NSTextField(labelWithString: DDCController.backendSummaryWithoutHardwareAccess)
     private let launchAtLoginCheckbox = NSSwitch()
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
@@ -692,11 +691,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.autohidesScrollers = true
 
         refreshDisplaysButton.setAccessibilityLabel("检测并刷新显示器")
-        nativeDDCStatusLabel.textColor = .secondaryLabelColor
-        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制后端"), nativeDDCStatusLabel, refreshDisplaysButton])
-        channelRow.orientation = .horizontal
-        channelRow.alignment = .centerY
-        channelRow.spacing = 12
 
         let documentView = FlippedDocumentView()
         documentView.translatesAutoresizingMaskIntoConstraints = false
@@ -704,7 +698,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         documentView.addSubview(displayStack)
         scrollView.documentView = documentView
         displayStack.addArrangedSubview(module(title: "显示器控制", views: [
-            channelRow,
+            refreshDisplaysButton,
             separator(),
             switchRow(
                 button: linkedCheckbox,
@@ -841,12 +835,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
 
-        let channelRow = NSStackView(views: [NSTextField(labelWithString: "控制后端"), nativeDDCStatusLabel, refreshDisplaysButton])
-        channelRow.orientation = .horizontal
-        channelRow.alignment = .centerY
-        channelRow.spacing = 12
         displayStack.addArrangedSubview(module(title: "显示器控制", views: [
-            channelRow,
+            refreshDisplaysButton,
             separator(),
             switchRow(button: linkedCheckbox, title: "联动调节所有显示器",
                       description: "只联动同时开启相同控制项的显示器。", symbolName: "link")
