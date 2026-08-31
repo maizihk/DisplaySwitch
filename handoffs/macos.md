@@ -8,6 +8,7 @@
 - 实现提交：`606f3164d3d3967753e2a61d72ad4504dedd95b0`
 - 托盘收敛提交：`37f8a74f76ffb5ea05ca86db1cc29a332f15f7c1`
 - 前置诊断提交：`bef1ca9ccd44539d627a9f20894cb1e5908ca2c6`
+- 组合合并提交：`df35036e8af4e2c27eef0117c46d9c17463c68e9`
 - PR：[#64](https://github.com/maizihk/DisplaySwitch/pull/64)，目标分支改为 `codex/macos-diagnostic-recording-toggle`，保持开放等待组合 GUI 验收。
 - CI：当前无检查；macOS workflow 只监听目标为 `main` 的 PR。本任务不手动触发 `workflow_dispatch`，待前置 PR 依次合并并将 #64 改为 `main` 后运行最终 CI。
 - 组合原因：PR #63 与 #64 原为共同基线 `53024bb` 上的兄弟分支，旧 #64 测试包没有包含 DS-023，导致详细诊断门控和简洁 DDC 状态回退；本轮通过普通 merge 建立 DS-023 → DS-024 堆叠关系，不改写历史。
