@@ -130,9 +130,9 @@ struct DisplayCachedValuePresentation: Equatable {
     }
 }
 
-enum DisplayDiagnosticLayout {
-    static let wraps = true
-    static let maximumNumberOfLines = 0
+enum DisplayStatusLayout {
+    static let wraps = false
+    static let maximumNumberOfLines = 1
 }
 
 enum DisplayInputMappingPresentation {

@@ -690,7 +690,9 @@ enum PeerInspectionDiagnosticEvent: Equatable {
 }
 
 final class PeerInspectionDiagnosticStore {
-    static let shared = PeerInspectionDiagnosticStore()
+    static let shared = PeerInspectionDiagnosticStore(
+        recordingEnabled: { DetailedDiagnosticRecordingPreference.shared.isEnabled }
+    )
 
     private let lock = NSLock()
     private let maximumLineCount: Int
@@ -700,16 +702,25 @@ final class PeerInspectionDiagnosticStore {
     private var hostTokens: [String: String] = [:]
     private var receivedCountByInspectionID: [String: Int] = [:]
     private var lines: [String] = []
+    private let recordingEnabled: () -> Bool
 
     init(
         maximumLineCount: Int = 1_000,
-        nowMs: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) }
+        nowMs: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1_000) },
+        recordingEnabled: @escaping () -> Bool = { true }
     ) {
         self.maximumLineCount = max(100, maximumLineCount)
         self.nowMs = nowMs
+        self.recordingEnabled = recordingEnabled
     }
 
     func begin(eventID: String, targetHost: String, targetPort: Int) -> PeerInspectionDiagnosticContext {
+        guard recordingEnabled() else {
+            return PeerInspectionDiagnosticContext(
+                diagnosticID: "disabled", eventID: eventID.lowercased(),
+                targetHostToken: "disabled", targetPort: targetPort, startedAtMs: nowMs()
+            )
+        }
         lock.lock()
         let diagnosticID = "I\(nextInspectionIndex)"
         nextInspectionIndex += 1
@@ -730,6 +741,7 @@ final class PeerInspectionDiagnosticStore {
     }
 
     func record(_ event: PeerInspectionDiagnosticEvent, context: PeerInspectionDiagnosticContext) {
+        guard recordingEnabled() else { return }
         lock.lock()
         let elapsed = max(0, nowMs() - context.startedAtMs)
         let prefix = "inspection=\(context.diagnosticID) elapsed-ms=\(elapsed)"
@@ -758,12 +770,19 @@ final class PeerInspectionDiagnosticStore {
     }
 
     func receivedDatagramCount(for context: PeerInspectionDiagnosticContext) -> Int {
+        guard recordingEnabled() else { return 0 }
         lock.lock()
         defer { lock.unlock() }
         return receivedCountByInspectionID[context.diagnosticID, default: 0]
     }
 
     func exportText() -> String {
+        guard recordingEnabled() else {
+            return [
+                "DisplaySwitcher collaboration inspection diagnostic",
+                "Detailed diagnostic recording is disabled."
+            ].joined(separator: "\n")
+        }
         lock.lock()
         let snapshot = lines
         lock.unlock()
@@ -771,6 +790,16 @@ final class PeerInspectionDiagnosticStore {
             "DisplaySwitcher collaboration inspection diagnostic",
             "Session-only anonymized data; no IP, pairing code, auth tag, endpoint ID, or hardware identifier."
         ] + snapshot).joined(separator: "\n")
+    }
+
+    func clear() {
+        lock.lock()
+        nextInspectionIndex = 1
+        nextHostIndex = 1
+        hostTokens.removeAll()
+        receivedCountByInspectionID.removeAll()
+        lines.removeAll()
+        lock.unlock()
     }
 
     private func hostTokenLocked(for host: String) -> String {
