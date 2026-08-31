@@ -5,6 +5,9 @@
 - 日期：2026-08-31
 - 分支：`codex/macos-stable-local-signing`
 - 基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`
+- 实现提交：`e0da1296b43054dfd7a6dc571484d32eafac4709`
+- PR：[#62](https://github.com/maizihk/DisplaySwitch/pull/62)
+- CI：macOS run `33376900709` 全绿；Debug、149 项 XCTest、Release、打包、严格验签及 artifact 上传通过。
 - 根因：持续使用 ad-hoc 签名并从不同解压路径启动测试包，不能为 macOS 本地网络权限提供稳定的 Apple 代码签名身份，造成大量同名权限记录；本机最初还只有已过期的旧 WWDR 中间证书，导致新 Apple Development 身份无法建立可信链。
 - 本机准备：用户已将 WWDR G3 导入登录钥匙串，`security find-identity -p codesigning -v` 确认 1 个有效 Apple Development 身份；证书和私钥不进入仓库。
 - 实现：`build-app.sh` 在可选环境变量设置时使用有效钥匙串身份，未设置时保持 ad-hoc；三份 App 均严格验签，身份模式额外拒绝 ad-hoc 或缺少 TeamIdentifier 的结果。
