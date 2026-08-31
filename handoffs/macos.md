@@ -5,7 +5,9 @@
 - 日期：2026-08-31
 - 分支：`codex/macos-tray-empty-group`
 - 基线：`origin/codex/macos-stable-local-signing@53024bb`
-- PR：待创建；目标分支为 `codex/macos-stable-local-signing`，不包含 PR #63 的诊断开关提交。
+- 实现提交：`606f3164d3d3967753e2a61d72ad4504dedd95b0`
+- PR：[#64](https://github.com/maizihk/DisplaySwitch/pull/64)，目标分支为 `codex/macos-stable-local-signing`，状态开放且可合并，不包含 PR #63 的诊断开关提交。
+- CI：当前无检查；macOS workflow 只监听目标为 `main` 的 PR。本任务不手动触发 `workflow_dispatch`，待前置 PR #62 合并并将 #64 改为 `main` 后运行最终 CI。
 - 根因：`DisplaySettingsSemantics.trayCommands` 已正确过滤功能开关和“在托盘显示”，但 `rebuildDisplayMenuItems` 在过滤结果为空时仍无条件创建显示器 `NSMenuItem` 与子菜单，产生只有标题的空分组。
 - 实现：新增纯 `TrayDisplayMenuProjection`，先按稳定显示器身份生成可见分组；只有至少一个托盘控制项时才交给 AppKit 创建显示器标题和子菜单。
 - 行为边界：有可见控制项的显示器名称、滑杆和值保持不变；联动、协同菜单、设置和退出逻辑未改；未按品牌、型号、数量或枚举顺序特判。
