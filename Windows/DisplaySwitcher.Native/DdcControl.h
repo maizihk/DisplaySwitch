@@ -13,6 +13,8 @@ namespace DisplaySwitcher::Native
         Volume = 0x62,
     };
 
+    bool IsDdcControlVcpCode(DdcVcpCode code) noexcept;
+
     enum class DdcAvailability
     {
         Available,

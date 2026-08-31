@@ -69,14 +69,14 @@ namespace DisplaySwitcher::Native
                 }
                 else
                 {
-                    auto generation = transport_->TopologyGeneration();
                     auto write = Allowed(config, cancellation)
                         ? WriteInputSourceWithOneRefresh(*transport_, display.nativeMonitorId,
                             display.macInput, cancellation)
                         : InputSourceWriteResult{ false, DdcErrorKind::Canceled, L"操作已取消" };
-                    topologyChanged = transport_->TopologyGeneration() != generation
+                    auto currentGeneration = transport_->TopologyGeneration();
+                    topologyChanged = write.error == DdcErrorKind::TopologyChanged
                         || (write.success && write.topologyGeneration != 0
-                            && write.topologyGeneration != transport_->TopologyGeneration());
+                            && write.topologyGeneration != currentGeneration);
                     itemError = topologyChanged ? DdcErrorKind::TopologyChanged : write.error;
                     item = topologyChanged
                         ? ActionResult{ false, L"显示拓扑已变化，旧句柄结果已丢弃" }

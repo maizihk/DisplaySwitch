@@ -47,15 +47,16 @@ namespace
         return { DdcVcpCode::Brightness, DdcVcpCode::Contrast, DdcVcpCode::Volume };
     }
 
-    bool IsControlCode(DdcVcpCode code) noexcept
-    {
-        return code == DdcVcpCode::Brightness || code == DdcVcpCode::Contrast
-            || code == DdcVcpCode::Volume;
-    }
 }
 
 namespace DisplaySwitcher::Native
 {
+    bool IsDdcControlVcpCode(DdcVcpCode code) noexcept
+    {
+        return code == DdcVcpCode::Brightness || code == DdcVcpCode::Contrast
+            || code == DdcVcpCode::Volume;
+    }
+
     std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config)
     {
         std::vector<DdcTrayControl> result;
@@ -301,7 +302,7 @@ namespace DisplaySwitcher::Native
     {
         DdcControlBatchResult batch;
         if (!Allowed(config, cancellation)) { batch.canceled = true; return batch; }
-        if (!IsControlCode(code))
+        if (!IsDdcControlVcpCode(code))
         {
             batch.items.push_back({ displayId, code, false, false, false, false, {}, {}, DdcAvailability::Unsupported,
                 DdcErrorKind::Unsupported, L"普通 DDC 控制不支持该 VCP 项" });

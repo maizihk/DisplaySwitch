@@ -436,14 +436,14 @@ namespace
             DdcErrorKind error{}; std::wstring message;
             auto monitor = ::ResolveLocked(native, monitorId, error, message);
             if (!monitor) return { { DdcAvailability::TemporarilyUnavailable, std::move(message) }, true, {}, {} };
-            return { { DdcAvailability::Available, L"原生硬件 DDC/CI 可用" }, true,
-                { DdcVcpCode::Brightness, DdcVcpCode::Contrast, DdcVcpCode::Volume },
-                { DdcVcpCode::Brightness, DdcVcpCode::Contrast, DdcVcpCode::Volume } };
+            return { { DdcAvailability::Available, L"原生硬件 DDC/CI 可用" }, false, {}, {} };
         }
 
         DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
             DdcCancellationToken const& cancellation) override
         {
+            if (!IsDdcControlVcpCode(code))
+                return { false, 0, 0, DdcErrorKind::Unsupported, L"普通 DDC 控制不支持该 VCP 项" };
             if (cancellation.IsCanceled()) return { false, 0, 0, DdcErrorKind::Canceled, L"操作已取消" };
             std::scoped_lock lock(nativeDdcMutex);
             auto& native = ::RefreshLocked(*session_, false);
@@ -470,6 +470,8 @@ namespace
         DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
             DdcCancellationToken const& cancellation) override
         {
+            if (!IsDdcControlVcpCode(code))
+                return { false, DdcErrorKind::Unsupported, L"普通 DDC 控制不支持该 VCP 项" };
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消" };
             std::scoped_lock lock(nativeDdcMutex);
             auto& native = ::RefreshLocked(*session_, false);

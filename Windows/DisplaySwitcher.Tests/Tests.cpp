@@ -132,6 +132,7 @@ namespace
         std::map<std::wstring, int> transientWriteFailures;
         std::vector<std::pair<std::wstring, int>> writes;
         std::function<void()> onWrite;
+        bool invalidateOnTransientFailure{};
         std::atomic<uint64_t> topologyGeneration{ 1 };
 
         DdcBackendStatus Status() const override { return status; }
@@ -146,7 +147,10 @@ namespace
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"已取消" };
             auto transient = transientWriteFailures.find(monitorId);
             if (transient != transientWriteFailures.end() && transient->second-- > 0)
+            {
+                if (invalidateOnTransientFailure) ++topologyGeneration;
                 return { false, DdcErrorKind::WriteFailed, L"模拟输入源句柄失效" };
+            }
             if (writeFailures.contains(monitorId))
                 return { false, DdcErrorKind::WriteFailed, L"模拟输入源写入失败" };
             return { true, DdcErrorKind::None, {}, generation };
@@ -1032,8 +1036,8 @@ namespace
         native.writes.clear();
         auto legacyInputCode = static_cast<DdcVcpCode>(96);
         auto rejectedLegacyInput = service.Write(config, firstId, legacyInputCode, 17, false, cancellation.Begin());
-        Check(!rejectedLegacyInput.success && native.writes.empty(),
-            L"W-206: 普通 DDC 服务必须拒绝旧输入源 VCP 值且保持 backend 零写入");
+        Check(!rejectedLegacyInput.success && native.writes.empty() && IsDdcControlVcpCode(legacyInputCode) == false,
+            L"W-206: 普通 DDC 服务和共用白名单必须拒绝旧输入源 VCP 值");
 
         native.writes.clear();
         FakeInputSourceTransport inputTransport;
@@ -1100,6 +1104,15 @@ namespace
             && productionBackends.Lookup(L"control_my_monitor") == nullptr
             && productionBackends.Lookup(L"auto") == nullptr,
             L"W-206/DS-011: 正式集合必须分别暴露原生 DDC 与输入源传输，且不得保留外部回退入口");
+        auto productionDdc = productionBackends.Lookup(NativeDdcBackendKey);
+        auto productionGeneration = productionDdc->TopologyGeneration();
+        DdcCancellationSource productionCancellation;
+        auto nativeRejectedRead = productionDdc->Read(L"unused", legacyInputCode, productionCancellation.Begin());
+        auto nativeRejectedWrite = productionDdc->Write(L"unused", legacyInputCode, 17, productionCancellation.Begin());
+        Check(!nativeRejectedRead.success && nativeRejectedRead.error == DdcErrorKind::Unsupported
+            && !nativeRejectedWrite.success && nativeRejectedWrite.error == DdcErrorKind::Unsupported
+            && productionDdc->TopologyGeneration() == productionGeneration,
+            L"W-206: 原生普通 DDC 边界必须在解析显示器或调用 DXVA2 前拒绝 0x60");
         auto topologyBeforeInvalidation = productionBackends.TopologyGeneration();
         productionBackends.InvalidateTopology();
         Check(productionBackends.TopologyGeneration() > topologyBeforeInvalidation
@@ -1120,11 +1133,14 @@ namespace
 
         isolatedInput.writes.clear(); isolatedInput.writeFailures.clear();
         isolatedInput.transientWriteFailures[L"monitor-0"] = 1;
+        isolatedInput.invalidateOnTransientFailure = true;
         auto oneDisplay = inputConfig; oneDisplay.displays.resize(1);
         auto retriedInput = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
             oneDisplay, inputCancellation.Begin());
-        Check(retriedInput.success && isolatedInput.writes.size() == 2,
-            L"W-206: 输入源句柄失效只允许刷新后重试一次");
+        Check(retriedInput.success && isolatedInput.writes.size() == 2
+            && isolatedInput.TopologyGeneration() == 2,
+            L"W-206: 受控刷新递增 generation 后的新句柄成功结果必须被接受");
+        isolatedInput.invalidateOnTransientFailure = false;
 
         isolatedInput.writes.clear();
         auto canceledInputToken = inputCancellation.Begin(); inputCancellation.Cancel();
