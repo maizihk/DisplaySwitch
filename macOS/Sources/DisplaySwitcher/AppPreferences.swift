@@ -21,7 +21,5 @@ enum AppPreferences {
         try DisplayConfigurationStore.saveDocument(document)
     }
 
-    static var linkedDisplays: Bool { localConfiguration.linkAllDisplays }
-
     static var usbSwitch: USBSwitchConfiguration { localConfiguration.usbSwitch }
 }

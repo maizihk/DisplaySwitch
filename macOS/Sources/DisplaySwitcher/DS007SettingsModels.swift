@@ -131,6 +131,30 @@ struct TrayDisplayMenuProjection {
     }
 }
 
+enum TrayStaticMenuAction: CaseIterable, Equatable {
+    case settings
+    case quit
+}
+
+enum TrayMenuSeparatorProjection {
+    static func showsDynamicContentSeparator(
+        profileCount: Int,
+        displayGroupCount: Int
+    ) -> Bool {
+        profileCount > 0 || displayGroupCount > 0
+    }
+}
+
+enum DisplayControlTargetProjection {
+    static func displayIDs(
+        selectedDisplayID: Int,
+        availableDisplayIDs: [Int],
+        linkAllDisplays: Bool
+    ) -> [Int] {
+        linkAllDisplays ? availableDisplayIDs.sorted() : [selectedDisplayID]
+    }
+}
+
 struct DisplayCachedValuePresentation: Equatable {
     struct Entry: Hashable {
         let stableID: String

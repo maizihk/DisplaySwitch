@@ -9,10 +9,15 @@
 - PR：[#64](https://github.com/maizihk/DisplaySwitch/pull/64)，目标分支为 `codex/macos-stable-local-signing`，状态开放且可合并，不包含 PR #63 的诊断开关提交。
 - CI：当前无检查；macOS workflow 只监听目标为 `main` 的 PR。本任务不手动触发 `workflow_dispatch`，待前置 PR #62 合并并将 #64 改为 `main` 后运行最终 CI。
 - 根因：`DisplaySettingsSemantics.trayCommands` 已正确过滤功能开关和“在托盘显示”，但 `rebuildDisplayMenuItems` 在过滤结果为空时仍无条件创建显示器 `NSMenuItem` 与子菜单，产生只有标题的空分组。
+- 追加根因：托盘 `linkedItem.state` 同时被用作滑杆联动业务真值，不能在隐藏该入口后继续保留；检测项还承担托盘进度文案，诊断跳转 action 只服务托盘入口。
 - 实现：新增纯 `TrayDisplayMenuProjection`，先按稳定显示器身份生成可见分组；只有至少一个托盘控制项时才交给 AppKit 创建显示器标题和子菜单。
-- 行为边界：有可见控制项的显示器名称、滑杆和值保持不变；联动、协同菜单、设置和退出逻辑未改；未按品牌、型号、数量或枚举顺序特判。
-- 自动验证：DS-024 三项纯模型回归通过；完整 XCTest 152/152、Release `build-app.sh`、输出 App 与 ZIP 解压副本严格 codesign 验证通过。
-- 待验证：真实菜单中全部关闭后零显示器分组、只开启部分显示器时仅显示对应分组，以及每组只显示已启用并勾选托盘的项目。
+- 菜单收敛：静态托盘动作只保留“设置…”和“退出”；联动、检测和诊断预览仅移除托盘入口，设置窗口中的联动开关、检测按钮、诊断页及复制功能保留。
+- 联动与分隔线：`setControl` 直接读取持久 `linkAllDisplays`；动态协同/显示器区域为空时隐藏唯一分隔线，避免孤立或重复分隔线。
+- 行为边界：有可见控制项的显示器名称、滑杆和值以及协同菜单保持不变；未按品牌、型号、数量或枚举顺序特判。
+- 自动验证：六项 DS-024 纯模型回归通过；完整 XCTest 最终 155/155。首次完整运行仅有已知输入源 resolver 并发顺序断言波动，单项复跑及随后完整套件通过，本任务未修改输入源代码。
+- 构建验证：Release `build-app.sh`、稳定 Apple Development 签名的输出 App 与 ZIP 解压副本严格 codesign 验证通过。
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-024-tray-menu-cleanup-macOS-test.zip`，SHA-256 `ace596e2474cc06d4d2518193d89c31885afb9dc4397b1a32591ac5f02f3e797`；此前 DS-024 测试包哈希作废。
+- 待验证：真实托盘只剩动态协同/可见显示器、设置和退出；全部动态内容为空时无孤立分隔线；设置页联动、检测和诊断页继续可用。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作，未修改协议、schema、版本、系统权限或签名配置。
 
 ## 上一任务：DS-022 稳定本地开发签名

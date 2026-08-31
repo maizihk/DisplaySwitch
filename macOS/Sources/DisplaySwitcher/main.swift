@@ -264,15 +264,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         return controller
     }()
 
-    private lazy var linkedItem: NSMenuItem = {
-        let item = NSMenuItem(title: "联动所有显示器", action: #selector(toggleLinkedControls), keyEquivalent: "")
-        item.target = self
-        item.state = AppPreferences.linkedDisplays ? .on : .off
+    private lazy var dynamicContentSeparator: NSMenuItem = {
+        let item = NSMenuItem.separator()
+        item.isHidden = true
         return item
     }()
 
-    private lazy var detectItem: NSMenuItem = {
-        let item = NSMenuItem(title: "重新检测显示器", action: #selector(detectDisplaysManually), keyEquivalent: "")
+    private lazy var settingsItem: NSMenuItem = {
+        let item = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
+        item.target = self
+        return item
+    }()
+
+    private lazy var quitItem: NSMenuItem = {
+        let item = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         item.target = self
         return item
     }()
@@ -327,30 +332,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         let menu = NSMenu()
         menu.delegate = self
-        rebuildProfileSwitchItems(in: menu)
-        menu.addItem(.separator())
-
-        menu.addItem(linkedItem)
-        menu.addItem(.separator())
-
-        menu.addItem(detectItem)
-
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        let diagnosticItem = NSMenuItem(
-            title: "查看诊断预览…",
-            action: #selector(showDiagnosticPreview),
-            keyEquivalent: ""
-        )
-        diagnosticItem.target = self
-        menu.addItem(diagnosticItem)
-
-        let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
+        menu.addItem(dynamicContentSeparator)
+        for action in TrayStaticMenuAction.allCases {
+            switch action {
+            case .settings: menu.addItem(settingsItem)
+            case .quit: menu.addItem(quitItem)
+            }
+        }
         statusItem.menu = menu
+        rebuildProfileSwitchItems(in: menu)
         rebuildDisplayMenuItems()
         updateConfigurationSafetyUI()
         presentDDCValues(for: .startup)
@@ -440,24 +430,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    @objc private func toggleLinkedControls() {
-        let previous = linkedItem.state
-        linkedItem.state = linkedItem.state == .on ? .off : .on
-        var document = AppPreferences.localConfiguration
-        document.linkAllDisplays = linkedItem.state == .on
-        do {
-            try AppPreferences.saveLocalConfiguration(document)
-            reloadSettings()
-        } catch {
-            linkedItem.state = previous
-            showError(title: "设置未保存", error: error)
-        }
-    }
-
-    @objc private func detectDisplaysManually() {
-        detectDisplays(showFailure: true)
-    }
-
     private func detectDisplays(showFailure: Bool) {
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else {
             if showFailure, case .requiresUserReview(let error) = configurationSafetyGate.state {
@@ -467,8 +439,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         ddcWriteCoordinator.cancelAll()
         refreshDDCOperationAccess()
-        detectItem.isEnabled = false
-        detectItem.title = "正在检测…"
         let ddcController = ddcController
         let existing = configurations.values.sorted { $0.index < $1.index }
 
@@ -481,7 +451,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 DispatchQueue.main.async {
                     guard let self else { return }
                     guard self.configurationSafetyGate.allows(.ddc), self.usbLearningSafetyGate.allows(.ddc) else {
-                        self.finishDetection()
                         return
                     }
                     do {
@@ -495,15 +464,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         ddcController.updateConfigurations(merged)
                         self.rebuildDisplayMenuItems()
                         self.presentDDCValues(for: .displayDetection)
-                        self.finishDetection()
                     } catch let error as DisplayConfigurationStoreError {
-                        self.finishDetection()
                         self.enterConfigurationSafetyState(error)
                         if showFailure {
                             self.showError(title: "显示器配置保存失败", error: error)
                         }
                     } catch {
-                        self.finishDetection()
                         self.enterConfigurationSafetyState(.writeFailed)
                         if showFailure {
                             self.showError(title: "显示器配置保存失败", error: error)
@@ -512,7 +478,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.finishDetection()
                     if showFailure {
                         self?.showError(title: "显示器检测失败", error: error)
                     }
@@ -521,16 +486,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    private func finishDetection() {
-        detectItem.title = "重新检测显示器"
-        detectItem.isEnabled = true
-    }
-
     private func setControl(_ control: DisplayControl, value: Int, fromDisplay displayID: Int) {
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else { return }
-        let targetDisplays = linkedItem.state == .on ? configurations.keys.sorted() : [displayID]
         let currentConfigurations = configurations
         let document = AppPreferences.localConfiguration
+        let targetDisplays = DisplayControlTargetProjection.displayIDs(
+            selectedDisplayID: displayID,
+            availableDisplayIDs: Array(currentConfigurations.keys),
+            linkAllDisplays: document.linkAllDisplays
+        )
         let targets = targetDisplays.compactMap { currentConfigurations[$0] }
             .map { Self.ddcTarget(for: $0, document: document) }
             .filter { $0.enabledCommands.contains(control.ddcCommand) }
@@ -1146,11 +1110,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
     }
 
-    @objc private func showDiagnosticPreview() {
-        settingsWindowHasBeenShown = true
-        settingsWindowController.showDiagnosticPreview()
-    }
-
     private func makeDiagnosticReport() -> DiagnosticReport {
         let document = AppPreferences.localConfiguration
         let now = currentTimeMs()
@@ -1185,7 +1144,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         ddcController.updateConfigurations(values)
         rebuildDisplayMenuItems()
         if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
-        linkedItem.state = AppPreferences.linkedDisplays ? .on : .off
         configureUSBMonitor()
         configurePeerTransport()
         updateConfigurationSafetyUI()
@@ -1201,7 +1159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         displayMenuItems.removeAll()
         displayControls.removeAll()
 
-        guard var insertionIndex = menu.items.firstIndex(of: linkedItem) else { return }
+        guard var insertionIndex = menu.items.firstIndex(of: dynamicContentSeparator) else { return }
         let document = AppPreferences.localConfiguration
         let entries = TrayDisplayMenuProjection.entries(
             configurations: Array(configurations.values), displays: document.displays
@@ -1222,7 +1180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             menu.insertItem(displayItem, at: insertionIndex)
             insertionIndex += 1
         }
-        linkedItem.isEnabled = configurations.count > 1
+        refreshDynamicContentSeparator()
     }
 
     private func rebuildProfileSwitchItems(in menu: NSMenu) {
@@ -1238,6 +1196,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             menu.insertItem(item, at: offset)
             profileSwitchItems.append(item)
         }
+        refreshDynamicContentSeparator()
+    }
+
+    private func refreshDynamicContentSeparator() {
+        dynamicContentSeparator.isHidden = !TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: profileSwitchItems.count,
+            displayGroupCount: displayMenuItems.count
+        )
     }
 
     @objc private func quit() {
@@ -1518,7 +1484,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func updateConfigurationSafetyUI() {
         let enabled = configurationSafetyGate.state == .ready
         profileSwitchItems.forEach { $0.isEnabled = enabled }
-        detectItem.isEnabled = enabled
     }
 
     private func acquireSingleInstanceLock() -> Bool {

@@ -71,6 +71,37 @@ final class DS007Tests: XCTestCase {
         XCTAssertEqual(entries[0].commands, [.luminance])
     }
 
+    func testDS024StaticTrayActionsOnlyContainSettingsAndQuit() {
+        XCTAssertEqual(TrayStaticMenuAction.allCases, [.settings, .quit])
+    }
+
+    func testDS024DynamicSeparatorRequiresVisibleDynamicContent() {
+        XCTAssertFalse(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: 0, displayGroupCount: 0
+        ))
+        XCTAssertTrue(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: 1, displayGroupCount: 0
+        ))
+        XCTAssertTrue(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: 0, displayGroupCount: 1
+        ))
+    }
+
+    func testDS024LinkedControlTargetsUsePersistedSetting() {
+        XCTAssertEqual(
+            DisplayControlTargetProjection.displayIDs(
+                selectedDisplayID: 2, availableDisplayIDs: [3, 1, 2], linkAllDisplays: false
+            ),
+            [2]
+        )
+        XCTAssertEqual(
+            DisplayControlTargetProjection.displayIDs(
+                selectedDisplayID: 2, availableDisplayIDs: [3, 1, 2], linkAllDisplays: true
+            ),
+            [1, 2, 3]
+        )
+    }
+
     func testV1PeerIdentityCanNeverBeConfirmedInV2OnlyConfiguration() {
         let profile = completeProfile(name: "Peer", displayID: UUID().uuidString)
         XCTAssertEqual(
