@@ -2,6 +2,7 @@
 #include "AppConfig.h"
 #include "DdcControl.h"
 #include "DdcBackends.h"
+#include "DiagnosticReport.h"
 #include "ProfileDetection.h"
 #include "UdpPeer.h"
 #include "V2Protocol.h"
@@ -61,6 +62,7 @@ namespace DisplaySwitcher::Native
         void WriteTrayDdc(std::wstring const& displayId, DdcVcpCode code, int value);
         void ProcessTrayDdcWrites();
         void RefreshTrayDdcControls();
+        DiagnosticSnapshot BuildDiagnosticSnapshot();
         void OnDisplayTopologyChanged();
         void ShowSettings();
         void SetStatus(std::wstring const& text);
@@ -83,6 +85,7 @@ namespace DisplaySwitcher::Native
         std::mutex v2OutgoingMutex_;
         std::map<std::wstring, V2Message> v2OutgoingMessages_;
         std::map<std::wstring, int64_t> v2PeerLastSeenMs_;
+        DiagnosticHeartbeatTracker diagnosticHeartbeats_;
         std::map<std::wstring, PendingStatusProbe> v2HealthProbes_;
         struct PendingProfileDetection
         {
@@ -111,5 +114,8 @@ namespace DisplaySwitcher::Native
         std::jthread peerHealthThread_;
         DdcWriteQueue trayDdcWrites_;
         DdcBackendSet ddcBackends_;
+        AboutInfo aboutInfo_{ PublicAboutInfo() };
+        std::shared_ptr<DisplayOperationTracker> displayDiagnostics_{ std::make_shared<DisplayOperationTracker>() };
+        DiagnosticAliasRegistry diagnosticAliases_;
     };
 }

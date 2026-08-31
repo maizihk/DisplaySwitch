@@ -3,6 +3,8 @@
 
 namespace DisplaySwitcher::Native
 {
+    inline constexpr int CurrentAppConfigSchemaVersion = 5;
+
     enum class AppConfigSaveFaultForTesting
     {
         None,

@@ -4,6 +4,66 @@
 namespace
 {
     std::mutex logMutex;
+    std::vector<std::string> sessionEvents;
+    constexpr size_t MaximumSessionEvents = 64;
+
+    bool SafeToken(std::string const& value, bool allowDot)
+    {
+        return !value.empty() && std::all_of(value.begin(), value.end(), [allowDot](unsigned char value)
+        {
+            return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') ||
+                value == '_' || value == '-' || (allowDot && value == '.');
+        });
+    }
+
+    bool SafeField(std::string const& key, std::string const& value)
+    {
+        static std::set<std::string> const allowed{
+            "present", "message_ignored", "success", "count", "duration_ms", "elapsed_ms",
+            "resolve_ok", "resolve_ms", "send_ok", "send_ms"
+        };
+        return allowed.contains(key) && !value.empty() && std::all_of(value.begin(), value.end(), [](unsigned char c)
+        { return c >= '0' && c <= '9'; });
+    }
+
+    std::string Sanitize(std::string const& event)
+    {
+        std::istringstream stream(event);
+        std::string name;
+        stream >> name;
+        static std::set<std::string> const allowedEvents{
+            "app.started", "controller.usb_presence", "protocol.v2",
+            "profile_detection.response_received", "profile_detection.response_authenticated",
+            "profile_detection.response_authentication_failed", "profile_detection.started",
+            "profile_detection.response_timeout", "profile_detection.send_completed",
+            "udp.send", "display.switch_complete", "usb.target_notification", "usb.poll_change",
+            "diagnostic.redacted"
+        };
+        if (!SafeToken(name, true) || !allowedEvents.contains(name))
+            return "diagnostic.redacted redacted=1";
+        std::string result = name;
+        std::string field;
+        bool removed{};
+        while (stream >> field)
+        {
+            auto separator = field.find('=');
+            if (separator == std::string::npos || !SafeField(field.substr(0, separator), field.substr(separator + 1)))
+            {
+                removed = true;
+                continue;
+            }
+            result += " " + field;
+        }
+        if (removed) result += " redacted=1";
+        return result;
+    }
+
+    void Remember(std::string const& event)
+    {
+        sessionEvents.push_back(event);
+        if (sessionEvents.size() > MaximumSessionEvents)
+            sessionEvents.erase(sessionEvents.begin(), sessionEvents.begin() + (sessionEvents.size() - MaximumSessionEvents));
+    }
 
     std::filesystem::path LogPath()
     {
@@ -32,12 +92,24 @@ namespace DisplaySwitcher::Native
     void ResetDiagnosticLog()
     {
         std::scoped_lock lock(logMutex);
+        sessionEvents.clear();
+        Remember("app.started");
         WriteLine(std::ios::trunc, "app.started");
     }
 
     void WriteDiagnostic(std::string const& event)
     {
         std::scoped_lock lock(logMutex);
-        WriteLine(std::ios::app, event);
+        auto safe = Sanitize(event);
+        Remember(safe);
+        WriteLine(std::ios::app, safe);
     }
+
+    std::vector<std::string> DiagnosticEventSnapshot()
+    {
+        std::scoped_lock lock(logMutex);
+        return sessionEvents;
+    }
+
+    std::string SanitizeDiagnosticEvent(std::string const& event) { return Sanitize(event); }
 }

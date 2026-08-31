@@ -222,6 +222,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::function<void()> cancelProfileDetection,
         std::function<void()> beginUsbLearning,
         std::function<void()> endUsbLearning,
+        std::function<::DisplaySwitcher::Native::DiagnosticSnapshot()> diagnosticSnapshot,
+        std::shared_ptr<::DisplaySwitcher::Native::DisplayOperationTracker> displayDiagnostics,
         std::function<void()> closed)
     {
         if (initialized_) return;
@@ -232,6 +234,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         checkNetworkAccess_ = std::move(checkNetworkAccess);
         detectProfile_ = std::move(detectProfile); cancelProfileDetection_ = std::move(cancelProfileDetection);
         beginUsbLearning_ = std::move(beginUsbLearning); endUsbLearning_ = std::move(endUsbLearning);
+        diagnosticSnapshotProvider_ = std::make_unique<::DisplaySwitcher::Native::CallbackDiagnosticSnapshotProvider>(
+            std::move(diagnosticSnapshot));
+        displayDiagnostics_ = std::move(displayDiagnostics);
         closed_ = std::move(closed);
         Title(L"常规");
         try { SystemBackdrop(MicaBackdrop()); } catch (...) {}
@@ -415,6 +420,29 @@ namespace winrt::DisplaySwitcher::Native::implementation
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
+        auto diagnosticTab = TabViewItem(); diagnosticTab.IsClosable(false);
+        diagnosticTab.HorizontalContentAlignment(HorizontalAlignment::Center);
+        diagnosticTab.Header(CreateTabHeader(L"\uE9D9", L"诊断"));
+        auto diagnosticHint = TextBlock();
+        diagnosticHint.Text(L"预览只读取当前配置快照和内存状态，不会发起网络检测、USB 或显示器操作。复制内容与下方可见文本完全一致。");
+        diagnosticHint.TextWrapping(TextWrapping::Wrap); diagnosticHint.Opacity(0.72);
+        diagnosticPreview_ = TextBox();
+        diagnosticPreview_.IsReadOnly(true); diagnosticPreview_.AcceptsReturn(true);
+        diagnosticPreview_.TextWrapping(TextWrapping::NoWrap); diagnosticPreview_.MinHeight(390);
+        diagnosticPreview_.HorizontalAlignment(HorizontalAlignment::Stretch);
+        ScrollViewer::SetVerticalScrollBarVisibility(diagnosticPreview_, ScrollBarVisibility::Auto);
+        ScrollViewer::SetHorizontalScrollBarVisibility(diagnosticPreview_, ScrollBarVisibility::Auto);
+        AutomationProperties::SetName(diagnosticPreview_, L"诊断预览");
+        auto refreshDiagnostic = Button(); refreshDiagnostic.Content(box_value(L"刷新预览"));
+        refreshDiagnostic.Click([this](auto const&, auto const&) { RefreshDiagnosticPreview(); });
+        auto copyDiagnostic = Button(); copyDiagnostic.Content(box_value(L"复制诊断"));
+        copyDiagnostic.Click([this](auto const&, auto const&) { CopyDiagnosticPreview(); });
+        auto diagnosticActions = StackPanel(); diagnosticActions.Orientation(Orientation::Horizontal);
+        diagnosticActions.Spacing(8); diagnosticActions.Children().Append(refreshDiagnostic);
+        diagnosticActions.Children().Append(copyDiagnostic);
+        diagnosticTab.Content(CreatePage({ CreateSection({ diagnosticHint, diagnosticActions, diagnosticPreview_ }) }));
+        RefreshDiagnosticPreview();
+
         auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         aboutTab.Header(CreateTabHeader(L"\uE946", L"关于"));
         auto info = ::DisplaySwitcher::Native::PublicAboutInfo();
@@ -434,13 +462,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         aboutTab.Content(CreatePage({ CreateSection({ aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
-        tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab); tabs_.TabItems().Append(aboutTab);
+        tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab);
+        tabs_.TabItems().Append(diagnosticTab); tabs_.TabItems().Append(aboutTab);
         tabs_.SelectedIndex(0);
         tabs_.SelectionChanged([this](auto const&, auto const&)
         {
-            static constexpr wchar_t const* titles[]{ L"常规", L"USB 切换", L"协同", L"显示器", L"关于" };
+            static constexpr wchar_t const* titles[]{ L"常规", L"USB 切换", L"协同", L"显示器", L"诊断", L"关于" };
             auto index = tabs_.SelectedIndex();
-            if (index >= 0 && index < 5) Title(titles[index]);
+            if (index >= 0 && index < 6) Title(titles[index]);
             validation_.Visibility(Visibility::Collapsed);
         });
         Grid::SetRow(tabs_, 0); root.Children().Append(tabs_);
@@ -809,6 +838,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         displayEditorsPanel_.Children().Clear();
         displayEditors_.clear();
 
+        auto diagnosticStates = displayDiagnostics_ ? displayDiagnostics_->Snapshot(workingDisplays_)
+            : std::vector<::DisplaySwitcher::Native::DiagnosticDisplaySummary>{};
         for (size_t index = 0; index < workingDisplays_.size(); ++index)
         {
             auto const display = workingDisplays_[index];
@@ -834,7 +865,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.contrast = Slider(); configureSlider(controls.contrast, display.contrastValue, display.contrastMax);
             controls.volume = Slider(); configureSlider(controls.volume, display.volumeValue, display.volumeMax);
             controls.status = TextBlock();
-            controls.status.Text(display.bindingMessage.empty() ? L"状态尚未读取" : display.bindingMessage);
+            if (index < diagnosticStates.size() &&
+                diagnosticStates[index].lastState != ::DisplaySwitcher::Native::DiagnosticOperationState::Idle)
+                controls.status.Text(::DisplaySwitcher::Native::DescribeDiagnosticOperation(diagnosticStates[index]));
+            else controls.status.Text(display.bindingMessage.empty() ? L"状态尚未读取" : display.bindingMessage);
             controls.status.Opacity(0.72);
             controls.status.TextWrapping(TextWrapping::Wrap);
 
@@ -1419,6 +1453,26 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (!detectingProfileId_.empty()) CancelProfileDetection();
         return !loading_ && Save(false);
+    }
+
+    void SettingsWindow::RefreshDiagnosticPreview()
+    {
+        if (!diagnosticPreview_) return;
+        if (diagnosticSnapshotProvider_)
+            diagnosticPreview_.Text(diagnosticPreviewModel_.Refresh(*diagnosticSnapshotProvider_));
+    }
+
+    void SettingsWindow::CopyDiagnosticPreview()
+    {
+        if (!diagnosticPreview_) return;
+        auto visible = std::wstring(diagnosticPreview_.Text().c_str());
+        // Copy exactly what is visible. No refresh or alternate export path is allowed here.
+        auto package = Windows::ApplicationModel::DataTransfer::DataPackage();
+        package.SetText(visible);
+        Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+        Windows::ApplicationModel::DataTransfer::Clipboard::Flush();
+        validation_.Text(L"已复制当前可见的诊断预览。");
+        validation_.Visibility(Visibility::Visible);
     }
 
     void SettingsWindow::ShowValidationError(std::wstring const& message)

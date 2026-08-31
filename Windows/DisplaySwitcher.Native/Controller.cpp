@@ -3,6 +3,7 @@
 #include "AutoStart.h"
 #include "Diagnostics.h"
 #include "DdcBackends.h"
+#include "DiagnosticReport.h"
 #include "SettingsWindow.xaml.h"
 #include "SystemActions.h"
 #include "TrayIcon.h"
@@ -115,6 +116,9 @@ namespace DisplaySwitcher::Native
             std::scoped_lock lock(peerLifecycleMutex_);
             peer_->Stop();
         }
+        displayDiagnostics_->Reconcile(config.displays);
+        if (config.displayConfigurationSafeMode) diagnosticHeartbeats_.Reset();
+        else diagnosticHeartbeats_.Reconcile(config.localEndpointId, config.collaborationProfiles);
         auto usbConfigured = config.HasUsbDeviceConfiguration();
         auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
             [&](auto const& mapping) { return mapping.targetInput && FindDisplayById(config.displays, mapping.displayId); });
@@ -263,7 +267,15 @@ namespace DisplaySwitcher::Native
             {
                 auto self = weak.lock();
                 if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
-                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.Lookup(NativeDdcBackendKey));
+                auto tracker = self->displayDiagnostics_;
+                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.Lookup(NativeDdcBackendKey),
+                    [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
+                    {
+                        tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
+                            DiagnosticOperationKind::InputSource,
+                            error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
+                            (success ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed));
+                    });
                 if (auto current = weak.lock(); current && current->AllowsSideEffects(generation))
                     current->Enqueue([weak, generation, result]
                     {
@@ -552,6 +564,7 @@ namespace DisplaySwitcher::Native
             v2HealthProbes_.erase(pending);
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
             v2PeerLastSeenMs_[message.sourceEndpointId] = now;
+            diagnosticHeartbeats_.Observe(profile->id, message.sourceEndpointId, now);
             SetPeerConnectionStatus(L"已和对端（" + profile->name + L"）建立连接", true);
             return;
         }
@@ -565,6 +578,7 @@ namespace DisplaySwitcher::Native
         {
             v2StateMachine_->SetTargetReachable(message.sourceEndpointId, true);
             v2PeerLastSeenMs_[message.sourceEndpointId] = now;
+            diagnosticHeartbeats_.Observe(profile->id, message.sourceEndpointId, now);
             SetPeerConnectionStatus(L"已和对端（" + profile->name + L"）建立连接", true);
         }
         if (message.type == L"status_probe") actions = v2StateMachine_->OnStatusProbe(now, message.sourceEndpointId, message.eventId, true);
@@ -695,7 +709,15 @@ namespace DisplaySwitcher::Native
         {
             auto controller = weak.lock();
             if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
-            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.Lookup(NativeDdcBackendKey));
+            auto tracker = controller->displayDiagnostics_;
+            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.Lookup(NativeDdcBackendKey),
+                [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
+                {
+                    tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
+                        DiagnosticOperationKind::InputSource,
+                        error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
+                        (success ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed));
+                });
             if (auto self = weak.lock(); self && !self->disposed_)
                 self->Enqueue([weak, result, name, missing, generation, eventId]
                 {
@@ -753,6 +775,7 @@ namespace DisplaySwitcher::Native
                 { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
             auto result = service.Write(config, request->displayId, request->code, request->value,
                 config.linkAllDisplays, token);
+            displayDiagnostics_->RecordBatch(config.displays, result, DiagnosticOperationKind::Write);
             if (!result.success || !AllowsSideEffects(request->generation)) continue;
             try { config.Save(); }
             catch (...)
@@ -780,6 +803,39 @@ namespace DisplaySwitcher::Native
             items.push_back({ control.displayId, control.displayName, control.code, control.label,
                 control.value, control.maximum, control.hasValue });
         trayIcon_->SetDdcItems(std::move(items));
+    }
+
+    DiagnosticSnapshot Controller::BuildDiagnosticSnapshot()
+    {
+        auto config = Config();
+        DiagnosticSnapshot snapshot;
+        snapshot.about = aboutInfo_;
+        snapshot.schemaVersion = CurrentAppConfigSchemaVersion;
+        snapshot.safeMode = config.displayConfigurationSafeMode || !sideEffectGate_.AllowsSideEffects();
+        auto now = NowMilliseconds();
+        for (auto const& profile : config.collaborationProfiles)
+        {
+            DiagnosticProfileSummary item;
+            item.anonymousIndex = diagnosticAliases_.Profile(profile.id);
+            item.enabled = profile.coordinationEnabled;
+            item.endpointBound = !profile.peerEndpointId.empty();
+            item.heartbeat = diagnosticHeartbeats_.State(profile.id, profile.peerEndpointId, now);
+            item.connected = item.heartbeat == DiagnosticHeartbeatState::Recent;
+            snapshot.profiles.push_back(item);
+        }
+        snapshot.usb = { config.usbSwitch.enabled, !config.usbSwitch.deviceLocalReference.empty(),
+            config.usbSwitch.displayInputs.size(), config.usbSwitch.collaborationWakeEnabled };
+        auto backend = ddcBackends_.Lookup(NativeDdcBackendKey);
+        if (backend)
+        {
+            snapshot.backend.availability = backend->Status().availability;
+            snapshot.backend.enumerateSupported = true;
+            snapshot.backend.readSupported = true;
+            snapshot.backend.writeSupported = true;
+        }
+        snapshot.displays = displayDiagnostics_->Snapshot(config.displays, &diagnosticAliases_);
+        snapshot.sessions = DiagnosticEventSnapshot();
+        return snapshot;
     }
 
     void Controller::OnDisplayTopologyChanged()
@@ -1005,7 +1061,9 @@ namespace DisplaySwitcher::Native
                     if (self->profileDetectionActive_) { DdcControlBatchResult result; result.canceled = true; return result; }
                     DdcControlService service([self](std::wstring const& key) { return self->ddcBackends_.Lookup(key); },
                         [weak] { if (auto value = weak.lock()) return value->sideEffectGate_.AllowsSideEffects(); return false; });
-                    return service.Read(config, displayIds, cancellation);
+                    auto result = service.Read(config, displayIds, cancellation);
+                    self->displayDiagnostics_->RecordBatch(config.displays, result, DiagnosticOperationKind::Read);
+                    return result;
                 }
                 DdcControlBatchResult result; result.canceled = true; return result;
             },
@@ -1017,7 +1075,9 @@ namespace DisplaySwitcher::Native
                     if (self->profileDetectionActive_) { DdcControlBatchResult result; result.canceled = true; return result; }
                     DdcControlService service([self](std::wstring const& key) { return self->ddcBackends_.Lookup(key); },
                         [weak] { if (auto current = weak.lock()) return current->sideEffectGate_.AllowsSideEffects(); return false; });
-                    return service.Write(config, displayId, code, value, linkAllDisplays, cancellation);
+                    auto result = service.Write(config, displayId, code, value, linkAllDisplays, cancellation);
+                    self->displayDiagnostics_->RecordBatch(config.displays, result, DiagnosticOperationKind::Write);
+                    return result;
                 }
                 DdcControlBatchResult result; result.canceled = true; return result;
             },
@@ -1062,6 +1122,12 @@ namespace DisplaySwitcher::Native
             },
             [weak] { if (auto self = weak.lock()) self->BeginUsbLearning(); },
             [weak] { if (auto self = weak.lock()) self->EndUsbLearning(); },
+            [weak]
+            {
+                if (auto self = weak.lock()) return self->BuildDiagnosticSnapshot();
+                return DiagnosticSnapshot{};
+            },
+            displayDiagnostics_,
             [weak]
             {
                 if (auto self = weak.lock())
@@ -1140,6 +1206,7 @@ namespace DisplaySwitcher::Native
     void Controller::Dispose()
     {
         if (disposed_.exchange(true)) return;
+        diagnosticHeartbeats_.Reset();
         StopPeerHealthCheck();
         if (peer_)
         {

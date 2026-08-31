@@ -25,7 +25,7 @@ namespace DisplaySwitcher::Native
             DdcEnumerationResult{ false, DdcErrorKind::BackendUnavailable, L"Windows 原生 DDC 后端不可用", {}, false };
     }
 
-    ActionResult SwitchDisplaysToMac(AppConfig const& config, IDdcBackend* backend)
+    ActionResult SwitchDisplaysToMac(AppConfig const& config, IDdcBackend* backend, DisplayActionObserver observer)
     {
         auto started = GetTickCount64();
         if (!config.HasDisplayConfiguration())
@@ -73,6 +73,13 @@ namespace DisplaySwitcher::Native
                             : ActionResult{ write.success, write.message };
                     }
                 }
+            }
+            if (observer)
+            {
+                auto error = item.success ? DdcErrorKind::None :
+                    (display.bindingStatus == DisplayBindingStatus::Ambiguous ? DdcErrorKind::AmbiguousMonitor :
+                    (display.bindingStatus == DisplayBindingStatus::Offline ? DdcErrorKind::MonitorUnavailable : DdcErrorKind::WriteFailed));
+                observer(display, item.success, error);
             }
             ++completed;
             if (!item.success)
