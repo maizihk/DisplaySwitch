@@ -1,14 +1,25 @@
 # macOS 交接记录
 
-## 当前任务
+## 当前状态：DS-021 发布准备事实同步
+
+- 日期：2026-08-31
+- 分支：`codex/docs-ds-021-release-readiness`
+- 基线：`origin/main@ee6bc5bacc582841351c4b89b23ae842151a21cc`
+- PR：[#61](https://github.com/maizihk/DisplaySwitch/pull/61)
+- 范围：仅公共兼容性、清单与交接文档；不修改 macOS 运行时、协议、schema、合约、workflow、版本或硬件状态。
+- 主线集成：PR [#59](https://github.com/maizihk/DisplaySwitch/pull/59) 已合并为 `ee6bc5bacc582841351c4b89b23ae842151a21cc`；macOS run `33316481986` 全绿。
+- 用户验收：三台显示器诊断状态均保留成功；内建 HDMI、直连 C2DP、扩展坞 HDMI 读取通过；C2DP 诊断样本 3/3，C2C 2/3。
+- 剩余边界：DS-010 的真实 TCC 允许/拒绝/重新允许、通用浅深色/键盘/辅助功能，以及清单中明确保留的未覆盖硬件场景。
+
+## 上一任务：M-006 诊断与脱敏预览
 
 - 日期：2026-08-30
 - 功能：M-006 / 诊断与脱敏预览
 - 分支：`codex/macos-m006-diagnostics`
 - 基线：`origin/main@0ddf9ae`
 - 实现提交：`21dcbe3`；诊断状态生命周期修复：`9c09212`、`7e56bf6`
-- PR：[#59](https://github.com/maizihk/DisplaySwitch/pull/59)
-- 修复版 CI：macOS run `33316060868` 全绿；149 项 XCTest、Release 打包、严格验签和 artifact 上传均通过
+- PR：[#59](https://github.com/maizihk/DisplaySwitch/pull/59)，已合并为 `ee6bc5bacc582841351c4b89b23ae842151a21cc`
+- 修复版 CI：macOS run `33316481986` 全绿；149 项 XCTest、Release 打包、严格验签和 artifact 上传均通过
 
 ## M-006 原因与决策
 

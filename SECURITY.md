@@ -12,7 +12,7 @@ Please include the affected platform and version, impact, reproduction condition
 
 ## Security boundaries
 
-- Protocol v1 uses a shared pairing code for message validation but does not provide encrypted transport or strong cryptographic peer authentication. Use it only on a trusted local network.
+- Protocol v2 derives direction-specific HMAC-SHA256 keys from the pairing code with PBKDF2, validates endpoints and timestamps, and rejects replay. It authenticates messages but does not encrypt their contents; use it only on a trusted local network.
 - Status probes must not trigger display wake, USB actions, or DDC input changes.
 - The macOS native DDC backend uses private CoreDisplay/IOAVService interfaces and runs without App Sandbox. Treat downloaded builds and update sources accordingly.
 - Never attach a real pairing code or unredacted diagnostic log to a public report.
