@@ -166,7 +166,6 @@ namespace
         DisplaySwitcher::Native::DisplayConfig display;
         display.id = RequiredString(object, L"Id");
         display.name = RequiredString(object, L"Name");
-        display.backend.clear();
         display.localInput.reset();
         display.readEnabled = RequiredBoolean(object, L"ReadEnabled");
         display.brightnessEnabled = RequiredBoolean(object, L"BrightnessEnabled");
@@ -176,7 +175,6 @@ namespace
         display.volumeEnabled = RequiredBoolean(object, L"VolumeEnabled");
         display.volumeShowInTray = RequiredBoolean(object, L"VolumeShowInTray");
         display.nativeMonitorId = OptionalString(object, L"NativeMonitorId");
-        display.controlMonitorPath = OptionalString(object, L"ControlMonitorPath");
         display.macInput = -1;
         display.brightnessValue = NullableInteger(object, L"Brightness", 0, 65535, false);
         display.contrastValue = NullableInteger(object, L"Contrast", 0, 65535, false);
@@ -273,8 +271,6 @@ namespace
     {
         if (!DisplaySwitcher::Native::IsValidDisplayId(config.localEndpointId) || !VisibleText(config.localDeviceName, 1, 32)
             || config.listenPort < 1 || config.listenPort > 65535) throw std::runtime_error("invalid top-level fields");
-        if (config.displayControlBackend != L"auto" && config.displayControlBackend != L"native_ddc" &&
-            config.displayControlBackend != L"control_my_monitor") throw std::runtime_error("invalid control channel");
         ValidateDisplays(config.displays);
         ValidateProfiles(config.collaborationProfiles);
         std::set<std::wstring> usbDisplayIds;
@@ -318,8 +314,6 @@ namespace
         static_cast<void>(RequiredInteger(object, L"UsbVendorId", -1, 65535));
         static_cast<void>(RequiredInteger(object, L"UsbProductId", -1, 65535));
         static_cast<void>(RequiredString(object, L"UsbName"));
-        config.displayControlBackend = RequiredString(object, L"ControlChannel");
-        config.controlMyMonitorPath = RequiredString(object, L"ControlMyMonitorPath");
         config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
         config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
@@ -336,8 +330,6 @@ namespace
         config.localEndpointId = RequiredString(object, L"LocalEndpointId");
         config.localDeviceName = RequiredString(object, L"LocalDeviceName");
         config.listenPort = RequiredInteger(object, L"ListenPort", 1, 65535);
-        config.displayControlBackend = RequiredString(object, L"ControlChannel");
-        config.controlMyMonitorPath = RequiredString(object, L"ControlMyMonitorPath");
         config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
         config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
@@ -377,7 +369,6 @@ namespace
     {
         DisplaySwitcher::Native::AppConfig config;
         config.localEndpointId = DisplaySwitcher::Native::GenerateIdentifier();
-        config.displayControlBackend = L"auto";
         config.linkAllDisplays = false;
         EnsureDefaultProfile(config);
         return config;
@@ -392,7 +383,6 @@ namespace
         for (auto& display : config.displays)
         {
             display.name = Trim(display.name);
-            display.backend.clear();
             if (!display.brightnessEnabled) display.brightnessShowInTray = false;
             if (!display.contrastEnabled) display.contrastShowInTray = false;
             if (!display.volumeEnabled) display.volumeShowInTray = false;
@@ -433,8 +423,6 @@ namespace
         }
         usb.Insert(L"DisplayInputs", usbMappings);
         object.Insert(L"UsbSwitch", usb);
-        object.Insert(L"ControlChannel", JsonValue::CreateStringValue(config.displayControlBackend));
-        object.Insert(L"ControlMyMonitorPath", JsonValue::CreateStringValue(config.controlMyMonitorPath));
         object.Insert(L"LinkAllDisplays", JsonValue::CreateBooleanValue(config.linkAllDisplays));
         object.Insert(L"StartWithWindows", JsonValue::CreateBooleanValue(config.startWithWindows));
 
@@ -451,7 +439,6 @@ namespace
             item.Insert(L"VolumeEnabled", JsonValue::CreateBooleanValue(display.volumeEnabled));
             item.Insert(L"VolumeShowInTray", JsonValue::CreateBooleanValue(display.volumeShowInTray));
             item.Insert(L"NativeMonitorId", JsonValue::CreateStringValue(display.nativeMonitorId));
-            item.Insert(L"ControlMonitorPath", JsonValue::CreateStringValue(display.controlMonitorPath));
             item.Insert(L"Brightness", display.brightnessValue ? JsonValue::CreateNumberValue(*display.brightnessValue) : JsonValue::CreateNullValue());
             item.Insert(L"Contrast", display.contrastValue ? JsonValue::CreateNumberValue(*display.contrastValue) : JsonValue::CreateNullValue());
             item.Insert(L"Volume", display.volumeValue ? JsonValue::CreateNumberValue(*display.volumeValue) : JsonValue::CreateNullValue());

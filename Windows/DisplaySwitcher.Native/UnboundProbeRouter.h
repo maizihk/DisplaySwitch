@@ -29,12 +29,14 @@ namespace DisplaySwitcher::Native
     };
 
     using ProbeHostMatcher = std::function<bool(CollaborationProfile const&, DatagramSource const&)>;
+    using ProbeKeyProvider = std::function<std::array<uint8_t, 32>(std::wstring const&, std::wstring const&)>;
 
     UnboundProbeMatch MatchUnboundStatusProbe(std::vector<CollaborationProfile> const& candidates,
         std::wstring const& localEndpointId, DatagramSource const& source, V2Message const& message,
         int64_t nowUnixSeconds, int64_t nowMilliseconds, ProbeHostMatcher const& hostMatches,
-        V2ReplayCache* replayCache = nullptr);
+        V2ReplayCache* replayCache = nullptr, ProbeKeyProvider const& keyProvider = {});
 
     V2Message CreateUnboundStatusResponse(V2Message const& probe, std::wstring const& localEndpointId,
-        int64_t nowUnixSeconds, std::wstring nonce, std::wstring const& pairingCode);
+        int64_t nowUnixSeconds, std::wstring nonce, std::wstring const& pairingCode,
+        ProbeKeyProvider const& keyProvider = {});
 }

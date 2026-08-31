@@ -15,18 +15,23 @@ namespace winrt::DisplaySwitcher::Native::implementation
         SettingsWindow();
         void Initialize(::DisplaySwitcher::Native::AppConfig const& config,
             std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved,
+            std::function<::DisplaySwitcher::Native::DdcEnumerationResult()> enumerateDdc,
             std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
                 std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc,
             std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
                 std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
                 ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc,
             std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache,
+            std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+                std::function<void(bool, std::wstring const&)>)> checkNetworkAccess,
             std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
                 std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile,
+            std::function<void()> cancelProfileDetection,
             std::function<void()> beginUsbLearning,
             std::function<void()> endUsbLearning,
             std::function<void()> closed);
         void SetConnectionStatus(std::wstring const& status, bool connected);
+        void ReloadConfiguration(::DisplaySwitcher::Native::AppConfig const& config);
         void ShowWindow();
         void CloseForExit();
 
@@ -61,7 +66,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void DetectProfile(std::wstring const& id);
         void CompleteProfileDetection(std::wstring const& id,
             ::DisplaySwitcher::Native::ProfileDetectionResult const& result);
-        void UpdateDisplayBackendVisibility();
+        void CancelProfileDetection();
+        void SetProfileDetectionBusy(std::wstring const& id, bool busy);
         ::DisplaySwitcher::Native::AppConfig WorkingDdcConfig();
         void ReadDdc(std::wstring const& displayId);
         void WriteDdc(std::wstring const& displayId, ::DisplaySwitcher::Native::DdcVcpCode code, int value);
@@ -74,14 +80,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
         ::DisplaySwitcher::Native::AppConfig original_;
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved_;
+        std::function<::DisplaySwitcher::Native::DdcEnumerationResult()> enumerateDdc_;
         std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
             std::vector<std::wstring> const&, ::DisplaySwitcher::Native::DdcCancellationToken const&)> readDdc_;
         std::function<::DisplaySwitcher::Native::DdcControlBatchResult(::DisplaySwitcher::Native::AppConfig&,
             std::wstring const&, ::DisplaySwitcher::Native::DdcVcpCode, int, bool,
             ::DisplaySwitcher::Native::DdcCancellationToken const&)> writeDdc_;
         std::function<bool(std::vector<::DisplaySwitcher::Native::DisplayConfig> const&)> commitDdcCache_;
+        std::function<void(::DisplaySwitcher::Native::AppConfig const&,
+            std::function<void(bool, std::wstring const&)>)> checkNetworkAccess_;
         std::function<void(::DisplaySwitcher::Native::AppConfig const&, std::wstring const&,
             std::function<void(::DisplaySwitcher::Native::ProfileDetectionResult const&)>)> detectProfile_;
+        std::function<void()> cancelProfileDetection_;
         std::function<void()> beginUsbLearning_;
         std::function<void()> endUsbLearning_;
         std::function<void()> closed_;
@@ -137,6 +147,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbSwitchDisplaysOnArrival_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel profileEditorsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox profileSelector_{ nullptr };
+        Microsoft::UI::Xaml::Controls::Button detectProfileButton_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbProfileSelector_{ nullptr };
         Microsoft::UI::Xaml::Controls::ComboBox usbDevices_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock usbDeviceStatus_{ nullptr };
@@ -151,13 +162,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::wstring selectedUsbName_;
         int selectedUsbVendorId_{ -1 };
         int selectedUsbProductId_{ -1 };
-        Microsoft::UI::Xaml::Controls::ComboBox displayBackend_{ nullptr };
         Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBox controlMyMonitor_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         bool initialized_{};
         bool loading_{};
+        bool windowClosed_{};
+        uint64_t profileDetectionGeneration_{};
+        std::wstring detectingProfileId_;
     };
 }
 

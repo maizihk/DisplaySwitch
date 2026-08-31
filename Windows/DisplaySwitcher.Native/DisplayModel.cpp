@@ -3,6 +3,9 @@
 
 namespace
 {
+    constexpr std::wstring_view StrongBindingPrefix = L"ds13:";
+    constexpr std::wstring_view PendingTargetPrefix = L"target:";
+
     bool EqualInsensitive(std::wstring const& left, std::wstring const& right) noexcept
     {
         return _wcsicmp(left.c_str(), right.c_str()) == 0;
@@ -13,6 +16,18 @@ namespace
         constexpr std::wstring_view prefix = L"显示器 ";
         if (!name.starts_with(prefix) || name.size() == prefix.size()) return name.empty();
         return std::all_of(name.begin() + static_cast<std::ptrdiff_t>(prefix.size()), name.end(), iswdigit);
+    }
+
+    bool ContainsInsensitive(std::vector<std::wstring> const& values, std::wstring const& candidate)
+    {
+        return std::any_of(values.begin(), values.end(), [&](auto const& value)
+            { return EqualInsensitive(value, candidate); });
+    }
+
+    std::wstring MonitorGroupingKey(DisplaySwitcher::Native::DdcMonitorInfo const& monitor)
+    {
+        if (!monitor.logicalTargetId.empty()) return monitor.logicalTargetId;
+        return DisplaySwitcher::Native::CanonicalDdcMonitorId(monitor.id);
     }
 }
 
@@ -50,24 +65,54 @@ namespace DisplaySwitcher::Native
         return result;
     }
 
+    bool IsPersistedStrongMonitorBinding(std::wstring const& id) noexcept
+    {
+        return id.starts_with(StrongBindingPrefix) && id.size() > StrongBindingPrefix.size();
+    }
+
+    bool IsDisplayDdcResolved(DisplayConfig const& display) noexcept
+    {
+        return display.bindingStatus == DisplayBindingStatus::Resolved
+            && !display.nativeMonitorId.empty();
+    }
+
     std::vector<DdcMonitorInfo> NormalizeDdcMonitorCollection(std::vector<DdcMonitorInfo> monitors)
     {
         std::vector<DdcMonitorInfo> unique;
         for (auto& monitor : monitors)
         {
-            monitor.id = CanonicalDdcMonitorId(monitor.id);
-            if (monitor.id.empty()) continue;
+            auto originalId = monitor.id;
+            auto groupingKey = MonitorGroupingKey(monitor);
+            if (groupingKey.empty()) continue;
+            if (monitor.logicalTargetId.empty()) monitor.logicalTargetId = groupingKey;
+            if (!originalId.empty() && !ContainsInsensitive(monitor.legacyIds, originalId))
+                monitor.legacyIds.push_back(originalId);
+            if (monitor.physicalHandleCount == 0) monitor.physicalHandleCount = 1;
             auto found = std::find_if(unique.begin(), unique.end(), [&](auto const& value)
-                { return EqualInsensitive(value.id, monitor.id); });
+                { return EqualInsensitive(MonitorGroupingKey(value), groupingKey); });
             if (found == unique.end()) unique.push_back(std::move(monitor));
             else
             {
                 if (found->displayName.empty()) found->displayName = std::move(monitor.displayName);
                 if (found->gdiName.empty()) found->gdiName = std::move(monitor.gdiName);
+                if (found->id.empty()) found->id = std::move(monitor.id);
+                else if (!monitor.id.empty() && !EqualInsensitive(found->id, monitor.id)) found->ambiguous = true;
+                found->physicalHandleCount += monitor.physicalHandleCount;
+                found->ambiguous = found->ambiguous || monitor.ambiguous;
+                for (auto& legacy : monitor.legacyIds)
+                    if (!ContainsInsensitive(found->legacyIds, legacy)) found->legacyIds.push_back(std::move(legacy));
             }
         }
         std::sort(unique.begin(), unique.end(), [](auto const& left, auto const& right)
-            { return _wcsicmp(left.id.c_str(), right.id.c_str()) < 0; });
+            { return _wcsicmp(MonitorGroupingKey(left).c_str(), MonitorGroupingKey(right).c_str()) < 0; });
+
+        for (auto& monitor : unique)
+        {
+            auto duplicateStrongIdentity = !monitor.id.empty() && std::count_if(unique.begin(), unique.end(), [&](auto const& other)
+                { return EqualInsensitive(other.id, monitor.id); }) != 1;
+            monitor.ambiguous = monitor.ambiguous || monitor.id.empty()
+                || monitor.physicalHandleCount != 1 || duplicateStrongIdentity;
+        }
 
         for (auto& monitor : unique) if (monitor.displayName.empty()) monitor.displayName = L"显示器";
         std::vector<std::wstring> baseNames;
@@ -101,29 +146,33 @@ namespace DisplaySwitcher::Native
             result.displays = existing;
             return result;
         }
-        result.displays.reserve(monitors.size());
+        result.displays.reserve((std::max)(existing.size(), monitors.size()));
         std::vector<bool> used(existing.size());
-        for (auto const& monitor : monitors)
+        std::vector<bool> monitorUsed(monitors.size());
+        auto applyMonitor = [&](DisplayConfig display, DdcMonitorInfo const& monitor, bool migrateBinding)
         {
-            auto found = std::find_if(existing.begin(), existing.end(), [&](auto const& display)
-                { return EqualInsensitive(CanonicalDdcMonitorId(display.nativeMonitorId), monitor.id); });
-            if (found == existing.end())
+            display.topologyGeneration = monitor.topologyGeneration;
+            if (monitor.ambiguous)
             {
-                auto display = CreateDisplayConfig(monitor.displayName);
-                display.nativeMonitorId = monitor.id;
-                result.displays.push_back(std::move(display));
-                ++result.added;
-                result.changed = true;
-                continue;
+                display.bindingStatus = DisplayBindingStatus::Ambiguous;
+                display.bindingMessage = monitor.physicalHandleCount != 1
+                    ? L"当前逻辑显示目标对应多个物理 DDC 句柄，需要重新确认"
+                    : L"显示器身份不唯一，需要重新确认";
             }
-            auto index = static_cast<size_t>(std::distance(existing.begin(), found));
-            if (used[index]) continue;
-            used[index] = true;
-            auto display = *found;
-            if (!EqualInsensitive(display.nativeMonitorId, monitor.id))
+            else if (migrateBinding || EqualInsensitive(display.nativeMonitorId, monitor.id))
             {
-                display.nativeMonitorId = monitor.id;
-                result.changed = true;
+                if (migrateBinding && !EqualInsensitive(display.nativeMonitorId, monitor.id))
+                {
+                    display.nativeMonitorId = monitor.id;
+                    result.changed = true;
+                }
+                display.bindingStatus = DisplayBindingStatus::Resolved;
+                display.bindingMessage = L"原生 DDC/CI 已绑定";
+            }
+            else
+            {
+                display.bindingStatus = DisplayBindingStatus::NeedsConfirmation;
+                display.bindingMessage = L"当前显示目标需要用户重新确认绑定";
             }
             if (IsGenericDisplayName(display.name) && display.name != monitor.displayName)
             {
@@ -131,9 +180,79 @@ namespace DisplaySwitcher::Native
                 result.changed = true;
             }
             result.displays.push_back(std::move(display));
+        };
+
+        // First preserve exact strong bindings. Global one-to-one use tracking
+        // prevents the same physical target from satisfying two logical entries.
+        for (size_t existingIndex = 0; existingIndex < existing.size(); ++existingIndex)
+        {
+            auto const& display = existing[existingIndex];
+            if (!IsPersistedStrongMonitorBinding(display.nativeMonitorId)) continue;
+            std::vector<size_t> candidates;
+            for (size_t monitorIndex = 0; monitorIndex < monitors.size(); ++monitorIndex)
+                if (!monitorUsed[monitorIndex] && EqualInsensitive(display.nativeMonitorId, monitors[monitorIndex].id))
+                    candidates.push_back(monitorIndex);
+            if (candidates.size() != 1) continue;
+            auto index = candidates.front();
+            used[existingIndex] = true; monitorUsed[index] = true;
+            applyMonitor(display, monitors[index], false);
         }
-        result.removed = static_cast<size_t>(std::count(used.begin(), used.end(), false));
-        result.changed = result.changed || result.removed != 0 || result.displays.size() != existing.size();
+
+        // Legacy GDI/interface identifiers migrate only when they select one
+        // non-ambiguous strong target. Never choose the first equivalent item.
+        for (size_t existingIndex = 0; existingIndex < existing.size(); ++existingIndex)
+        {
+            if (used[existingIndex]) continue;
+            auto const& display = existing[existingIndex];
+            std::vector<size_t> candidates;
+            for (size_t monitorIndex = 0; monitorIndex < monitors.size(); ++monitorIndex)
+            {
+                if (monitorUsed[monitorIndex]) continue;
+                auto const& monitor = monitors[monitorIndex];
+                auto legacyMatch = EqualInsensitive(display.nativeMonitorId, monitor.gdiName)
+                    || ContainsInsensitive(monitor.legacyIds, display.nativeMonitorId)
+                    || (!display.nativeMonitorId.empty() && display.nativeMonitorId.starts_with(PendingTargetPrefix)
+                        && EqualInsensitive(display.nativeMonitorId.substr(PendingTargetPrefix.size()), monitor.logicalTargetId));
+                if (legacyMatch) candidates.push_back(monitorIndex);
+            }
+            if (candidates.size() != 1) continue;
+            auto index = candidates.front();
+            used[existingIndex] = true; monitorUsed[index] = true;
+            auto canMigrate = !monitors[index].ambiguous && !monitors[index].id.empty()
+                && !display.nativeMonitorId.starts_with(PendingTargetPrefix);
+            applyMonitor(display, monitors[index], canMigrate);
+        }
+
+        // A current logical target absent from the saved catalogue is shown once.
+        // Weak/ambiguous targets receive a non-operational target token so they
+        // remain visible without being mistaken for a confirmed binding.
+        for (size_t monitorIndex = 0; monitorIndex < monitors.size(); ++monitorIndex)
+        {
+            if (monitorUsed[monitorIndex]) continue;
+            auto const& monitor = monitors[monitorIndex];
+            auto display = CreateDisplayConfig(monitor.displayName);
+            display.nativeMonitorId = !monitor.ambiguous && !monitor.id.empty()
+                ? monitor.id : std::wstring(PendingTargetPrefix) + monitor.logicalTargetId;
+            applyMonitor(std::move(display), monitor, !monitor.ambiguous && !monitor.id.empty());
+            ++result.added;
+            result.changed = true;
+        }
+
+        // Disconnected or unresolved saved displays remain in the catalogue and
+        // retain all user settings and cross-feature mappings.
+        for (size_t existingIndex = 0; existingIndex < existing.size(); ++existingIndex)
+        {
+            if (used[existingIndex]) continue;
+            auto display = existing[existingIndex];
+            display.bindingStatus = IsPersistedStrongMonitorBinding(display.nativeMonitorId)
+                ? DisplayBindingStatus::Offline : DisplayBindingStatus::NeedsConfirmation;
+            display.topologyGeneration = 0;
+            display.bindingMessage = display.bindingStatus == DisplayBindingStatus::Offline
+                ? L"显示器当前离线，配置已保留" : L"显示器绑定证据不足，需要重新确认";
+            result.displays.push_back(std::move(display));
+        }
+        result.removed = 0;
+        result.changed = result.changed || result.displays.size() != existing.size();
         return result;
     }
 

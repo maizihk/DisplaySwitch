@@ -43,11 +43,12 @@ namespace DisplaySwitcher::Native
     class DdcBackendSet final
     {
     public:
-        explicit DdcBackendSet(AppConfig const& config);
+        DdcBackendSet();
         IDdcBackend* Lookup(std::wstring const& key) const noexcept;
+        void InvalidateTopology() noexcept;
+        uint64_t TopologyGeneration() const noexcept;
 
     private:
         std::unique_ptr<IDdcBackend> native_;
-        std::unique_ptr<IDdcBackend> controlMyMonitor_;
     };
 }

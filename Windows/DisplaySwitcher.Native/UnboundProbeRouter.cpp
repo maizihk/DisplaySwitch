@@ -14,7 +14,7 @@ namespace DisplaySwitcher::Native
     UnboundProbeMatch MatchUnboundStatusProbe(std::vector<CollaborationProfile> const& candidates,
         std::wstring const& localEndpointId, DatagramSource const& source, V2Message const& message,
         int64_t nowUnixSeconds, int64_t nowMilliseconds, ProbeHostMatcher const& hostMatches,
-        V2ReplayCache* replayCache)
+        V2ReplayCache* replayCache, ProbeKeyProvider const& keyProvider)
     {
         if (message.type != L"status_probe" || message.targetEndpointId) return {};
         if (!IsValidDisplayId(localEndpointId) || EqualId(message.sourceEndpointId, localEndpointId))
@@ -32,8 +32,8 @@ namespace DisplaySwitcher::Native
             auto const& profile = candidates[index];
             try
             {
-                auto secret = NormalizeV2PairingSecret(profile.pairingCode);
-                auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
+                auto key = keyProvider ? keyProvider(profile.pairingCode, message.sourceEndpointId) :
+                    DeriveV2AuthenticationKey(NormalizeV2PairingSecret(profile.pairingCode), message.sourceEndpointId);
                 return ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
                     nowUnixSeconds, nullptr, nowMilliseconds).accepted;
             }
@@ -47,8 +47,8 @@ namespace DisplaySwitcher::Native
             if (profile.peerProtocolVersion != 2 || !hostMatches(profile, source))
                 return { UnboundProbeMatchStatus::NoMatch };
             if (!authenticates(index)) return { UnboundProbeMatchStatus::AuthenticationFailed };
-            auto secret = NormalizeV2PairingSecret(profile.pairingCode);
-            auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
+            auto key = keyProvider ? keyProvider(profile.pairingCode, message.sourceEndpointId) :
+                DeriveV2AuthenticationKey(NormalizeV2PairingSecret(profile.pairingCode), message.sourceEndpointId);
             auto validation = ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
                 nowUnixSeconds, replayCache, nowMilliseconds);
             if (!validation.accepted) return { UnboundProbeMatchStatus::NoMatch };
@@ -82,8 +82,8 @@ namespace DisplaySwitcher::Native
 
         auto index = authenticatedCandidates.front();
         auto const& profile = candidates[index];
-        auto secret = NormalizeV2PairingSecret(profile.pairingCode);
-        auto key = DeriveV2AuthenticationKey(secret, message.sourceEndpointId);
+        auto key = keyProvider ? keyProvider(profile.pairingCode, message.sourceEndpointId) :
+            DeriveV2AuthenticationKey(NormalizeV2PairingSecret(profile.pairingCode), message.sourceEndpointId);
         auto validation = ValidateV2Message(message, localEndpointId, message.sourceEndpointId, key,
             nowUnixSeconds, replayCache, nowMilliseconds);
         if (!validation.accepted)
@@ -93,7 +93,8 @@ namespace DisplaySwitcher::Native
     }
 
     V2Message CreateUnboundStatusResponse(V2Message const& probe, std::wstring const& localEndpointId,
-        int64_t nowUnixSeconds, std::wstring nonce, std::wstring const& pairingCode)
+        int64_t nowUnixSeconds, std::wstring nonce, std::wstring const& pairingCode,
+        ProbeKeyProvider const& keyProvider)
     {
         V2Message response;
         response.type = L"status_response";
@@ -103,8 +104,8 @@ namespace DisplaySwitcher::Native
         response.sourcePlatform = L"windows";
         response.timestamp = nowUnixSeconds;
         response.nonce = std::move(nonce);
-        auto secret = NormalizeV2PairingSecret(pairingCode);
-        auto key = DeriveV2AuthenticationKey(secret, localEndpointId);
+        auto key = keyProvider ? keyProvider(pairingCode, localEndpointId) :
+            DeriveV2AuthenticationKey(NormalizeV2PairingSecret(pairingCode), localEndpointId);
         return SignV2Message(std::move(response), key);
     }
 }

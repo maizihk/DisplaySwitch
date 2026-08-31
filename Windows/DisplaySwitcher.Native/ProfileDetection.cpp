@@ -11,6 +11,33 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
+    ProfileDetectionAsyncOperation::ProfileDetectionAsyncOperation() : state_(std::make_shared<State>()) {}
+    ProfileDetectionAsyncOperation::~ProfileDetectionAsyncOperation() { Cancel(); }
+
+    void ProfileDetectionAsyncOperation::Start(Work work, Dispatch dispatch, Completion completion)
+    {
+        auto state = state_;
+        auto generation = ++state->generation;
+        std::thread([state, generation, work = std::move(work), dispatch = std::move(dispatch),
+            completion = std::move(completion)]
+        {
+            auto canceled = [state, generation] { return state->generation.load() != generation; };
+            bool succeeded{};
+            try { if (!canceled()) succeeded = work(canceled); }
+            catch (...) { succeeded = false; }
+            if (canceled()) return;
+            dispatch([state, generation, completion = std::move(completion), succeeded]
+            {
+                if (state->generation.load() == generation && completion) completion(succeeded);
+            });
+        }).detach();
+    }
+
+    void ProfileDetectionAsyncOperation::Cancel() noexcept
+    {
+        ++state_->generation;
+    }
+
     bool ApplyProfileDetectionResult(CollaborationProfile& profile,
         ProfileDetectionResult const& result, bool endpointConfirmed)
     {
@@ -57,6 +84,11 @@ namespace DisplaySwitcher::Native
     {
         if (!active_ || nowMilliseconds < deadlineMilliseconds_) return {};
         return Complete({ ProfileDetectionOutcome::NoResponse });
+    }
+
+    void ProfileDetectionSession::MarkProbeSent(int64_t nowMilliseconds) noexcept
+    {
+        if (WaitingForV2()) deadlineMilliseconds_ = nowMilliseconds + ProbeTimeoutMilliseconds;
     }
 
     ProfileDetectionAction ProfileDetectionSession::OnV2StatusResponse(int64_t nowMilliseconds,

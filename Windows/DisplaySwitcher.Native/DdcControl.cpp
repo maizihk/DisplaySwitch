@@ -62,6 +62,7 @@ namespace DisplaySwitcher::Native
         };
         for (auto const& display : config.displays)
         {
+            if (!IsDisplayDdcResolved(display)) continue;
             append(display, DdcVcpCode::Brightness, L"亮度", display.brightnessEnabled,
                 display.brightnessShowInTray, display.brightnessValue, display.brightnessMax);
             append(display, DdcVcpCode::Contrast, L"对比度", display.contrastEnabled,
@@ -161,22 +162,20 @@ namespace DisplaySwitcher::Native
         return true;
     }
 
-    std::wstring DdcControlService::BackendKey(AppConfig const& config, DisplayConfig const& display)
-    {
-        static_cast<void>(config);
-        static_cast<void>(display);
-        return L"native_ddc";
-    }
-
     bool DdcControlService::Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const
     {
         return !config.displayConfigurationSafeMode && !cancellation.IsCanceled()
             && (!sideEffectsAllowed_ || sideEffectsAllowed_());
     }
 
-    IDdcBackend* DdcControlService::Backend(AppConfig const& config, DisplayConfig const& display) const
+    IDdcBackend* DdcControlService::Backend() const
     {
-        return lookup_ ? lookup_(BackendKey(config, display)) : nullptr;
+        return lookup_ ? lookup_(NativeDdcBackendKey) : nullptr;
+    }
+
+    bool DdcControlService::TopologyUnchanged(IDdcBackend const& backend, uint64_t generation) noexcept
+    {
+        return backend.TopologyGeneration() == generation;
     }
 
     DdcControlBatchResult DdcControlService::Read(AppConfig& config,
@@ -194,8 +193,20 @@ namespace DisplaySwitcher::Native
         {
             if (!requested(display) || !display.readEnabled) continue;
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
-            auto backend = Backend(config, display);
-            auto backendKey = BackendKey(config, display);
+            if (!IsDisplayDdcResolved(display))
+            {
+                auto ambiguous = display.bindingStatus == DisplayBindingStatus::Ambiguous
+                    || display.bindingStatus == DisplayBindingStatus::NeedsConfirmation;
+                auto error = ambiguous ? DdcErrorKind::AmbiguousMonitor : DdcErrorKind::MonitorUnavailable;
+                auto message = display.bindingMessage.empty()
+                    ? (ambiguous ? L"显示器绑定不明确，需要重新确认" : L"显示器当前离线")
+                    : display.bindingMessage;
+                for (auto code : ControlCodes()) if (FeatureEnabled(display, code))
+                    batch.items.push_back(Failure(display, code,
+                        { DdcAvailability::TemporarilyUnavailable, message }, error, message));
+                continue;
+            }
+            auto backend = Backend();
             DdcBackendStatus status;
             if (!backend)
             {
@@ -213,8 +224,9 @@ namespace DisplaySwitcher::Native
                         status.message));
                 continue;
             }
-            auto monitorId = display.BackendMonitorId(backendKey);
+            auto const& monitorId = display.nativeMonitorId;
             auto capabilities = backend->Capabilities(monitorId, cancellation);
+            auto topologyGeneration = backend->TopologyGeneration();
             std::vector<DdcControlItemResult> displayResults;
             for (auto code : ControlCodes())
             {
@@ -227,6 +239,10 @@ namespace DisplaySwitcher::Native
                     continue;
                 }
                 auto value = backend->Read(monitorId, code, cancellation);
+                if (!TopologyUnchanged(*backend, topologyGeneration)
+                    || (value.success && value.topologyGeneration != 0
+                        && value.topologyGeneration != backend->TopologyGeneration()))
+                { batch.canceled = true; break; }
                 DdcControlItemResult item{ display.id, code, value.success, false, value.success, false,
                     value.success ? std::optional<int>{ value.current } : std::nullopt,
                     value.success ? std::optional<int>{ EffectiveMaximum(value.current, value.maximum) } : std::nullopt,
@@ -299,8 +315,19 @@ namespace DisplaySwitcher::Native
         {
             auto& display = config.displays[index];
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
-            auto backend = Backend(config, display);
-            auto backendKey = BackendKey(config, display);
+            if (!IsDisplayDdcResolved(display))
+            {
+                auto ambiguous = display.bindingStatus == DisplayBindingStatus::Ambiguous
+                    || display.bindingStatus == DisplayBindingStatus::NeedsConfirmation;
+                auto error = ambiguous ? DdcErrorKind::AmbiguousMonitor : DdcErrorKind::MonitorUnavailable;
+                auto message = display.bindingMessage.empty()
+                    ? (ambiguous ? L"显示器绑定不明确，需要重新确认" : L"显示器当前离线")
+                    : display.bindingMessage;
+                batch.items.push_back(Failure(display, code,
+                    { DdcAvailability::TemporarilyUnavailable, message }, error, message));
+                continue;
+            }
+            auto backend = Backend();
             if (!backend)
             {
                 batch.items.push_back(Failure(display, code, { DdcAvailability::Unsupported, L"未选择可用的硬件 DDC 后端" },
@@ -313,17 +340,30 @@ namespace DisplaySwitcher::Native
                 batch.items.push_back(Failure(display, code, status, DdcErrorKind::BackendUnavailable, status.message));
                 continue;
             }
-            auto monitorId = display.BackendMonitorId(backendKey);
+            auto const& monitorId = display.nativeMonitorId;
             auto capabilities = backend->Capabilities(monitorId, cancellation);
+            auto topologyGeneration = backend->TopologyGeneration();
             if (!capabilities.CanWrite(code))
             {
                 batch.items.push_back(Failure(display, code, capabilities.status, DdcErrorKind::Unsupported,
                     capabilities.status.message.empty() ? L"显示器未报告该硬件 DDC 功能" : capabilities.status.message));
                 continue;
             }
-            auto result = backendKey == L"native_ddc" && Allowed(config, cancellation)
+            auto result = Allowed(config, cancellation)
                 ? WriteNativeWithOneRefresh(*backend, monitorId, code, value, cancellation)
-                : backend->Write(monitorId, code, value, cancellation);
+                : DdcWriteResult{ false, DdcErrorKind::Canceled, L"操作已取消" };
+            auto topologyChangedDuringWrite = !TopologyUnchanged(*backend, topologyGeneration);
+            if (topologyChangedDuringWrite || (result.success && result.topologyGeneration != 0
+                && result.topologyGeneration != backend->TopologyGeneration()))
+            {
+                result = { false, DdcErrorKind::TopologyChanged, L"显示拓扑已变化，旧句柄结果已丢弃" };
+                topologyChangedDuringWrite = true;
+            }
+            if (topologyChangedDuringWrite)
+            {
+                batch.canceled = true;
+                break;
+            }
             DdcControlItemResult item{ display.id, code, result.success, false, result.success, false,
                 result.success ? std::optional<int>{ value } : std::nullopt,
                 result.success ? std::optional<int>{ EffectiveMaximum(value, CachedMaximum(display, code).value_or(100)) } : std::nullopt,

@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
+#include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -14,6 +17,8 @@ namespace DisplaySwitcher::Native
         V2Available,
         AuthenticationFailed,
         NoResponse,
+        NetworkNotReady,
+        SendFailed,
         LocalConfigurationIncomplete,
     };
 
@@ -58,6 +63,7 @@ namespace DisplaySwitcher::Native
         ProfileDetectionAction Start(int64_t nowMilliseconds, bool localConfigurationComplete,
             std::wstring const& savedEndpointId, std::wstring v2EventId);
         ProfileDetectionAction Advance(int64_t nowMilliseconds);
+        void MarkProbeSent(int64_t nowMilliseconds) noexcept;
         ProfileDetectionAction OnV2StatusResponse(int64_t nowMilliseconds, std::wstring const& eventId,
             std::wstring const& sourceEndpointId, bool authenticated);
         void Cancel() noexcept;
@@ -74,5 +80,23 @@ namespace DisplaySwitcher::Native
         int64_t deadlineMilliseconds_{};
         std::wstring pendingEventId_;
         std::wstring savedEndpointId_;
+    };
+
+    class ProfileDetectionAsyncOperation final
+    {
+    public:
+        using IsCanceled = std::function<bool()>;
+        using Work = std::function<bool(IsCanceled const&)>;
+        using Dispatch = std::function<void(std::function<void()>)>;
+        using Completion = std::function<void(bool)>;
+
+        ProfileDetectionAsyncOperation();
+        ~ProfileDetectionAsyncOperation();
+        void Start(Work work, Dispatch dispatch, Completion completion);
+        void Cancel() noexcept;
+
+    private:
+        struct State { std::atomic<uint64_t> generation{}; };
+        std::shared_ptr<State> state_;
     };
 }

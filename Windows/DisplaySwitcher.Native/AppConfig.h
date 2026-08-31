@@ -27,8 +27,6 @@ namespace DisplaySwitcher::Native
     {
         UsbSwitchConfig usbSwitch;
 
-        std::wstring displayControlBackend;
-        std::wstring controlMyMonitorPath;
         bool linkAllDisplays{ false };
         std::vector<DisplayConfig> displays;
         std::wstring localEndpointId;

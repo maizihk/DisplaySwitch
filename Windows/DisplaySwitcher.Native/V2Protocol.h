@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,7 +43,7 @@ namespace DisplaySwitcher::Native
     {
     public:
         V2ReplayResult CheckAndRemember(V2Message const& message, int64_t nowMilliseconds);
-        void Clear() noexcept { entries_.clear(); }
+        void Clear() noexcept;
 
     private:
         struct Entry
@@ -51,6 +53,31 @@ namespace DisplaySwitcher::Native
             std::string canonical;
             int64_t seenAtMilliseconds{};
         };
+        std::deque<Entry> entries_;
+        mutable std::mutex mutex_;
+    };
+
+    class V2AuthenticationKeyCache final
+    {
+    public:
+        using Deriver = std::function<std::array<uint8_t, 32>(std::span<uint8_t const>, std::wstring const&)>;
+
+        explicit V2AuthenticationKeyCache(size_t capacity = 16, Deriver deriver = {});
+        std::array<uint8_t, 32> Get(std::wstring const& pairingCode,
+            std::wstring const& sourceEndpointId);
+        void Clear() noexcept;
+        size_t Size() const noexcept;
+
+    private:
+        struct Entry
+        {
+            std::vector<uint8_t> secret;
+            std::wstring sourceEndpointId;
+            std::array<uint8_t, 32> key{};
+        };
+        size_t capacity_;
+        Deriver deriver_;
+        mutable std::mutex mutex_;
         std::deque<Entry> entries_;
     };
 
