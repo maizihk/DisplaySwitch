@@ -214,6 +214,86 @@ namespace
         }
     }
 
+    void TestDetailedDiagnosticRecording(std::filesystem::path const& root)
+    {
+        auto configPath = root / L"detailed-diagnostics-config.json";
+        bool firstRun{};
+        auto config = AppConfig::LoadFromPath(configPath, &firstRun);
+        Check(firstRun && !config.detailedDiagnosticRecording &&
+            !ReadObject(configPath).GetNamedBoolean(L"DetailedDiagnosticRecording"),
+            L"详细诊断记录必须在全新安装时默认关闭并显式持久化");
+
+        config.detailedDiagnosticRecording = true;
+        config.SaveToPath(configPath);
+        Check(AppConfig::LoadFromPath(configPath).detailedDiagnosticRecording,
+            L"详细诊断记录开关必须能够保存并在重启后回读");
+
+        auto legacyPath = root / L"detailed-diagnostics-legacy-v5.json";
+        auto legacyObject = ReadObject(configPath);
+        legacyObject.Remove(L"DetailedDiagnosticRecording");
+        WriteObject(legacyPath, legacyObject);
+        Check(!AppConfig::LoadFromPath(legacyPath).detailedDiagnosticRecording,
+            L"缺少详细诊断字段的旧 v5 配置升级后必须默认关闭");
+
+        auto logPath = root / L"detailed-diagnostics.log";
+        SetDiagnosticLogPathForTesting(logPath);
+        SetDetailedDiagnosticRecordingEnabled(false);
+        ResetDiagnosticLog();
+        for (auto const& event : {
+            "display.switch_complete success=0 duration_ms=7",
+            "usb.poll_change present=1",
+            "profile_detection.started",
+            "udp.send resolve_ok=1 resolve_ms=2 send_ok=1 send_ms=1" })
+            WriteDiagnostic(event);
+        Check(DiagnosticEventSnapshot().empty() && !std::filesystem::exists(logPath),
+            L"详细记录关闭时 DDC/输入源、USB 和协同网络入口必须零内存记录且不创建日志文件");
+
+        SetDetailedDiagnosticRecordingEnabled(true);
+        Check(IsDetailedDiagnosticRecordingEnabled() && DiagnosticEventSnapshot().empty() &&
+            !std::filesystem::exists(logPath),
+            L"从关闭切到开启必须先清空既有详细记录");
+        WriteDiagnostic("usb.target_notification present=0");
+        Check(DiagnosticEventSnapshot().size() == 1 && std::filesystem::exists(logPath),
+            L"开启后只记录随后产生的会话内脱敏轨迹");
+
+        SetDetailedDiagnosticRecordingEnabled(false);
+        Check(!IsDetailedDiagnosticRecordingEnabled() && DiagnosticEventSnapshot().empty() &&
+            !std::filesystem::exists(logPath),
+            L"从开启切到关闭必须清除内存和磁盘中的全部详细记录");
+        {
+            std::ofstream stale(logPath, std::ios::binary | std::ios::trunc);
+            stale << "stale-detail";
+        }
+        SetDetailedDiagnosticRecordingEnabled(true);
+        Check(DiagnosticEventSnapshot().empty() && !std::filesystem::exists(logPath),
+            L"再次开启也必须删除关闭前遗留的详细日志，不能混入新会话");
+
+        DiagnosticSnapshot disabledSnapshot;
+        disabledSnapshot.about.applicationName = L"DisplaySwitch";
+        disabledSnapshot.detailedRecordingEnabled = false;
+        disabledSnapshot.sessions = { "udp.send success=1" };
+        auto disabledPreview = BuildDiagnosticPreview(disabledSnapshot);
+        Check(disabledPreview.find(L"detailed-recording=false") != std::wstring::npos &&
+            disabledPreview.find(L"udp.send") == std::wstring::npos &&
+            disabledPreview.find(L"会话内详细事件：0") != std::wstring::npos,
+            L"详细记录关闭时诊断预览必须保留摘要并且不得输出任何旧轨迹");
+
+        DdcControlItemResult internalFailure;
+        internalFailure.error = DdcErrorKind::ReadFailed;
+        internalFailure.message = L"HANDLE=0x1234 HRESULT=0x80070005 attempt=2 checksum=bad transport=i2c";
+        auto basicFailure = DescribeBasicDdcResult(internalFailure, false);
+        Check(basicFailure == L"硬件 DDC 读取失败" &&
+            basicFailure.find(L"HANDLE") == std::wstring::npos &&
+            basicFailure.find(L"HRESULT") == std::wstring::npos &&
+            basicFailure.find(L"attempt") == std::wstring::npos &&
+            basicFailure.find(L"checksum") == std::wstring::npos &&
+            basicFailure.find(L"transport") == std::wstring::npos,
+            L"显示器页面必须只投影简明成功/失败结果，不得展示内部 DDC 细节");
+
+        SetDetailedDiagnosticRecordingEnabled(false);
+        SetDiagnosticLogPathForTesting(std::nullopt);
+    }
+
     void TestProfileManagementAndReorder(std::filesystem::path const& root)
     {
         auto config = ConfigWithDisplays(3);
@@ -1517,6 +1597,7 @@ namespace
             L"https://example.invalid/notices", L"测试构建", true };
         snapshot.schemaVersion = CurrentAppConfigSchemaVersion;
         snapshot.safeMode = true;
+        snapshot.detailedRecordingEnabled = true;
         snapshot.profiles = {
             { 1, true, true, true, DiagnosticHeartbeatState::Recent },
             { 2, false, false, false, DiagnosticHeartbeatState::Never }
@@ -1766,6 +1847,7 @@ int wmain()
     {
         TestV2OnlyDatagramGate();
         TestFreshInstallAndCounts(root);
+        TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);
         TestImmediateCommitSafety(root);
