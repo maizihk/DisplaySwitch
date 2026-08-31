@@ -315,14 +315,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
         auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
-        auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
-        commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
         auto diagnosticsHint = TextBlock();
-        diagnosticsHint.Text(L"默认关闭。开启后仅记录本次会话中随后产生的脱敏排障轨迹；任意切换都会清空旧轨迹。");
+        diagnosticsHint.Text(L"仅排障时开启；切换开关会清空已有详细记录。");
         diagnosticsHint.TextWrapping(TextWrapping::Wrap); diagnosticsHint.Opacity(0.72);
         commonTab.Content(CreatePage({ CreateSection({
             LabeledToggleRow(L"登录时启动", autoStart_),
-            LabeledToggleRow(L"详细诊断记录", detailedDiagnostics_), diagnosticsHint, commonHint }) }));
+            LabeledToggleRow(L"详细诊断记录", detailedDiagnostics_), diagnosticsHint }) }));
 
         auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习"));
         AutomationProperties::SetName(learnCurrentUsb, L"学习 USB 触发设备");
@@ -951,9 +949,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 controls.volume, controls.volumeEnabled, controls.volumeShowInTray, 3);
 
             auto fields = StackPanel(); fields.Spacing(10);
+            auto header = Grid();
+            auto titleColumn = ColumnDefinition();
+            titleColumn.Width(GridLength{ 1, GridUnitType::Star });
+            header.ColumnDefinitions().Append(titleColumn);
+            auto actionColumn = ColumnDefinition();
+            actionColumn.Width(GridLengthHelper::Auto());
+            header.ColumnDefinitions().Append(actionColumn);
             auto displayTitle = TextBlock(); displayTitle.Text(display.name);
             displayTitle.FontSize(18); displayTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-            fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(controlsGrid);
+            displayTitle.VerticalAlignment(VerticalAlignment::Center);
+            read.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(read, 1);
+            header.Children().Append(displayTitle);
+            header.Children().Append(read);
+            fields.Children().Append(header); fields.Children().Append(controlsGrid);
             fields.Children().Append(controls.status);
             displayEditorsPanel_.Children().Append(CreateCard(fields));
             displayEditors_.push_back(std::move(controls));
