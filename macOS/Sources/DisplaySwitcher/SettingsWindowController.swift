@@ -8,16 +8,6 @@ private extension Array {
     }
 }
 
-private extension NSColor {
-    func cgColor(using appearance: NSAppearance) -> CGColor {
-        var result = NSColor.clear.cgColor
-        appearance.performAsCurrentDrawingAppearance {
-            result = cgColor
-        }
-        return result
-    }
-}
-
 private final class DisplayInputMappingRowView: NSStackView {
     let inputField = NSTextField()
     private let titleLabel = NSTextField(wrappingLabelWithString: "")
@@ -81,50 +71,7 @@ private final class HoverTrackingView: NSView {
     }
 }
 
-private final class AppearanceBackgroundView: NSView {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override var wantsUpdateLayer: Bool {
-        true
-    }
-
-    override func updateLayer() {
-        layer?.backgroundColor = NSColor.controlBackgroundColor
-            .cgColor(using: effectiveAppearance)
-        layer?.cornerRadius = 12
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-    }
-}
-
-private class AppearancePageView: NSView {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-    }
-
-    required init?(coder: NSCoder) { nil }
-    override var wantsUpdateLayer: Bool { true }
-    override func updateLayer() {
-        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor(using: effectiveAppearance)
-    }
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-    }
-}
-
-private final class FlippedDocumentView: AppearancePageView {
+private final class FlippedDocumentView: SettingsPageBackgroundView {
     override var isFlipped: Bool { true }
 }
 
@@ -526,9 +473,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerCoordinationCheckbox.action = #selector(profileEnabledChanged(_:))
         usbAutomationCheckbox.target = self
         usbAutomationCheckbox.action = #selector(immediateSwitchChanged(_:))
-        for button in [addProfileButton, removeProfileButton, moveProfileUpButton, moveProfileDownButton] {
-            button.bezelStyle = .texturedRounded
-            button.controlSize = .small
+        for button in [
+            learnUSBButton,
+            requestLocalNetworkPermissionButton,
+            inspectProfileButton,
+            addProfileButton,
+            removeProfileButton,
+            moveProfileUpButton,
+            moveProfileDownButton,
+            refreshDisplaysButton,
+            refreshDiagnosticPreviewButton,
+            copyDiagnosticPreviewButton
+        ] {
+            SettingsActionButtonStyle.apply(to: button)
         }
         peerHostField.placeholderString = "IP 或主机名，例如 peer.example"
         peerPortField.placeholderString = "49731"
@@ -691,7 +648,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private func makePage(label: String, views: [NSView]) -> NSTabViewItem {
         let item = NSTabViewItem(identifier: label)
         item.label = label
-        let container = AppearancePageView()
+        let container = SettingsPageBackgroundView()
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -710,9 +667,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private func makeScrollablePage(label: String, views: [NSView]) -> NSTabViewItem {
         let item = NSTabViewItem(identifier: label)
         item.label = label
-        let scrollView = NSScrollView()
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .windowBackgroundColor
+        let scrollView = SettingsPageScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
@@ -739,9 +694,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private func makeDisplayPage() -> NSTabViewItem {
         let item = NSTabViewItem(identifier: "显示器")
         item.label = "显示器"
-        let scrollView = NSScrollView()
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .windowBackgroundColor
+        let scrollView = SettingsPageScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
 
@@ -817,7 +770,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         item.label = "关于"
         let content = AboutPageContent.make(metadata: Bundle.main)
 
-        let container = AppearancePageView()
+        let container = SettingsPageBackgroundView()
         let iconView = NSImageView(image: NSApplication.shared.applicationIconImage)
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.translatesAutoresizingMaskIntoConstraints = false
@@ -959,19 +912,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let heading = sectionTitle(title)
         let header: NSView
         if let headerAccessory {
-            let spacer = NSView()
-            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let spacer = makeFlexibleSpacer()
+            headerAccessory.setContentHuggingPriority(.required, for: .horizontal)
+            headerAccessory.setContentCompressionResistancePriority(.required, for: .horizontal)
             let headerRow = NSStackView(views: [heading, spacer, headerAccessory])
             headerRow.orientation = .horizontal
             headerRow.alignment = .centerY
             headerRow.spacing = 10
+            headerRow.distribution = .fill
             headerRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
             header = headerRow
         } else {
             header = heading
         }
-        let card = AppearanceBackgroundView()
+        let card = SettingsCardView()
         card.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSStackView(views: views)
@@ -1048,6 +1002,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func displayReadControls(index: Int, name: String) -> (button: NSButton, status: NSTextField) {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
+        SettingsActionButtonStyle.apply(to: readButton)
         readButton.tag = index
         readButton.setAccessibilityLabel("读取\(name) DDC 参数")
         let status = NSTextField(wrappingLabelWithString: "尚未读取")

@@ -11,9 +11,11 @@
 - 根因：USB 与协同页面仍沿用单个粗粒度卡片，自动切换、动态映射、网络检查和配置编辑混排；两页不是可滚动内容，3 台以上显示器容易挤压或溢出。
 - 实现：USB 固定为“自动切换 / 对端输入源 / 联动协同”三组；协同固定为“协同状态 / 当前配置 / 配置详情”三组。地址与端口、状态操作、联动目标与开关分别同行，动态映射以稳定显示器 ID 保持一台一行。
 - 实机反馈与根因：功能流程正常，但“添加配置”“学习”和联动开关仍贴左；原因是横向 helper 使用 `NSStackView` 默认 `.gravityAreas`，空 spacer 只有低 hugging 而不会扩展，带 accessory 的行还未插 spacer。现统一使用 `.fill`，分栏行插入最低 hugging 的弹性间隔，需填充的配置下拉框单独扩展，尾部控件保持 required hugging/compression 并贴齐卡片右缘。
+- 第二轮视觉根因：原卡片用 `controlBackgroundColor`、页面用 `windowBackgroundColor`，两者在浅色下近似且卡片没有语义边框/裁切，深色下圆角轮廓同样不可辨；配置按钮又单独设为 small/texturedRounded，与其他默认按钮分裂。
+- 第二轮实现：共享 `SettingsCardView`、`SettingsPageBackgroundView` 和 `SettingsPageScrollView` 统一使用动态系统语义色、separator 边框、连续圆角及裁切，appearance 变化时实时更新；共享 `SettingsActionButtonStyle` 统一普通动作按钮的 regular/rounded 样式和最小高度，module 标题附件也复用 trailing 对齐。
 - 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
 - 行为边界：只调整设置页信息架构与展示模型；即时保存、无效值回退、配置启用条件、USB 学习、v2 协同、DDC、网络和输入源行为均未修改。DS-023 详细诊断默认关闭、DS-024 托盘静态入口清理均未回退。
-- 自动验证：设置展示模型 18/18、完整 XCTest 164/164 通过。新增回归明确区分“弹性间隔分栏”和“左侧主控件扩展”语义；本轮完整测试一次通过。
+- 自动验证：设置展示/AppKit 契约 20/20、完整 XCTest 166/166 通过。测试直接实例化生产卡片和按钮组件，覆盖浅色/深色语义背景差异、圆角/裁切/边框和按钮样式幂等；本轮完整测试一次通过。
 - 构建验证：Release `./macOS/scripts/build-app.sh` 通过，使用默认 ad-hoc 签名；`codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 通过。
 - 待验证：窄窗口、0/1/2/3+ 台真实显示器、浅色/深色、键盘导航、VoiceOver 和实际配置编辑流程仍需 GUI 验收。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改协议、schema、版本、系统权限或签名配置。

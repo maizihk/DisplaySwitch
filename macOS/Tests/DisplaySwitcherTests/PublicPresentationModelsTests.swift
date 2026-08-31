@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 private final class RecordingAboutMetadata: AboutBundleMetadataSource {
@@ -15,6 +16,54 @@ private final class RecordingAboutMetadata: AboutBundleMetadataSource {
 }
 
 final class PublicPresentationModelsTests: XCTestCase {
+    func testSettingsCardUsesDynamicSemanticSurfaceAndRoundedClipping() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let card = SettingsCardView(frame: NSRect(x: 0, y: 0, width: 300, height: 120))
+        let page = SettingsPageBackgroundView(frame: card.frame)
+
+        card.appearance = light
+        page.appearance = light
+        card.updateLayer()
+        page.updateLayer()
+        let lightCard = card.layer?.backgroundColor?.components ?? []
+        let lightPage = page.layer?.backgroundColor?.components ?? []
+
+        XCTAssertEqual(card.layer?.cornerRadius, SettingsSurfaceStyle.cardCornerRadius)
+        XCTAssertEqual(card.layer?.borderWidth, SettingsSurfaceStyle.cardBorderWidth)
+        XCTAssertTrue(card.layer?.masksToBounds ?? false)
+        XCTAssertNotNil(card.layer?.borderColor)
+        XCTAssertNotEqual(lightCard, lightPage)
+
+        card.appearance = dark
+        page.appearance = dark
+        card.updateLayer()
+        page.updateLayer()
+        let darkCard = card.layer?.backgroundColor?.components ?? []
+        let darkPage = page.layer?.backgroundColor?.components ?? []
+
+        XCTAssertNotEqual(darkCard, darkPage)
+        XCTAssertNotEqual(lightCard, darkCard)
+    }
+
+    func testSettingsActionButtonStyleAppliesOneNativeRegularContract() {
+        let button = NSButton(title: "测试动作", target: nil, action: nil)
+        SettingsActionButtonStyle.apply(to: button)
+        SettingsActionButtonStyle.apply(to: button)
+
+        XCTAssertEqual(button.controlSize, SettingsActionButtonStyle.controlSize)
+        XCTAssertEqual(button.bezelStyle, SettingsActionButtonStyle.bezelStyle)
+        XCTAssertEqual(
+            button.constraints.filter { $0.identifier == "SettingsActionButton.minimumHeight" }.count,
+            1
+        )
+        XCTAssertTrue(button.constraints.contains {
+            $0.identifier == "SettingsActionButton.minimumHeight"
+                && $0.relation == .greaterThanOrEqual
+                && $0.constant == SettingsActionButtonStyle.minimumHeight
+        })
+    }
+
     func testLocalNetworkPermissionPresentationUsesFourConservativeStates() {
         let notChecked = LocalNetworkPermissionPresentation.make(for: .notChecked)
         let connected = LocalNetworkPermissionPresentation.make(for: .collaborationConnected)

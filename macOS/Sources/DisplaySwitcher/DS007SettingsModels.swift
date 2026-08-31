@@ -1,4 +1,101 @@
+import AppKit
 import Foundation
+
+extension NSColor {
+    func cgColor(using appearance: NSAppearance) -> CGColor {
+        var result = NSColor.clear.cgColor
+        appearance.performAsCurrentDrawingAppearance {
+            result = cgColor
+        }
+        return result
+    }
+}
+
+enum SettingsSurfaceStyle {
+    static let cardCornerRadius: CGFloat = 12
+    static let cardBorderWidth: CGFloat = 1
+}
+
+final class SettingsCardView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor(using: effectiveAppearance)
+        layer?.borderColor = NSColor.separatorColor.cgColor(using: effectiveAppearance)
+        layer?.borderWidth = SettingsSurfaceStyle.cardBorderWidth
+        layer?.cornerRadius = SettingsSurfaceStyle.cardCornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+class SettingsPageBackgroundView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor(using: effectiveAppearance)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+final class SettingsPageScrollView: NSScrollView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        drawsBackground = true
+        updateSemanticBackground()
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateSemanticBackground()
+    }
+
+    private func updateSemanticBackground() {
+        backgroundColor = .underPageBackgroundColor
+    }
+}
+
+enum SettingsActionButtonStyle {
+    static let controlSize: NSControl.ControlSize = .regular
+    static let bezelStyle: NSButton.BezelStyle = .rounded
+    static let minimumHeight: CGFloat = 28
+
+    static func apply(to button: NSButton) {
+        button.controlSize = controlSize
+        button.bezelStyle = bezelStyle
+        button.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        if !button.constraints.contains(where: { $0.identifier == "SettingsActionButton.minimumHeight" }) {
+            let height = button.heightAnchor.constraint(greaterThanOrEqualToConstant: minimumHeight)
+            height.identifier = "SettingsActionButton.minimumHeight"
+            height.isActive = true
+        }
+    }
+}
 
 enum CollaborationConnectionState: Equatable {
     case disabled
