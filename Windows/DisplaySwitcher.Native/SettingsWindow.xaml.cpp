@@ -273,10 +273,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbDeviceStatus_ = TextBlock(); usbDeviceStatus_.Opacity(0.72); usbDeviceStatus_.TextWrapping(TextWrapping::Wrap);
         linkAllDisplays_ = ToggleSwitch();
         autoStart_ = ToggleSwitch();
+        detailedDiagnostics_ = ToggleSwitch();
         usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         autoStart_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
+        detailedDiagnostics_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
         {
             if (loading_) return;
@@ -313,10 +315,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
         auto commonTab = TabViewItem(); commonTab.IsClosable(false); commonTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         commonTab.Header(CreateTabHeader(L"\uE713", L"常规"));
-        auto commonHint = TextBlock(); commonHint.Text(L"程序启动后常驻系统托盘，可在托盘菜单中打开设置或退出。");
-        commonHint.TextWrapping(TextWrapping::Wrap); commonHint.Opacity(0.72);
+        auto diagnosticsHint = TextBlock();
+        diagnosticsHint.Text(L"仅排障时开启；切换开关会清空已有详细记录。");
+        diagnosticsHint.TextWrapping(TextWrapping::Wrap); diagnosticsHint.Opacity(0.72);
         commonTab.Content(CreatePage({ CreateSection({
-            LabeledToggleRow(L"登录时启动", autoStart_), commonHint }) }));
+            LabeledToggleRow(L"登录时启动", autoStart_),
+            LabeledToggleRow(L"详细诊断记录", detailedDiagnostics_), diagnosticsHint }) }));
 
         auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习"));
         AutomationProperties::SetName(learnCurrentUsb, L"学习 USB 触发设备");
@@ -597,6 +601,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         RebuildDisplayEditors();
         RebuildProfileEditors();
         autoStart_.IsOn(config.startWithWindows);
+        detailedDiagnostics_.IsOn(config.detailedDiagnosticRecording);
         linkAllDisplays_.IsOn(config.linkAllDisplays);
         loading_ = false;
     }
@@ -944,9 +949,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 controls.volume, controls.volumeEnabled, controls.volumeShowInTray, 3);
 
             auto fields = StackPanel(); fields.Spacing(10);
+            auto header = Grid();
+            auto titleColumn = ColumnDefinition();
+            titleColumn.Width(GridLength{ 1, GridUnitType::Star });
+            header.ColumnDefinitions().Append(titleColumn);
+            auto actionColumn = ColumnDefinition();
+            actionColumn.Width(GridLengthHelper::Auto());
+            header.ColumnDefinitions().Append(actionColumn);
             auto displayTitle = TextBlock(); displayTitle.Text(display.name);
             displayTitle.FontSize(18); displayTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
-            fields.Children().Append(displayTitle); fields.Children().Append(read); fields.Children().Append(controlsGrid);
+            displayTitle.VerticalAlignment(VerticalAlignment::Center);
+            read.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(read, 1);
+            header.Children().Append(displayTitle);
+            header.Children().Append(read);
+            fields.Children().Append(header); fields.Children().Append(controlsGrid);
             fields.Children().Append(controls.status);
             displayEditorsPanel_.Children().Append(CreateCard(fields));
             displayEditors_.push_back(std::move(controls));
@@ -1331,17 +1348,17 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (first == result.items.end()) continue;
             auto failed = std::find_if(first, result.items.end(), [&](auto const& item)
             { return _wcsicmp(item.displayId.c_str(), editor.id.c_str()) == 0 && (!item.success || !item.trusted); });
-            if (failed != result.items.end())
-                editor.status.Text(failed->message.empty() ? L"硬件 DDC 暂时不可用或不支持" : failed->message);
-            else editor.status.Text(write ? L"硬件 DDC 写入成功" : L"硬件 DDC 回读成功");
+            editor.status.Text(::DisplaySwitcher::Native::DescribeBasicDdcResult(
+                failed != result.items.end() ? *failed : *first, write));
         }
         auto failures = std::count_if(result.items.begin(), result.items.end(), [](auto const& item) { return !item.success || !item.trusted; });
         if (result.items.empty()) ShowValidationError(L"未执行 DDC 操作：功能可能已关闭或显示器配置不完整。");
         else if (failures)
         {
             auto first = std::find_if(result.items.begin(), result.items.end(), [](auto const& item) { return !item.success || !item.trusted; });
-            ShowValidationError((write ? L"部分硬件 DDC 写入失败：" : L"部分硬件 DDC 读取失败：")
-                + (first->message.empty() ? L"后端暂时不可用或不支持该功能" : first->message));
+            ShowValidationError(first->error == ::DisplaySwitcher::Native::DdcErrorKind::AmbiguousMonitor
+                ? L"硬件 DDC 操作失败：显示器匹配不唯一。"
+                : (write ? L"部分硬件 DDC 写入失败。" : L"部分硬件 DDC 读取失败。"));
         }
         else
         {
@@ -1437,6 +1454,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         result.collaborationProfiles = workingProfiles_;
         for (auto& display : result.displays) display.macInput = -1;
         result.displayConfigurationSafeMode = false; result.startWithWindows = autoStart_.IsOn();
+        result.detailedDiagnosticRecording = detailedDiagnostics_.IsOn();
         if (!saved_ || !saved_(result))
         {
             ShowValidationError(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。");

@@ -42,6 +42,7 @@ namespace DisplaySwitcher::Native
 
     void Controller::Initialize()
     {
+        SetDetailedDiagnosticRecordingEnabled(Config().detailedDiagnosticRecording);
         ResetDiagnosticLog();
         std::weak_ptr<Controller> weak = shared_from_this();
         usbWatcher_ = std::make_unique<UsbWatcher>(-1, -1, [weak](bool present)
@@ -86,6 +87,7 @@ namespace DisplaySwitcher::Native
         sideEffectGate_.Block();
         trayDdcWrites_.CancelPending();
         auto config = Config();
+        SetDetailedDiagnosticRecordingEnabled(config.detailedDiagnosticRecording);
         if (!config.displayConfigurationSafeMode)
         {
             try
@@ -812,6 +814,7 @@ namespace DisplaySwitcher::Native
         snapshot.about = aboutInfo_;
         snapshot.schemaVersion = CurrentAppConfigSchemaVersion;
         snapshot.safeMode = config.displayConfigurationSafeMode || !sideEffectGate_.AllowsSideEffects();
+        snapshot.detailedRecordingEnabled = config.detailedDiagnosticRecording;
         auto now = NowMilliseconds();
         for (auto const& profile : config.collaborationProfiles)
         {
@@ -834,7 +837,7 @@ namespace DisplaySwitcher::Native
             snapshot.backend.writeSupported = true;
         }
         snapshot.displays = displayDiagnostics_->Snapshot(config.displays, &diagnosticAliases_);
-        snapshot.sessions = DiagnosticEventSnapshot();
+        if (snapshot.detailedRecordingEnabled) snapshot.sessions = DiagnosticEventSnapshot();
         return snapshot;
     }
 

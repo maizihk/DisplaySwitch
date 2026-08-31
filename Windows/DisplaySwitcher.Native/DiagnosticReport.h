@@ -51,6 +51,7 @@ namespace DisplaySwitcher::Native
         AboutInfo about;
         int schemaVersion{ CurrentAppConfigSchemaVersion };
         bool safeMode{};
+        bool detailedRecordingEnabled{};
         std::vector<DiagnosticProfileSummary> profiles;
         DiagnosticUsbSummary usb;
         DiagnosticBackendSummary backend;
@@ -60,6 +61,7 @@ namespace DisplaySwitcher::Native
 
     std::wstring BuildDiagnosticPreview(DiagnosticSnapshot const& snapshot);
     std::wstring DescribeDiagnosticOperation(DiagnosticDisplaySummary const& display);
+    std::wstring DescribeBasicDdcResult(DdcControlItemResult const& item, bool write);
 
     class IDiagnosticSnapshotProvider
     {
