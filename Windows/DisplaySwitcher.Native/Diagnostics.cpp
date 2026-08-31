@@ -5,6 +5,8 @@ namespace
 {
     std::mutex logMutex;
     std::vector<std::string> sessionEvents;
+    bool detailedRecordingEnabled{};
+    std::optional<std::filesystem::path> testLogPath;
     constexpr size_t MaximumSessionEvents = 64;
 
     bool SafeToken(std::string const& value, bool allowDot)
@@ -67,6 +69,7 @@ namespace
 
     std::filesystem::path LogPath()
     {
+        if (testLogPath) return *testLogPath;
         PWSTR localAppData{};
         if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &localAppData))) return {};
         std::filesystem::path path(localAppData);
@@ -85,14 +88,43 @@ namespace
             std::chrono::system_clock::now().time_since_epoch()).count();
         stream << "unix_ms=" << unixMilliseconds << " tick_ms=" << GetTickCount64() << " " << event << "\n";
     }
+
+    void ClearStoredLog()
+    {
+        auto path = LogPath();
+        if (path.empty()) return;
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) return;
+        {
+            std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+        }
+        std::filesystem::remove(path, error);
+    }
 }
 
 namespace DisplaySwitcher::Native
 {
+    void SetDetailedDiagnosticRecordingEnabled(bool enabled)
+    {
+        std::scoped_lock lock(logMutex);
+        if (detailedRecordingEnabled == enabled) return;
+        detailedRecordingEnabled = enabled;
+        sessionEvents.clear();
+        ClearStoredLog();
+    }
+
+    bool IsDetailedDiagnosticRecordingEnabled()
+    {
+        std::scoped_lock lock(logMutex);
+        return detailedRecordingEnabled;
+    }
+
     void ResetDiagnosticLog()
     {
         std::scoped_lock lock(logMutex);
         sessionEvents.clear();
+        ClearStoredLog();
+        if (!detailedRecordingEnabled) return;
         Remember("app.started");
         WriteLine(std::ios::trunc, "app.started");
     }
@@ -100,6 +132,7 @@ namespace DisplaySwitcher::Native
     void WriteDiagnostic(std::string const& event)
     {
         std::scoped_lock lock(logMutex);
+        if (!detailedRecordingEnabled) return;
         auto safe = Sanitize(event);
         Remember(safe);
         WriteLine(std::ios::app, safe);
@@ -108,8 +141,18 @@ namespace DisplaySwitcher::Native
     std::vector<std::string> DiagnosticEventSnapshot()
     {
         std::scoped_lock lock(logMutex);
+        if (!detailedRecordingEnabled) return {};
         return sessionEvents;
     }
 
     std::string SanitizeDiagnosticEvent(std::string const& event) { return Sanitize(event); }
+
+    void SetDiagnosticLogPathForTesting(std::optional<std::filesystem::path> path)
+    {
+        std::scoped_lock lock(logMutex);
+        sessionEvents.clear();
+        if (testLogPath) ClearStoredLog();
+        testLogPath = std::move(path);
+        if (testLogPath) ClearStoredLog();
+    }
 }

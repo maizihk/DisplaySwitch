@@ -332,6 +332,8 @@ namespace
         config.listenPort = RequiredInteger(object, L"ListenPort", 1, 65535);
         config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
         config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
+        config.detailedDiagnosticRecording = object.HasKey(L"DetailedDiagnosticRecording")
+            ? RequiredBoolean(object, L"DetailedDiagnosticRecording") : false;
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
         for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), false));
         auto usb = object.GetNamedObject(L"UsbSwitch");
@@ -425,6 +427,7 @@ namespace
         object.Insert(L"UsbSwitch", usb);
         object.Insert(L"LinkAllDisplays", JsonValue::CreateBooleanValue(config.linkAllDisplays));
         object.Insert(L"StartWithWindows", JsonValue::CreateBooleanValue(config.startWithWindows));
+        object.Insert(L"DetailedDiagnosticRecording", JsonValue::CreateBooleanValue(config.detailedDiagnosticRecording));
 
         JsonArray displayArray;
         for (auto const& display : config.displays)

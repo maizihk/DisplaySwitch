@@ -80,6 +80,13 @@ namespace DisplaySwitcher::Native
         return std::wstring(OperationKind(display.lastKind)) + L"：" + OperationState(display.lastState);
     }
 
+    std::wstring DescribeBasicDdcResult(DdcControlItemResult const& item, bool write)
+    {
+        if (item.success && item.trusted) return write ? L"硬件 DDC 写入成功" : L"硬件 DDC 回读成功";
+        if (item.error == DdcErrorKind::AmbiguousMonitor) return L"硬件 DDC 操作失败：显示器匹配不唯一";
+        return write ? L"硬件 DDC 写入失败" : L"硬件 DDC 读取失败";
+    }
+
     std::wstring BuildDiagnosticPreview(DiagnosticSnapshot const& snapshot)
     {
         std::wostringstream out;
@@ -89,6 +96,7 @@ namespace DisplaySwitcher::Native
             << L"架构：" << snapshot.about.architecture << L"\r\n"
             << L"协议：v2\r\n"
             << L"配置 schemaVersion：" << snapshot.schemaVersion << L"\r\n"
+            << L"detailed-recording=" << (snapshot.detailedRecordingEnabled ? L"true（开启）" : L"false（关闭）") << L"\r\n"
             << L"安全状态：" << (snapshot.safeMode ? L"已阻断副作用" : L"正常") << L"\r\n\r\n";
 
         out << L"协同配置：" << snapshot.profiles.size() << L"\r\n";
@@ -119,9 +127,13 @@ namespace DisplaySwitcher::Native
                 << L"，最后操作=" << DescribeDiagnosticOperation(display) << L"\r\n";
         }
 
-        out << L"\r\n会话内安全事件：" << snapshot.sessions.size() << L"\r\n";
-        for (size_t index = 0; index < snapshot.sessions.size(); ++index)
-            out << L"S" << index + 1 << L" / O" << index + 1 << L"：" << WidenSafeAscii(snapshot.sessions[index]) << L"\r\n";
+        out << L"\r\n会话内详细事件："
+            << (snapshot.detailedRecordingEnabled ? snapshot.sessions.size() : 0) << L"\r\n";
+        if (!snapshot.detailedRecordingEnabled)
+            out << L"详细记录已关闭；仅显示配置、能力和基本运行状态。\r\n";
+        else
+            for (size_t index = 0; index < snapshot.sessions.size(); ++index)
+                out << L"S" << index + 1 << L" / O" << index + 1 << L"：" << WidenSafeAscii(snapshot.sessions[index]) << L"\r\n";
         return out.str();
     }
 

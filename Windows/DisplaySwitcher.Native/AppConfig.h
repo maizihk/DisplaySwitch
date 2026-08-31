@@ -36,6 +36,7 @@ namespace DisplaySwitcher::Native
         int listenPort{ 49731 };
         std::vector<CollaborationProfile> collaborationProfiles;
         bool startWithWindows{ false };
+        bool detailedDiagnosticRecording{ false };
         bool displayConfigurationSafeMode{ false };
 
         bool HasUsbDeviceConfiguration() const noexcept;

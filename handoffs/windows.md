@@ -1,18 +1,24 @@
 # Windows 交接记录
 
-## 当前状态：DS-021 发布准备事实同步
+## 当前任务：Windows 按需详细诊断记录
 
 - 日期：2026-08-31
-- 分支：`codex/docs-ds-021-release-readiness`
-- 基线：`origin/main@ee6bc5bacc582841351c4b89b23ae842151a21cc`
-- PR：[#61](https://github.com/maizihk/DisplaySwitch/pull/61)
-- 范围：仅公共兼容性、清单与交接文档；不修改 Windows 运行时、协议、schema、合约、workflow、版本或硬件状态。
+- 分支：`codex/windows-detailed-diagnostics`
+- 最新主线基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`，通过普通 merge 合入；未 rebase、reset 或丢弃原提交。
+- 主线同步 merge 提交：`dbcce044c97315858869d7840523fb2f776da0cd`；冲突仅位于 Windows 清单与本交接文件，解决时同时保留 PR #54/#60 已合并及用户验收、DS-021 发布准备、新增按需详细记录待验收状态和既有实机边界。
+- 实现提交：`78d55050a4d775f961b86f5d135cea30ce930c06`
+- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，目标改为 `main` 后保持 open，等待 Windows CI 与实机 GUI 验收。
+- 范围：按需详细诊断记录及其本机设置、测试和 Windows 文档；不修改协议、schemaVersion、版本、workflow、tag 或 Release。
+
+## 已合并基线与发布准备事实
+
 - 主线集成：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) 已合并为 `e14ae6ea6d381dd31097406d7d735f41ec9a2699`，PR [#60](https://github.com/maizihk/DisplaySwitch/pull/60) 已合并为 `3a22c66afdb4838040e2fdc5d122ed955337bb13`。
 - CI：Windows runs `33366897393`、`33367712427` 均通过构建、自动测试、dist 验证和 artifact 上传。
 - 用户验收：最终 Windows 测试包、诊断页和真实局域网协同检测通过，单击检测不再卡死。
+- DS-021：PR [#61](https://github.com/maizihk/DisplaySwitch/pull/61) 已完成原生-only、v2-only、六页诊断和未签名绿色测试包的发布准备事实同步。
 - 剩余边界：休眠恢复、热插拔、接口切换、高 DPI/辅助功能和清单中明确保留的未覆盖 DDC 场景。
 
-## 上一任务：W-005 文档与诊断安全、W-203 诊断页面
+## W-005 / W-203 诊断实现历史
 
 - 日期：2026-08-31
 - 功能：W-005 文档与诊断安全、W-203 诊断页面与脱敏日志
@@ -33,36 +39,45 @@
 - 评审发现 `DisplayOperationTracker::RecordBatch` 曾逐项覆盖同一显示器状态，导致亮度失败后对比度/音量成功可能误报整批成功；现在先按目标显示器聚合，只有全部请求项成功且可信才记录成功，失败、不可信和歧义均安全保留。
 - 在线运行态仍按 6 秒窗口从 `v2PeerLastSeenMs_` 失效，但诊断改用独立的会话跟踪器保存最后合法心跳事实，因此会稳定显示 `Never -> Recent -> Expired`；profile/endpoint/地址/端口/认证身份变化、配置删除、安全会话或应用会话重置会清除旧状态，报告不含身份和原始时间。
 - 诊断预览正式边界改为 `IDiagnosticSnapshotProvider`：WinUI 预览模型只持有 `ReadSnapshot()`，不能访问 UDP、USB、wake、DDC 或 input-source 接口；刷新调用注入 provider，复制只返回当前可见文本。
+- 原详细事件入口无条件写入会话内存和本机 `diagnostic.log`，即使用户没有排障需求也会在启动时创建记录。现在 schema v5 增加可选的本机 `DetailedDiagnosticRecording` 设置，缺失时严格默认为关闭，不修改 schemaVersion。
+- “常规”页新增即时保存的“详细诊断记录”。所有 DDC/输入源、USB 与协同网络详细入口最终汇入同一锁内硬门控；关闭时既不保留内存事件也不创建日志文件，任意方向切换都会清空旧内存和旧文件。
+- 诊断预览关闭详细记录时仍显示配置、能力、连接和 DDC 基本状态，并明确输出 `detailed-recording=false`；显示器页不再投影后端原始 message，只显示读取/写入成功、失败或匹配歧义。
 
 ## 修改范围
 
 - `Windows/DisplaySwitcher.Native/DiagnosticReport.*`：纯诊断快照、严格输出格式、预览模型和显示器操作状态生命周期。
 - `Windows/DisplaySwitcher.Native/Diagnostics.*`：日志白名单清洗与有界会话安全事件快照。
+- `Windows/DisplaySwitcher.Native/AppConfig.*`、`Controller.cpp`：持久化默认关闭的本机开关，在启动及配置成功应用后同步记录门控。
 - `Windows/DisplaySwitcher.Native/Controller.*`、`SystemActions.*`：从现有内存状态投影诊断，并在既有 DDC/输入源完成点记录匿名操作结果。
 - `Windows/DisplaySwitcher.Native/SettingsWindow.*`：新增只读诊断页、刷新预览和同文复制；显示器卡片复用会话内最后操作状态。
-- `Windows/DisplaySwitcher.Tests/Tests.cpp` 与工程文件：隐私注入、零副作用、同文复制、D1/D2/D3 状态、重枚举、generation、重排和歧义测试。
+- `Windows/DisplaySwitcher.Tests/Tests.cpp`：增加默认关闭、旧 v5 缺失字段、持久化、四类入口零记录、开启后记录、双向切换清空、关闭预览不泄漏和简明 DDC 文案测试；保留既有隐私及状态生命周期回归。
 - `Windows/README.md`、`Windows/DEVELOPMENT_CHECKLIST.md` 与本交接文件。
 
 ## 自动验证
 
-- `Windows/build-windows.ps1` x64 Release 已编译原生应用、绿色版启动器与测试，并真实运行完整 `DisplaySwitcher.Tests.exe`；共通过 236 项检查。
+- `Windows/build-windows.ps1` x64 Release 已编译原生应用、绿色版启动器与测试，并真实运行完整 `DisplaySwitcher.Tests.exe`；共通过 246 项检查。
+- 合入 `origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9` 后重新完成同一套验证：仍为 246 项检查全过，dist 共 9 个文件、1,824,709 字节，入口及 `runtime/` 完整，敏感信息扫描无命中。
+- 新测试使用临时配置与临时日志路径，证明新安装和缺字段旧配置默认关闭、设置可跨重启回读、关闭时 DDC/输入源/USB/协同网络入口零内存及零文件记录、开启后仅记录后续事件、任意切换清空旧轨迹。
+- 关闭状态的诊断投影即使收到人为注入的旧 sessions 也强制显示 0 且不输出事件；注入含 HANDLE、HRESULT、attempt、checksum 与 transport 的 DDC 错误后，用户界面投影仍只有简明“读取失败”。
 - W-005/W-203 测试向报告注入私网地址、密码、endpoint、合成 Windows 路径、显示器/USB 标识和设备名称，确认全部不存在，同时保留安全状态和匿名编号。
 - 可注入 snapshot provider 测试确认刷新只调用 `ReadSnapshot()`，复制不再次读取且文本逐字一致；该纯投影边界不暴露网络、USB、唤醒、DDC 枚举/读写或输入源接口。
 - DDC 批处理测试覆盖亮度失败后对比度/音量成功、不可信估计值和歧义优先级，最终状态分别保持失败/失败/歧义，不再误报 `读取：成功`。
 - 模拟时钟覆盖心跳 `Never -> Recent -> Expired`，并验证同一身份重新应用保留 Expired，认证身份/endpoint 变化、配置删除和会话重置安全清除。
 - D1、D2、D3 依次成功、相同绑定重枚举、同型号/重排、绑定及 generation 变化和歧义隔离均通过。
 - 既有 DS-004、DS-005、DS-007、DS-008、DS-009、DS-012、DS-013 回归通过；v2 公共向量为 1 条规范化、4 条认证、20 条消息、6 条状态机；USB-001 至 USB-016 全部通过。
-- dist 绿色版为 framework-dependent，完整目录 1,820,613 字节（1.74 MiB）。未签名测试 ZIP 为 `DisplaySwitch-Windows-x64-unsigned-framework-dependent-PR60.zip`，849,286 字节，SHA-256 `C8870D61F791880C7A5792C862A71CF1FC7A36349C33695B2F9C89131111F575`。
+- dist 绿色版为 framework-dependent，构建脚本报告 1.74 MiB。未签名测试 ZIP 为 `Windows/outputs/DisplaySwitch-Windows-x64-unsigned-framework-dependent-detailed-diagnostics.zip`，850,734 字节，SHA-256 `05490C752161DF8FB7288F34823FE31D551014F38DB8EEA382B01635B69D7DD9`。
 - Release 编译启用基于 MSBuild 变量的路径映射；对 dist 扫描确认没有配置/日志、测试秘密、当前 Windows 用户目录或仓库绝对路径。
 - NuGet 漏洞索引在受限网络下产生 NU1900 警告；缓存依赖还原、编译、链接、测试和产物检查均成功。
 
 ## 实机验收与剩余边界
 
 - 用户已确认最终测试包的诊断标签、刷新/复制、多显示器状态和真实局域网检测可用，单击检测不再导致程序卡死。
+- PR #65 新增“详细诊断记录”开关的即时保存、重启保持、双向切换后的预览内容和旧日志清理仍需实机 GUI 验证。
 - 休眠恢复、热插拔、接口切换和常见高 DPI/辅助功能仍需专项实机验证。
-- 本轮文档同步不执行新的网络、USB、DDC、唤醒、输入源或系统设置操作。
+- 本轮合并、构建和自动测试不执行新的真实网络、USB、DDC、唤醒、输入源或系统设置操作。
 
 ## 范围
 
 - 只修改 `Windows/` 和 `handoffs/windows.md`；未修改 macOS、共享协议/提案/合约、GitHub Actions、版本号、tag 或 Release。
 - 实现已通过 PR #54、#60 集成到 `main`；正式安装器、商业签名、tag 和 Release 仍不在本任务范围。
+- PR #65 只承载新的按需详细诊断增量；最终 merge SHA、CI 和工作区状态以交付报告为准。

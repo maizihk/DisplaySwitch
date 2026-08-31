@@ -172,6 +172,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
+        Microsoft::UI::Xaml::Controls::ToggleSwitch detailedDiagnostics_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox diagnosticPreview_{ nullptr };
         ::DisplaySwitcher::Native::DiagnosticPreviewModel diagnosticPreviewModel_;
         bool initialized_{};
