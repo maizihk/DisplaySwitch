@@ -266,7 +266,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let usbMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let profileMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let peerTriggerDeviceStatusLabel = NSTextField(wrappingLabelWithString: "未引用本机触发设备")
-    private let peerSaveStatusLabel = NSTextField(labelWithString: "修改会自动保存")
+    private let peerSaveStatusIconView = NSImageView()
+    private let peerSaveStatusLabel = NSTextField(labelWithString: SettingsSaveStatusPresentation.saved.text)
+    private let peerSaveStatusRow = NSStackView()
     private lazy var learnUSBButton = NSButton(title: "学习", target: self, action: #selector(learnUSBDevice))
     private var inputFields: [String: NSTextField] = [:]
     private var profileMappingRows: [String: DisplayInputMappingRowView] = [:]
@@ -519,8 +521,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         localNetworkPermissionDetailLabel.font = .systemFont(ofSize: 11)
         localNetworkPermissionDetailLabel.textColor = .secondaryLabelColor
         peerSaveStatusLabel.font = .systemFont(ofSize: 11)
-        peerSaveStatusLabel.textColor = .secondaryLabelColor
-        peerSaveStatusLabel.setAccessibilityLabel("协同配置保存状态")
+        peerSaveStatusLabel.setAccessibilityLabel(SettingsSaveStatusPresentation.saved.accessibilityLabel)
+        peerSaveStatusIconView.translatesAutoresizingMaskIntoConstraints = false
+        peerSaveStatusIconView.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        peerSaveStatusIconView.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        peerSaveStatusRow.orientation = .horizontal
+        peerSaveStatusRow.alignment = .centerY
+        peerSaveStatusRow.spacing = 5
+        peerSaveStatusRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
+        peerSaveStatusRow.setViews([peerSaveStatusIconView, peerSaveStatusLabel], in: .center)
+        peerSaveStatusRow.setAccessibilityElement(true)
+        updatePeerSaveStatus(.saved)
 
         let usbDeviceRow = labeledControlRow(
             title: "触发设备", control: usbDeviceLabel, accessory: learnUSBButton
@@ -546,11 +557,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         )
         let peerAddressRow = addressAndPortRow()
         let pairingRow = labeledControlRow(title: "配对密码", control: pairingCodeField)
-        let profileActions = horizontalActionRow(
-            primary: removeProfileButton,
-            actions: [],
-            trailing: peerSaveStatusLabel
-        )
+        let profileActions = horizontalActionRow(primary: removeProfileButton, actions: [])
 
         requestLocalNetworkPermissionButton.setContentHuggingPriority(.required, for: .horizontal)
         tabView.addTabViewItem(makeScrollablePage(label: "USB 切换", views: [
@@ -598,7 +605,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 peerTriggerDeviceStatusLabel,
                 separator(),
                 profileActions
-            ])
+            ]),
+            peerSaveStatusRow
         ]))
 
         displayStack.orientation = .vertical
@@ -1362,7 +1370,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let didSave = persistDocument { value in
             value.collaborationProfiles[self.selectedProfileIndex] = decision.profile
         }
-        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
+        updatePeerSaveStatus(didSave ? .saved : .failedRestored)
         if didSave, decision.disabledBecauseIncomplete {
             showValidationError("配置不完整，已自动停用并保存当前输入。请补全所有字段后重新启用。")
         }
@@ -1379,15 +1387,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             clearValidationError()
             onSave?()
             reloadValues(rebuildDisplayForms: false)
+            updatePeerSaveStatus(.saved)
             return true
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
+            updatePeerSaveStatus(.failedRestored)
             showValidationError("设置未保存，已恢复最后有效值：\n\(error.localizedDescription)")
             return false
         } catch {
             onConfigurationSaveFailure?(.writeFailed)
             reloadValues()
+            updatePeerSaveStatus(.failedRestored)
             showValidationError("设置未保存，已恢复最后有效值。")
             return false
         }
@@ -1568,7 +1579,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerTriggerDeviceStatusLabel.stringValue = profile.triggerDevices.isEmpty
             ? "未引用本机触发设备"
             : "已引用 \(profile.triggerDevices.count) 个本机触发设备"
-        updatePeerSaveStatus("修改会自动保存", isError: false)
+        updatePeerSaveStatus(.saved)
         rebuildProfileMappings(profile: profile)
     }
 
@@ -1601,9 +1612,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         inputFields = reconciled.mapValues(\.inputField)
     }
 
-    private func updatePeerSaveStatus(_ text: String, isError: Bool) {
-        peerSaveStatusLabel.stringValue = text
-        peerSaveStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    private func updatePeerSaveStatus(_ presentation: SettingsSaveStatusPresentation) {
+        peerSaveStatusLabel.stringValue = presentation.text
+        peerSaveStatusLabel.textColor = nsColor(for: presentation.textColor)
+        peerSaveStatusIconView.image = NSImage(
+            systemSymbolName: presentation.symbolName,
+            accessibilityDescription: presentation.text
+        )
+        peerSaveStatusIconView.contentTintColor = nsColor(for: presentation.iconColor)
+        peerSaveStatusRow.setAccessibilityLabel(presentation.accessibilityLabel)
+        peerSaveStatusRow.setAccessibilityValue(presentation.accessibilityValue)
+    }
+
+    private func nsColor(for role: SettingsSaveStatusColorRole) -> NSColor {
+        switch role {
+        case .secondary: return .secondaryLabelColor
+        case .systemRed: return .systemRed
+        }
     }
 
     private func replaceMappingRows(in stack: NSStackView, rows: [DisplayInputMappingRowView]) {
@@ -1631,7 +1656,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             displayInputs: [], triggerDevices: []))
         selectedProfileIndex = editingProfiles.count - 1
         let didSave = persistDocument { $0.collaborationProfiles = self.editingProfiles }
-        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
+        updatePeerSaveStatus(didSave ? .saved : .failedRestored)
     }
 
     @objc private func removeProfile() {
@@ -1652,7 +1677,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 $0.usbSwitch.collaborationWakeEnabled = false
             }
         }
-        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
+        updatePeerSaveStatus(didSave ? .saved : .failedRestored)
     }
 
     @objc private func inspectCurrentProfile() {
@@ -1730,9 +1755,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 self.editingProfiles[current].peerEndpointID = endpointID.lowercased()
                 self.editingProfiles[current].peerProtocolVersion = 2
                 let didSave = self.persistDocument { $0.collaborationProfiles = self.editingProfiles }
-                self.updatePeerSaveStatus(
-                    didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave
-                )
+                self.updatePeerSaveStatus(didSave ? .saved : .failedRestored)
             }
         case .authenticationFailed:
             peerStatusLabel.stringValue = "\(profile.name)：认证失败"

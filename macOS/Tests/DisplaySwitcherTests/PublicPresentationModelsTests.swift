@@ -405,13 +405,49 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(layout.groups[2].rows.contains {
             $0.id == "collaboration-delete" && $0.action == .deleteCollaborationProfile && $0.isEnabled
         })
-        XCTAssertTrue(layout.groups[2].rows.contains {
-            $0.id == "collaboration-save-status" && $0.isVisible
+        XCTAssertFalse(layout.groups[2].rows.contains {
+            $0.id == SettingsSaveStatusPresentation.rowID
         })
+        XCTAssertEqual(layout.footerRows.filter {
+            $0.id == SettingsSaveStatusPresentation.rowID && $0.isVisible
+        }.count, 1)
         XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-up" })
         XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-down" })
         XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "上移配置" })
         XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "下移配置" })
+    }
+
+    func testCollaborationSaveStatusIsSingleBottomFooterWithSemanticPresentation() {
+        XCTAssertTrue(SettingsSaveStatusPresentation.isBottomFooter)
+        XCTAssertFalse(SettingsSaveStatusPresentation.isInDetailsCard)
+
+        let saved = SettingsSaveStatusPresentation.saved
+        XCTAssertEqual(saved.text, "已保存")
+        XCTAssertEqual(saved.symbolName, "checkmark.circle.fill")
+        XCTAssertEqual(saved.textColor, .secondary)
+        XCTAssertEqual(saved.iconColor, .secondary)
+        XCTAssertEqual(saved.accessibilityLabel, "协同配置保存状态")
+        XCTAssertEqual(saved.accessibilityValue, "已保存")
+
+        let failed = SettingsSaveStatusPresentation.failedRestored
+        XCTAssertEqual(failed.text, "保存失败，已恢复")
+        XCTAssertEqual(failed.symbolName, "exclamationmark.circle.fill")
+        XCTAssertEqual(failed.textColor, .systemRed)
+        XCTAssertEqual(failed.iconColor, .systemRed)
+        XCTAssertEqual(failed.accessibilityLabel, "协同配置保存状态")
+        XCTAssertEqual(failed.accessibilityValue, "保存失败，已恢复")
+
+        let layout = SettingsPageLayoutProjection.collaboration(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            hasSelectedProfile: true,
+            profileCount: 1,
+            selectedProfileIndex: 0,
+            inspectionInProgress: false
+        )
+        XCTAssertEqual(layout.footerRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertFalse(layout.groups.flatMap(\.rows).contains {
+            $0.id == SettingsSaveStatusPresentation.rowID
+        })
     }
 
     func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {

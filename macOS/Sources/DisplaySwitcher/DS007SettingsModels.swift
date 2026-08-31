@@ -337,6 +337,47 @@ struct SettingsMappingListLayout: Equatable {
     }
 }
 
+enum SettingsSaveStatusColorRole: Equatable {
+    case secondary
+    case systemRed
+}
+
+struct SettingsSaveStatusPresentation: Equatable {
+    let text: String
+    let symbolName: String
+    let textColor: SettingsSaveStatusColorRole
+    let iconColor: SettingsSaveStatusColorRole
+    let accessibilityLabel: String
+    let accessibilityValue: String
+
+    static let rowID = "collaboration-save-status"
+    static let rowTitle = "即时保存状态"
+    static let isBottomFooter = true
+    static let isInDetailsCard = false
+
+    static var saved: SettingsSaveStatusPresentation {
+        SettingsSaveStatusPresentation(
+            text: "已保存",
+            symbolName: "checkmark.circle.fill",
+            textColor: .secondary,
+            iconColor: .secondary,
+            accessibilityLabel: "协同配置保存状态",
+            accessibilityValue: "已保存"
+        )
+    }
+
+    static var failedRestored: SettingsSaveStatusPresentation {
+        SettingsSaveStatusPresentation(
+            text: "保存失败，已恢复",
+            symbolName: "exclamationmark.circle.fill",
+            textColor: .systemRed,
+            iconColor: .systemRed,
+            accessibilityLabel: "协同配置保存状态",
+            accessibilityValue: "保存失败，已恢复"
+        )
+    }
+}
+
 enum SettingsHorizontalRowAlignment: Equatable {
     case splitByFlexibleGap
     case expandingLeadingControl
@@ -383,6 +424,12 @@ struct SettingsPageLayoutProjection: Equatable {
     }
 
     let groups: [Group]
+    let footerRows: [Row]
+
+    init(groups: [Group], footerRows: [Row] = []) {
+        self.groups = groups
+        self.footerRows = footerRows
+    }
 
     static func usb(
         displays: [DisplayConfigurationV4Display],
@@ -455,9 +502,7 @@ struct SettingsPageLayoutProjection: Equatable {
                 isVisible: hasSelectedProfile, isEnabled: false),
             Row(id: "collaboration-delete", title: "删除配置",
                 action: .deleteCollaborationProfile,
-                isVisible: hasSelectedProfile, isEnabled: profileCount > 1),
-            Row(id: "collaboration-save-status", title: "即时保存状态", action: nil,
-                isVisible: hasSelectedProfile, isEnabled: false)
+                isVisible: hasSelectedProfile, isEnabled: profileCount > 1)
         ]
         return SettingsPageLayoutProjection(groups: [
             Group(id: .collaborationStatus, rows: [
@@ -478,6 +523,10 @@ struct SettingsPageLayoutProjection: Equatable {
                     action: .addCollaborationProfile, isVisible: true, isEnabled: true)
             ]),
             Group(id: .collaborationDetails, rows: details)
+        ], footerRows: [
+            Row(id: SettingsSaveStatusPresentation.rowID,
+                title: SettingsSaveStatusPresentation.rowTitle, action: nil,
+                isVisible: hasSelectedProfile, isEnabled: false)
         ])
     }
 }
