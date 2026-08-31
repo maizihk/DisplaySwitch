@@ -5,6 +5,7 @@
 - 日期：2026-08-31
 - 分支：`codex/docs-ds-021-release-readiness`
 - 基线：`origin/main@ee6bc5bacc582841351c4b89b23ae842151a21cc`
+- PR：[#61](https://github.com/maizihk/DisplaySwitch/pull/61)
 - 范围：仅公共兼容性、清单与交接文档；不修改 macOS 运行时、协议、schema、合约、workflow、版本或硬件状态。
 - 主线集成：PR [#59](https://github.com/maizihk/DisplaySwitch/pull/59) 已合并为 `ee6bc5bacc582841351c4b89b23ae842151a21cc`；macOS run `33316481986` 全绿。
 - 用户验收：三台显示器诊断状态均保留成功；内建 HDMI、直连 C2DP、扩展坞 HDMI 读取通过；C2DP 诊断样本 3/3，C2C 2/3。

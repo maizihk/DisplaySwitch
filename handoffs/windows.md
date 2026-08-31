@@ -5,6 +5,7 @@
 - 日期：2026-08-31
 - 分支：`codex/docs-ds-021-release-readiness`
 - 基线：`origin/main@ee6bc5bacc582841351c4b89b23ae842151a21cc`
+- PR：[#61](https://github.com/maizihk/DisplaySwitch/pull/61)
 - 范围：仅公共兼容性、清单与交接文档；不修改 Windows 运行时、协议、schema、合约、workflow、版本或硬件状态。
 - 主线集成：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) 已合并为 `e14ae6ea6d381dd31097406d7d735f41ec9a2699`，PR [#60](https://github.com/maizihk/DisplaySwitch/pull/60) 已合并为 `3a22c66afdb4838040e2fdc5d122ed955337bb13`。
 - CI：Windows runs `33366897393`、`33367712427` 均通过构建、自动测试、dist 验证和 artifact 上传。
