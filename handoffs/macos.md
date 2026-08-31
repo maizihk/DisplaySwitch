@@ -9,6 +9,7 @@
 - 横向对齐修复提交：`10a3aa94d07b773575e29f127371b50236f85424`。
 - 视觉样式修复提交：`c08bcbb29aa4685abf3e14e31b04e7cfa9d7100b`。
 - 双背景画布修复提交：`3d42c4d01b0c08adae447cae2806061d1cadd759`。
+- 显示器控制顶部横线修复提交：本任务提交。
 - PR：[#67](https://github.com/maizihk/DisplaySwitch/pull/67)，目标为 `codex/macos-tray-empty-group`，保持开放等待 GUI 验收；前置依赖仍为 PR #62 → #63 → #64。
 - 根因：USB 与协同页面仍沿用单个粗粒度卡片，自动切换、动态映射、网络检查和配置编辑混排；两页不是可滚动内容，3 台以上显示器容易挤压或溢出。
 - 实现：USB 固定为“自动切换 / 对端输入源 / 联动协同”三组；协同固定为“协同状态 / 当前配置 / 配置详情”三组。地址与端口、状态操作、联动目标与开关分别同行，动态映射以稳定显示器 ID 保持一台一行。
@@ -17,10 +18,12 @@
 - 第二轮实现：共享 `SettingsCardView`、`SettingsPageBackgroundView` 和 `SettingsPageScrollView` 统一使用动态系统语义色、separator 边框、连续圆角及裁切，appearance 变化时实时更新；共享 `SettingsActionButtonStyle` 统一普通动作按钮的 regular/rounded 样式和最小高度，module 标题附件也复用 trailing 对齐。
 - 第三轮视觉根因：窗口内容区和标签页内 page/scroll/document 同时绘制不同语义背景，tabView 四边留白处暴露外层颜色，页面内部又出现直角大矩形；卡片层本身是预期模块层，不应删除。
 - 第三轮实现：窗口背景统一为 `underPageBackgroundColor`；普通页、USB、协同、显示器、诊断和关于页的 page/scroll/document 只作为透明承载层，不再绘制第二块画布；卡片继续使用 `controlBackgroundColor`、separator 边框、连续圆角和裁切。
+- 第四轮视觉根因：`makeDisplayPage()` 和显示器重建路径把“显示器控制”的标题与刷新按钮放在 module header，而内容首项仍是 `separator()`，所以卡片正文最上方出现一条没有分隔语义的孤立横线。
+- 第四轮实现：仅删除“显示器控制”卡片开头的分隔线，改为生产展示模型声明该卡片内容从联动开关开始；每台显示器卡片仍保留读取状态与具体控制项之间的有效分隔线，未全局改动 `separator()`。
 - 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
 - 行为边界：只调整设置页信息架构与展示模型；即时保存、无效值回退、配置启用条件、USB 学习、v2 协同、DDC、网络和输入源行为均未修改。DS-023 详细诊断默认关闭、DS-024 托盘静态入口清理均未回退。
-- 自动验证：设置展示/AppKit 契约 22/22、完整 XCTest 168/168 通过。测试直接实例化生产卡片、页面容器、滚动承载层和按钮组件，覆盖浅色/深色唯一画布、透明 page/scroll/document、圆角/裁切/边框和按钮样式幂等；本轮完整测试一次通过。
-- 构建验证：Release `./macOS/scripts/build-app.sh` 通过，使用默认 ad-hoc 签名；`codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 通过。
+- 自动验证：设置展示/AppKit 契约 24/24、完整 XCTest 170/170 通过。测试直接实例化生产卡片、页面容器、滚动承载层和按钮组件，覆盖浅色/深色唯一画布、透明 page/scroll/document、圆角/裁切/边框、按钮样式幂等、显示器控制卡片不以分隔线开头，以及每台显示器读取模块继续保留有效分隔线。
+- 构建验证：Debug `xcodebuild` 通过；Release `xcodebuild` 通过；Release `./macOS/scripts/build-app.sh` 通过，使用默认 ad-hoc 签名；`codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 通过。
 - 待验证：窄窗口、0/1/2/3+ 台真实显示器、浅色/深色、键盘导航、VoiceOver 和实际配置编辑流程仍需 GUI 验收。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改协议、schema、版本、系统权限或签名配置。
 

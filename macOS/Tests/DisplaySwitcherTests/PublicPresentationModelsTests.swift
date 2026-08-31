@@ -164,6 +164,17 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(DisplayStatusLayout.maximumNumberOfLines, 1)
     }
 
+    func testDisplayControlModuleDoesNotStartWithLeadingSeparator() {
+        XCTAssertEqual(DisplayControlModuleContent.items.first, .linkAllDisplays)
+        XCTAssertFalse(DisplayControlModuleContent.items.contains(.separator))
+    }
+
+    func testDisplayReadModuleKeepsItsMeaningfulSeparator() {
+        XCTAssertEqual(DisplayReadModuleContent.items, [
+            .displayReadStatus, .separator, .displayControls
+        ])
+    }
+
     func testC023AboutPageUsesOnlyPublicMetadataAndHasNoRuntimeSideEffectDependencies() {
         let metadata = RecordingAboutMetadata(values: [
             "CFBundleName": "DisplaySwitcher",

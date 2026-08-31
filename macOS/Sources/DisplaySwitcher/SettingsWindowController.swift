@@ -705,15 +705,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayStack.translatesAutoresizingMaskIntoConstraints = false
         documentView.addSubview(displayStack)
         scrollView.documentView = documentView
-        displayStack.addArrangedSubview(module(title: "显示器控制", headerAccessory: refreshDisplaysButton, views: [
-            separator(),
-            switchRow(
-                button: linkedCheckbox,
-                title: "联动调节所有显示器",
-                description: "只联动同时开启相同控制项的显示器。",
-                symbolName: "link"
-            )
-        ]))
+        displayStack.addArrangedSubview(module(
+            title: "显示器控制",
+            headerAccessory: refreshDisplaysButton,
+            views: displayControlModuleViews()
+        ))
         NSLayoutConstraint.activate([
             documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
             displayStack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 18),
@@ -882,18 +878,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
 
-        displayStack.addArrangedSubview(module(title: "显示器控制", headerAccessory: refreshDisplaysButton, views: [
-            separator(),
-            switchRow(button: linkedCheckbox, title: "联动调节所有显示器",
-                      description: "只联动同时开启相同控制项的显示器。", symbolName: "link")
-        ]))
+        displayStack.addArrangedSubview(module(
+            title: "显示器控制",
+            headerAccessory: refreshDisplaysButton,
+            views: displayControlModuleViews()
+        ))
 
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
             let readControls = displayReadControls(index: configuration.index, name: configuration.name)
             displayStack.addArrangedSubview(module(
                 title: configuration.name,
                 headerAccessory: readControls.button,
-                views: [readControls.status, separator(), displayForm(index: configuration.index)]
+                views: displayReadModuleViews(index: configuration.index, status: readControls.status)
             ))
         }
 
@@ -947,6 +943,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         wrapper.alignment = .leading
         wrapper.spacing = 8
         return wrapper
+    }
+
+    private func displayControlModuleViews() -> [NSView] {
+        DisplayControlModuleContent.items.compactMap { item in
+            switch item {
+            case .separator:
+                return separator()
+            case .linkAllDisplays:
+                return switchRow(
+                    button: linkedCheckbox,
+                    title: "联动调节所有显示器",
+                    description: "只联动同时开启相同控制项的显示器。",
+                    symbolName: "link"
+                )
+            case .displayReadStatus, .displayControls:
+                return nil
+            }
+        }
+    }
+
+    private func displayReadModuleViews(index: Int, status: NSView) -> [NSView] {
+        DisplayReadModuleContent.items.compactMap { item in
+            switch item {
+            case .displayReadStatus:
+                return status
+            case .separator:
+                return separator()
+            case .displayControls:
+                return displayForm(index: index)
+            case .linkAllDisplays:
+                return nil
+            }
+        }
     }
 
     private func switchRow(

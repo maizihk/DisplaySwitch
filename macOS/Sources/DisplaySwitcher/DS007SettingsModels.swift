@@ -277,6 +277,21 @@ enum DisplayStatusLayout {
     static let maximumNumberOfLines = 1
 }
 
+enum SettingsModuleContentItem: Equatable {
+    case separator
+    case linkAllDisplays
+    case displayReadStatus
+    case displayControls
+}
+
+enum DisplayControlModuleContent {
+    static let items: [SettingsModuleContentItem] = [.linkAllDisplays]
+}
+
+enum DisplayReadModuleContent {
+    static let items: [SettingsModuleContentItem] = [.displayReadStatus, .separator, .displayControls]
+}
+
 enum SettingsPageLayoutAction: String, Equatable {
     case toggleUSBAutomation
     case learnUSBDevice
