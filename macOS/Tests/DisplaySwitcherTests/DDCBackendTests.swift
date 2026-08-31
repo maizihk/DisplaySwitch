@@ -1,6 +1,92 @@
 import XCTest
 
 final class DDCBackendTests: XCTestCase {
+    func testDiscoveryKeepsLastOperationWhenServiceBindingIsUnchanged() {
+        var state = NativeDDCDiagnosticDiscoveryState()
+        let binding = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+        let initial = state.replacementSnapshot(
+            selector: "display-a", binding: binding, current: nil
+        )
+        XCTAssertEqual(initial?.operationCategory, .idle)
+
+        let succeeded = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 2,
+            chipAddress: 0x37,
+            readDataAddress: 0x51,
+            readAttemptCount: 1,
+            requestChecksumMode: .legacy
+        )
+
+        XCTAssertNil(state.replacementSnapshot(
+            selector: "DISPLAY-A", binding: binding, current: succeeded
+        ))
+    }
+
+    func testDiscoveryResetsLastOperationWhenServiceIdentityChanges() {
+        var state = NativeDDCDiagnosticDiscoveryState()
+        let original = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+        _ = state.replacementSnapshot(selector: "display-a", binding: original, current: nil)
+        let succeeded = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 2
+        )
+        let changed = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 202
+        )
+
+        let replacement = state.replacementSnapshot(
+            selector: "display-a", binding: changed, current: succeeded
+        )
+
+        XCTAssertEqual(replacement?.transportPath, .typeCDPAlt)
+        XCTAssertEqual(replacement?.operationCategory, .idle)
+        XCTAssertEqual(replacement?.rebuildCount, 2)
+        XCTAssertNil(replacement?.chipAddress)
+    }
+
+    func testDiscoveryResetsLastOperationWhenTransportChanges() {
+        var state = NativeDDCDiagnosticDiscoveryState()
+        let original = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+        _ = state.replacementSnapshot(selector: "display-a", binding: original, current: nil)
+        let succeeded = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 0
+        )
+        let changed = NativeDDCDiagnosticBinding(
+            transportPath: .builtinHDMIConverter,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+
+        let replacement = state.replacementSnapshot(
+            selector: "display-a", binding: changed, current: succeeded
+        )
+
+        XCTAssertEqual(replacement?.transportPath, .builtinHDMIConverter)
+        XCTAssertEqual(replacement?.operationCategory, .idle)
+    }
+
     func testNativeWriteKeepsEarlierAcceptedCycleWhenTypeCPathDrops() {
         var results = [true, false]
         var calls = 0

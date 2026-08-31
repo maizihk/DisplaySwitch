@@ -65,6 +65,7 @@ final class NativeDDCBackend: DDCBackend {
     private var displaysByUUID: [String: NativeDDCDisplay] = [:]
     private var readPreferenceCache = NativeDDCReadPreferenceCache()
     private var diagnosticsBySelector: [String: NativeDDCDiagnosticSnapshot] = [:]
+    private var diagnosticDiscoveryState = NativeDDCDiagnosticDiscoveryState()
     private let transportParameters: NativeDDCTransportParameters
     private let hardwareArbiter: NativeI2CHardwareArbiter
 
@@ -108,11 +109,11 @@ final class NativeDDCBackend: DDCBackend {
         }))
         cacheLock.unlock()
         for display in displays {
-            recordDiagnostic(
+            recordDiscoveryDiagnostic(
                 selector: display.systemUUID,
                 path: display.transportPath,
                 serviceMatched: display.service != nil,
-                category: display.service == nil ? .serviceUnmatched : .idle
+                serviceIdentity: display.serviceIdentity
             )
         }
         return displays
@@ -312,6 +313,29 @@ final class NativeDDCBackend: DDCBackend {
             checksumCompatibilityEvidence: checksumCompatibilityEvidence,
             hdmiReadDiagnostics: hdmiReadDiagnostics
         )
+        diagnosticsLock.unlock()
+    }
+
+    private func recordDiscoveryDiagnostic(
+        selector: String,
+        path: NativeDDCTransportPath,
+        serviceMatched: Bool,
+        serviceIdentity: UInt64
+    ) {
+        let key = selector.uppercased()
+        let binding = NativeDDCDiagnosticBinding(
+            transportPath: path,
+            serviceMatched: serviceMatched,
+            serviceIdentity: serviceIdentity
+        )
+        diagnosticsLock.lock()
+        if let replacement = diagnosticDiscoveryState.replacementSnapshot(
+            selector: selector,
+            binding: binding,
+            current: diagnosticsBySelector[key]
+        ) {
+            diagnosticsBySelector[key] = replacement
+        }
         diagnosticsLock.unlock()
     }
 

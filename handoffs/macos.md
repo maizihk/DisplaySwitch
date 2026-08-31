@@ -3,6 +3,64 @@
 ## 当前任务
 
 - 日期：2026-08-30
+- 功能：M-006 / 诊断与脱敏预览
+- 分支：`codex/macos-m006-diagnostics`
+- 基线：`origin/main@0ddf9ae`
+- 实现提交：`21dcbe3`；诊断状态生命周期修复：`9c09212`、`7e56bf6`
+- PR：[#59](https://github.com/maizihk/DisplaySwitch/pull/59)
+- 修复版 CI：macOS run `33316060868` 全绿；149 项 XCTest、Release 打包、严格验签和 artifact 上传均通过
+
+## M-006 原因与决策
+
+- 现有输入源与协同诊断由两个菜单项直接写入剪贴板，用户无法在复制前核对内容，也没有涵盖版本、协议、USB、显示器匹配和 DDC 后端能力的统一快照。
+- 诊断页只读取配置快照与会话内存状态；刷新和复制均不发网络请求，不执行 USB、唤醒、DDC 写入或输入源切换。
+- 报告不输出配置名称、主机地址、配对码、endpoint、USB 标识、显示器原始 UUID 或本机路径。对端、显示器、会话和操作使用会话内 `P`、`D`、`S`、`O` 匿名编号。
+- 菜单只负责打开诊断预览；只有诊断页的“复制诊断”按钮会复制，而且复制内容与当前可见预览完全一致。
+- 首版实机验收发现按 D1、D2、D3 依次读取后，统一诊断只保留 D3 成功。根因是每次显式 DDC 操作前的全量重新枚举把所有已匹配显示器的最后操作状态覆盖为 `idle`，显示器页自身保存的成功文本未受影响。
+- 修复后，相同 selector、service identity 和传输类型的重新枚举保留最后操作结果；service、接口或匹配状态变化时仍重置，避免把旧链路成功状态错误关联到新链路。
+
+## M-006 实现与自动验证
+
+- 新增统一 `DiagnosticReport`，报告应用版本、架构、协议与配置安全状态、协同配置状态、USB 状态、DDC 后端能力、显示器匹配与会话诊断。
+- 设置窗口新增第六个“诊断”页，提供只读可选择的等宽文本预览、刷新与复制操作。
+- 输入源诊断操作 ID 由随机 UUID 改为会话内 `O1`、`O2` 编号；既有协同诊断继续使用匿名标识。
+- 新增脱敏测试，注入私网 IP、配对码、UUID、USB 引用以及配置、显示器和设备名称，验证报告均不泄露，同时保留决策所需状态。
+- 新增三项 DDC 诊断状态回归测试，覆盖相同绑定保留结果、service identity 变化重置和传输类型变化重置。
+- 本机 Command Line Tools 环境以 `swiftc -warnings-as-errors -typecheck` 完成全部 macOS 正式 Swift 源码类型检查。此环境没有完整 Xcode 和 XCTest SDK，因此本机未声称运行 XCTest 或打包。
+- PR #59 修复版 CI 已完成 149/149 XCTest、Debug/Release 构建、`build-app.sh`、`codesign --verify --deep --strict` 和 artifact 上传。
+
+## M-006 尚需 GUI 验证
+
+1. 浅色和深色模式打开设置，确认六页导航、诊断预览和按钮布局正常。
+2. 从菜单选择“查看诊断预览…”，确认只打开预览且不会自动改写剪贴板；点击“复制诊断”后再核对剪贴板与可见文本一致。
+3. 人工检查真实配置生成的预览不含 IP、配对码、UUID、USB 标识、显示器原始设备标识或本机路径。
+4. 依次读取三台显示器，重新打开诊断页；D1、D2、D3 均应保留各自最后一次 `read-succeeded`，而不是只有最后读取的显示器成功。
+5. 本任务未执行真实 USB、唤醒、输入源切换或协同网络探测。
+
+## M-006 实机验收结果
+
+- 用户使用修复版依次读取三台显示器后重新打开诊断页并复制预览，D1、D2、D3 均保留各自的 `read-succeeded`。
+- D1 内建 HDMI 保留 `offset 0 · attempts 1 · checksum standard`；D2 直连 C2DP 保留 `offset 0x51 · attempts 1 · checksum legacy`；D3 扩展坞 HDMI 保留 `offset 0 · attempts 11 · checksum standard`。
+- 导出文本未出现 IP、配对码、endpoint、显示器 UUID、USB 标识或本机路径；对端与显示器继续使用 `P1`、`D1`、`D2`、`D3` 会话匿名编号。
+- 诊断状态生命周期修复复验通过，M-006 满足合并条件；通用浅色/深色、键盘和辅助功能检查仍归 DS-007 总体验收，不伪记为本轮已完成。
+
+## M-006 修改文件
+
+- `macOS/Sources/DisplaySwitcher/InputSourceSwitching.swift`
+- `macOS/Sources/DisplaySwitcher/DDCBackend.swift`
+- `macOS/Sources/DisplaySwitcher/NativeDDC.swift`
+- `macOS/Sources/DisplaySwitcher/PublicPresentationModels.swift`
+- `macOS/Sources/DisplaySwitcher/SettingsWindowController.swift`
+- `macOS/Sources/DisplaySwitcher/main.swift`
+- `macOS/Tests/DisplaySwitcherTests/InputSourceSwitchingTests.swift`
+- `macOS/Tests/DisplaySwitcherTests/DDCBackendTests.swift`
+- `macOS/Tests/DisplaySwitcherTests/PublicPresentationModelsTests.swift`
+- `macOS/DEVELOPMENT_CHECKLIST.md`
+- `handoffs/macos.md`
+
+## 上一任务：DS-020 扩展坞 HDMI Get VCP 校验策略
+
+- 日期：2026-08-30
 - 功能：DS-020 / 扩展坞 HDMI Get VCP 校验策略
 - 基线：`origin/main@edeacd0`
 - 实现提交：`b2f22d7`；实机验收记录：`71081ab`
