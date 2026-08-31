@@ -78,10 +78,12 @@ namespace DisplaySwitcher::Native
         std::wstring message;
         std::vector<DdcMonitorInfo> monitors;
         bool complete{};
+        DisplayTopologyTrust topologyTrust{ DisplayTopologyTrust::IncompleteOrUnavailable };
 
         bool IsTrustedNonEmptySnapshot() const noexcept
         {
-            return success && complete && !monitors.empty();
+            return success && complete && !monitors.empty()
+                && topologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative;
         }
     };
 
@@ -130,6 +132,8 @@ namespace DisplaySwitcher::Native
         virtual DdcWriteResult Write(std::wstring const& monitorId, DdcVcpCode code, int value,
             DdcCancellationToken const& cancellation) = 0;
         virtual uint64_t TopologyGeneration() const noexcept { return 0; }
+        virtual DisplayTopologyTrust TopologyTrust() const noexcept
+        { return DisplayTopologyTrust::IncompleteOrUnavailable; }
         virtual void InvalidateTopology() noexcept {}
     };
 

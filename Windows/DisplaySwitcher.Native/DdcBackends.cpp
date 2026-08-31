@@ -3,6 +3,31 @@
 #include "Diagnostics.h"
 #include <devpkey.h>
 
+namespace DisplaySwitcher::Native
+{
+    bool IsRemoteDisplaySession(DisplaySessionProbe const& probe) noexcept
+    {
+        if (probe.remoteSessionMetric) return true;
+        return probe.currentSessionId && probe.glassSessionId
+            && *probe.currentSessionId != *probe.glassSessionId;
+    }
+
+    bool IsRemoteOrMirroringDisplayDevice(uint32_t stateFlags) noexcept
+    {
+        return (stateFlags & (DISPLAY_DEVICE_REMOTE | DISPLAY_DEVICE_MIRRORING_DRIVER)) != 0;
+    }
+
+    DisplayTopologyTrust ClassifyDisplayTopology(bool remoteSession, uint32_t queryError,
+        bool partialFailure, size_t localPhysicalTargetCount) noexcept
+    {
+        if (remoteSession || queryError == ERROR_ACCESS_DENIED)
+            return DisplayTopologyTrust::RemoteSessionLimited;
+        if (queryError != ERROR_SUCCESS || partialFailure || localPhysicalTargetCount == 0)
+            return DisplayTopologyTrust::IncompleteOrUnavailable;
+        return DisplayTopologyTrust::LocalPhysicalAuthoritative;
+    }
+}
+
 namespace
 {
     using namespace DisplaySwitcher::Native;
@@ -161,7 +186,41 @@ namespace
         std::wstring friendlyName;
     };
 
-    bool QueryActiveTargets(std::vector<ActiveTarget>& targets, DWORD& error, bool& partialFailure)
+    DisplaySessionProbe CurrentDisplaySessionProbe()
+    {
+        DisplaySessionProbe result;
+        result.remoteSessionMetric = GetSystemMetrics(SM_REMOTESESSION) != 0;
+        DWORD currentSession{};
+        if (ProcessIdToSessionId(GetCurrentProcessId(), &currentSession))
+            result.currentSessionId = currentSession;
+
+        HKEY key{};
+        if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+            L"SYSTEM\\CurrentControlSet\\Control\\Terminal Server", 0, KEY_READ, &key) == ERROR_SUCCESS)
+        {
+            DWORD type{}, glassSession{}, size = sizeof(glassSession);
+            if (RegQueryValueExW(key, L"GlassSessionId", nullptr, &type,
+                reinterpret_cast<BYTE*>(&glassSession), &size) == ERROR_SUCCESS
+                && type == REG_DWORD && size == sizeof(glassSession))
+                result.glassSessionId = glassSession;
+            RegCloseKey(key);
+        }
+        return result;
+    }
+
+    std::optional<DWORD> DisplayAdapterFlags(std::wstring const& gdiName)
+    {
+        for (DWORD index = 0;; ++index)
+        {
+            DISPLAY_DEVICEW device{ sizeof(device) };
+            if (!EnumDisplayDevicesW(nullptr, index, &device, 0)) break;
+            if (EqualInsensitive(device.DeviceName, gdiName)) return device.StateFlags;
+        }
+        return std::nullopt;
+    }
+
+    bool QueryActiveTargets(std::vector<ActiveTarget>& targets, DWORD& error, bool& partialFailure,
+        bool& remoteTargetDetected)
     {
         UINT32 pathCount{}, modeCount{};
         auto status = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
@@ -182,6 +241,12 @@ namespace
             if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS)
             {
                 partialFailure = true;
+                continue;
+            }
+
+            if (auto flags = DisplayAdapterFlags(source.viewGdiDeviceName); flags && IsRemoteOrMirroringDisplayDevice(*flags))
+            {
+                remoteTargetDetected = remoteTargetDetected || ((*flags & DISPLAY_DEVICE_REMOTE) != 0);
                 continue;
             }
 
@@ -217,25 +282,36 @@ namespace
         std::vector<std::wstring> legacyIds;
     };
 
-    std::vector<LogicalMonitor> EnumerateLogicalMonitors(bool& partialFailure)
+    std::vector<LogicalMonitor> EnumerateLogicalMonitors(bool& partialFailure, bool& remoteTargetDetected)
     {
         std::vector<LogicalMonitor> result;
-        std::pair<std::vector<LogicalMonitor>*, bool*> state{ &result, &partialFailure };
+        struct CallbackState
+        {
+            std::vector<LogicalMonitor>* monitors;
+            bool* partialFailure;
+            bool* remoteTargetDetected;
+        } state{ &result, &partialFailure, &remoteTargetDetected };
         if (!EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR monitor, HDC, LPRECT, LPARAM parameter) -> BOOL
         {
-            auto& callbackState = *reinterpret_cast<std::pair<std::vector<LogicalMonitor>*, bool*>*>(parameter);
+            auto& callbackState = *reinterpret_cast<CallbackState*>(parameter);
             MONITORINFOEXW monitorInfo{ sizeof(monitorInfo) };
-            if (!GetMonitorInfoW(monitor, &monitorInfo)) { *callbackState.second = true; return TRUE; }
+            if (!GetMonitorInfoW(monitor, &monitorInfo)) { *callbackState.partialFailure = true; return TRUE; }
             DISPLAY_DEVICEW device{ sizeof(device) };
             if (!EnumDisplayDevicesW(monitorInfo.szDevice, 0, &device, EDD_GET_DEVICE_INTERFACE_NAME))
-            { *callbackState.second = true; return TRUE; }
+            { *callbackState.partialFailure = true; return TRUE; }
+            if (IsRemoteOrMirroringDisplayDevice(device.StateFlags))
+            {
+                *callbackState.remoteTargetDetected = *callbackState.remoteTargetDetected
+                    || ((device.StateFlags & DISPLAY_DEVICE_REMOTE) != 0);
+                return TRUE;
+            }
             LogicalMonitor item;
             item.handle = monitor;
             item.gdiName = monitorInfo.szDevice;
             item.friendlyName = device.DeviceString[0] ? device.DeviceString : monitorInfo.szDevice;
             if (device.DeviceID[0]) item.legacyIds.push_back(device.DeviceID);
             if (device.DeviceKey[0]) item.legacyIds.push_back(device.DeviceKey);
-            callbackState.first->push_back(std::move(item));
+            callbackState.monitors->push_back(std::move(item));
             return TRUE;
         }, reinterpret_cast<LPARAM>(&state))) partialFailure = true;
         return result;
@@ -252,6 +328,7 @@ namespace
         bool success{ true };
         bool partialFailure{};
         DWORD error{};
+        DisplayTopologyTrust topologyTrust{ DisplayTopologyTrust::IncompleteOrUnavailable };
         std::vector<NativeMonitor> monitors;
         std::wstring fingerprint;
     };
@@ -261,13 +338,33 @@ namespace
     NativeEnumeration EnumerateNativeMonitors()
     {
         NativeEnumeration result;
-        std::vector<ActiveTarget> targets;
-        if (!QueryActiveTargets(targets, result.error, result.partialFailure))
+        if (IsRemoteDisplaySession(CurrentDisplaySessionProbe()))
         {
-            result.success = false;
+            result.topologyTrust = DisplayTopologyTrust::RemoteSessionLimited;
+            result.fingerprint = L"remote-session-limited";
             return result;
         }
-        auto logical = EnumerateLogicalMonitors(result.partialFailure);
+        std::vector<ActiveTarget> targets;
+        bool remoteTargetDetected{};
+        if (!QueryActiveTargets(targets, result.error, result.partialFailure, remoteTargetDetected))
+        {
+            result.topologyTrust = ClassifyDisplayTopology(false, result.error, result.partialFailure, 0);
+            result.success = result.topologyTrust == DisplayTopologyTrust::RemoteSessionLimited;
+            return result;
+        }
+        if (remoteTargetDetected)
+        {
+            result.topologyTrust = DisplayTopologyTrust::RemoteSessionLimited;
+            result.fingerprint = L"remote-session-limited";
+            return result;
+        }
+        auto logical = EnumerateLogicalMonitors(result.partialFailure, remoteTargetDetected);
+        if (remoteTargetDetected)
+        {
+            result.topologyTrust = DisplayTopologyTrust::RemoteSessionLimited;
+            result.fingerprint = L"remote-session-limited";
+            return result;
+        }
 
         for (auto const& target : targets)
         {
@@ -329,6 +426,8 @@ namespace
                 + std::to_wstring(monitor.info.physicalHandleCount) + L"|" + (monitor.info.ambiguous ? L"1" : L"0"));
         std::sort(fingerprintItems.begin(), fingerprintItems.end());
         for (auto const& value : fingerprintItems) result.fingerprint += value + L"\n";
+        result.topologyTrust = ClassifyDisplayTopology(false, result.error,
+            result.partialFailure, result.monitors.size());
         return result;
     }
 
@@ -347,6 +446,7 @@ namespace
     struct NativeMonitorSession
     {
         std::atomic<uint64_t> generation{ 1 };
+        std::atomic<DisplayTopologyTrust> topologyTrust{ DisplayTopologyTrust::IncompleteOrUnavailable };
         std::optional<NativeEnumeration> cached;
     };
 
@@ -357,29 +457,38 @@ namespace
 
     NativeEnumeration& RefreshLocked(NativeMonitorSession& session, bool force)
     {
-        if (!force && session.cached && session.cached->success) return *session.cached;
+        auto remoteSession = IsRemoteDisplaySession(CurrentDisplaySessionProbe());
+        if (!force && session.cached && session.cached->success
+            && ((remoteSession && session.cached->topologyTrust == DisplayTopologyTrust::RemoteSessionLimited)
+                || (!remoteSession && session.cached->topologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative)))
+            return *session.cached;
         auto current = EnumerateNativeMonitors();
         if (session.cached && session.cached->success && current.success
+            && session.cached->topologyTrust == current.topologyTrust
             && session.cached->fingerprint == current.fingerprint)
             return *session.cached;
         session.generation.fetch_add(1, std::memory_order_acq_rel);
         session.cached = std::move(current);
+        session.topologyTrust.store(session.cached->topologyTrust, std::memory_order_release);
         return *session.cached;
     }
 
     void InvalidateLocked(NativeMonitorSession& session)
     {
         session.generation.fetch_add(1, std::memory_order_acq_rel);
+        session.topologyTrust.store(DisplayTopologyTrust::IncompleteOrUnavailable, std::memory_order_release);
         session.cached.reset();
     }
 
     NativeMonitor* ResolveLocked(NativeEnumeration& native, std::wstring const& monitorId,
         DdcErrorKind& error, std::wstring& message)
     {
-        if (!native.success)
+        if (native.topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative)
         {
             error = DdcErrorKind::BackendUnavailable;
-            message = L"Windows 当前显示拓扑不可用";
+            message = native.topologyTrust == DisplayTopologyTrust::RemoteSessionLimited
+                ? L"远程桌面会话中，已保留本地物理显示器配置，返回本地后重新检测"
+                : L"Windows 当前显示拓扑不完整或不可用";
             return nullptr;
         }
         std::vector<NativeMonitor*> matches;
@@ -404,6 +513,8 @@ namespace
         std::wstring DisplayName() const override { return L"Windows 原生 DDC/CI"; }
         DdcBackendStatus Status() const override { return { DdcAvailability::Available, L"Windows 物理显示器 DDC/CI" }; }
         uint64_t TopologyGeneration() const noexcept override { return SessionGeneration(*session_); }
+        DisplayTopologyTrust TopologyTrust() const noexcept override
+        { return session_->topologyTrust.load(std::memory_order_acquire); }
 
         void InvalidateTopology() noexcept override
         {
@@ -417,13 +528,19 @@ namespace
             std::scoped_lock lock(nativeDdcMutex);
             auto& native = ::RefreshLocked(*session_, true);
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消", {}, false };
+            if (native.topologyTrust == DisplayTopologyTrust::RemoteSessionLimited)
+                return { true, DdcErrorKind::None,
+                    L"远程桌面会话中，已保留本地物理显示器配置，返回本地后重新检测",
+                    {}, false, DisplayTopologyTrust::RemoteSessionLimited };
             if (!native.success || (native.partialFailure && native.monitors.empty()))
                 return { false, DdcErrorKind::BackendUnavailable,
-                    L"Windows 当前显示拓扑枚举失败，错误 " + std::to_wstring(native.error), {}, false };
+                    L"Windows 当前显示拓扑枚举失败，错误 " + std::to_wstring(native.error), {}, false,
+                    DisplayTopologyTrust::IncompleteOrUnavailable };
             auto monitors = PublicMonitorInfo(native, TopologyGeneration());
             return { true, DdcErrorKind::None,
                 native.partialFailure ? L"部分显示目标无法完整解析；已阻止不明确的 DDC 操作" : L"",
-                std::move(monitors), !native.partialFailure };
+                std::move(monitors), native.topologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative,
+                native.topologyTrust };
         }
 
         DdcCapabilities Capabilities(std::wstring const& monitorId,
@@ -510,6 +627,8 @@ namespace
         }
 
         uint64_t TopologyGeneration() const noexcept override { return SessionGeneration(*session_); }
+        DisplayTopologyTrust TopologyTrust() const noexcept override
+        { return session_->topologyTrust.load(std::memory_order_acquire); }
 
         void InvalidateTopology() noexcept override
         {

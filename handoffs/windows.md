@@ -1,6 +1,22 @@
 # Windows 交接记录
 
-## 当前任务：W-206 输入源切换与 DDC 调节后端解耦
+## 当前任务：Windows RDP 会话显示拓扑安全
+
+- 日期：2026-09-01
+- 分支：`codex/windows-rdp-display-topology`
+- 堆叠基线：`origin/codex/windows-input-source-transport@12fb328188a2ccd5c538859189ff48377f2d2fe5`；该基线包含 PR #66 的 W-206 完整实现，因此没有从尚未包含它的 `main` 重做或丢弃堆叠提交。
+- 根因：原生枚举把当前会话的 `QueryDisplayConfig` / `EnumDisplayMonitors` 结果直接视为可持久协调的本地物理拓扑；RDP 虚拟目标可能因此新增到显示器目录，而 `ERROR_ACCESS_DENIED`、部分或空结果也缺少明确的可信度语义。
+- 设计：新增本地物理权威、远程会话受限、不完整/不可用三态可信度；持久物理目录与实时会话拓扑分离，只有完整非空的本地权威快照可以调用显示器协调并保存。
+- 远程识别：使用 `SM_REMOTESESSION`，并结合当前进程 session 与 `GlassSessionId` 处理 RemoteFX/vGPU 场景；同时按 `DISPLAY_DEVICE_REMOTE` 和 `DISPLAY_DEVICE_MIRRORING_DRIVER` 标志处理目标，不使用名称、品牌或型号黑名单。
+- 安全行为：远程或不可信快照不新增、删除、重命名或重新绑定显示器，不修改稳定 ID、native 绑定、generation、USB/协同映射，也不保存配置；普通 DDC 和输入源传输在解析前阻断。诊断只输出 `local-authoritative`、`remote-limited` 或 `incomplete-unavailable`。
+- 恢复路径：保留 `WM_DISPLAYCHANGE` 的现有失效机制，并在托盘隐藏窗口注册 WTS 会话通知；返回本地控制台后重新枚举，仍只按强身份恢复一对一绑定。
+- 自动测试：模拟本地 3 台物理显示器→RDP 单虚拟目标→本地 3 台重排恢复，覆盖远程/镜像标志、首次 RDP 启动、访问受限、枚举失败/空/部分结果、目录和全部映射不变、零保存及零 DDC/输入源调用。
+- 本机验证：`Windows/build-windows.ps1` x64 Release 成功，完整原生测试通过 262 项检查；v2 公共向量 1+4+20+6、USB-001 至 USB-016 及既有 DS-004/005/007/009/012/013、W-005/W-203 回归全部通过。自动测试没有连接真实 RDP，也没有访问真实显示器、USB、网络、唤醒或输入源。
+- 产物验证：绿色版目录 1.75 MiB，入口、`runtime/` 和必需文件完整，低于 20 MiB。
+- 实机待验：连接 RDP 时设置页保留原物理目录且无虚拟条目；断开 RDP 返回本地后稳定 ID、名称、DDC/托盘开关、USB/协同映射恢复；随后经用户授权验证 DDC 和输入源仍指向正确物理显示器。
+- PR、实现提交与 CI：待本任务提交和推送后补充。
+
+## 历史任务：W-206 输入源切换与 DDC 调节后端解耦
 
 - 日期：2026-08-31
 - 分支：`codex/windows-input-source-transport`

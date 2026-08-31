@@ -85,16 +85,20 @@ namespace
         std::function<void()> onRead;
         std::function<void()> onWrite;
         std::atomic<uint64_t> topologyGeneration{ 1 };
+        DisplayTopologyTrust topologyTrust{ DisplayTopologyTrust::LocalPhysicalAuthoritative };
 
         std::wstring Key() const override { return key; }
         std::wstring DisplayName() const override { return L"模拟硬件 DDC/CI"; }
         DdcBackendStatus Status() const override { return status; }
         uint64_t TopologyGeneration() const noexcept override { return topologyGeneration.load(); }
+        DisplayTopologyTrust TopologyTrust() const noexcept override { return topologyTrust; }
         void InvalidateTopology() noexcept override { ++topologyGeneration; }
         DdcEnumerationResult Enumerate(DdcCancellationToken const&) override
-        { return { true, DdcErrorKind::None, {}, {}, true }; }
+        { return { true, DdcErrorKind::None, {}, {}, true, topologyTrust }; }
         DdcCapabilities Capabilities(std::wstring const&, DdcCancellationToken const&) override
         {
+            if (topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative)
+                return { { DdcAvailability::TemporarilyUnavailable, L"当前会话拓扑不可用" }, true, {}, {} };
             return { status, false, {}, {} };
         }
         DdcValueResult Read(std::wstring const& monitorId, DdcVcpCode code,
@@ -134,9 +138,15 @@ namespace
         std::function<void()> onWrite;
         bool invalidateOnTransientFailure{};
         std::atomic<uint64_t> topologyGeneration{ 1 };
+        DisplayTopologyTrust topologyTrust{ DisplayTopologyTrust::LocalPhysicalAuthoritative };
 
-        DdcBackendStatus Status() const override { return status; }
+        DdcBackendStatus Status() const override
+        {
+            return topologyTrust == DisplayTopologyTrust::RemoteSessionLimited
+                ? DdcBackendStatus{ DdcAvailability::TemporarilyUnavailable, L"远程会话已阻止" } : status;
+        }
         uint64_t TopologyGeneration() const noexcept override { return topologyGeneration.load(); }
+        DisplayTopologyTrust TopologyTrust() const noexcept override { return topologyTrust; }
         void InvalidateTopology() noexcept override { ++topologyGeneration; }
         InputSourceWriteResult WriteInputSource(std::wstring const& monitorId, int value,
             DdcCancellationToken const& cancellation) override
@@ -671,7 +681,8 @@ namespace
             && differentModels[1].displayName == L"型号乙",
             L"W-009: 不同型号显示器必须直接使用系统友好名称而不添加无意义序号");
 
-        auto reconciled = ReconcileDisplayConfigurations({ first, second }, duplicated, true);
+        auto reconciled = ReconcileDisplayConfigurations({ first, second }, duplicated,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         auto preservedFirst = std::find_if(reconciled.displays.begin(), reconciled.displays.end(), [&](auto const& display)
             { return display.id == firstLogicalId; });
         auto preservedSecond = std::find_if(reconciled.displays.begin(), reconciled.displays.end(), [&](auto const& display)
@@ -698,16 +709,18 @@ namespace
         preservedUsb.displayInputs = { { firstLogicalId, 33 }, { secondLogicalId, 34 } };
 
         DdcEnumerationResult partialSnapshot{ true, DdcErrorKind::None, L"部分枚举",
-            { { L"device-b", L"相同型号", L"DISPLAY9" } }, false };
+            { { L"device-b", L"相同型号", L"DISPLAY9" } }, false,
+            DisplayTopologyTrust::IncompleteOrUnavailable };
         auto partial = ReconcileDisplayConfigurations(reconciled.displays, partialSnapshot.monitors,
-            partialSnapshot.IsTrustedNonEmptySnapshot());
+            partialSnapshot.topologyTrust);
         Check(!partial.changed && partial.removed == 0 && partial.displays.size() == 2
             && preservedProfile.displayInputs.size() == 2 && preservedUsb.displayInputs.size() == 2,
             L"W-009: 部分失败的枚举必须原样保留显示器、USB 映射和协同映射");
 
-        DdcEnumerationResult sleepingSnapshot{ true, DdcErrorKind::None, {}, {}, true };
+        DdcEnumerationResult sleepingSnapshot{ true, DdcErrorKind::None, {}, {}, false,
+            DisplayTopologyTrust::IncompleteOrUnavailable };
         auto sleeping = ReconcileDisplayConfigurations(partial.displays, sleepingSnapshot.monitors,
-            sleepingSnapshot.IsTrustedNonEmptySnapshot());
+            sleepingSnapshot.topologyTrust);
         auto sleepingFirst = std::find_if(sleeping.displays.begin(), sleeping.displays.end(), [&](auto const& display)
             { return display.id == firstLogicalId; });
         Check(!sleeping.changed && sleeping.removed == 0 && sleeping.displays.size() == 2
@@ -721,7 +734,8 @@ namespace
 
         auto recovered = ReconcileDisplayConfigurations(sleeping.displays,
             { { L"device-b", L"相同型号", L"DISPLAY2" },
-              { L"device-a", L"相同型号", L"DISPLAY1" } }, true);
+              { L"device-a", L"相同型号", L"DISPLAY1" } },
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         auto recoveredFirst = std::find_if(recovered.displays.begin(), recovered.displays.end(), [&](auto const& display)
             { return display.id == firstLogicalId; });
         Check(!recovered.changed && recovered.removed == 0 && recovered.displays.size() == 2
@@ -731,7 +745,8 @@ namespace
             L"W-009: 显示器休眠恢复并重排后必须按稳定 ID 恢复原用户设置");
 
         auto disconnected = ReconcileDisplayConfigurations(reconciled.displays,
-            { { L"device-b", L"相同型号", L"DISPLAY9" } }, true);
+            { { L"device-b", L"相同型号", L"DISPLAY9" } },
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         Check(disconnected.displays.size() == 1 && disconnected.removed == 1
             && disconnected.displays[0].id == secondLogicalId,
             L"W-009: 已断开或失效显示器必须从实时集合清理，仍存在显示器保持逻辑 ID");
@@ -746,7 +761,8 @@ namespace
             L"W-009: 显示器清理必须同步移除孤立映射且不污染仍连接显示器");
 
         auto reconnected = ReconcileDisplayConfigurations(disconnected.displays,
-            { { L"device-a", L"另一型号", L"DISPLAY4" }, { L"device-b", L"相同型号", L"DISPLAY9" } }, true);
+            { { L"device-a", L"另一型号", L"DISPLAY4" }, { L"device-b", L"相同型号", L"DISPLAY9" } },
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         auto newFirst = std::find_if(reconnected.displays.begin(), reconnected.displays.end(), [&](auto const& display)
             { return _wcsicmp(display.nativeMonitorId.c_str(), L"device-a") == 0; });
         Check(reconnected.added == 1 && newFirst != reconnected.displays.end()
@@ -785,7 +801,8 @@ namespace
         });
         Check(fourHandles.size() == 2 && fourHandles[0].ambiguous && fourHandles[1].ambiguous,
             L"DS-013: 两个逻辑 target 的四个底层句柄只能显示两个逻辑项并标记歧义");
-        auto fourReconciled = ReconcileDisplayConfigurations({}, fourHandles, true);
+        auto fourReconciled = ReconcileDisplayConfigurations({}, fourHandles,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         Check(fourReconciled.displays.size() == 2
             && std::all_of(fourReconciled.displays.begin(), fourReconciled.displays.end(), [](auto const& display)
                 { return display.bindingStatus == DisplayBindingStatus::Ambiguous; }),
@@ -815,9 +832,11 @@ namespace
             monitor({}, L"adapter-c:1", L"相同型号", L"DISPLAY4", 1),
             monitor({}, L"adapter-c:2", L"相同型号", L"DISPLAY5", 1),
         });
-        auto noSerialFirst = ReconcileDisplayConfigurations({}, noSerial, true);
+        auto noSerialFirst = ReconcileDisplayConfigurations({}, noSerial,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         std::reverse(noSerial.begin(), noSerial.end());
-        auto noSerialReordered = ReconcileDisplayConfigurations(noSerialFirst.displays, noSerial, true);
+        auto noSerialReordered = ReconcileDisplayConfigurations(noSerialFirst.displays, noSerial,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         Check(noSerialReordered.displays.size() == 2
             && std::all_of(noSerialReordered.displays.begin(), noSerialReordered.displays.end(), [](auto const& display)
                 { return display.bindingStatus != DisplayBindingStatus::Resolved; }),
@@ -827,14 +846,16 @@ namespace
             monitor(L"ds13:strong-a", L"adapter-d:1", L"相同型号", L"DISPLAY6", 1),
             monitor(L"ds13:strong-b", L"adapter-d:2", L"相同型号", L"DISPLAY7", 1),
         });
-        auto strongFirst = ReconcileDisplayConfigurations({}, strong, true);
+        auto strongFirst = ReconcileDisplayConfigurations({}, strong,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         auto firstLogicalIds = std::map<std::wstring, std::wstring>{};
         for (auto const& display : strongFirst.displays) firstLogicalIds[display.nativeMonitorId] = display.id;
         auto switchedPorts = NormalizeDdcMonitorCollection({
             monitor(L"ds13:strong-b", L"adapter-e:9", L"相同型号", L"DISPLAY9", 1),
             monitor(L"ds13:strong-a", L"adapter-e:8", L"相同型号", L"DISPLAY8", 1),
         });
-        auto strongRebound = ReconcileDisplayConfigurations(strongFirst.displays, switchedPorts, true);
+        auto strongRebound = ReconcileDisplayConfigurations(strongFirst.displays, switchedPorts,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         Check(strongRebound.displays.size() == 2
             && std::all_of(strongRebound.displays.begin(), strongRebound.displays.end(), [&](auto const& display)
                 { return display.bindingStatus == DisplayBindingStatus::Resolved
@@ -849,9 +870,12 @@ namespace
             transientUsb.displayInputs.push_back({ display.id, 25 });
         }
         auto partial = ReconcileDisplayConfigurations(strongFirst.displays,
-            { monitor(L"ds13:strong-a", L"adapter-d:1", L"相同型号", L"DISPLAY6", 1) }, false);
-        auto empty = ReconcileDisplayConfigurations(partial.displays, {}, false);
-        auto wakeRecovery = ReconcileDisplayConfigurations(empty.displays, switchedPorts, true);
+            { monitor(L"ds13:strong-a", L"adapter-d:1", L"相同型号", L"DISPLAY6", 1) },
+            DisplayTopologyTrust::IncompleteOrUnavailable);
+        auto empty = ReconcileDisplayConfigurations(partial.displays, {},
+            DisplayTopologyTrust::IncompleteOrUnavailable);
+        auto wakeRecovery = ReconcileDisplayConfigurations(empty.displays, switchedPorts,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         Check(!partial.changed && !empty.changed && partial.displays.size() == 2 && empty.displays.size() == 2
             && wakeRecovery.displays.size() == 2 && transientProfile.displayInputs.size() == 2
             && transientUsb.displayInputs.size() == 2,
@@ -861,7 +885,7 @@ namespace
         auto legacyId = legacy.id;
         auto uniqueMigration = ReconcileDisplayConfigurations({ legacy }, {
             monitor(L"ds13:migrated-a", L"adapter-f:1", L"迁移目标", L"DISPLAY10", 1,
-                { L"legacy-interface-a" }) }, true);
+                { L"legacy-interface-a" }) }, DisplayTopologyTrust::LocalPhysicalAuthoritative);
         Check(uniqueMigration.displays.size() == 1 && uniqueMigration.displays[0].id == legacyId
             && uniqueMigration.displays[0].nativeMonitorId == L"ds13:migrated-a"
             && uniqueMigration.displays[0].bindingStatus == DisplayBindingStatus::Resolved,
@@ -870,7 +894,7 @@ namespace
             monitor(L"ds13:migrated-b", L"adapter-f:2", L"相同型号", L"DISPLAY11", 1,
                 { L"legacy-interface-a" }),
             monitor(L"ds13:migrated-c", L"adapter-f:3", L"相同型号", L"DISPLAY12", 1,
-                { L"legacy-interface-a" }) }, true);
+                { L"legacy-interface-a" }) }, DisplayTopologyTrust::LocalPhysicalAuthoritative);
         auto retainedLegacy = std::find_if(ambiguousMigration.displays.begin(), ambiguousMigration.displays.end(),
             [&](auto const& display) { return display.id == legacyId; });
         Check(retainedLegacy != ambiguousMigration.displays.end()
@@ -885,7 +909,8 @@ namespace
         UsbSwitchConfig usb;
         for (auto const& display : offlineConfig) usb.displayInputs.push_back({ display.id, 21 });
         auto partialTopology = ReconcileDisplayConfigurations(offlineConfig,
-            { monitor(L"ds13:strong-b", L"adapter-d:2", L"相同型号", L"DISPLAY7", 1) }, true);
+            { monitor(L"ds13:strong-b", L"adapter-d:2", L"相同型号", L"DISPLAY7", 1) },
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
         auto offline = std::find_if(partialTopology.displays.begin(), partialTopology.displays.end(),
             [&](auto const& display) { return display.id == offlineId; });
         Check(partialTopology.displays.size() == 2 && partialTopology.removed == 0
@@ -902,6 +927,147 @@ namespace
             Check(handles.Handles().size() == 2, L"DS-013: 物理句柄所有权必须去重");
         }
         Check(released == 2, L"DS-013: 拓扑销毁时每个唯一物理句柄必须恰好释放一次");
+    }
+
+    void TestRemoteSessionDisplayTopology()
+    {
+        Check(IsRemoteDisplaySession({ true, 4, 4 })
+            && IsRemoteDisplaySession({ false, 7, 3 })
+            && !IsRemoteDisplaySession({ false, 3, 3 }),
+            L"RDP: SM_REMOTESESSION 和 GlassSessionId 必须共同覆盖普通与 RemoteFX/vGPU 远程会话");
+        Check(IsRemoteOrMirroringDisplayDevice(DISPLAY_DEVICE_REMOTE)
+            && IsRemoteOrMirroringDisplayDevice(DISPLAY_DEVICE_MIRRORING_DRIVER)
+            && !IsRemoteOrMirroringDisplayDevice(DISPLAY_DEVICE_ACTIVE),
+            L"RDP: 远程目标和镜像驱动必须按 Windows 状态位排除，不得使用名称黑名单");
+        Check(ClassifyDisplayTopology(false, ERROR_SUCCESS, false, 3)
+                == DisplayTopologyTrust::LocalPhysicalAuthoritative
+            && ClassifyDisplayTopology(true, ERROR_SUCCESS, false, 1)
+                == DisplayTopologyTrust::RemoteSessionLimited
+            && ClassifyDisplayTopology(false, ERROR_ACCESS_DENIED, false, 0)
+                == DisplayTopologyTrust::RemoteSessionLimited
+            && ClassifyDisplayTopology(false, ERROR_GEN_FAILURE, false, 0)
+                == DisplayTopologyTrust::IncompleteOrUnavailable
+            && ClassifyDisplayTopology(false, ERROR_SUCCESS, true, 2)
+                == DisplayTopologyTrust::IncompleteOrUnavailable
+            && ClassifyDisplayTopology(false, ERROR_SUCCESS, false, 0)
+                == DisplayTopologyTrust::IncompleteOrUnavailable,
+            L"RDP: 拓扑可信度必须区分本地权威、远程受限和不完整/不可用");
+
+        std::vector<DisplayConfig> catalogue;
+        for (int index = 0; index < 3; ++index)
+        {
+            auto display = Display(L"本地物理显示器 " + std::to_wstring(index + 1),
+                L"ds13:rdp-physical-" + std::to_wstring(index + 1), 16 + index);
+            display.localInput = 26 + index;
+            display.brightnessEnabled = index != 1;
+            display.brightnessShowInTray = index == 0;
+            display.contrastEnabled = index != 2;
+            display.contrastShowInTray = index == 1;
+            display.volumeEnabled = true;
+            display.volumeShowInTray = index == 2;
+            display.topologyGeneration = 9;
+            catalogue.push_back(std::move(display));
+        }
+        auto original = catalogue;
+        CollaborationProfile profile = Profile(L"模拟协同配置");
+        UsbSwitchConfig usb;
+        for (size_t index = 0; index < catalogue.size(); ++index)
+        {
+            profile.displayInputs.push_back({ catalogue[index].id, static_cast<int>(31 + index) });
+            usb.displayInputs.push_back({ catalogue[index].id, static_cast<int>(41 + index) });
+        }
+        auto originalProfileMappings = profile.displayInputs;
+        auto originalUsbMappings = usb.displayInputs;
+        auto profileMappingsEqual = [](auto const& left, auto const& right)
+        {
+            return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+                [](auto const& first, auto const& second)
+                { return first.displayId == second.displayId && first.peerInput == second.peerInput; });
+        };
+        auto usbMappingsEqual = [](auto const& left, auto const& right)
+        {
+            return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+                [](auto const& first, auto const& second)
+                { return first.displayId == second.displayId && first.targetInput == second.targetInput; });
+        };
+
+        DdcMonitorInfo remoteVirtual;
+        remoteVirtual.id = L"virtual-session-target";
+        remoteVirtual.displayName = L"会话显示目标";
+        remoteVirtual.logicalTargetId = L"session-target";
+        auto remote = ReconcileDisplayConfigurations(catalogue, { remoteVirtual },
+            DisplayTopologyTrust::RemoteSessionLimited);
+        int saveCalls{};
+        if (remote.changed) ++saveCalls;
+        auto unchanged = remote.displays.size() == original.size();
+        for (size_t index = 0; unchanged && index < original.size(); ++index)
+        {
+            auto const& before = original[index];
+            auto const& after = remote.displays[index];
+            unchanged = before.id == after.id && before.name == after.name
+                && before.nativeMonitorId == after.nativeMonitorId
+                && before.bindingStatus == after.bindingStatus
+                && before.topologyGeneration == after.topologyGeneration
+                && before.localInput == after.localInput && before.macInput == after.macInput
+                && before.brightnessEnabled == after.brightnessEnabled
+                && before.brightnessShowInTray == after.brightnessShowInTray
+                && before.contrastEnabled == after.contrastEnabled
+                && before.contrastShowInTray == after.contrastShowInTray
+                && before.volumeEnabled == after.volumeEnabled
+                && before.volumeShowInTray == after.volumeShowInTray;
+        }
+        Check(!remote.changed && remote.added == 0 && remote.removed == 0 && saveCalls == 0 && unchanged
+            && profileMappingsEqual(profile.displayInputs, originalProfileMappings)
+            && usbMappingsEqual(usb.displayInputs, originalUsbMappings),
+            L"RDP: 远程阶段持久物理目录必须零新增、零删除、零重绑定、零保存且映射不变");
+        auto firstRunRemote = ReconcileDisplayConfigurations({}, { remoteVirtual },
+            DisplayTopologyTrust::RemoteSessionLimited);
+        Check(firstRunRemote.displays.empty() && !firstRunRemote.changed,
+            L"RDP: 首次启动仅有远程虚拟目标时不得创建持久显示器条目");
+
+        auto incomplete = ReconcileDisplayConfigurations(catalogue, { remoteVirtual },
+            DisplayTopologyTrust::IncompleteOrUnavailable);
+        auto empty = ReconcileDisplayConfigurations(catalogue, {},
+            DisplayTopologyTrust::IncompleteOrUnavailable);
+        Check(!incomplete.changed && !empty.changed && incomplete.displays.size() == 3 && empty.displays.size() == 3,
+            L"RDP: 本地枚举失败、空结果或部分结果不得覆盖可信目录");
+
+        std::vector<DdcMonitorInfo> returnedLocal;
+        for (auto const& display : original)
+        {
+            DdcMonitorInfo monitor;
+            monitor.id = display.nativeMonitorId;
+            monitor.displayName = display.name;
+            monitor.logicalTargetId = L"local-target-" + display.id;
+            monitor.physicalHandleCount = 1;
+            monitor.topologyGeneration = 12;
+            returnedLocal.push_back(std::move(monitor));
+        }
+        std::reverse(returnedLocal.begin(), returnedLocal.end());
+        auto restored = ReconcileDisplayConfigurations(remote.displays, returnedLocal,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
+        Check(restored.displays.size() == 3
+            && std::all_of(restored.displays.begin(), restored.displays.end(), [&](auto const& display)
+            {
+                return std::any_of(original.begin(), original.end(), [&](auto const& before)
+                { return display.id == before.id && display.nativeMonitorId == before.nativeMonitorId
+                    && display.name == before.name; });
+            }) && profileMappingsEqual(profile.displayInputs, originalProfileMappings)
+            && usbMappingsEqual(usb.displayInputs, originalUsbMappings),
+            L"RDP: 返回本地后重排的同一批物理显示器必须按强身份恢复原逻辑 ID 和映射");
+
+        AppConfig hardwareConfig; hardwareConfig.displays = catalogue;
+        FakeDdcBackend remoteDdc; remoteDdc.topologyTrust = DisplayTopologyTrust::RemoteSessionLimited;
+        DdcCancellationSource cancellation;
+        auto remoteRead = FakeService(remoteDdc).Read(hardwareConfig, {}, cancellation.Begin());
+        auto remoteWrite = FakeService(remoteDdc).Write(hardwareConfig, hardwareConfig.displays[0].id,
+            DdcVcpCode::Brightness, 50, false, cancellation.Begin());
+        FakeInputSourceTransport remoteInput;
+        remoteInput.topologyTrust = DisplayTopologyTrust::RemoteSessionLimited;
+        auto remoteSwitch = SwitchDisplaysToMac(hardwareConfig, &remoteInput);
+        Check(!remoteRead.success && !remoteWrite.success && !remoteSwitch.success
+            && remoteDdc.reads.empty() && remoteDdc.writes.empty() && remoteInput.writes.empty(),
+            L"RDP: 远程受限会话必须保持 DDC 读写和输入源传输零调用");
     }
 
     void TestUsbTriggerStability()
@@ -1720,7 +1886,8 @@ namespace
             { 2, false, false, false, DiagnosticHeartbeatState::Never }
         };
         snapshot.usb = { true, true, 3, true };
-        snapshot.backend = { DdcAvailability::Available, true, true, true };
+        snapshot.backend = { DdcAvailability::Available,
+            DisplayTopologyTrust::RemoteSessionLimited, true, true, true };
         snapshot.displays = {
             { 1, DisplayBindingStatus::Resolved, true, false, true, DiagnosticOperationKind::Write, DiagnosticOperationState::Success },
             { 2, DisplayBindingStatus::Ambiguous, false, false, false, DiagnosticOperationKind::None, DiagnosticOperationState::Ambiguous }
@@ -1745,7 +1912,8 @@ namespace
             Check(second.find(secret) == std::wstring::npos, L"W-005：诊断预览不得包含注入的本机秘密或设备标识");
         Check(second.find(L"P1") != std::wstring::npos && second.find(L"D1") != std::wstring::npos &&
             second.find(L"S1 / O1") != std::wstring::npos && second.find(L"已阻断副作用") != std::wstring::npos &&
-            second.find(L"最后合法心跳=最近合法") != std::wstring::npos,
+            second.find(L"最后合法心跳=最近合法") != std::wstring::npos
+            && second.find(L"topology=remote-limited") != std::wstring::npos,
             L"W-203：严格脱敏后仍须保留匿名编号和必要的安全状态");
         Check(injected.find("10.23.45.67") == std::string::npos && injected.find("TOP-SECRET") == std::string::npos &&
             injected.find("redacted=1") != std::string::npos,
@@ -1975,6 +2143,7 @@ int wmain()
         TestUnknownFieldsVersionsAndDuplicates(root);
         TestRenameAndFailureIsolation(root);
         TestDisplayTopologyBinding();
+        TestRemoteSessionDisplayTopology();
         TestUsbTriggerStability();
         TestDdcControls();
         TestUsbLearningAndAbout();
@@ -1991,6 +2160,7 @@ int wmain()
         if (!failures) std::wcout << L"DS-009 asymmetric bootstrap and loopback UDP scenarios passed\n";
         if (!failures) std::wcout << L"DS-012 nonblocking detection, cancellation and key-cache scenarios passed\n";
         if (!failures) std::wcout << L"DS-013 logical display binding and topology-generation scenarios passed\n";
+        if (!failures) std::wcout << L"Windows RDP display-topology trust scenarios passed\n";
         if (!failures) std::wcout << L"W-005/W-203 diagnostic redaction, zero-side-effect and display-state scenarios passed\n";
         failures += RunV2ProtocolVectorTests();
         failures += RunUsbSwitchVectorTests();

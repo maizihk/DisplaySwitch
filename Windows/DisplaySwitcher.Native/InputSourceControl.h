@@ -20,6 +20,7 @@ namespace DisplaySwitcher::Native
         virtual InputSourceWriteResult WriteInputSource(std::wstring const& monitorId, int value,
             DdcCancellationToken const& cancellation) = 0;
         virtual uint64_t TopologyGeneration() const noexcept = 0;
+        virtual DisplayTopologyTrust TopologyTrust() const noexcept = 0;
         virtual void InvalidateTopology() noexcept = 0;
     };
 

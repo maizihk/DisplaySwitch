@@ -132,10 +132,10 @@ namespace DisplaySwitcher::Native
 
     DisplayReconciliationResult ReconcileDisplayConfigurations(
         std::vector<DisplayConfig> const& existing, std::vector<DdcMonitorInfo> const& connected,
-        bool trustedCompleteEnumeration)
+        DisplayTopologyTrust topologyTrust)
     {
         DisplayReconciliationResult result;
-        if (!trustedCompleteEnumeration || connected.empty())
+        if (topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative || connected.empty())
         {
             result.displays = existing;
             return result;

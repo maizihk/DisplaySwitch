@@ -57,6 +57,15 @@ namespace
         default: return L"尚未操作";
         }
     }
+    wchar_t const* TopologyTrust(DisplayTopologyTrust value)
+    {
+        switch (value)
+        {
+        case DisplayTopologyTrust::LocalPhysicalAuthoritative: return L"local-authoritative";
+        case DisplayTopologyTrust::RemoteSessionLimited: return L"remote-limited";
+        default: return L"incomplete-unavailable";
+        }
+    }
     std::wstring WidenSafeAscii(std::string const& value)
     {
         return std::wstring(value.begin(), value.end());
@@ -114,6 +123,7 @@ namespace DisplaySwitcher::Native
             << L"，协同唤醒=" << YesNo(snapshot.usb.collaborationWakeEnabled) << L"\r\n\r\n";
 
         out << L"原生 Dxva2：" << Availability(snapshot.backend.availability)
+            << L"，topology=" << TopologyTrust(snapshot.backend.topologyTrust)
             << L"，枚举=" << YesNo(snapshot.backend.enumerateSupported)
             << L"，读取=" << YesNo(snapshot.backend.readSupported)
             << L"，写入=" << YesNo(snapshot.backend.writeSupported) << L"\r\n";

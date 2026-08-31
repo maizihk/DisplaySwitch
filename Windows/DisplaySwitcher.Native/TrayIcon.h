@@ -48,6 +48,7 @@ namespace DisplaySwitcher::Native
         std::wstring status_{ L"正在初始化…" };
         std::vector<std::pair<std::wstring, std::wstring>> profiles_;
         std::vector<TrayDdcItem> ddcItems_;
+        bool sessionNotificationsRegistered_{};
         bool disposed_{};
     };
 }

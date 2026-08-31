@@ -778,14 +778,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             }
             if (!enumeration.IsTrustedNonEmptySnapshot())
             {
-                ShowValidationError(enumeration.monitors.empty()
+                ShowValidationError(enumeration.topologyTrust == ::DisplaySwitcher::Native::DisplayTopologyTrust::RemoteSessionLimited
+                    ? L"远程桌面会话中，已保留本地物理显示器配置，返回本地后重新检测。"
+                    : enumeration.monitors.empty()
                     ? L"暂未检测到显示器；已保留现有设置和映射，显示器可能处于休眠或短暂断开状态。"
                     : L"显示器枚举结果不完整；已保留现有设置和映射。");
                 return;
             }
             ddcMonitors_ = std::move(enumeration.monitors);
             auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
-                workingDisplays_, ddcMonitors_, true);
+                workingDisplays_, ddcMonitors_, enumeration.topologyTrust);
             workingDisplays_ = std::move(reconciled.displays);
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
