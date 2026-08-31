@@ -242,6 +242,18 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(rows.allSatisfy(\.isVisible))
     }
 
+    func testHorizontalRowsPinTrailingControlsWithoutUnboundedLeadingGrowth() {
+        let split = SettingsHorizontalRowAlignment.splitByFlexibleGap
+        XCTAssertTrue(split.pinsTrailingControlToCardEdge)
+        XCTAssertTrue(split.usesFlexibleGap)
+        XCTAssertFalse(split.expandsLeadingControl)
+
+        let expanding = SettingsHorizontalRowAlignment.expandingLeadingControl
+        XCTAssertTrue(expanding.pinsTrailingControlToCardEdge)
+        XCTAssertFalse(expanding.usesFlexibleGap)
+        XCTAssertTrue(expanding.expandsLeadingControl)
+    }
+
     func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {
         let displays = (0..<4).map {
             mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")

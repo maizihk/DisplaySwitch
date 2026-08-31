@@ -198,6 +198,15 @@ enum SettingsPageLayoutAction: String, Equatable {
     case editValue
 }
 
+enum SettingsHorizontalRowAlignment: Equatable {
+    case splitByFlexibleGap
+    case expandingLeadingControl
+
+    var pinsTrailingControlToCardEdge: Bool { true }
+    var usesFlexibleGap: Bool { self == .splitByFlexibleGap }
+    var expandsLeadingControl: Bool { self == .expandingLeadingControl }
+}
+
 struct SettingsPageLayoutProjection: Equatable {
     enum GroupID: String, Equatable {
         case usbAutomation

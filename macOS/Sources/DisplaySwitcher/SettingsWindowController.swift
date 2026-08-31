@@ -499,7 +499,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         ]))
 
         usbDeviceLabel.textColor = .secondaryLabelColor
-        usbDeviceLabel.maximumNumberOfLines = 2
+        usbDeviceLabel.maximumNumberOfLines = 1
+        usbDeviceLabel.lineBreakMode = .byTruncatingMiddle
         usbStatusLabel.textColor = .secondaryLabelColor
         usbStatusLabel.font = .systemFont(ofSize: 11)
         usbMappingStack.orientation = .vertical
@@ -1122,11 +1123,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         accessory: NSView? = nil
     ) -> NSView {
         control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let views = [fixedLabel(title, width: 90), control] + (accessory.map { [$0] } ?? [])
+        let alignment: SettingsHorizontalRowAlignment = accessory == nil
+            ? .expandingLeadingControl
+            : .splitByFlexibleGap
+        var views = [fixedLabel(title, width: 90), control]
+        if alignment.usesFlexibleGap {
+            views.append(makeFlexibleSpacer())
+        }
+        if let accessory {
+            accessory.setContentHuggingPriority(.required, for: .horizontal)
+            accessory.setContentCompressionResistancePriority(.required, for: .horizontal)
+            views.append(accessory)
+        }
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
+        row.distribution = .fill
         row.widthAnchor.constraint(equalToConstant: 590).isActive = true
         return row
     }
@@ -1141,23 +1154,36 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         if expandsPrimary {
             primary.setContentHuggingPriority(.defaultLow, for: .horizontal)
         }
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let alignment: SettingsHorizontalRowAlignment = expandsPrimary
+            ? .expandingLeadingControl
+            : .splitByFlexibleGap
+        for action in actions {
+            action.setContentHuggingPriority(.required, for: .horizontal)
+            action.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
         let views: [NSView]
         if let trailing {
-            views = [primary] + actions + [spacer, trailing]
-        } else if expandsPrimary {
+            trailing.setContentHuggingPriority(.required, for: .horizontal)
+            views = [primary] + actions + [makeFlexibleSpacer(), trailing]
+        } else if alignment.expandsLeadingControl {
             views = [primary] + actions
         } else {
-            views = [primary, spacer] + actions
+            views = [primary, makeFlexibleSpacer()] + actions
         }
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
+        row.distribution = .fill
         row.widthAnchor.constraint(equalToConstant: 590).isActive = true
         return row
+    }
+
+    private func makeFlexibleSpacer() -> NSView {
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
+        return spacer
     }
 
     private func addressAndPortRow() -> NSView {
@@ -1172,6 +1198,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
+        row.distribution = .fill
         row.widthAnchor.constraint(equalToConstant: 590).isActive = true
         return row
     }
