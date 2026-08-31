@@ -5,10 +5,14 @@
 - 日期：2026-08-31
 - 分支：`codex/macos-diagnostic-recording-toggle`
 - 堆叠基线：`codex/macos-stable-local-signing@53024bb`；本任务 PR 应以该分支为 base，待 PR #62 合并后再改为 `main`。
+- 实现提交：`bef1ca9ccd44539d627a9f20894cb1e5908ca2c6`
+- PR：[#63](https://github.com/maizihk/DisplaySwitch/pull/63)，保持开放等待用户 GUI 验收。
 - 原因：显示器页直接拼接 DDC 内部诊断，同时 DDC、输入源和协同记录器始终工作，导致正常使用也持续保留排障轨迹；诊断采集与用户状态展示没有边界。
 - 实现：“常规”增加默认关闭的全局开关；关闭时只保留基本操作状态，开启后才记录详细轨迹；任意切换清空三类会话记录。显示器页只展示单行读取/写入结果，内部 transport、chip、offset、attempts、checksum、IOReturn 和 rebuild 仅在开启后的诊断预览出现。
 - 安全边界：开关是本机 `UserDefaults` 偏好，不修改 schema、协议或硬件路径；诊断预览仍为只读，自动测试未访问网络、USB、DDC、唤醒或输入源。
 - 自动验证：完整 XCTest 153/153 通过；已知 InputSource QoS runtime warning 仍存在且测试通过，本任务未修改该调度路径。
+- 构建：Apple Development 签名测试包 `DisplaySwitcher-DS-023-diagnostic-toggle-macOS-test.zip`，SHA-256 `bc47d960258a0195172317c65c2d70c95920e84cff0b93d2b090c896f2a71c3d`；输出 App 与 ZIP 解压副本均通过完整信任链严格验签。
+- CI：workflow 仅监听 base=`main` 的 PR，因此堆叠 PR #63 当前不会自动触发；不得用 `workflow_dispatch` 替代最终验证，PR #62 合并并将 #63 改为 `main` 后再检查正式 CI。
 - 待验证：真实 GUI 中确认开关默认关闭、关闭时预览无详细轨迹、开启并复现后出现轨迹、再次关闭后旧轨迹消失，以及显示器页状态保持单行简明。
 
 ## 上一任务：DS-022 稳定本地开发签名
