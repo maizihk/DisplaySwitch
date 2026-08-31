@@ -1,6 +1,6 @@
 #pragma once
 
-#include "DdcControl.h"
+#include "InputSourceControl.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -45,10 +45,12 @@ namespace DisplaySwitcher::Native
     public:
         DdcBackendSet();
         IDdcBackend* Lookup(std::wstring const& key) const noexcept;
+        IInputSourceTransport* InputSource() const noexcept;
         void InvalidateTopology() noexcept;
         uint64_t TopologyGeneration() const noexcept;
 
     private:
         std::unique_ptr<IDdcBackend> native_;
+        std::unique_ptr<IInputSourceTransport> inputSource_;
     };
 }

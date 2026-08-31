@@ -1,13 +1,26 @@
 # Windows 交接记录
 
-## 当前任务：Windows 按需详细诊断记录
+## 当前任务：W-206 输入源切换与 DDC 调节后端解耦
+
+- 日期：2026-08-31
+- 分支：`codex/windows-input-source-transport`
+- 基线：`origin/main@0e377256d177cd40ce45fb47b9da300789100dce`，已包含 PR #65 的按需详细诊断实现和界面收尾。
+- 根因：输入源和亮度/对比度/音量虽然业务入口不同，但共同依赖 `IDdcBackend::Write()`，且输入源 VCP 与普通三项混在 `DdcVcpCode`，无法从类型边界证明两条路径互不调用或互不污染。
+- 设计：新增独立 `IInputSourceTransport` 与 `InputSourceSwitchService`；`DdcBackendSet` 提供两个独立对象，但共享同一个原生物理显示器会话、句柄集合、解析缓存、topology generation 和全局串行锁。
+- 行为保持：USB 离开与协同切屏仍按原显示器映射执行同一 DXVA2 输入源写入，保留一次刷新重试、取消/安全门、离线/歧义零写入、拓扑变化丢弃旧结果和多显示器失败隔离。
+- 普通 DDC：`DdcVcpCode` 与 `DdcControlService` 只允许亮度、对比度和音量；旧输入源数值即使被强制构造也会在调用 backend 前拒绝。
+- 测试边界：DDC fake 与输入源 fake 完全分离；自动测试不访问真实网络、USB、唤醒、DDC 或输入源。
+- 实机待验：真实 USB 离开和协同切屏、显示器部分失败、句柄刷新重试、热插拔/接口切换后的目标稳定性。
+- 范围：只修改 `Windows/` 与本文件；不修改 macOS、协议、contracts、schemaVersion、版本、workflow、tag 或 Release。
+
+## 历史任务：Windows 按需详细诊断记录
 
 - 日期：2026-08-31
 - 分支：`codex/windows-detailed-diagnostics`
 - 最新主线基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`，通过普通 merge 合入；未 rebase、reset 或丢弃原提交。
 - 主线同步 merge 提交：`dbcce044c97315858869d7840523fb2f776da0cd`；冲突仅位于 Windows 清单与本交接文件，解决时同时保留 PR #54/#60 已合并及用户验收、DS-021 发布准备、新增按需详细记录待验收状态和既有实机边界。
 - 实现提交：`78d55050a4d775f961b86f5d135cea30ce930c06`
-- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，目标改为 `main` 后保持 open，等待 Windows CI 与实机 GUI 验收。
+- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65) 已合并为 `0e377256d177cd40ce45fb47b9da300789100dce`；按需详细诊断和界面收尾现已进入 main。
 - 范围：按需详细诊断记录及其本机设置、测试和 Windows 文档；不修改协议、schemaVersion、版本、workflow、tag 或 Release。
 
 ## 已合并基线与发布准备事实
