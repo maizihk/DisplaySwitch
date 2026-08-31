@@ -303,9 +303,17 @@ enum SettingsPageLayoutAction: String, Equatable {
     case addCollaborationProfile
     case toggleCollaborationProfile
     case deleteCollaborationProfile
-    case moveCollaborationProfileUp
-    case moveCollaborationProfileDown
     case editValue
+}
+
+enum SettingsFormRowLayout: Equatable {
+    case leadingLabelFixedControlColumn
+
+    static let labelColumnWidth: Double = 90
+    static let controlColumnSpacing: Double = 10
+
+    var alignsLabelWithCardContentLeading: Bool { true }
+    var keepsControlColumnStable: Bool { true }
 }
 
 enum SettingsHorizontalRowAlignment: Equatable {
@@ -427,14 +435,6 @@ struct SettingsPageLayoutProjection: Equatable {
             Row(id: "collaboration-delete", title: "删除配置",
                 action: .deleteCollaborationProfile,
                 isVisible: hasSelectedProfile, isEnabled: profileCount > 1),
-            Row(id: "collaboration-move-up", title: "上移配置",
-                action: .moveCollaborationProfileUp,
-                isVisible: hasSelectedProfile,
-                isEnabled: hasSelectedProfile && selectedProfileIndex > 0),
-            Row(id: "collaboration-move-down", title: "下移配置",
-                action: .moveCollaborationProfileDown,
-                isVisible: hasSelectedProfile,
-                isEnabled: hasSelectedProfile && selectedProfileIndex + 1 < profileCount),
             Row(id: "collaboration-save-status", title: "即时保存状态", action: nil,
                 isVisible: hasSelectedProfile, isEnabled: false)
         ]

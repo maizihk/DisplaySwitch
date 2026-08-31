@@ -347,6 +347,14 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(expanding.expandsLeadingControl)
     }
 
+    func testFormRowsAlignLabelsWithCardContentWhileKeepingControlColumnStable() {
+        let layout = SettingsFormRowLayout.leadingLabelFixedControlColumn
+        XCTAssertTrue(layout.alignsLabelWithCardContentLeading)
+        XCTAssertTrue(layout.keepsControlColumnStable)
+        XCTAssertEqual(SettingsFormRowLayout.labelColumnWidth, 90)
+        XCTAssertEqual(SettingsFormRowLayout.controlColumnSpacing, 10)
+    }
+
     func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {
         let displays = (0..<4).map {
             mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")
@@ -378,12 +386,10 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(layout.groups[2].rows.contains {
             $0.id == "collaboration-save-status" && $0.isVisible
         })
-        XCTAssertFalse(layout.groups[2].rows.first {
-            $0.action == .moveCollaborationProfileUp
-        }?.isEnabled ?? true)
-        XCTAssertTrue(layout.groups[2].rows.first {
-            $0.action == .moveCollaborationProfileDown
-        }?.isEnabled ?? false)
+        XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-up" })
+        XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-down" })
+        XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "上移配置" })
+        XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "下移配置" })
     }
 
     func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {

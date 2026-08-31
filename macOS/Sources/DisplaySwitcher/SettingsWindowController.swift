@@ -237,8 +237,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let profileMappingStack = NSStackView()
     private lazy var addProfileButton = NSButton(title: "添加配置", target: self, action: #selector(addProfile))
     private lazy var removeProfileButton = NSButton(title: "删除配置", target: self, action: #selector(removeProfile))
-    private lazy var moveProfileUpButton = NSButton(title: "上移", target: self, action: #selector(moveProfileUp))
-    private lazy var moveProfileDownButton = NSButton(title: "下移", target: self, action: #selector(moveProfileDown))
     private lazy var inspectProfileButton = NSButton(title: "检测连接", target: self, action: #selector(inspectCurrentProfile))
     private lazy var requestLocalNetworkPermissionButton = NSButton(
         title: "检查网络权限",
@@ -479,8 +477,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             inspectProfileButton,
             addProfileButton,
             removeProfileButton,
-            moveProfileUpButton,
-            moveProfileDownButton,
             refreshDisplaysButton,
             refreshDiagnosticPreviewButton,
             copyDiagnosticPreviewButton
@@ -498,8 +494,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerCoordinationCheckbox.setAccessibilityLabel("启用此配置")
         addProfileButton.setAccessibilityLabel("添加协同配置")
         removeProfileButton.setAccessibilityLabel("删除协同配置")
-        moveProfileUpButton.setAccessibilityLabel("上移协同配置")
-        moveProfileDownButton.setAccessibilityLabel("下移协同配置")
         inspectProfileButton.setAccessibilityLabel("检测当前协同配置")
         requestLocalNetworkPermissionButton.setAccessibilityLabel("检查本地网络权限")
         learnUSBButton.setAccessibilityLabel("学习 USB 设备")
@@ -542,7 +536,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let pairingRow = labeledControlRow(title: "配对密码", control: pairingCodeField)
         let profileActions = horizontalActionRow(
             primary: removeProfileButton,
-            actions: [moveProfileUpButton, moveProfileDownButton],
+            actions: [],
             trailing: peerSaveStatusLabel
         )
 
@@ -1101,6 +1095,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return label
     }
 
+    private func formLabel(_ title: String) -> NSTextField {
+        let label = fixedLabel(title, width: CGFloat(SettingsFormRowLayout.labelColumnWidth))
+        label.alignment = .left
+        return label
+    }
+
     private func labeledControlRow(
         title: String,
         control: NSView,
@@ -1110,7 +1110,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let alignment: SettingsHorizontalRowAlignment = accessory == nil
             ? .expandingLeadingControl
             : .splitByFlexibleGap
-        var views = [fixedLabel(title, width: 90), control]
+        var views = [formLabel(title), control]
         if alignment.usesFlexibleGap {
             views.append(makeFlexibleSpacer())
         }
@@ -1122,7 +1122,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
         row.distribution = .fill
         row.widthAnchor.constraint(equalToConstant: 590).isActive = true
         return row
@@ -1174,14 +1174,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerHostField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         peerPortField.widthAnchor.constraint(equalToConstant: 96).isActive = true
         let row = NSStackView(views: [
-            fixedLabel("对端地址", width: 90),
+            formLabel("对端地址"),
             peerHostField,
             fixedLabel("端口", width: 36),
             peerPortField
         ])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
         row.distribution = .fill
         row.widthAnchor.constraint(equalToConstant: 590).isActive = true
         return row
@@ -1486,8 +1486,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profilePopup.addItems(withTitles: editingProfiles.map(\.name))
         profilePopup.selectItem(at: selectedProfileIndex)
         removeProfileButton.isEnabled = editingProfiles.count > 1
-        moveProfileUpButton.isEnabled = selectedProfileIndex > 0
-        moveProfileDownButton.isEnabled = selectedProfileIndex + 1 < editingProfiles.count
     }
 
     private func reloadUSBControls(document: DisplayConfigurationStoreV5Document) {
@@ -1627,18 +1625,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 $0.usbSwitch.collaborationWakeEnabled = false
             }
         }
-        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
-    }
-
-    @objc private func moveProfileUp() { moveSelectedProfile(by: -1) }
-    @objc private func moveProfileDown() { moveSelectedProfile(by: 1) }
-
-    private func moveSelectedProfile(by delta: Int) {
-        let target = selectedProfileIndex + delta
-        guard editingProfiles.indices.contains(target) else { return }
-        editingProfiles.swapAt(selectedProfileIndex, target)
-        selectedProfileIndex = target
-        let didSave = persistDocument { $0.collaborationProfiles = self.editingProfiles }
         updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
     }
 
