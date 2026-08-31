@@ -49,6 +49,7 @@ private final class DisplayInputMappingRowView: NSStackView {
         titleLabel.stringValue = title
         inputField.stringValue = value
         inputField.delegate = delegate
+        inputField.setAccessibilityLabel("\(title)输入源")
     }
 }
 
@@ -287,13 +288,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let profilePopup = NSPopUpButton()
     private let profileNameField = NSTextField()
     private let profileMappingStack = NSStackView()
-    private lazy var addProfileButton = NSButton(title: "+", target: self, action: #selector(addProfile))
-    private lazy var removeProfileButton = NSButton(title: "−", target: self, action: #selector(removeProfile))
-    private lazy var moveProfileUpButton = NSButton(title: "↑", target: self, action: #selector(moveProfileUp))
-    private lazy var moveProfileDownButton = NSButton(title: "↓", target: self, action: #selector(moveProfileDown))
-    private lazy var inspectProfileButton = NSButton(title: "检测", target: self, action: #selector(inspectCurrentProfile))
+    private lazy var addProfileButton = NSButton(title: "添加配置", target: self, action: #selector(addProfile))
+    private lazy var removeProfileButton = NSButton(title: "删除配置", target: self, action: #selector(removeProfile))
+    private lazy var moveProfileUpButton = NSButton(title: "上移", target: self, action: #selector(moveProfileUp))
+    private lazy var moveProfileDownButton = NSButton(title: "下移", target: self, action: #selector(moveProfileDown))
+    private lazy var inspectProfileButton = NSButton(title: "检测连接", target: self, action: #selector(inspectCurrentProfile))
     private lazy var requestLocalNetworkPermissionButton = NSButton(
-        title: "检测并申请权限",
+        title: "检查网络权限",
         target: self,
         action: #selector(requestLocalNetworkPermission)
     )
@@ -309,7 +310,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let usbDeviceLabel = NSTextField(wrappingLabelWithString: "未选择触发设备")
     private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
     private let usbMappingStack = NSStackView()
-    private lazy var learnUSBButton = NSButton(title: "学习 USB 设备…", target: self, action: #selector(learnUSBDevice))
+    private let usbMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
+    private let profileMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
+    private let peerTriggerDeviceStatusLabel = NSTextField(wrappingLabelWithString: "未引用本机触发设备")
+    private let peerSaveStatusLabel = NSTextField(labelWithString: "修改会自动保存")
+    private lazy var learnUSBButton = NSButton(title: "学习", target: self, action: #selector(learnUSBDevice))
     private var inputFields: [String: NSTextField] = [:]
     private var profileMappingRows: [String: DisplayInputMappingRowView] = [:]
     private var displayFeatureSwitches: [Int: [DDCCommand: NSSwitch]] = [:]
@@ -497,16 +502,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbDeviceLabel.maximumNumberOfLines = 2
         usbStatusLabel.textColor = .secondaryLabelColor
         usbStatusLabel.font = .systemFont(ofSize: 11)
-        let usbRow = NSStackView(views: [learnUSBButton, usbDeviceLabel])
-        usbRow.orientation = .horizontal
-        usbRow.alignment = .centerY
-        usbRow.spacing = 10
         usbMappingStack.orientation = .vertical
         usbMappingStack.alignment = .leading
         usbMappingStack.spacing = 8
-        let usbHint = NSTextField(wrappingLabelWithString: "只监听这里学习的一个设备。设备离开时立即按本机映射切换显示器；设备接入时只唤醒本机显示器。")
+        for label in [usbMappingEmptyLabel, profileMappingEmptyLabel, peerTriggerDeviceStatusLabel] {
+            label.textColor = .secondaryLabelColor
+            label.font = .systemFont(ofSize: 11)
+        }
+        let usbHint = NSTextField(wrappingLabelWithString:
+            "只监听明确选择的一个本机设备；USB 离开时切换显示器，接入时只唤醒本机；联动协同默认关闭。")
         usbHint.textColor = .secondaryLabelColor
         usbHint.font = .systemFont(ofSize: 11)
+        usbHint.maximumNumberOfLines = 2
+        usbHint.widthAnchor.constraint(equalToConstant: 630).isActive = true
         profilePopup.target = self
         profilePopup.action = #selector(profileSelectionChanged(_:))
         profileNameField.placeholderString = "配置名称"
@@ -521,102 +529,110 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             button.bezelStyle = .texturedRounded
             button.controlSize = .small
         }
-        let profileToolbar = NSStackView(views: [profilePopup, addProfileButton, removeProfileButton, moveProfileUpButton, moveProfileDownButton, inspectProfileButton])
-        profileToolbar.orientation = .horizontal
-        profileToolbar.alignment = .centerY
-        profileToolbar.spacing = 6
-        profilePopup.widthAnchor.constraint(equalToConstant: 270).isActive = true
         peerHostField.placeholderString = "IP 或主机名，例如 peer.example"
         peerPortField.placeholderString = "49731"
-        pairingCodeField.placeholderString = "两端填写相同的配对码"
+        pairingCodeField.placeholderString = "两端填写相同的配对密码"
         profilePopup.setAccessibilityLabel("协同配置")
         profileNameField.setAccessibilityLabel("配置名称")
         peerHostField.setAccessibilityLabel("对端地址")
         peerPortField.setAccessibilityLabel("通信端口")
-        pairingCodeField.setAccessibilityLabel("配对码")
+        pairingCodeField.setAccessibilityLabel("配对密码")
+        peerCoordinationCheckbox.setAccessibilityLabel("启用此配置")
         addProfileButton.setAccessibilityLabel("添加协同配置")
         removeProfileButton.setAccessibilityLabel("删除协同配置")
         moveProfileUpButton.setAccessibilityLabel("上移协同配置")
         moveProfileDownButton.setAccessibilityLabel("下移协同配置")
         inspectProfileButton.setAccessibilityLabel("检测当前协同配置")
-        requestLocalNetworkPermissionButton.setAccessibilityLabel("检测并申请本地网络权限")
+        requestLocalNetworkPermissionButton.setAccessibilityLabel("检查本地网络权限")
         learnUSBButton.setAccessibilityLabel("学习 USB 设备")
-        let peerGrid = NSGridView(views: [
-            [NSTextField(labelWithString: "配置名称"), profileNameField],
-            [NSTextField(labelWithString: "对端地址"), peerHostField],
-            [NSTextField(labelWithString: "通信端口"), peerPortField],
-            [NSTextField(labelWithString: "配对码"), pairingCodeField]
-        ])
-        peerGrid.rowSpacing = 8
-        peerGrid.columnSpacing = 12
-        peerGrid.column(at: 0).xPlacement = .trailing
-        peerGrid.column(at: 1).width = 410
-        peerStatusLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        let peerHint = NSTextField(wrappingLabelWithString: "可以同时启用多个协同配置。检测只验证连接，不执行 USB、唤醒或显示器操作。")
+        peerStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        let peerHint = NSTextField(wrappingLabelWithString:
+            "检查网络权限和检测连接都只验证协同，不执行 USB、唤醒、DDC 或输入源切换。")
         peerHint.textColor = .secondaryLabelColor
         peerHint.font = .systemFont(ofSize: 11)
-        let localNetworkPermissionDescription = NSTextField(
-            wrappingLabelWithString: "本地网络用于检测并连接局域网中的 DisplaySwitcher 设备。权限由 macOS 管理。"
-        )
-        localNetworkPermissionDescription.textColor = .secondaryLabelColor
-        localNetworkPermissionDescription.font = .systemFont(ofSize: 11)
+        peerHint.maximumNumberOfLines = 2
         localNetworkPermissionStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         localNetworkPermissionDetailLabel.font = .systemFont(ofSize: 11)
         localNetworkPermissionDetailLabel.textColor = .secondaryLabelColor
-        let localNetworkPermissionRow = NSStackView(views: [
-            localNetworkPermissionStatusLabel,
-            requestLocalNetworkPermissionButton
-        ])
-        localNetworkPermissionRow.orientation = .horizontal
-        localNetworkPermissionRow.alignment = .centerY
-        localNetworkPermissionRow.spacing = 12
-        localNetworkPermissionRow.distribution = .fill
-        localNetworkPermissionStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        peerSaveStatusLabel.font = .systemFont(ofSize: 11)
+        peerSaveStatusLabel.textColor = .secondaryLabelColor
+        peerSaveStatusLabel.setAccessibilityLabel("协同配置保存状态")
+
+        let usbDeviceRow = labeledControlRow(
+            title: "触发设备", control: usbDeviceLabel, accessory: learnUSBButton
+        )
+        let usbStateRow = labeledControlRow(title: "当前状态", control: usbStatusLabel)
+        usbCollaborationProfilePopup.setAccessibilityLabel("USB 联动目标")
+        usbArrivalSwitchCheckbox.setAccessibilityLabel("联动协同")
+        let usbCollaborationRow = labeledControlRow(
+            title: "联动目标", control: usbCollaborationProfilePopup,
+            accessory: usbArrivalSwitchCheckbox
+        )
+
+        let peerStatusActions = horizontalActionRow(
+            primary: peerStatusLabel,
+            actions: [requestLocalNetworkPermissionButton, inspectProfileButton]
+        )
+        let profileSelectionRow = horizontalActionRow(
+            primary: profilePopup, actions: [addProfileButton], expandsPrimary: true
+        )
+        let profileNameRow = labeledControlRow(
+            title: "配置名称", control: profileNameField,
+            accessory: peerCoordinationCheckbox
+        )
+        let peerAddressRow = addressAndPortRow()
+        let pairingRow = labeledControlRow(title: "配对密码", control: pairingCodeField)
+        let profileActions = horizontalActionRow(
+            primary: removeProfileButton,
+            actions: [moveProfileUpButton, moveProfileDownButton],
+            trailing: peerSaveStatusLabel
+        )
+
         requestLocalNetworkPermissionButton.setContentHuggingPriority(.required, for: .horizontal)
-        tabView.addTabViewItem(makePage(label: "USB 切换", views: [
-            module(title: "USB 切换", views: [
+        tabView.addTabViewItem(makeScrollablePage(label: "USB 切换", views: [
+            module(title: SettingsPageLayoutProjection.GroupID.usbAutomation.title, views: [
                 switchRow(
                     button: usbAutomationCheckbox,
-                    title: "USB 切换",
+                    title: "自动切换",
                     description: "根据一个本机 USB 设备的接入状态执行本机显示器动作。",
                     symbolName: "cable.connector"
                 ),
                 separator(),
-                usbRow,
+                usbDeviceRow,
+                usbStateRow
+            ]),
+            module(title: SettingsPageLayoutProjection.GroupID.usbPeerInputs.title, views: [
                 usbMappingStack,
-                separator(),
-                switchRow(
-                    button: usbArrivalSwitchCheckbox,
-                    title: "联动协同",
-                    description: "USB 离开时并行向所选配置发送一次认证显示器唤醒，不等待网络结果。",
-                    symbolName: "network"
-                ),
-                formRow(title: "联动目标", control: usbCollaborationProfilePopup),
-                usbStatusLabel,
-                usbHint
-            ])
+                usbMappingEmptyLabel
+            ]),
+            module(title: SettingsPageLayoutProjection.GroupID.usbCollaboration.title, views: [
+                usbCollaborationRow
+            ]),
+            usbHint
         ]))
 
-        tabView.addTabViewItem(makePage(label: "协同", views: [
-            module(title: "本地网络权限", views: [
-                localNetworkPermissionDescription,
-                localNetworkPermissionRow,
-                localNetworkPermissionDetailLabel
-            ]),
-            module(title: "协同配置", views: [
-                profileToolbar,
+        tabView.addTabViewItem(makeScrollablePage(label: "协同", views: [
+            module(title: SettingsPageLayoutProjection.GroupID.collaborationStatus.title, views: [
+                peerStatusActions,
+                localNetworkPermissionStatusLabel,
+                localNetworkPermissionDetailLabel,
                 separator(),
-                switchRow(
-                    button: peerCoordinationCheckbox,
-                    title: "启用此配置",
-                    description: "用于检测连接和手动定向协同。USB 本机切换不依赖此开关。",
-                    symbolName: "network"
-                ),
-                separator(),
-                peerGrid,
-                profileMappingStack,
-                peerStatusLabel,
                 peerHint
+            ]),
+            module(title: SettingsPageLayoutProjection.GroupID.collaborationSelection.title, views: [
+                profileSelectionRow
+            ]),
+            module(title: SettingsPageLayoutProjection.GroupID.collaborationDetails.title, views: [
+                profileNameRow,
+                peerAddressRow,
+                pairingRow,
+                separator(),
+                sectionTitle("对端输入源"),
+                profileMappingStack,
+                profileMappingEmptyLabel,
+                peerTriggerDeviceStatusLabel,
+                separator(),
+                profileActions
             ])
         ]))
 
@@ -687,6 +703,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 18)
         ])
         item.view = container
+        return item
+    }
+
+    private func makeScrollablePage(label: String, views: [NSView]) -> NSTabViewItem {
+        let item = NSTabViewItem(identifier: label)
+        item.label = label
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .windowBackgroundColor
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+
+        let documentView = FlippedDocumentView()
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(stack)
+        scrollView.documentView = documentView
+        NSLayoutConstraint.activate([
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            stack.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: documentView.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 18),
+            stack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -18)
+        ])
+        item.view = scrollView
         return item
     }
 
@@ -1071,11 +1116,63 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return label
     }
 
-    private func formRow(title: String, control: NSView) -> NSView {
-        let row = NSStackView(views: [fixedLabel(title, width: 90), control])
+    private func labeledControlRow(
+        title: String,
+        control: NSView,
+        accessory: NSView? = nil
+    ) -> NSView {
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let views = [fixedLabel(title, width: 90), control] + (accessory.map { [$0] } ?? [])
+        let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10
+        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
+        return row
+    }
+
+    private func horizontalActionRow(
+        primary: NSView,
+        actions: [NSView],
+        trailing: NSView? = nil,
+        expandsPrimary: Bool = false
+    ) -> NSView {
+        primary.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        if expandsPrimary {
+            primary.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let views: [NSView]
+        if let trailing {
+            views = [primary] + actions + [spacer, trailing]
+        } else if expandsPrimary {
+            views = [primary] + actions
+        } else {
+            views = [primary, spacer] + actions
+        }
+        let row = NSStackView(views: views)
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
+        return row
+    }
+
+    private func addressAndPortRow() -> NSView {
+        peerHostField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        peerPortField.widthAnchor.constraint(equalToConstant: 96).isActive = true
+        let row = NSStackView(views: [
+            fixedLabel("对端地址", width: 90),
+            peerHostField,
+            fixedLabel("端口", width: 36),
+            peerPortField
+        ])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
         return row
     }
 
@@ -1229,6 +1326,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let didSave = persistDocument { value in
             value.collaborationProfiles[self.selectedProfileIndex] = decision.profile
         }
+        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
         if didSave, decision.disabledBecauseIncomplete {
             showValidationError("配置不完整，已自动停用并保存当前输入。请补全所有字段后重新启用。")
         }
@@ -1419,6 +1517,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         replaceMappingRows(in: usbMappingStack, rows: descriptors.compactMap {
             reconciled[$0.displayID]
         })
+        usbMappingEmptyLabel.isHidden = !descriptors.isEmpty
         usbMappingRows = reconciled
         usbInputFields = reconciled.mapValues(\.inputField)
     }
@@ -1431,6 +1530,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerPortField.integerValue = profile.peerPort
         pairingCodeField.stringValue = profile.pairingCode
         peerCoordinationCheckbox.state = profile.coordinationEnabled ? .on : .off
+        peerTriggerDeviceStatusLabel.stringValue = profile.triggerDevices.isEmpty
+            ? "未引用本机触发设备"
+            : "已引用 \(profile.triggerDevices.count) 个本机触发设备"
+        updatePeerSaveStatus("修改会自动保存", isError: false)
         rebuildProfileMappings(profile: profile)
     }
 
@@ -1457,8 +1560,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         replaceMappingRows(in: profileMappingStack, rows: descriptors.compactMap {
             reconciled[$0.displayID]
         })
+        profileMappingEmptyLabel.isHidden = !descriptors.isEmpty
         profileMappingRows = reconciled
         inputFields = reconciled.mapValues(\.inputField)
+    }
+
+    private func updatePeerSaveStatus(_ text: String, isError: Bool) {
+        peerSaveStatusLabel.stringValue = text
+        peerSaveStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
     }
 
     private func replaceMappingRows(in stack: NSStackView, rows: [DisplayInputMappingRowView]) {
@@ -1485,7 +1594,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             pairingCode: "", peerEndpointID: nil, peerProtocolVersion: nil, coordinationEnabled: false,
             displayInputs: [], triggerDevices: []))
         selectedProfileIndex = editingProfiles.count - 1
-        persistDocument { $0.collaborationProfiles = self.editingProfiles }
+        let didSave = persistDocument { $0.collaborationProfiles = self.editingProfiles }
+        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
     }
 
     @objc private func removeProfile() {
@@ -1499,13 +1609,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let removedProfileID = editingProfiles[selectedProfileIndex].id
         editingProfiles.remove(at: selectedProfileIndex)
         selectedProfileIndex = min(selectedProfileIndex, editingProfiles.count - 1)
-        persistDocument {
+        let didSave = persistDocument {
             $0.collaborationProfiles = self.editingProfiles
             if $0.usbSwitch.collaborationProfileID?.caseInsensitiveCompare(removedProfileID) == .orderedSame {
                 $0.usbSwitch.collaborationProfileID = nil
                 $0.usbSwitch.collaborationWakeEnabled = false
             }
         }
+        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
     }
 
     @objc private func moveProfileUp() { moveSelectedProfile(by: -1) }
@@ -1516,7 +1627,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard editingProfiles.indices.contains(target) else { return }
         editingProfiles.swapAt(selectedProfileIndex, target)
         selectedProfileIndex = target
-        persistDocument { $0.collaborationProfiles = self.editingProfiles }
+        let didSave = persistDocument { $0.collaborationProfiles = self.editingProfiles }
+        updatePeerSaveStatus(didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave)
     }
 
     @objc private func inspectCurrentProfile() {
@@ -1593,7 +1705,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                       let current = self.editingProfiles.firstIndex(where: { $0.id == profileID }) else { return }
                 self.editingProfiles[current].peerEndpointID = endpointID.lowercased()
                 self.editingProfiles[current].peerProtocolVersion = 2
-                self.persistDocument { $0.collaborationProfiles = self.editingProfiles }
+                let didSave = self.persistDocument { $0.collaborationProfiles = self.editingProfiles }
+                self.updatePeerSaveStatus(
+                    didSave ? "已自动保存" : "保存失败，已恢复", isError: !didSave
+                )
             }
         case .authenticationFailed:
             peerStatusLabel.stringValue = "\(profile.name)：认证失败"

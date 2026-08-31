@@ -182,6 +182,164 @@ enum DisplayStatusLayout {
     static let maximumNumberOfLines = 1
 }
 
+enum SettingsPageLayoutAction: String, Equatable {
+    case toggleUSBAutomation
+    case learnUSBDevice
+    case selectUSBWakeProfile
+    case toggleUSBWake
+    case requestLocalNetworkPermission
+    case inspectCollaboration
+    case selectCollaborationProfile
+    case addCollaborationProfile
+    case toggleCollaborationProfile
+    case deleteCollaborationProfile
+    case moveCollaborationProfileUp
+    case moveCollaborationProfileDown
+    case editValue
+}
+
+struct SettingsPageLayoutProjection: Equatable {
+    enum GroupID: String, Equatable {
+        case usbAutomation
+        case usbPeerInputs
+        case usbCollaboration
+        case collaborationStatus
+        case collaborationSelection
+        case collaborationDetails
+
+        var title: String {
+            switch self {
+            case .usbAutomation: return "自动切换"
+            case .usbPeerInputs: return "对端输入源"
+            case .usbCollaboration: return "联动协同"
+            case .collaborationStatus: return "协同状态"
+            case .collaborationSelection: return "当前配置"
+            case .collaborationDetails: return "配置详情"
+            }
+        }
+    }
+
+    struct Row: Equatable {
+        let id: String
+        let title: String
+        let action: SettingsPageLayoutAction?
+        let isVisible: Bool
+        let isEnabled: Bool
+    }
+
+    struct Group: Equatable {
+        let id: GroupID
+        let rows: [Row]
+    }
+
+    let groups: [Group]
+
+    static func usb(
+        displays: [DisplayConfigurationV4Display],
+        learningInProgress: Bool
+    ) -> SettingsPageLayoutProjection {
+        let mappings = DisplayInputMappingPresentation.rows(displays: displays, context: .usb)
+        let mappingRows = mappings.map {
+            Row(
+                id: "usb-mapping-\($0.displayID)", title: $0.title,
+                action: .editValue, isVisible: true, isEnabled: true
+            )
+        }
+        return SettingsPageLayoutProjection(groups: [
+            Group(id: .usbAutomation, rows: [
+                Row(id: "usb-automatic-switch", title: "自动切换", action: .toggleUSBAutomation,
+                    isVisible: true, isEnabled: true),
+                Row(id: "usb-trigger-device", title: "触发设备", action: nil,
+                    isVisible: true, isEnabled: true),
+                Row(id: "usb-connection-status", title: "当前状态", action: nil,
+                    isVisible: true, isEnabled: true),
+                Row(id: "usb-learn", title: "学习", action: .learnUSBDevice,
+                    isVisible: true, isEnabled: !learningInProgress)
+            ]),
+            Group(id: .usbPeerInputs, rows: mappingRows.isEmpty ? [
+                Row(id: "usb-mapping-empty", title: "尚未检测到显示器", action: nil,
+                    isVisible: true, isEnabled: false)
+            ] : mappingRows),
+            Group(id: .usbCollaboration, rows: [
+                Row(id: "usb-collaboration-target", title: "联动目标",
+                    action: .selectUSBWakeProfile, isVisible: true, isEnabled: true),
+                Row(id: "usb-collaboration-toggle", title: "联动协同",
+                    action: .toggleUSBWake, isVisible: true, isEnabled: true)
+            ])
+        ])
+    }
+
+    static func collaboration(
+        displays: [DisplayConfigurationV4Display],
+        hasSelectedProfile: Bool,
+        profileCount: Int,
+        selectedProfileIndex: Int,
+        inspectionInProgress: Bool
+    ) -> SettingsPageLayoutProjection {
+        let mappings = DisplayInputMappingPresentation.rows(
+            displays: displays, context: .collaboration
+        )
+        let mappingRows = mappings.map {
+            Row(
+                id: "collaboration-mapping-\($0.displayID)", title: $0.title,
+                action: .editValue, isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile
+            )
+        }
+        let details = [
+            Row(id: "collaboration-name", title: "配置名称", action: .editValue,
+                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
+            Row(id: "collaboration-enabled", title: "启用此配置",
+                action: .toggleCollaborationProfile,
+                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
+            Row(id: "collaboration-host", title: "对端地址", action: .editValue,
+                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
+            Row(id: "collaboration-port", title: "端口", action: .editValue,
+                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
+            Row(id: "collaboration-pairing-code", title: "配对密码", action: .editValue,
+                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile)
+        ] + (mappingRows.isEmpty ? [
+            Row(id: "collaboration-mapping-empty", title: "尚未检测到显示器", action: nil,
+                isVisible: hasSelectedProfile, isEnabled: false)
+        ] : mappingRows) + [
+            Row(id: "collaboration-trigger-reference", title: "本机触发设备", action: nil,
+                isVisible: hasSelectedProfile, isEnabled: false),
+            Row(id: "collaboration-delete", title: "删除配置",
+                action: .deleteCollaborationProfile,
+                isVisible: hasSelectedProfile, isEnabled: profileCount > 1),
+            Row(id: "collaboration-move-up", title: "上移配置",
+                action: .moveCollaborationProfileUp,
+                isVisible: hasSelectedProfile,
+                isEnabled: hasSelectedProfile && selectedProfileIndex > 0),
+            Row(id: "collaboration-move-down", title: "下移配置",
+                action: .moveCollaborationProfileDown,
+                isVisible: hasSelectedProfile,
+                isEnabled: hasSelectedProfile && selectedProfileIndex + 1 < profileCount),
+            Row(id: "collaboration-save-status", title: "即时保存状态", action: nil,
+                isVisible: hasSelectedProfile, isEnabled: false)
+        ]
+        return SettingsPageLayoutProjection(groups: [
+            Group(id: .collaborationStatus, rows: [
+                Row(id: "collaboration-status", title: "协同状态", action: nil,
+                    isVisible: true, isEnabled: false),
+                Row(id: "collaboration-permission", title: "检查网络权限",
+                    action: .requestLocalNetworkPermission, isVisible: true,
+                    isEnabled: hasSelectedProfile && !inspectionInProgress),
+                Row(id: "collaboration-inspection", title: "检测连接",
+                    action: .inspectCollaboration, isVisible: true,
+                    isEnabled: hasSelectedProfile && !inspectionInProgress)
+            ]),
+            Group(id: .collaborationSelection, rows: [
+                Row(id: "collaboration-selector", title: "当前配置",
+                    action: .selectCollaborationProfile, isVisible: true,
+                    isEnabled: hasSelectedProfile),
+                Row(id: "collaboration-add", title: "添加配置",
+                    action: .addCollaborationProfile, isVisible: true, isEnabled: true)
+            ]),
+            Group(id: .collaborationDetails, rows: details)
+        ])
+    }
+}
+
 enum DisplayInputMappingPresentation {
     enum Context {
         case usb
@@ -194,11 +352,11 @@ enum DisplayInputMappingPresentation {
     }
 
     static func usbTitle(displayName: String) -> String {
-        "\(displayName) 离开后输入源"
+        displayName
     }
 
     static func collaborationTitle(displayName: String) -> String {
-        "\(displayName) 输入源"
+        displayName
     }
 
     static func rows(

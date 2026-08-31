@@ -163,12 +163,12 @@ final class PublicPresentationModelsTests: XCTestCase {
         let names = ["模拟显示器（1）", "模拟显示器（2）"]
 
         XCTAssertEqual(names.map(DisplayInputMappingPresentation.usbTitle(displayName:)), [
-            "模拟显示器（1） 离开后输入源",
-            "模拟显示器（2） 离开后输入源"
+            "模拟显示器（1）",
+            "模拟显示器（2）"
         ])
         XCTAssertEqual(names.map(DisplayInputMappingPresentation.collaborationTitle(displayName:)), [
-            "模拟显示器（1） 输入源",
-            "模拟显示器（2） 输入源"
+            "模拟显示器（1）",
+            "模拟显示器（2）"
         ])
     }
 
@@ -195,10 +195,118 @@ final class PublicPresentationModelsTests: XCTestCase {
             XCTAssertEqual(collaborationRows.count, displays.count)
         }
 
-        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（1） 离开后输入源" })
-        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（2） 离开后输入源" })
-        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（1） 输入源" })
-        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2） 输入源" })
+        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（1）" })
+        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（2）" })
+        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（1）" })
+        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2）" })
+    }
+
+    func testUSBSettingsLayoutUsesThreeGroupsAndDynamicDisplayRows() {
+        for count in [0, 1, 2, 3, 5] {
+            let displays = (0..<count).map {
+                mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")
+            }
+            let layout = SettingsPageLayoutProjection.usb(
+                displays: displays, learningInProgress: false
+            )
+
+            XCTAssertEqual(layout.groups.map(\.id), [
+                .usbAutomation, .usbPeerInputs, .usbCollaboration
+            ])
+            XCTAssertEqual(layout.groups[0].rows.map(\.id), [
+                "usb-automatic-switch", "usb-trigger-device", "usb-connection-status", "usb-learn"
+            ])
+            let mappingRows = layout.groups[1].rows
+            XCTAssertEqual(mappingRows.count, max(1, count))
+            if count == 0 {
+                XCTAssertEqual(mappingRows.first?.id, "usb-mapping-empty")
+            } else {
+                XCTAssertEqual(mappingRows.map(\.title), displays.map(\.name))
+                XCTAssertTrue(mappingRows.allSatisfy { $0.action == .editValue })
+            }
+            XCTAssertEqual(layout.groups[2].rows.map(\.action), [
+                .selectUSBWakeProfile, .toggleUSBWake
+            ])
+        }
+    }
+
+    func testUSBSettingsLearningDisablesOnlyLearningAction() {
+        let layout = SettingsPageLayoutProjection.usb(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            learningInProgress: true
+        )
+        let rows = layout.groups[0].rows
+
+        XCTAssertFalse(rows.first { $0.id == "usb-learn" }?.isEnabled ?? true)
+        XCTAssertTrue(rows.first { $0.id == "usb-automatic-switch" }?.isEnabled ?? false)
+        XCTAssertTrue(rows.allSatisfy(\.isVisible))
+    }
+
+    func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {
+        let displays = (0..<4).map {
+            mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")
+        }
+        let layout = SettingsPageLayoutProjection.collaboration(
+            displays: displays,
+            hasSelectedProfile: true,
+            profileCount: 2,
+            selectedProfileIndex: 0,
+            inspectionInProgress: false
+        )
+
+        XCTAssertEqual(layout.groups.map(\.id), [
+            .collaborationStatus, .collaborationSelection, .collaborationDetails
+        ])
+        XCTAssertEqual(layout.groups[0].rows.map(\.action), [
+            nil, .requestLocalNetworkPermission, .inspectCollaboration
+        ])
+        XCTAssertEqual(layout.groups[1].rows.map(\.action), [
+            .selectCollaborationProfile, .addCollaborationProfile
+        ])
+        XCTAssertEqual(
+            layout.groups[2].rows.filter { $0.id.hasPrefix("collaboration-mapping-") }.map(\.title),
+            displays.map(\.name)
+        )
+        XCTAssertTrue(layout.groups[2].rows.contains {
+            $0.id == "collaboration-delete" && $0.action == .deleteCollaborationProfile && $0.isEnabled
+        })
+        XCTAssertTrue(layout.groups[2].rows.contains {
+            $0.id == "collaboration-save-status" && $0.isVisible
+        })
+        XCTAssertFalse(layout.groups[2].rows.first {
+            $0.action == .moveCollaborationProfileUp
+        }?.isEnabled ?? true)
+        XCTAssertTrue(layout.groups[2].rows.first {
+            $0.action == .moveCollaborationProfileDown
+        }?.isEnabled ?? false)
+    }
+
+    func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {
+        let empty = SettingsPageLayoutProjection.collaboration(
+            displays: [], hasSelectedProfile: false, profileCount: 0,
+            selectedProfileIndex: 0,
+            inspectionInProgress: false
+        )
+        XCTAssertTrue(empty.groups[2].rows.allSatisfy { !$0.isVisible })
+        XCTAssertFalse(empty.groups[0].rows.first {
+            $0.action == .inspectCollaboration
+        }?.isEnabled ?? true)
+
+        let checking = SettingsPageLayoutProjection.collaboration(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            hasSelectedProfile: true, profileCount: 1,
+            selectedProfileIndex: 0,
+            inspectionInProgress: true
+        )
+        XCTAssertFalse(checking.groups[0].rows.first {
+            $0.action == .requestLocalNetworkPermission
+        }?.isEnabled ?? true)
+        XCTAssertFalse(checking.groups[0].rows.first {
+            $0.action == .inspectCollaboration
+        }?.isEnabled ?? true)
+        XCTAssertFalse(checking.groups[2].rows.first {
+            $0.action == .deleteCollaborationProfile
+        }?.isEnabled ?? true)
     }
 
     func testCachedValuesRestoreByStableIDAcrossRebuildAndCacheInstances() {
