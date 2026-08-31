@@ -1,6 +1,19 @@
 # macOS 交接记录
 
-## 当前状态：DS-022 稳定本地开发签名
+## 当前状态：DS-024 托盘空显示器分组清理
+
+- 日期：2026-08-31
+- 分支：`codex/macos-tray-empty-group`
+- 基线：`origin/codex/macos-stable-local-signing@53024bb`
+- PR：待创建；目标分支为 `codex/macos-stable-local-signing`，不包含 PR #63 的诊断开关提交。
+- 根因：`DisplaySettingsSemantics.trayCommands` 已正确过滤功能开关和“在托盘显示”，但 `rebuildDisplayMenuItems` 在过滤结果为空时仍无条件创建显示器 `NSMenuItem` 与子菜单，产生只有标题的空分组。
+- 实现：新增纯 `TrayDisplayMenuProjection`，先按稳定显示器身份生成可见分组；只有至少一个托盘控制项时才交给 AppKit 创建显示器标题和子菜单。
+- 行为边界：有可见控制项的显示器名称、滑杆和值保持不变；联动、协同菜单、设置和退出逻辑未改；未按品牌、型号、数量或枚举顺序特判。
+- 自动验证：DS-024 三项纯模型回归通过；完整 XCTest 152/152、Release `build-app.sh`、输出 App 与 ZIP 解压副本严格 codesign 验证通过。
+- 待验证：真实菜单中全部关闭后零显示器分组、只开启部分显示器时仅显示对应分组，以及每组只显示已启用并勾选托盘的项目。
+- 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作，未修改协议、schema、版本、系统权限或签名配置。
+
+## 上一任务：DS-022 稳定本地开发签名
 
 - 日期：2026-08-31
 - 分支：`codex/macos-stable-local-signing`

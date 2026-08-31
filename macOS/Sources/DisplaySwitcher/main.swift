@@ -1203,24 +1203,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         guard var insertionIndex = menu.items.firstIndex(of: linkedItem) else { return }
         let document = AppPreferences.localConfiguration
-        for configuration in configurations.values.sorted(by: { $0.index < $1.index }) {
-            let displayID = configuration.index
-            let target = Self.ddcTarget(for: configuration, document: document)
-            let stored = document.displays.first {
-                $0.id.caseInsensitiveCompare(target.stableID) == .orderedSame
-            }
-            let enabledControls = Set(DisplayControl.allCases.filter { control in
-                guard target.enabledCommands.contains(control.ddcCommand), let stored else { return false }
-                switch control {
-                case .luminance: return stored.brightnessShowInTray
-                case .contrast: return stored.contrastShowInTray
-                case .volume: return stored.volumeShowInTray
-                }
+        let entries = TrayDisplayMenuProjection.entries(
+            configurations: Array(configurations.values), displays: document.displays
+        )
+        for entry in entries {
+            let displayID = entry.displayID
+            let enabledControls = Set(DisplayControl.allCases.filter {
+                entry.commands.contains($0.ddcCommand)
             })
             let controls = DisplayControls(displayID: displayID, enabledControls: enabledControls) { [weak self] id, control, value in
                 self?.setControl(control, value: value, fromDisplay: id)
             }
-            let displayItem = NSMenuItem(title: configuration.name, action: nil, keyEquivalent: "")
+            let displayItem = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
             displayItem.image = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
             displayItem.submenu = controls.menu
             displayControls[displayID] = controls
