@@ -7,9 +7,9 @@
 - 分支：`codex/windows-detailed-diagnostics`
 - 堆叠基线：`codex/windows-w005-w203-diagnostics@d31eee9`，包含 PR [#60](https://github.com/maizihk/DisplaySwitch/pull/60) 的诊断页面及评审修复；未改动或丢弃其 DS-011/DS-012/DS-013 堆叠历史
 - PR base：`codex/windows-w005-w203-diagnostics`，使本 PR 只展示按需记录增量
-- 实现提交：交付提交将在完成本文件与最终检查后记录
-- PR：待创建；保持开放等待实机 GUI 验收
-- CI：本节当前结果均为 Windows 本机验证；创建堆叠 PR 后再记录 GitHub 托管检查
+- 实现提交：`78d55050a4d775f961b86f5d135cea30ce930c06`
+- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，open；保持开放等待实机 GUI 验收，不自动合并
+- CI：PR #65 是以非 `main` 分支为 base 的堆叠 PR，当前 Windows workflow 不会为其自动运行；本节结果均为 Windows 本机验证
 
 ## 根因与设计
 
@@ -60,4 +60,4 @@
 ## 范围
 
 - 只修改 `Windows/` 和 `handoffs/windows.md`；未修改 macOS、共享协议/提案/合约、GitHub Actions、版本号、tag 或 Release。
-- 最终提交、PR 和工作区状态将在交付前补齐。
+- 实现提交及 PR 已记录；最终文档提交和工作区状态以交付报告为准。
