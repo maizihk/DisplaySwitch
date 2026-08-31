@@ -31,7 +31,6 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let second = DisplayConfigurationStore.load(storage: storage)
         XCTAssertEqual(first.safetyState, .ready)
         XCTAssertEqual(first.document.schemaVersion, 5)
-        XCTAssertEqual(first.document.controlChannel, .automatic)
         XCTAssertFalse(first.document.linkAllDisplays)
         XCTAssertEqual(first.document.usbSwitch, .disabled)
         XCTAssertEqual(first.document.localEndpointID, second.document.localEndpointID)
@@ -161,7 +160,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
     func testStagingReadbackFailureNeverReplacesLastValidValue() throws {
         var document = DisplayConfigurationStore.load(storage: storage).document
         let original = storage.data(forKey: DisplayConfigurationStore.storageKey)
-        document.controlChannel = .fallback
+        document.linkAllDisplays.toggle()
         storage.corruptReadBack = true
         XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
         XCTAssertEqual(storage.data(forKey: DisplayConfigurationStore.storageKey), original)
@@ -175,6 +174,26 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertNotEqual(blocked.safetyState, .ready)
         try DisplayConfigurationStore.saveDocument(blocked.document, storage: storage)
         XCTAssertEqual(DisplayConfigurationStore.load(storage: storage).safetyState, .ready)
+    }
+
+    func testLegacyBackendSelectionFieldIsIgnoredAndNeverSavedAgain() throws {
+        let original = populatedDocument()
+        var dictionary = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any]
+        )
+        dictionary["controlChannel"] = "fallback"
+        storage.values[DisplayConfigurationStore.storageKey] = try JSONSerialization.data(
+            withJSONObject: dictionary, options: [.sortedKeys]
+        )
+
+        let loaded = DisplayConfigurationStore.load(storage: storage)
+        XCTAssertEqual(loaded.safetyState, .ready)
+        try DisplayConfigurationStore.saveDocument(loaded.document, storage: storage)
+        let saved = try XCTUnwrap(storage.data(forKey: DisplayConfigurationStore.storageKey))
+        let savedDictionary = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: saved) as? [String: Any]
+        )
+        XCTAssertNil(savedDictionary["controlChannel"])
     }
 
     func testUnknownCurrentSchemaAndCorruptDataAreSafelyRejected() {
@@ -201,10 +220,55 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         ).isComplete)
     }
 
+    func testProfileValidationIssuesUseReadableLocalizedDescriptions() {
+        let expected: [LocalProfileIssue: String] = [
+            .missingName: "请填写配置名称。",
+            .missingHost: "请填写对端地址。",
+            .invalidPort: "通信端口必须在 1–65535 之间。",
+            .invalidPairingCode: "配对码必须为 8–128 个 UTF-8 字节。",
+            .missingDisplayMapping: "请为当前每台显示器填写对端输入源。",
+            .orphanedDisplayMapping: "存在不再对应当前显示器的旧输入源映射，请重新保存配置。"
+        ]
+
+        XCTAssertEqual(expected.count, 6)
+        for (issue, description) in expected {
+            XCTAssertEqual(issue.userFacingDescription, description)
+            XCTAssertNotEqual(issue.userFacingDescription, issue.rawValue)
+        }
+    }
+
     func testIncompleteEnabledProfileIsExcludedFromMenu() {
         var document = populatedDocument()
         document.collaborationProfiles[0].peerHost = ""
         XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
+    }
+
+    func testIncompleteEnabledProfileIsSavedDisabledWithoutLosingPartialMappings() {
+        var document = populatedDocument()
+        let secondDisplay = DisplayConfigurationV4Display(
+            id: UUID().uuidString, name: "Display 2", selector: UUID().uuidString,
+            localInput: nil, readEnabled: false
+        )
+        document.displays.append(secondDisplay)
+        let original = document.collaborationProfiles[0]
+
+        let decision = DisplayConfigurationStore.profileForSafeSave(original, displays: document.displays)
+
+        XCTAssertTrue(decision.disabledBecauseIncomplete)
+        XCTAssertFalse(decision.profile.coordinationEnabled)
+        XCTAssertEqual(decision.profile.displayInputs, original.displayInputs)
+        XCTAssertEqual(decision.profile.displayInputs.count, 1)
+    }
+
+    func testCompleteEnabledProfileRemainsEnabledWhenSaved() {
+        let document = populatedDocument()
+        let original = document.collaborationProfiles[0]
+
+        let decision = DisplayConfigurationStore.profileForSafeSave(original, displays: document.displays)
+
+        XCTAssertFalse(decision.disabledBecauseIncomplete)
+        XCTAssertTrue(decision.profile.coordinationEnabled)
+        XCTAssertEqual(decision.profile, original)
     }
 
     func testProfileNamesRemainUniqueAfterTrimmingAndCanonicalization() {
@@ -230,8 +294,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         peer.displayInputs = [DisplayInputMapping(displayID: display.id, peerInput: 18)]
         return DisplayConfigurationStoreV5Document(
             schemaVersion: 5, localEndpointID: UUID().uuidString,
-            localDeviceName: "Local", listenPort: 49731,
-            controlChannel: .automatic, linkAllDisplays: false,
+            localDeviceName: "Local", listenPort: 49731, linkAllDisplays: false,
             displays: [display], collaborationProfiles: [peer]
         )
     }

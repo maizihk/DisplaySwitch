@@ -6,7 +6,7 @@ enum DDCCommand: UInt8, CaseIterable, Hashable {
     case input = 0x60
     case volume = 0x62
 
-    var m1ddcName: String {
+    var cacheKeyComponent: String {
         switch self {
         case .luminance: return "luminance"
         case .contrast: return "contrast"
@@ -121,8 +121,43 @@ struct NativeDDCTransportAddressing: Equatable {
 
 enum NativeDisplayEndpointToken {
     static func extract(from values: [String]) -> String? {
-        let expression = try? NSRegularExpression(
+        extractService(from: values)
+    }
+
+    static func extractFramebuffer(from values: [String]) -> String? {
+        extract(
+            from: values,
+            pattern: "(?i)(?:^|[^a-z0-9])((?:dispext[0-9]+)|(?:disp[0-9]+))(?=$|[^a-z0-9])"
+        )
+    }
+
+    static func extractService(from values: [String]) -> String? {
+        extract(
+            from: values,
             pattern: "(?i)(?:^|[^a-z0-9])(dispext(?:e|[0-9]+))(?=$|[^a-z0-9])"
+        )
+    }
+
+    static func serviceEndpoint(forFramebuffer endpoint: String?) -> String? {
+        guard let endpoint else { return nil }
+        let normalized = endpoint.lowercased()
+        if normalized == "disp0" {
+            // Apple Silicon's built-in HDMI framebuffer is exposed as disp0,
+            // while its current DCP AV service endpoint is exposed as dispextE.
+            // This is a platform topology relationship, not a display-model rule.
+            return "dispextE"
+        }
+        if normalized.hasPrefix("dispext"),
+           !normalized.dropFirst("dispext".count).isEmpty,
+           normalized.dropFirst("dispext".count).allSatisfy(\.isNumber) {
+            return normalized
+        }
+        return nil
+    }
+
+    private static func extract(from values: [String], pattern: String) -> String? {
+        let expression = try? NSRegularExpression(
+            pattern: pattern
         )
         for value in values {
             let range = NSRange(value.startIndex..<value.endIndex, in: value)
@@ -135,15 +170,57 @@ enum NativeDisplayEndpointToken {
     }
 }
 
+struct NativeFramebufferTopologyNode: Equatable {
+    let location: Int
+    let endpointToken: String?
+}
+
+struct NativeServiceTopologyNode: Equatable {
+    let location: Int
+    let endpointToken: String?
+}
+
+enum NativeServiceTopologyMatcher {
+    static func matches(
+        framebuffers: [NativeFramebufferTopologyNode],
+        services: [NativeServiceTopologyNode]
+    ) -> [Int: Int] {
+        let requestedServiceEndpoints = framebuffers.reduce(into: [String: [Int]]()) {
+            result, framebuffer in
+            guard let endpoint = NativeDisplayEndpointToken.serviceEndpoint(
+                forFramebuffer: framebuffer.endpointToken
+            ) else { return }
+            result[endpoint.lowercased(), default: []].append(framebuffer.location)
+        }
+        let servicesByEndpoint = services.reduce(into: [String: [Int]]()) { result, service in
+            guard let endpoint = service.endpointToken?.lowercased() else { return }
+            result[endpoint, default: []].append(service.location)
+        }
+
+        var result: [Int: Int] = [:]
+        for (endpoint, framebufferLocations) in requestedServiceEndpoints {
+            guard framebufferLocations.count == 1,
+                  let serviceLocations = servicesByEndpoint[endpoint],
+                  serviceLocations.count == 1,
+                  let framebufferLocation = framebufferLocations.first,
+                  let serviceLocation = serviceLocations.first else { continue }
+            result[framebufferLocation] = serviceLocation
+        }
+        return result
+    }
+}
+
 enum NativeDDCOperationCategory: String, Equatable {
     case idle
     case serviceUnmatched = "service-unmatched"
     case readSucceeded = "read-succeeded"
+    case readDiagnosticSucceeded = "read-diagnostic-succeeded"
     case readRequestWriteFailed = "read-request-write-failed"
     case readResponseTimeout = "read-response-timeout"
     case readResponseFailed = "read-response-failed"
     case readReplyRejected = "read-reply-rejected"
     case readChecksumEstimated = "read-estimated/repeated-consistent/checksum-invalid"
+    case reliableReadUnsupported = "reliable-read-unsupported"
     case writeSucceeded = "write-succeeded"
     case writeTransportFailed = "write-transport-failed"
 }
@@ -157,16 +234,20 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
     let chipAddress: UInt32?
     let readDataAddress: UInt8?
     let readAttemptCount: Int?
+    let requestChecksumMode: NativeDDCRequestChecksumMode?
     let checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection?
     let checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence?
+    let hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic]
 
     init(transportPath: NativeDDCTransportPath, serviceMatched: Bool,
          operationCategory: NativeDDCOperationCategory, rebuildCount: Int,
          replyIssue: NativeDDCReplyIssue? = nil, chipAddress: UInt32? = nil,
          readDataAddress: UInt8? = nil,
          readAttemptCount: Int? = nil,
+         requestChecksumMode: NativeDDCRequestChecksumMode? = nil,
          checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
-         checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil) {
+         checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil,
+         hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []) {
         self.transportPath = transportPath
         self.serviceMatched = serviceMatched
         self.operationCategory = operationCategory
@@ -175,11 +256,16 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         self.chipAddress = chipAddress
         self.readDataAddress = readDataAddress
         self.readAttemptCount = readAttemptCount
+        self.requestChecksumMode = requestChecksumMode
         self.checksumCompatibilityRejection = checksumCompatibilityRejection
         self.checksumCompatibilityEvidence = checksumCompatibilityEvidence
+        self.hdmiReadDiagnostics = hdmiReadDiagnostics
     }
 
     var userFacingDescription: String {
+        if operationCategory == .reliableReadUnsupported {
+            return "当前连接不支持可靠读取"
+        }
         var operation = operationCategory.rawValue
         if operationCategory == .readReplyRejected, let replyIssue {
             operation += "/\(replyIssue.diagnosticCode)"
@@ -198,14 +284,47 @@ struct NativeDDCDiagnosticSnapshot: Equatable {
         if let readAttemptCount {
             parts.append("attempts \(readAttemptCount)")
         }
+        if let requestChecksumMode {
+            parts.append("checksum \(requestChecksumMode.rawValue)")
+        }
         if let checksumCompatibilityRejection {
             parts.append("compatibility \(checksumCompatibilityRejection.diagnosticDescription)")
         }
         if let checksumCompatibilityEvidence {
             parts.append(checksumCompatibilityEvidence.diagnosticDescription)
         }
+        if !hdmiReadDiagnostics.isEmpty {
+            parts.append("HDMI offset diagnostic:\n" + hdmiReadDiagnostics
+                .map(\.diagnosticDescription).joined(separator: "\n"))
+        }
         parts.append("rebuild \(rebuildCount)")
         return parts.joined(separator: " · ")
+    }
+}
+
+struct NativeDDCDiagnosticBinding: Equatable {
+    let transportPath: NativeDDCTransportPath
+    let serviceMatched: Bool
+    let serviceIdentity: UInt64
+}
+
+struct NativeDDCDiagnosticDiscoveryState {
+    private var bindingsBySelector: [String: NativeDDCDiagnosticBinding] = [:]
+
+    mutating func replacementSnapshot(
+        selector: String,
+        binding: NativeDDCDiagnosticBinding,
+        current: NativeDDCDiagnosticSnapshot?
+    ) -> NativeDDCDiagnosticSnapshot? {
+        let key = selector.uppercased()
+        let previousBinding = bindingsBySelector.updateValue(binding, forKey: key)
+        guard current == nil || previousBinding != binding else { return nil }
+        return NativeDDCDiagnosticSnapshot(
+            transportPath: binding.transportPath,
+            serviceMatched: binding.serviceMatched,
+            operationCategory: binding.serviceMatched ? .idle : .serviceUnmatched,
+            rebuildCount: current?.rebuildCount ?? 0
+        )
     }
 }
 
@@ -215,6 +334,7 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
     case readFailed(stableID: String, command: DDCCommand)
     case writeFailed(stableID: String, command: DDCCommand)
     case invalidReply(command: DDCCommand, issue: NativeDDCReplyIssue)
+    case reliableReadUnsupported(command: DDCCommand)
     case cancelled
 
     var errorDescription: String? {
@@ -229,6 +349,8 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
             return "写入\(command.userFacingName)失败。"
         case let .invalidReply(command, issue):
             return "读取\(command.userFacingName)失败：\(issue.userFacingDescription)。"
+        case .reliableReadUnsupported:
+            return "当前连接不支持可靠读取。"
         case .cancelled:
             return "DDC 操作已取消。"
         }
@@ -239,6 +361,7 @@ enum NativeDDCReplyIssue: Error, Equatable {
     case requestWriteFailed
     case responseTimeout
     case responseReadFailed
+    case nullReply
     case wrongLength
     case badChecksum
     case wrongSource
@@ -246,12 +369,15 @@ enum NativeDDCReplyIssue: Error, Equatable {
     case wrongOpcode
     case monitorRejected
     case wrongCommand
+    case invalidRange
+    case inconsistentStrictReplies
 
     var userFacingDescription: String {
         switch self {
         case .requestWriteFailed: return "读取请求写入失败"
         case .responseTimeout: return "读取回复超时"
         case .responseReadFailed: return "读取回复 I2C 失败"
+        case .nullReply: return "显示器返回 DDC 空回复"
         case .wrongLength: return "回复长度无效"
         case .badChecksum: return "回复校验失败"
         case .wrongSource: return "回复来源无效"
@@ -259,6 +385,8 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .wrongOpcode: return "回复类型不匹配"
         case .monitorRejected: return "显示器拒绝该 VCP 请求"
         case .wrongCommand: return "回复的 VCP 项不匹配"
+        case .invalidRange: return "回复的 VCP 数值范围无效"
+        case .inconsistentStrictReplies: return "连续严格回复的 VCP 数值不一致"
         }
     }
 
@@ -267,6 +395,7 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .requestWriteFailed: return "request-write-failed"
         case .responseTimeout: return "response-timeout"
         case .responseReadFailed: return "response-read-failed"
+        case .nullReply: return "null-reply"
         case .wrongLength: return "wrong-length"
         case .badChecksum: return "bad-checksum"
         case .wrongSource: return "wrong-source"
@@ -274,11 +403,132 @@ enum NativeDDCReplyIssue: Error, Equatable {
         case .wrongOpcode: return "wrong-opcode"
         case .monitorRejected: return "monitor-rejected"
         case .wrongCommand: return "wrong-command"
+        case .invalidRange: return "invalid-range"
+        case .inconsistentStrictReplies: return "inconsistent-strict-replies"
         }
     }
 
     var permitsAlternateReadOffset: Bool {
         self != .requestWriteFailed
+    }
+}
+
+enum NativeDDCStrictReadValidation: Equatable {
+    case valid(DDCReading)
+    case rejected(NativeDDCReplyIssue)
+
+    var diagnosticCode: String {
+        switch self {
+        case .valid:
+            return "strict-valid"
+        case .rejected(let issue):
+            return "strict-rejected/\(issue.diagnosticCode)"
+        }
+    }
+}
+
+enum NativeDDCI2CBufferBridge {
+    static func withInputBytes<Result>(
+        _ bytes: [UInt8],
+        body: (UnsafeRawBufferPointer) -> Result
+    ) -> Result {
+        bytes.withUnsafeBytes(body)
+    }
+
+    static func withOutputBytes<Result>(
+        _ bytes: inout [UInt8],
+        body: (UnsafeMutableRawBufferPointer) -> Result
+    ) -> Result {
+        bytes.withUnsafeMutableBytes(body)
+    }
+}
+
+enum NativeDDCReadDataSource: String, Equatable {
+    case strictDDCCI = "ddcci/strict-valid"
+    case edidLike = "non-ddcci/edid-like"
+    case unclassified = "non-ddcci/unclassified"
+}
+
+enum NativeDDCReplySourceClassifier {
+    static func classify(
+        reply: [UInt8],
+        validation: NativeDDCStrictReadValidation,
+        edidReferences: [[UInt8]]
+    ) -> NativeDDCReadDataSource {
+        if case .valid = validation {
+            return .strictDDCCI
+        }
+        return containsEDIDWindow(reply: reply, references: edidReferences)
+            ? .edidLike : .unclassified
+    }
+
+    private static func containsEDIDWindow(reply: [UInt8], references: [[UInt8]]) -> Bool {
+        let minimumWindowLength = 4
+        guard reply.count >= minimumWindowLength else { return false }
+        for reference in references where reference.count >= minimumWindowLength {
+            let maximumLength = min(reply.count, reference.count)
+            for length in stride(from: maximumLength, through: minimumWindowLength, by: -1) {
+                for replyStart in 0...(reply.count - length) {
+                    let window = Array(reply[replyStart..<(replyStart + length)])
+                    guard Set(window).count >= 3 else { continue }
+                    for referenceStart in 0...(reference.count - length) {
+                        if window.elementsEqual(reference[referenceStart..<(referenceStart + length)]) {
+                            return true
+                        }
+                    }
+                }
+            }
+        }
+        return false
+    }
+}
+
+struct NativeDDCReadAttemptDiagnostic: Equatable {
+    let dataAddress: UInt8
+    let strategyAttempt: Int
+    let delayMicroseconds: UInt32
+    let writeIOReturns: [Int32]
+    let readIOReturn: Int32?
+    let reply: [UInt8]
+    let validation: NativeDDCStrictReadValidation
+    let dataSource: NativeDDCReadDataSource
+
+    init(
+        dataAddress: UInt8,
+        strategyAttempt: Int,
+        delayMicroseconds: UInt32,
+        writeIOReturns: [Int32],
+        readIOReturn: Int32?,
+        reply: [UInt8],
+        validation: NativeDDCStrictReadValidation,
+        edidReferences: [[UInt8]] = []
+    ) {
+        self.dataAddress = dataAddress
+        self.strategyAttempt = strategyAttempt
+        self.delayMicroseconds = delayMicroseconds
+        self.writeIOReturns = writeIOReturns
+        self.readIOReturn = readIOReturn
+        self.reply = reply
+        self.validation = validation
+        self.dataSource = NativeDDCReplySourceClassifier.classify(
+            reply: reply,
+            validation: validation,
+            edidReferences: edidReferences
+        )
+    }
+
+    var diagnosticDescription: String {
+        let offset = dataAddress == 0 ? "0" : String(format: "0x%02X", dataAddress)
+        let writeResults = writeIOReturns.map(Self.hexIOReturn).joined(separator: ",")
+        let readResult = readIOReturn.map(Self.hexIOReturn) ?? "not-called"
+        return "offset \(offset) attempt \(strategyAttempt) delay-us \(delayMicroseconds)" +
+            " write-ior=[\(writeResults)] read-ior=\(readResult)" +
+            " reply-length=\(reply.count) source=\(dataSource.rawValue)" +
+            " \(validation.diagnosticCode)"
+    }
+
+    private static func hexIOReturn(_ value: Int32) -> String {
+        String(format: "0x%08X", UInt32(bitPattern: value))
     }
 }
 
@@ -349,19 +599,292 @@ enum NativeDDCReadStrategyRunner {
     }
 }
 
-struct NativeDDCReadPreferenceCache {
-    private var values: [String: UInt8] = [:]
+struct NativeDDCChecksumStrategyResult: Equatable {
+    let outcome: NativeDDCReadStrategyOutcome
+    let checksumMode: NativeDDCRequestChecksumMode
+}
 
-    func preferredAddress(selector: String, default defaultAddress: UInt8) -> UInt8 {
-        values[selector.uppercased()] ?? defaultAddress
+enum NativeDDCChecksumStrategyRunner {
+    static func run(
+        preferredMode: NativeDDCRequestChecksumMode,
+        primaryDataAddress: UInt8,
+        defaultDataAddress: UInt8,
+        attemptsPerAddress: Int,
+        allowsFallback: Bool = true,
+        exchange: (NativeDDCRequestChecksumMode, UInt8, inout [UInt8])
+            -> Result<DDCReading, NativeDDCReplyIssue>
+    ) -> NativeDDCChecksumStrategyResult {
+        var totalAttempts = 0
+        var nextPrimaryAddress = primaryDataAddress
+        var finalOutcome: NativeDDCReadStrategyOutcome = .failure(
+            .responseReadFailed,
+            dataAddress: primaryDataAddress,
+            attempts: 0,
+            onlyObservedIssueWasBadChecksum: false
+        )
+        var finalMode = preferredMode
+
+        let modes = allowsFallback ? [preferredMode, preferredMode.alternate] : [preferredMode]
+        for mode in modes {
+            finalMode = mode
+            let alternateAddress: UInt8? = allowsFallback
+                ? (nextPrimaryAddress == defaultDataAddress ? 0 : defaultDataAddress)
+                : nil
+            let outcome = NativeDDCReadStrategyRunner.run(
+                primaryDataAddress: nextPrimaryAddress,
+                alternateDataAddress: alternateAddress,
+                attemptsPerStrategy: attemptsPerAddress
+            ) { address, response in
+                exchange(mode, address, &response)
+            }
+            switch outcome {
+            case .success(let reading, let dataAddress, let attempts):
+                return NativeDDCChecksumStrategyResult(
+                    outcome: .success(
+                        reading,
+                        dataAddress: dataAddress,
+                        attempts: totalAttempts + attempts
+                    ),
+                    checksumMode: mode
+                )
+            case .failure(
+                let issue, let dataAddress, let attempts, let onlyBadChecksum,
+                _, _
+            ):
+                totalAttempts += attempts
+                nextPrimaryAddress = dataAddress
+                finalOutcome = .failure(
+                    issue,
+                    dataAddress: dataAddress,
+                    attempts: totalAttempts,
+                    onlyObservedIssueWasBadChecksum: onlyBadChecksum
+                )
+                if issue == .requestWriteFailed {
+                    return NativeDDCChecksumStrategyResult(
+                        outcome: finalOutcome,
+                        checksumMode: mode
+                    )
+                }
+            }
+        }
+        return NativeDDCChecksumStrategyResult(
+            outcome: finalOutcome,
+            checksumMode: finalMode
+        )
+    }
+}
+
+enum NativeDDCBuiltinHDMIReadPolicy {
+    // A Get VCP retry must repeat the complete request/reply exchange. Repeating
+    // only the request writes can leave the HDMI service returning a stale or
+    // unrelated frame while still reporting KERN_SUCCESS.
+    static func run(
+        readDataAddress: UInt8,
+        attempts: Int,
+        responseLength: Int = 11,
+        retry: () -> Void,
+        exchange: (UInt8, inout [UInt8]) -> Result<DDCReading, NativeDDCReplyIssue>
+    ) -> NativeDDCReadStrategyOutcome {
+        let attemptLimit = max(attempts, 1)
+        var lastIssue = NativeDDCReplyIssue.responseReadFailed
+        var onlyObservedIssueWasBadChecksum = true
+
+        for attempt in 1...attemptLimit {
+            var response = [UInt8](repeating: 0, count: responseLength)
+            switch exchange(readDataAddress, &response) {
+            case .success(let reading):
+                return .success(reading, dataAddress: readDataAddress, attempts: attempt)
+            case .failure(let issue):
+                lastIssue = issue
+                onlyObservedIssueWasBadChecksum = onlyObservedIssueWasBadChecksum
+                    && issue == .badChecksum
+                if attempt < attemptLimit {
+                    retry()
+                }
+            }
+        }
+
+        return .failure(
+            lastIssue,
+            dataAddress: readDataAddress,
+            attempts: attemptLimit,
+            onlyObservedIssueWasBadChecksum: onlyObservedIssueWasBadChecksum,
+            checksumCompatibilityRejection: nil,
+            checksumCompatibilityEvidence: nil
+        )
+    }
+}
+
+struct NativeDDCHDMIReadDiagnosticResult: Equatable {
+    let outcome: NativeDDCReadStrategyOutcome
+    let attempts: [NativeDDCReadAttemptDiagnostic]
+}
+
+enum NativeDDCHDMIReadDiagnosticRunner {
+    static func run(
+        primaryDataAddress: UInt8,
+        alternateDataAddress: UInt8?,
+        attemptsPerStrategy: Int,
+        exchange: (UInt8, Int) -> NativeDDCReadAttemptDiagnostic
+    ) -> NativeDDCHDMIReadDiagnosticResult {
+        let attemptLimit = max(attemptsPerStrategy, 1)
+        var records: [NativeDDCReadAttemptDiagnostic] = []
+        var totalAttempts = 0
+        var lastIssue = NativeDDCReplyIssue.responseReadFailed
+        var primaryStrictReading: DDCReading?
+
+        for attempt in 1...attemptLimit {
+            totalAttempts += 1
+            let record = exchange(primaryDataAddress, attempt)
+            records.append(record)
+            switch record.validation {
+            case .valid(let reading):
+                if primaryDataAddress == 0x51 {
+                    guard reading.maximum > 0, reading.current <= reading.maximum else {
+                        primaryStrictReading = nil
+                        lastIssue = .invalidRange
+                        continue
+                    }
+                    if let previous = primaryStrictReading {
+                        guard previous.current == reading.current,
+                              previous.maximum == reading.maximum else {
+                            primaryStrictReading = reading
+                            lastIssue = .inconsistentStrictReplies
+                            continue
+                        }
+                    } else {
+                        primaryStrictReading = reading
+                        continue
+                    }
+                }
+                return NativeDDCHDMIReadDiagnosticResult(
+                    outcome: .success(
+                        reading, dataAddress: primaryDataAddress, attempts: totalAttempts
+                    ),
+                    attempts: records
+                )
+            case .rejected(let issue):
+                primaryStrictReading = nil
+                lastIssue = issue
+            }
+        }
+
+        guard lastIssue.permitsAlternateReadOffset,
+              let alternateDataAddress,
+              alternateDataAddress != primaryDataAddress else {
+            return NativeDDCHDMIReadDiagnosticResult(
+                outcome: .failure(
+                    lastIssue,
+                    dataAddress: primaryDataAddress,
+                    attempts: totalAttempts,
+                    onlyObservedIssueWasBadChecksum: records.allSatisfy {
+                        $0.validation == .rejected(.badChecksum)
+                    }
+                ),
+                attempts: records
+            )
+        }
+
+        var previousStrictReading: DDCReading?
+        var observedInconsistentStrictReplies = false
+        for attempt in 1...attemptLimit {
+            totalAttempts += 1
+            let record = exchange(alternateDataAddress, attempt)
+            records.append(record)
+            switch record.validation {
+            case .valid(let reading):
+                guard reading.maximum > 0, reading.current <= reading.maximum else {
+                    previousStrictReading = nil
+                    lastIssue = .invalidRange
+                    continue
+                }
+                if let previous = previousStrictReading {
+                    guard previous.current == reading.current,
+                          previous.maximum == reading.maximum else {
+                        observedInconsistentStrictReplies = true
+                        lastIssue = .inconsistentStrictReplies
+                        previousStrictReading = reading
+                        continue
+                    }
+                    return NativeDDCHDMIReadDiagnosticResult(
+                        outcome: .success(
+                            reading, dataAddress: alternateDataAddress, attempts: totalAttempts
+                        ),
+                        attempts: records
+                    )
+                }
+                previousStrictReading = reading
+            case .rejected(let issue):
+                previousStrictReading = nil
+                lastIssue = issue
+            }
+        }
+        if observedInconsistentStrictReplies, previousStrictReading != nil {
+            lastIssue = .inconsistentStrictReplies
+        }
+        return NativeDDCHDMIReadDiagnosticResult(
+            outcome: .failure(
+                lastIssue,
+                dataAddress: alternateDataAddress,
+                attempts: totalAttempts,
+                onlyObservedIssueWasBadChecksum: records.allSatisfy {
+                    $0.validation == .rejected(.badChecksum)
+                }
+            ),
+            attempts: records
+        )
     }
 
-    mutating func remember(address: UInt8, selector: String) {
-        values[selector.uppercased()] = address
+}
+
+struct NativeDDCReadPreferenceKey: Hashable {
+    let selector: String
+    let serviceIdentity: UInt64
+    let transportPath: NativeDDCTransportPath
+
+    init(selector: String, serviceIdentity: UInt64, transportPath: NativeDDCTransportPath) {
+        self.selector = selector.uppercased()
+        self.serviceIdentity = serviceIdentity
+        self.transportPath = transportPath
+    }
+}
+
+enum NativeDDCRequestChecksumMode: String, Equatable {
+    case legacy = "legacy"
+    case standard = "standard"
+
+    var includesDataAddress: Bool { self == .standard }
+
+    var alternate: NativeDDCRequestChecksumMode {
+        self == .standard ? .legacy : .standard
+    }
+}
+
+struct NativeDDCReadPreference: Equatable {
+    let dataAddress: UInt8
+    let checksumMode: NativeDDCRequestChecksumMode
+}
+
+struct NativeDDCReadPreferenceCache {
+    private var values: [NativeDDCReadPreferenceKey: NativeDDCReadPreference] = [:]
+
+    func preferred(for key: NativeDDCReadPreferenceKey,
+                   default defaultPreference: NativeDDCReadPreference) -> NativeDDCReadPreference {
+        values[key] ?? defaultPreference
+    }
+
+    mutating func remember(_ preference: NativeDDCReadPreference,
+                           for key: NativeDDCReadPreferenceKey) {
+        values[key] = preference
     }
 
     mutating func invalidate(selector: String) {
-        values.removeValue(forKey: selector.uppercased())
+        let normalized = selector.uppercased()
+        values = values.filter { $0.key.selector != normalized }
+    }
+
+    mutating func retainOnly(_ validKeys: Set<NativeDDCReadPreferenceKey>) {
+        values = values.filter { validKeys.contains($0.key) }
     }
 
     mutating func removeAll() {
@@ -376,8 +899,10 @@ struct NativeDDCTransportParameters: Equatable {
     let writeSleepMicroseconds: UInt32
     let typeCDPReadSleepMicroseconds: UInt32
     let builtinHDMIReadSleepMicroseconds: UInt32
+    let builtinHDMIReadRetrySleepMicroseconds: UInt32
     let retrySleepMicroseconds: UInt32
     let writeCycles: Int
+    let builtinHDMIReadRequestWriteCycles: Int
     let writeAttempts: Int
     let typeCDPReadAttempts: Int
     let builtinHDMIReadAttempts: Int
@@ -401,13 +926,33 @@ struct NativeDDCTransportParameters: Equatable {
         builtinHDMIReadDataAddress: 0x00,
         writeSleepMicroseconds: 10_000,
         typeCDPReadSleepMicroseconds: 50_000,
-        builtinHDMIReadSleepMicroseconds: 50_000,
+        builtinHDMIReadSleepMicroseconds: 10_000,
+        builtinHDMIReadRetrySleepMicroseconds: 5_000,
         retrySleepMicroseconds: 20_000,
         writeCycles: 2,
+        builtinHDMIReadRequestWriteCycles: 1,
         writeAttempts: 5,
         typeCDPReadAttempts: 5,
-        builtinHDMIReadAttempts: 5
+        builtinHDMIReadAttempts: 8
     )
+}
+
+enum NativeDDCRequestPacketBuilder {
+    static func packet(
+        request: [UInt8],
+        chipAddress: UInt32,
+        dataAddress: UInt8,
+        includesDataAddressInChecksum: Bool
+    ) -> [UInt8] {
+        var packet = [UInt8(0x80 | (request.count + 1)), UInt8(request.count)]
+            + request + [0]
+        var checksumSeed = UInt8(truncatingIfNeeded: chipAddress << 1)
+        if includesDataAddressInChecksum {
+            checksumSeed ^= dataAddress
+        }
+        packet[packet.count - 1] = packet.dropLast().reduce(checksumSeed, ^)
+        return packet
+    }
 }
 
 enum NativeDDCWriteCyclePolicy {
@@ -427,6 +972,9 @@ enum NativeDDCWriteCyclePolicy {
 enum NativeDDCReplyValidator {
     static func reading(from reply: [UInt8], command: DDCCommand) -> Result<DDCReading, NativeDDCReplyIssue> {
         guard reply.count == 11 else { return .failure(.wrongLength) }
+        guard !(reply[0] == 0x6E && reply[1] & 0x7F == 0) else {
+            return .failure(.nullReply)
+        }
         guard reply.dropLast().reduce(UInt8(0x50), ^) == reply.last else { return .failure(.badChecksum) }
         guard reply[0] == 0x6E else { return .failure(.wrongSource) }
         guard reply[1] & 0x7F == 8 else { return .failure(.wrongPayloadLength) }
@@ -606,6 +1154,7 @@ enum NativeDDCChecksumCompatibilityValidator {
 
     private static func fieldIssue(_ reply: [UInt8], command: DDCCommand) -> NativeDDCReplyIssue {
         guard reply.count == 11 else { return .wrongLength }
+        guard !(reply[0] == 0x6E && reply[1] & 0x7F == 0) else { return .nullReply }
         guard reply[0] == 0x6E else { return .wrongSource }
         guard reply[1] & 0x7F == 8 else { return .wrongPayloadLength }
         guard reply[2] == 0x02 else { return .wrongOpcode }
@@ -698,18 +1247,20 @@ enum NativeDisplayMatcher {
                 // location, serial, or multiple independent EDID/product characteristics.
                 return score < 2 ? nil : (identity.stableID, candidate.serviceLocation, score)
             }
-        }.sorted { lhs, rhs in
-            if lhs.2 != rhs.2 { return lhs.2 > rhs.2 }
-            if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
-            return lhs.1 < rhs.1
         }
-        var usedDisplays = Set<String>()
-        var usedServices = Set<Int>()
+        let uniqueBestByDisplay = Dictionary(grouping: scored, by: { $0.0 }).compactMapValues {
+            edges -> (String, Int, Int)? in
+            guard let bestScore = edges.map(\.2).max() else { return nil }
+            let bestEdges = edges.filter { $0.2 == bestScore }
+            return bestEdges.count == 1 ? bestEdges[0] : nil
+        }
+        let uniqueBestByService = Dictionary(
+            grouping: uniqueBestByDisplay.values,
+            by: { $0.1 }
+        )
         var result: [String: Int] = [:]
-        for (displayID, serviceLocation, _) in scored {
-            guard !usedDisplays.contains(displayID), !usedServices.contains(serviceLocation) else { continue }
-            usedDisplays.insert(displayID)
-            usedServices.insert(serviceLocation)
+        for (displayID, serviceLocation, _) in uniqueBestByDisplay.values {
+            guard uniqueBestByService[serviceLocation]?.count == 1 else { continue }
             result[displayID] = serviceLocation
         }
         return result
@@ -759,10 +1310,15 @@ enum NativeInputCandidateDiagnosticProjection {
 }
 
 enum DDCSingleRetry {
-    static func perform(operation: () throws -> Void, recover: () throws -> Void) throws {
+    static func perform(
+        operation: () throws -> Void,
+        recover: () throws -> Void,
+        shouldRetry: (Error) -> Bool = { _ in true }
+    ) throws {
         do {
             try operation()
         } catch {
+            guard shouldRetry(error) else { throw error }
             try recover()
             try operation()
         }
@@ -811,99 +1367,63 @@ extension DDCBackend {
 }
 
 final class DDCBackendRouter {
-    private let backends: [DDCBackend]
+    private let backend: DDCBackend
 
-    init(backends: [DDCBackend]) {
-        self.backends = backends
-    }
-
-    func setControlChannel(_ channel: DDCControlChannel) {
-        // DS-009 deliberately keeps the persisted setting readable while the runtime is
-        // native-only. Selecting automatic or the historical fallback must not silently
-        // launch m1ddc and report a native operation as successful.
-        _ = channel
-    }
-
-    private var selectedBackends: [DDCBackend] {
-        backends.filter { $0.identifier == "apple-silicon-native" }
+    init(backend: DDCBackend) {
+        self.backend = backend
     }
 
     var availability: DDCBackendAvailability {
-        selectedBackends.contains { $0.availability == .available }
-            ? .available
-            : .unavailable("没有可用的硬件 DDC 后端")
+        backend.availability
     }
 
     var capabilities: DDCBackendCapabilities {
-        let available = selectedBackends.filter { $0.availability == .available }
-        return DDCBackendCapabilities(
-            canEnumerate: available.contains { $0.capabilities.canEnumerate },
-            canReadVCP: available.contains { $0.capabilities.canReadVCP },
-            canWriteVCP: available.contains { $0.capabilities.canWriteVCP }
-        )
+        backend.availability == .available
+            ? backend.capabilities
+            : DDCBackendCapabilities(canEnumerate: false, canReadVCP: false, canWriteVCP: false)
     }
 
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
-        backends.forEach { $0.updateKnownDisplays(displays) }
+        backend.updateKnownDisplays(displays)
     }
 
     func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
-        var lastError: Error?
-        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canEnumerate {
-            do {
-                try token.throwIfCancelled()
-                let displays = try backend.enumerateDisplays(token: token)
-                if !displays.isEmpty { return displays }
-                lastError = DDCBackendError.unavailable(backend: backend.identifier)
-            } catch DDCBackendError.cancelled {
-                throw DDCBackendError.cancelled
-            } catch {
-                lastError = error
-            }
+        guard backend.availability == .available, backend.capabilities.canEnumerate else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        throw lastError ?? DDCBackendError.unavailable(backend: "all")
+        try token.throwIfCancelled()
+        let displays = try backend.enumerateDisplays(token: token)
+        guard !displays.isEmpty else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
+        }
+        return displays
     }
 
     func read(stableID: String, selector: String, command: DDCCommand,
               token: DDCCancellationToken) throws -> DDCReading {
-        var lastError: Error?
-        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canReadVCP {
-            do {
-                try token.throwIfCancelled()
-                return try backend.read(stableID: stableID, selector: selector, command: command, token: token)
-            } catch DDCBackendError.cancelled {
-                throw DDCBackendError.cancelled
-            } catch {
-                lastError = error
-            }
+        guard backend.availability == .available, backend.capabilities.canReadVCP else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        throw lastError ?? DDCBackendError.unavailable(backend: "all")
+        try token.throwIfCancelled()
+        return try backend.read(stableID: stableID, selector: selector, command: command, token: token)
     }
 
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
                token: DDCCancellationToken) throws {
-        var lastError: Error?
-        for backend in selectedBackends where backend.availability == .available && backend.capabilities.canWriteVCP {
-            do {
-                try token.throwIfCancelled()
-                try backend.write(stableID: stableID, selector: selector, command: command,
-                                  value: value, token: token)
-                return
-            } catch DDCBackendError.cancelled {
-                throw DDCBackendError.cancelled
-            } catch {
-                lastError = error
-            }
+        guard backend.availability == .available, backend.capabilities.canWriteVCP else {
+            throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        throw lastError ?? DDCBackendError.unavailable(backend: "all")
+        try token.throwIfCancelled()
+        try backend.write(stableID: stableID, selector: selector, command: command,
+                          value: value, token: token)
     }
 
     func cancelAll() {
-        backends.forEach { $0.cancelAll() }
+        backend.cancelAll()
     }
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
-        selectedBackends.compactMap { $0.diagnostic(selector: selector) }.first
+        backend.diagnostic(selector: selector)
     }
 }
 
@@ -1006,7 +1526,7 @@ final class UserDefaultsDDCValueCache: DDCValueCache {
     }
 
     private func cacheKey(stableID: String, command: DDCCommand) -> String {
-        "LastValue.stable.\(stableID.lowercased()).\(command.m1ddcName)"
+        "LastValue.stable.\(stableID.lowercased()).\(command.cacheKeyComponent)"
     }
 }
 
@@ -1046,10 +1566,6 @@ final class DDCControlService {
 
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {
         router.updateKnownDisplays(displays)
-    }
-
-    func setControlChannel(_ channel: DDCControlChannel) {
-        router.setControlChannel(channel)
     }
 
     func enumerateDisplays() throws -> [DDCBackendDisplay] {

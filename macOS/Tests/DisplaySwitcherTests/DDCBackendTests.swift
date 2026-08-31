@@ -1,6 +1,92 @@
 import XCTest
 
 final class DDCBackendTests: XCTestCase {
+    func testDiscoveryKeepsLastOperationWhenServiceBindingIsUnchanged() {
+        var state = NativeDDCDiagnosticDiscoveryState()
+        let binding = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+        let initial = state.replacementSnapshot(
+            selector: "display-a", binding: binding, current: nil
+        )
+        XCTAssertEqual(initial?.operationCategory, .idle)
+
+        let succeeded = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 2,
+            chipAddress: 0x37,
+            readDataAddress: 0x51,
+            readAttemptCount: 1,
+            requestChecksumMode: .legacy
+        )
+
+        XCTAssertNil(state.replacementSnapshot(
+            selector: "DISPLAY-A", binding: binding, current: succeeded
+        ))
+    }
+
+    func testDiscoveryResetsLastOperationWhenServiceIdentityChanges() {
+        var state = NativeDDCDiagnosticDiscoveryState()
+        let original = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+        _ = state.replacementSnapshot(selector: "display-a", binding: original, current: nil)
+        let succeeded = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 2
+        )
+        let changed = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 202
+        )
+
+        let replacement = state.replacementSnapshot(
+            selector: "display-a", binding: changed, current: succeeded
+        )
+
+        XCTAssertEqual(replacement?.transportPath, .typeCDPAlt)
+        XCTAssertEqual(replacement?.operationCategory, .idle)
+        XCTAssertEqual(replacement?.rebuildCount, 2)
+        XCTAssertNil(replacement?.chipAddress)
+    }
+
+    func testDiscoveryResetsLastOperationWhenTransportChanges() {
+        var state = NativeDDCDiagnosticDiscoveryState()
+        let original = NativeDDCDiagnosticBinding(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+        _ = state.replacementSnapshot(selector: "display-a", binding: original, current: nil)
+        let succeeded = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 0
+        )
+        let changed = NativeDDCDiagnosticBinding(
+            transportPath: .builtinHDMIConverter,
+            serviceMatched: true,
+            serviceIdentity: 101
+        )
+
+        let replacement = state.replacementSnapshot(
+            selector: "display-a", binding: changed, current: succeeded
+        )
+
+        XCTAssertEqual(replacement?.transportPath, .builtinHDMIConverter)
+        XCTAssertEqual(replacement?.operationCategory, .idle)
+    }
+
     func testNativeWriteKeepsEarlierAcceptedCycleWhenTypeCPathDrops() {
         var results = [true, false]
         var calls = 0
@@ -38,7 +124,7 @@ final class DDCBackendTests: XCTestCase {
                           .volume: DDCReading(current: 7, maximum: 20)]
         ]
         let cache = MockDDCCache()
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a")])
 
@@ -55,7 +141,7 @@ final class DDCBackendTests: XCTestCase {
         backend.readings = ["display-a": Dictionary(uniqueKeysWithValues:
             DDCCommand.userControls.map { ($0, DDCReading(current: 0, maximum: 100)) })]
         let cache = MockDDCCache(values: ["display-a": [.luminance: 35, .contrast: 46, .volume: 8]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a")])
 
@@ -73,7 +159,7 @@ final class DDCBackendTests: XCTestCase {
             .volume: DDCReading(current: 9, maximum: 20)
         ]]
         let cache = MockDDCCache()
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a")])
 
@@ -91,7 +177,7 @@ final class DDCBackendTests: XCTestCase {
         backend.readFailures = ["display-a": [.contrast]]
         backend.writeFailures = ["display-a": [.luminance]]
         let cache = MockDDCCache(values: ["display-a": [.contrast: 44]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let readings = service.read([
             target(id: "display-b", commands: [.luminance]),
@@ -112,7 +198,7 @@ final class DDCBackendTests: XCTestCase {
 
     func testC020DisabledControlsPerformNoReadOrWrite() {
         let backend = MockDDCBackend()
-        let service = makeService(backends: [backend], cache: MockDDCCache())
+        let service = makeService(backend: backend, cache: MockDDCCache())
         let disabled = target(id: "display-a", commands: [])
 
         let result = service.read([disabled])
@@ -134,7 +220,7 @@ final class DDCBackendTests: XCTestCase {
         let commands = DisplaySettingsSemantics.enabledCommands(for: stored)
         let backend = MockDDCBackend()
         backend.readings = ["display-a": [.luminance: DDCReading(current: 42, maximum: 100)]]
-        let service = makeService(backends: [backend], cache: MockDDCCache())
+        let service = makeService(backend: backend, cache: MockDDCCache())
 
         let result = service.read([target(id: "display-a", commands: commands)])
 
@@ -148,7 +234,7 @@ final class DDCBackendTests: XCTestCase {
         backend.readings = ["simulated-display": Dictionary(uniqueKeysWithValues:
             DDCCommand.userControls.map { ($0, DDCReading(current: 0, maximum: 0)) })]
         let cache = MockDDCCache(values: ["simulated-display": [.luminance: 63]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "simulated-display")])
 
@@ -158,18 +244,28 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(cache.writeCount, 0)
     }
 
-    func testNativeSuccessAndEveryNativeFailureNeverUseM1DDC() throws {
+    func testUnsupportedReliableReadPreservesLastTrustedCache() {
+        let backend = MockDDCBackend()
+        backend.readFailures = ["display-a": [.luminance]]
+        let cache = MockDDCCache(values: ["display-a": [.luminance: 64]])
+        let service = makeService(backend: backend, cache: cache)
+
+        let result = service.read([target(id: "display-a", commands: [.luminance])])
+
+        XCTAssertEqual(result["display-a"]?[.luminance]?.reading.current, 64)
+        XCTAssertTrue(result["display-a"]?[.luminance]?.estimated == true)
+        XCTAssertEqual(cache.writeCount, 0)
+    }
+
+    func testSingleNativeBackendSuccessAndFailuresRemainExplicit() throws {
         let native = MockDDCBackend(identifier: "apple-silicon-native")
-        let fallback = MockDDCBackend(identifier: "m1ddc")
         native.readings = ["display-a": [.luminance: DDCReading(current: 30, maximum: 100)]]
-        fallback.readings = ["display-a": [.luminance: DDCReading(current: 70, maximum: 100)]]
         let token = DDCCancellationToken()
-        let router = DDCBackendRouter(backends: [native, fallback])
+        let router = DDCBackendRouter(backend: native)
 
         let nativeRead = try router.read(stableID: "display-a", selector: "selector-a",
                                          command: .luminance, token: token)
         XCTAssertEqual(nativeRead.current, 30)
-        XCTAssertEqual(fallback.readCalls.count, 0)
 
         native.readFailures = ["display-a": [.luminance]]
         XCTAssertThrowsError(try router.read(
@@ -179,43 +275,30 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertThrowsError(try router.read(
             stableID: "display-a", selector: "selector-a", command: .luminance, token: token))
         XCTAssertEqual(native.readCalls.count, 2)
-        XCTAssertEqual(fallback.readCalls.count, 0)
 
         native.availabilityValue = .available
         native.writeFailures = ["display-a": [.contrast]]
         XCTAssertThrowsError(try router.write(stableID: "display-a", selector: "selector-a",
                                               command: .contrast, value: 55, token: token))
-        XCTAssertEqual(fallback.writeCalls.count, 0)
         native.writeFailures = [:]
         try router.write(stableID: "display-a", selector: "selector-a", command: .volume,
                          value: 8, token: token)
-        XCTAssertEqual(fallback.writeCalls.count, 0)
 
-        fallback.displays = [DDCBackendDisplay(stableID: "display-a", name: "A", selector: "selector-a")]
         native.availabilityValue = .unavailable("unsupported architecture")
         XCTAssertThrowsError(try router.enumerateDisplays(token: token))
-        XCTAssertEqual(fallback.enumerateCount, 0)
+        XCTAssertEqual(native.enumerateCount, 0)
     }
 
-    func testPersistedControlChannelCannotReenableM1DDC() throws {
-        let native = MockDDCBackend(identifier: "apple-silicon-native")
-        let fallback = MockDDCBackend(identifier: "m1ddc")
-        native.readings = ["display-a": [.luminance: DDCReading(current: 31, maximum: 100)]]
-        fallback.readings = ["display-a": [.luminance: DDCReading(current: 72, maximum: 100)]]
-        let router = DDCBackendRouter(backends: [native, fallback])
-        let token = DDCCancellationToken()
+    func testPlatformNeutralCommandNamesPreserveExistingCacheKeys() {
+        let suite = "DisplaySwitcher.DDC.Cache.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(73, forKey: "LastValue.stable.display-a.luminance")
+        let cache = UserDefaultsDDCValueCache(defaults: defaults)
 
-        router.setControlChannel(.native)
-        XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
-                                       command: .luminance, token: token).current, 31)
-        XCTAssertEqual(fallback.readCalls.count, 0)
-
-        for channel in DDCControlChannel.allCases {
-            router.setControlChannel(channel)
-            XCTAssertEqual(try router.read(stableID: "display-a", selector: "selector-a",
-                                           command: .luminance, token: token).current, 31)
-        }
-        XCTAssertEqual(fallback.readCalls.count, 0)
+        XCTAssertEqual(cache.value(stableID: "DISPLAY-A", command: .luminance), 73)
+        cache.setValue(44, stableID: "DISPLAY-A", command: .contrast)
+        XCTAssertEqual(defaults.integer(forKey: "LastValue.stable.display-a.contrast"), 44)
     }
 
     func testProductNamesAndSameModelStableLocalOrdinalsSurviveEnumerationReorder() {
@@ -274,6 +357,41 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(matches["display-b"], 2)
         XCTAssertNil(matches["display-unbound"])
         XCTAssertEqual(Set(matches.values).count, matches.count)
+    }
+
+    func testNativeServiceMatchingRejectsTiedSameModelCandidates() {
+        let identities = [
+            NativeDisplayIdentity(
+                stableID: "display-a", ioDisplayLocation: "",
+                productName: "Same Model", serialNumber: 0,
+                edidSearchKeys: [
+                    NativeEDIDSearchKey(value: "AAAA", offset: 0),
+                    NativeEDIDSearchKey(value: "BBBB", offset: 4)
+                ]
+            ),
+            NativeDisplayIdentity(
+                stableID: "display-b", ioDisplayLocation: "",
+                productName: "Same Model", serialNumber: 0,
+                edidSearchKeys: [
+                    NativeEDIDSearchKey(value: "AAAA", offset: 0),
+                    NativeEDIDSearchKey(value: "BBBB", offset: 4)
+                ]
+            )
+        ]
+        let candidates = [
+            NativeTransportCandidate(
+                serviceLocation: 1, ioDisplayLocation: "candidate-a",
+                productName: "Same Model", serialNumber: 0, edidUUID: "AAAABBBB"
+            ),
+            NativeTransportCandidate(
+                serviceLocation: 2, ioDisplayLocation: "candidate-b",
+                productName: "Same Model", serialNumber: 0, edidUUID: "AAAABBBB"
+            )
+        ]
+
+        XCTAssertTrue(
+            NativeDisplayMatcher.matches(identities: identities, candidates: candidates).isEmpty
+        )
     }
 
     func testNativeGetVCPReplyValidationRejectsWrongOrLateFrames() throws {
@@ -404,7 +522,7 @@ final class DDCBackendTests: XCTestCase {
             ]
         ]
         let cache = MockDDCCache()
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
 
         let result = service.read([target(id: "display-a", commands: [.luminance])])
 
@@ -419,14 +537,28 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
         XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0x00)
         XCTAssertEqual(parameters.readSleepMicroseconds(for: .typeCDPAlt), 50_000)
-        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 50_000)
+        XCTAssertEqual(parameters.readSleepMicroseconds(for: .builtinHDMIConverter), 10_000)
+        XCTAssertEqual(parameters.builtinHDMIReadRetrySleepMicroseconds, 5_000)
         XCTAssertEqual(parameters.readAttempts(for: .typeCDPAlt), 5)
-        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 5)
+        XCTAssertEqual(parameters.readAttempts(for: .builtinHDMIConverter), 8)
         XCTAssertEqual(parameters.writeCycles, 2)
+        XCTAssertEqual(parameters.builtinHDMIReadRequestWriteCycles, 1)
         XCTAssertEqual(parameters.writeAttempts, 5)
     }
 
     func testNativeTransportPathClassificationIsDeterministicAndSanitized() {
+        XCTAssertEqual(
+            NativeDisplayEndpointToken.extractFramebuffer(
+                from: ["synthetic/disp0@8000000/IOMobileFramebufferShim"]
+            ),
+            "disp0"
+        )
+        XCTAssertEqual(
+            NativeDisplayEndpointToken.extractFramebuffer(
+                from: ["synthetic/dispext1@88000000/IOMobileFramebufferShim"]
+            ),
+            "dispext1"
+        )
         XCTAssertEqual(
             NativeDisplayEndpointToken.extract(from: ["synthetic/dispextE:/proxy"]),
             "dispextE"
@@ -472,6 +604,87 @@ final class DDCBackendTests: XCTestCase {
         let parameters = NativeDDCTransportParameters.appleSiliconDDCCompatible
         XCTAssertEqual(parameters.readDataAddress(for: .builtinHDMIConverter), 0)
         XCTAssertEqual(parameters.readDataAddress(for: .typeCDPAlt), 0x51)
+    }
+
+    func testNativeServiceTopologyMatchesM4HDMIAndExternalEndpointsIndependentOfOrder() {
+        let framebuffers = [
+            NativeFramebufferTopologyNode(location: 1, endpointToken: "disp0"),
+            NativeFramebufferTopologyNode(location: 2, endpointToken: "dispext0"),
+            NativeFramebufferTopologyNode(location: 3, endpointToken: "dispext1")
+        ]
+        let services = [
+            NativeServiceTopologyNode(location: 30, endpointToken: "dispext1"),
+            NativeServiceTopologyNode(location: 10, endpointToken: "dispextE"),
+            NativeServiceTopologyNode(location: 20, endpointToken: "dispext0")
+        ]
+
+        let expected = [1: 10, 2: 20, 3: 30]
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: framebuffers, services: services
+            ),
+            expected
+        )
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: Array(framebuffers.reversed()),
+                services: Array(services.reversed())
+            ),
+            expected
+        )
+    }
+
+    func testNativeServiceTopologyRejectsAmbiguityAndUnknownEndpoints() {
+        XCTAssertTrue(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "dispext0"),
+                    NativeFramebufferTopologyNode(location: 2, endpointToken: "dispext0"),
+                    NativeFramebufferTopologyNode(location: 3, endpointToken: nil),
+                    NativeFramebufferTopologyNode(location: 4, endpointToken: "disp1")
+                ],
+                services: [
+                    NativeServiceTopologyNode(location: 10, endpointToken: "dispext0"),
+                    NativeServiceTopologyNode(location: 11, endpointToken: nil)
+                ]
+            ).isEmpty
+        )
+        XCTAssertTrue(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "disp0")
+                ],
+                services: [
+                    NativeServiceTopologyNode(location: 10, endpointToken: "dispextE"),
+                    NativeServiceTopologyNode(location: 11, endpointToken: "dispextE")
+                ]
+            ).isEmpty
+        )
+    }
+
+    func testNativeServiceTopologyRebindsAfterInterfaceChangeWithoutHistoricalGuessing() {
+        let services = [
+            NativeServiceTopologyNode(location: 10, endpointToken: "dispextE"),
+            NativeServiceTopologyNode(location: 20, endpointToken: "dispext2")
+        ]
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "disp0")
+                ],
+                services: services
+            ),
+            [1: 10]
+        )
+        XCTAssertEqual(
+            NativeServiceTopologyMatcher.matches(
+                framebuffers: [
+                    NativeFramebufferTopologyNode(location: 1, endpointToken: "dispext2")
+                ],
+                services: services
+            ),
+            [1: 20]
+        )
     }
 
     func testNativeTransportAddressingSeparatesEndpointPathFromConverterChip() {
@@ -577,15 +790,501 @@ final class DDCBackendTests: XCTestCase {
         )
     }
 
+    func testHDMIDiagnosticFallsBackFromOffsetZeroAndRequiresTwoStrictOffset51Replies() {
+        var addresses: [UInt8] = []
+        let valid = DDCReading(current: 42, maximum: 100)
+
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0,
+            alternateDataAddress: 0x51,
+            attemptsPerStrategy: 5
+        ) { address, attempt in
+            addresses.append(address)
+            return readAttempt(
+                address: address,
+                attempt: attempt,
+                reply: address == 0 ? badChecksumReply(current: 42, maximum: 100)
+                    : strictReply(current: 42, maximum: 100),
+                validation: address == 0 ? .rejected(.badChecksum) : .valid(valid)
+            )
+        }
+
+        XCTAssertEqual(addresses, [0, 0, 0, 0, 0, 0x51, 0x51])
+        XCTAssertEqual(
+            result.outcome,
+            .success(valid, dataAddress: 0x51, attempts: 7)
+        )
+        XCTAssertEqual(result.attempts.count, 7)
+        XCTAssertTrue(result.attempts.allSatisfy { $0.reply.count == 11 })
+    }
+
+    func testBuiltinHDMIFormalReadRetriesCompleteTransactionsWithoutAlternateProbe() {
+        var addresses: [UInt8] = []
+        var retryCount = 0
+        var buffersWereFresh: [Bool] = []
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 8,
+            retry: { retryCount += 1 }
+        ) { address, response in
+            addresses.append(address)
+            buffersWereFresh.append(response.allSatisfy { $0 == 0 })
+            response = self.badChecksumReply(current: 42, maximum: 100)
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(addresses, Array(repeating: 0, count: 8))
+        XCTAssertEqual(retryCount, 7)
+        XCTAssertTrue(buffersWereFresh.allSatisfy { $0 })
+        XCTAssertEqual(
+            outcome,
+            .failure(
+                .badChecksum,
+                dataAddress: 0,
+                attempts: 8,
+                onlyObservedIssueWasBadChecksum: true
+            )
+        )
+    }
+
+    func testBuiltinHDMIFormalReadAcceptsOnlyStrictValidReply() {
+        let expected = DDCReading(current: 42, maximum: 100)
+        var calls = 0
+        var retryCount = 0
+        let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
+            readDataAddress: 0,
+            attempts: 8,
+            retry: { retryCount += 1 }
+        ) { _, response in
+            calls += 1
+            response = self.strictReply(current: 42, maximum: 100)
+            return NativeDDCReplyValidator.reading(from: response, command: .luminance)
+        }
+
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(retryCount, 0)
+        XCTAssertEqual(outcome, .success(expected, dataAddress: 0, attempts: 1))
+    }
+
+    func testReliableReadUnsupportedDiagnosticHidesTransportInternals() {
+        let rejectedReply = badChecksumReply(current: 42, maximum: 100)
+        let edidLikeAttempt = NativeDDCReadAttemptDiagnostic(
+            dataAddress: 0,
+            strategyAttempt: 1,
+            delayMicroseconds: 50_000,
+            writeIOReturns: [0],
+            readIOReturn: 0,
+            reply: rejectedReply,
+            validation: .rejected(.badChecksum),
+            edidReferences: [rejectedReply]
+        )
+        XCTAssertEqual(edidLikeAttempt.dataSource, .edidLike)
+        let snapshot = NativeDDCDiagnosticSnapshot(
+            transportPath: .builtinHDMIConverter,
+            serviceMatched: true,
+            operationCategory: .reliableReadUnsupported,
+            rebuildCount: 2,
+            replyIssue: .badChecksum,
+            chipAddress: 0x37,
+            readDataAddress: 0x51,
+            readAttemptCount: 10,
+            hdmiReadDiagnostics: [edidLikeAttempt]
+        )
+
+        XCTAssertEqual(snapshot.userFacingDescription, "当前连接不支持可靠读取")
+        XCTAssertFalse(snapshot.userFacingDescription.contains("chip"))
+        XCTAssertFalse(snapshot.userFacingDescription.contains("offset"))
+        XCTAssertFalse(snapshot.userFacingDescription.contains("attempt"))
+    }
+
+    func testReliableReadUnsupportedSkipsRecoveryRetry() {
+        var operationCount = 0
+        var recoveryCount = 0
+
+        XCTAssertThrowsError(try DDCSingleRetry.perform(operation: {
+            operationCount += 1
+            throw DDCBackendError.reliableReadUnsupported(command: .luminance)
+        }, recover: {
+            recoveryCount += 1
+        }, shouldRetry: { error in
+            if case DDCBackendError.reliableReadUnsupported = error { return false }
+            return true
+        }))
+        XCTAssertEqual(operationCount, 1)
+        XCTAssertEqual(recoveryCount, 0)
+    }
+
+    func testHDMIDiagnosticRequestWriteFailureNeverProbesOffset51() {
+        var addresses: [UInt8] = []
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0,
+            alternateDataAddress: 0x51,
+            attemptsPerStrategy: 5
+        ) { address, attempt in
+            addresses.append(address)
+            return readAttempt(
+                address: address,
+                attempt: attempt,
+                reply: [UInt8](repeating: 0, count: 11),
+                validation: .rejected(.requestWriteFailed),
+                readIOReturn: nil
+            )
+        }
+
+        XCTAssertEqual(addresses, Array(repeating: 0, count: 5))
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .requestWriteFailed,
+                dataAddress: 0,
+                attempts: 5,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
+    }
+
+    func testConfirmedHDMIOffset51StillRequiresTwoStrictReplies() {
+        var calls = 0
+        let valid = DDCReading(current: 42, maximum: 100)
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0x51,
+            alternateDataAddress: nil,
+            attemptsPerStrategy: 5
+        ) { address, attempt in
+            calls += 1
+            return readAttempt(
+                address: address,
+                attempt: attempt,
+                reply: strictReply(current: 42, maximum: 100),
+                validation: .valid(valid)
+            )
+        }
+
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(result.outcome, .success(valid, dataAddress: 0x51, attempts: 2))
+    }
+
+    func testHDMIDiagnosticStrictlyRejectsShiftedBadChecksumNullAndInconsistentReplies() {
+        var shifted = strictReply(current: 42, maximum: 100)
+        shifted[0] = 0
+        shifted[10] = shifted.dropLast().reduce(UInt8(0x50), ^)
+        let badChecksum = badChecksumReply(current: 42, maximum: 100)
+        let nullReply: [UInt8] = [0x6E, 0x80, 0xBE, 0, 0, 0, 0, 0, 0, 0, 0]
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: shifted, command: .luminance),
+            .failure(.wrongSource)
+        )
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: badChecksum, command: .luminance),
+            .failure(.badChecksum)
+        )
+        XCTAssertEqual(
+            NativeDDCReplyValidator.reading(from: nullReply, command: .luminance),
+            .failure(.nullReply)
+        )
+
+        for (reply, issue) in [
+            (shifted, NativeDDCReplyIssue.wrongSource),
+            (badChecksum, .badChecksum),
+            (nullReply, .nullReply)
+        ] {
+            let rejection = NativeDDCHDMIReadDiagnosticRunner.run(
+                primaryDataAddress: 0,
+                alternateDataAddress: 0x51,
+                attemptsPerStrategy: 1
+            ) { address, attempt in
+                readAttempt(
+                    address: address, attempt: attempt, reply: reply,
+                    validation: .rejected(issue)
+                )
+            }
+            guard case .failure = rejection.outcome else {
+                return XCTFail("Strictly rejected reply must never become a reading")
+            }
+        }
+
+        var alternateValues = [
+            DDCReading(current: 41, maximum: 100),
+            DDCReading(current: 42, maximum: 100)
+        ]
+        let result = NativeDDCHDMIReadDiagnosticRunner.run(
+            primaryDataAddress: 0,
+            alternateDataAddress: 0x51,
+            attemptsPerStrategy: 2
+        ) { address, attempt in
+            if address == 0 {
+                return readAttempt(
+                    address: address, attempt: attempt, reply: nullReply,
+                    validation: .rejected(.wrongSource)
+                )
+            }
+            let reading = alternateValues.removeFirst()
+            return readAttempt(
+                address: address, attempt: attempt,
+                reply: strictReply(current: reading.current, maximum: reading.maximum),
+                validation: .valid(reading)
+            )
+        }
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .inconsistentStrictReplies,
+                dataAddress: 0x51,
+                attempts: 4,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
+    }
+
+    func testHDMIDiagnosticAttemptProjectionContainsOnlyPublicTransactionFields() {
+        let attempt = readAttempt(
+            address: 0x51,
+            attempt: 2,
+            reply: strictReply(current: 42, maximum: 100),
+            validation: .valid(DDCReading(current: 42, maximum: 100))
+        )
+        let description = attempt.diagnosticDescription
+
+        XCTAssertTrue(description.contains("offset 0x51 attempt 2 delay-us 50000"))
+        XCTAssertTrue(description.contains("write-ior=[0x00000000,0x00000000]"))
+        XCTAssertTrue(description.contains("read-ior=0x00000000"))
+        XCTAssertTrue(description.contains("reply-length=11 source=ddcci/strict-valid"))
+        XCTAssertTrue(description.contains("strict-valid"))
+        XCTAssertFalse(description.contains("6E 88 02 00 10"))
+        XCTAssertFalse(description.contains("UUID"))
+        XCTAssertFalse(description.contains("IORegistry"))
+        XCTAssertFalse(description.contains("selector"))
+    }
+
+    func testI2CBufferBridgeProvidesContiguousInputAndMutableOutputBytes() {
+        let input: [UInt8] = [0x84, 0x03, 0x60, 0x00, 0x11, 0xC9]
+        var capturedInput: [UInt8] = []
+        let inputLength = NativeDDCI2CBufferBridge.withInputBytes(input) { buffer -> Int in
+            capturedInput = Array(buffer.bindMemory(to: UInt8.self))
+            return buffer.count
+        }
+        XCTAssertEqual(inputLength, input.count)
+        XCTAssertEqual(capturedInput, input)
+
+        var output = [UInt8](repeating: 0, count: 11)
+        let outputLength = NativeDDCI2CBufferBridge.withOutputBytes(&output) { buffer -> Int in
+            let bytes = buffer.bindMemory(to: UInt8.self)
+            bytes[0] = 0x6E
+            bytes[10] = 0xA5
+            return buffer.count
+        }
+        XCTAssertEqual(outputLength, 11)
+        XCTAssertEqual(output[0], 0x6E)
+        XCTAssertEqual(output[10], 0xA5)
+    }
+
+    func testRejectedReplyMatchingEDIDWindowIsClassifiedWithoutExposingBytes() {
+        let reference = Array("SIMULATED PANEL".utf8)
+        let reply: [UInt8] = [0x00, 0xFF, 0x50, 0x41, 0x4E, 0x45, 0x4C, 0x20, 0x00, 0x00, 0x00]
+        let attempt = NativeDDCReadAttemptDiagnostic(
+            dataAddress: 0,
+            strategyAttempt: 1,
+            delayMicroseconds: 50_000,
+            writeIOReturns: [0, 0],
+            readIOReturn: 0,
+            reply: reply,
+            validation: .rejected(.badChecksum),
+            edidReferences: [reference]
+        )
+
+        XCTAssertEqual(attempt.dataSource, .edidLike)
+        XCTAssertEqual(attempt.reply, reply)
+        XCTAssertTrue(attempt.diagnosticDescription.contains("source=non-ddcci/edid-like"))
+        XCTAssertFalse(attempt.diagnosticDescription.contains("PANEL"))
+        XCTAssertFalse(attempt.diagnosticDescription.contains("50 41 4E 45 4C"))
+    }
+
+    func testReplySourceClassificationKeepsStrictAndUnmatchedDataSeparate() {
+        let reference = [UInt8]("SIMULATED PANEL".utf8)
+        let validReply = strictReply(current: 42, maximum: 100)
+        XCTAssertEqual(
+            NativeDDCReplySourceClassifier.classify(
+                reply: validReply,
+                validation: .valid(DDCReading(current: 42, maximum: 100)),
+                edidReferences: [validReply]
+            ),
+            .strictDDCCI
+        )
+        XCTAssertEqual(
+            NativeDDCReplySourceClassifier.classify(
+                reply: [0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
+                validation: .rejected(.badChecksum),
+                edidReferences: [reference]
+            ),
+            .unclassified
+        )
+    }
+
     func testReadOffsetPreferenceIsPerDisplayAndInvalidatedWithService() {
         var cache = NativeDDCReadPreferenceCache()
-        cache.remember(address: 0, selector: "selector-a")
+        let current = NativeDDCReadPreferenceKey(
+            selector: "selector-a", serviceIdentity: 101,
+            transportPath: .builtinHDMIConverter
+        )
+        let replacementService = NativeDDCReadPreferenceKey(
+            selector: "selector-a", serviceIdentity: 202,
+            transportPath: .builtinHDMIConverter
+        )
+        let replacementTransport = NativeDDCReadPreferenceKey(
+            selector: "selector-a", serviceIdentity: 101,
+            transportPath: .typeCDPAlt
+        )
+        let preference = NativeDDCReadPreference(
+            dataAddress: 0x51,
+            checksumMode: .standard
+        )
+        let fallback = NativeDDCReadPreference(
+            dataAddress: 0,
+            checksumMode: .legacy
+        )
+        cache.remember(preference, for: current)
 
-        XCTAssertEqual(cache.preferredAddress(selector: "SELECTOR-A", default: 0x51), 0)
-        XCTAssertEqual(cache.preferredAddress(selector: "selector-b", default: 0x51), 0x51)
+        XCTAssertEqual(cache.preferred(for: current, default: fallback), preference)
+        XCTAssertEqual(cache.preferred(for: replacementService, default: fallback), fallback)
+        XCTAssertEqual(cache.preferred(for: replacementTransport, default: fallback), fallback)
+
+        cache.retainOnly([replacementService])
+        XCTAssertEqual(cache.preferred(for: current, default: fallback), fallback)
 
         cache.invalidate(selector: "selector-a")
-        XCTAssertEqual(cache.preferredAddress(selector: "selector-a", default: 0x51), 0x51)
+        XCTAssertEqual(cache.preferred(for: replacementService, default: fallback), fallback)
+    }
+
+    func testTypeCChecksumStrategyFallsBackToStandardAndRemembersWinningAddress() {
+        var requests: [(NativeDDCRequestChecksumMode, UInt8)] = []
+        let expected = DDCReading(current: 47, maximum: 100)
+
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .legacy,
+            primaryDataAddress: 0x51,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2
+        ) { mode, address, _ in
+            requests.append((mode, address))
+            if mode == .standard && address == 0 {
+                return .success(expected)
+            }
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(requests.map(\.0), [
+            .legacy, .legacy, .legacy, .legacy, .standard
+        ])
+        XCTAssertEqual(requests.map(\.1), [0x51, 0x51, 0, 0, 0])
+        XCTAssertEqual(result.checksumMode, .standard)
+        XCTAssertEqual(
+            result.outcome,
+            .success(expected, dataAddress: 0, attempts: 5)
+        )
+    }
+
+    func testPreferredStandardChecksumStopsBeforeLegacyFallback() {
+        var modes: [NativeDDCRequestChecksumMode] = []
+        let expected = DDCReading(current: 64, maximum: 100)
+
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .standard,
+            primaryDataAddress: 0,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2
+        ) { mode, address, _ in
+            modes.append(mode)
+            return address == 0 ? .success(expected) : .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(modes, [.standard])
+        XCTAssertEqual(result.checksumMode, .standard)
+        XCTAssertEqual(result.outcome, .success(expected, dataAddress: 0, attempts: 1))
+    }
+
+    func testChecksumFallbackStopsWhenRequestWriteIsRejected() {
+        var modes: [NativeDDCRequestChecksumMode] = []
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .legacy,
+            primaryDataAddress: 0x51,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2
+        ) { mode, _, _ in
+            modes.append(mode)
+            return .failure(.requestWriteFailed)
+        }
+
+        XCTAssertEqual(modes, [.legacy, .legacy])
+        XCTAssertEqual(result.checksumMode, .legacy)
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .requestWriteFailed,
+                dataAddress: 0x51,
+                attempts: 2,
+                onlyObservedIssueWasBadChecksum: false
+            )
+        )
+    }
+
+    func testChecksumFallbackIsLimitedToTypeCStrategyCallers() {
+        var requests: [(NativeDDCRequestChecksumMode, UInt8)] = []
+        let result = NativeDDCChecksumStrategyRunner.run(
+            preferredMode: .standard,
+            primaryDataAddress: 0,
+            defaultDataAddress: 0x51,
+            attemptsPerAddress: 2,
+            allowsFallback: false
+        ) { mode, address, _ in
+            requests.append((mode, address))
+            return .failure(.badChecksum)
+        }
+
+        XCTAssertEqual(requests.map(\.0), [.standard, .standard])
+        XCTAssertEqual(requests.map(\.1), [0, 0])
+        XCTAssertEqual(result.checksumMode, .standard)
+        XCTAssertEqual(
+            result.outcome,
+            .failure(
+                .badChecksum,
+                dataAddress: 0,
+                attempts: 2,
+                onlyObservedIssueWasBadChecksum: true
+            )
+        )
+    }
+
+    func testNativeGetVCPPacketsKeepTransportSpecificChecksumBehavior() {
+        XCTAssertEqual(
+            NativeDDCRequestPacketBuilder.packet(
+                request: [DDCCommand.luminance.rawValue],
+                chipAddress: 0x37,
+                dataAddress: 0x51,
+                includesDataAddressInChecksum: true
+            ),
+            [0x82, 0x01, 0x10, 0xAC]
+        )
+        XCTAssertEqual(
+            NativeDDCRequestPacketBuilder.packet(
+                request: [DDCCommand.luminance.rawValue],
+                chipAddress: 0x37,
+                dataAddress: 0x51,
+                includesDataAddressInChecksum: false
+            ),
+            [0x82, 0x01, 0x10, 0xFD]
+        )
+    }
+
+    func testNativeSetVCPPacketStillIncludesDataAddressInChecksum() {
+        XCTAssertEqual(
+            NativeDDCRequestPacketBuilder.packet(
+                request: [DDCCommand.luminance.rawValue, 0x00, 0x64],
+                chipAddress: 0x37,
+                dataAddress: 0x51,
+                includesDataAddressInChecksum: true
+            ),
+            [0x84, 0x03, 0x10, 0x00, 0x64, 0xCC]
+        )
     }
 
     func testNativeDiagnosticsExposeOnlySanitizedTransportState() {
@@ -597,12 +1296,13 @@ final class DDCBackendTests: XCTestCase {
             replyIssue: .responseTimeout,
             chipAddress: 0x37,
             readDataAddress: 0,
-            readAttemptCount: 5
+            readAttemptCount: 5,
+            requestChecksumMode: .standard
         )
 
         XCTAssertEqual(
             snapshot.userFacingDescription,
-            "builtin-hdmi-converter · service matched · read-response-timeout · chip 0x37 · offset 0 · attempts 5 · rebuild 1"
+            "builtin-hdmi-converter · service matched · read-response-timeout · chip 0x37 · offset 0 · attempts 5 · checksum standard · rebuild 1"
         )
         XCTAssertFalse(snapshot.userFacingDescription.contains("IOService"))
         XCTAssertFalse(snapshot.userFacingDescription.contains("/"))
@@ -610,6 +1310,7 @@ final class DDCBackendTests: XCTestCase {
 
     func testEveryRejectedReplyReasonHasSanitizedDiagnosticProjection() {
         let issues: [(NativeDDCReplyIssue, String)] = [
+            (.nullReply, "null-reply"),
             (.badChecksum, "bad-checksum"),
             (.wrongSource, "wrong-source"),
             (.wrongLength, "wrong-length"),
@@ -748,7 +1449,7 @@ final class DDCBackendTests: XCTestCase {
         let backend = MockDDCBackend()
         backend.readings = ["display-a": [.luminance: DDCReading(current: 88, maximum: 100)]]
         let cache = MockDDCCache(values: ["display-a": [.luminance: 22]])
-        let service = makeService(backends: [backend], cache: cache)
+        let service = makeService(backend: backend, cache: cache)
         backend.onRead = { service.setOperationsAllowed(false) }
 
         let result = service.read([target(id: "display-a", commands: [.luminance])])
@@ -779,7 +1480,7 @@ final class DDCBackendTests: XCTestCase {
             "display-a": [.luminance: DDCReading(current: 10, maximum: 100)],
             "display-b": [.luminance: DDCReading(current: 90, maximum: 100)]
         ]
-        let service = makeService(backends: [backend], cache: MockDDCCache())
+        let service = makeService(backend: backend, cache: MockDDCCache())
 
         XCTAssertEqual(try service.enumerateDisplays().map(\.stableID), ["display-b", "display-a"])
         let result = service.read([
@@ -793,7 +1494,7 @@ final class DDCBackendTests: XCTestCase {
     func testConfigurationAndUSBLearningSafetyStatesIssueNoDDCCalls() {
         for _ in 0..<2 {
             let backend = MockDDCBackend()
-            let service = makeService(backends: [backend], cache: MockDDCCache())
+            let service = makeService(backend: backend, cache: MockDDCCache())
             service.setOperationsAllowed(false)
             XCTAssertTrue(service.read([target(id: "display-a")]).isEmpty)
             XCTAssertNotNil(service.write(command: .luminance, value: 50,
@@ -803,8 +1504,8 @@ final class DDCBackendTests: XCTestCase {
         }
     }
 
-    private func makeService(backends: [DDCBackend], cache: MockDDCCache) -> DDCControlService {
-        DDCControlService(router: DDCBackendRouter(backends: backends), cache: cache)
+    private func makeService(backend: DDCBackend, cache: MockDDCCache) -> DDCControlService {
+        DDCControlService(router: DDCBackendRouter(backend: backend), cache: cache)
     }
 
     private func target(id: String, selector: String? = nil,
@@ -821,6 +1522,30 @@ final class DDCBackendTests: XCTestCase {
         ]
         reply[10] = reply.dropLast().reduce(UInt8(0x50), ^) ^ 0xFF
         return reply
+    }
+
+    private func strictReply(current: Int, maximum: Int) -> [UInt8] {
+        var reply = badChecksumReply(current: current, maximum: maximum)
+        reply[10] = reply.dropLast().reduce(UInt8(0x50), ^)
+        return reply
+    }
+
+    private func readAttempt(
+        address: UInt8,
+        attempt: Int,
+        reply: [UInt8],
+        validation: NativeDDCStrictReadValidation,
+        readIOReturn: Int32? = 0
+    ) -> NativeDDCReadAttemptDiagnostic {
+        NativeDDCReadAttemptDiagnostic(
+            dataAddress: address,
+            strategyAttempt: attempt,
+            delayMicroseconds: 50_000,
+            writeIOReturns: [0, 0],
+            readIOReturn: readIOReturn,
+            reply: reply,
+            validation: validation
+        )
     }
 }
 

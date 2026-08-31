@@ -1,15 +1,32 @@
 # Windows 交接记录
 
-## 当前任务
+## 当前任务：Windows 按需详细诊断记录
 
 - 日期：2026-08-31
-- 功能：Windows 按需详细诊断记录（延续 W-005 / W-203）
 - 分支：`codex/windows-detailed-diagnostics`
-- 堆叠基线：`codex/windows-w005-w203-diagnostics@d31eee9`，包含 PR [#60](https://github.com/maizihk/DisplaySwitch/pull/60) 的诊断页面及评审修复；未改动或丢弃其 DS-011/DS-012/DS-013 堆叠历史
-- PR base：`codex/windows-w005-w203-diagnostics`，使本 PR 只展示按需记录增量
+- 最新主线基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`，通过普通 merge 合入；未 rebase、reset 或丢弃原提交。
 - 实现提交：`78d55050a4d775f961b86f5d135cea30ce930c06`
-- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，open；保持开放等待实机 GUI 验收，不自动合并
-- CI：PR #65 是以非 `main` 分支为 base 的堆叠 PR，当前 Windows workflow 不会为其自动运行；本节结果均为 Windows 本机验证
+- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，目标改为 `main` 后保持 open，等待 Windows CI 与实机 GUI 验收。
+- 范围：按需详细诊断记录及其本机设置、测试和 Windows 文档；不修改协议、schemaVersion、版本、workflow、tag 或 Release。
+
+## 已合并基线与发布准备事实
+
+- 主线集成：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) 已合并为 `e14ae6ea6d381dd31097406d7d735f41ec9a2699`，PR [#60](https://github.com/maizihk/DisplaySwitch/pull/60) 已合并为 `3a22c66afdb4838040e2fdc5d122ed955337bb13`。
+- CI：Windows runs `33366897393`、`33367712427` 均通过构建、自动测试、dist 验证和 artifact 上传。
+- 用户验收：最终 Windows 测试包、诊断页和真实局域网协同检测通过，单击检测不再卡死。
+- DS-021：PR [#61](https://github.com/maizihk/DisplaySwitch/pull/61) 已完成原生-only、v2-only、六页诊断和未签名绿色测试包的发布准备事实同步。
+- 剩余边界：休眠恢复、热插拔、接口切换、高 DPI/辅助功能和清单中明确保留的未覆盖 DDC 场景。
+
+## W-005 / W-203 诊断实现历史
+
+- 日期：2026-08-31
+- 功能：W-005 文档与诊断安全、W-203 诊断页面与脱敏日志
+- 分支：`codex/windows-w005-w203-diagnostics`
+- 集成基线：PR [#54](https://github.com/maizihk/DisplaySwitch/pull/54) 已合并为 `e14ae6ea6d381dd31097406d7d735f41ec9a2699`
+- 实现提交：`befd20f49cc11d535bcc3dc8bee0036e1a4550e3`
+- PR #60 评审修复提交：`9bfa6d546ae6cc3a9a9284bd01b55b7d55b1582e`，补齐 DDC 批量聚合、心跳诊断生命周期和只读 snapshot provider 边界
+- PR：[#60](https://github.com/maizihk/DisplaySwitch/pull/60)，已合并为 `3a22c66afdb4838040e2fdc5d122ed955337bb13`
+- CI：合并到 main 后的 Windows runs `33366897393`、`33367712427` 均全绿；本节所列 Windows 本机验证同样通过
 
 ## 根因与设计
 
@@ -50,14 +67,15 @@
 - Release 编译启用基于 MSBuild 变量的路径映射；对 dist 扫描确认没有配置/日志、测试秘密、当前 Windows 用户目录或仓库绝对路径。
 - NuGet 漏洞索引在受限网络下产生 NU1900 警告；缓存依赖还原、编译、链接、测试和产物检查均成功。
 
-## 尚需实机验证
+## 实机验收与剩余边界
 
-- 诊断标签在常见 DPI/深浅色下的布局、只读文本选择、滚动、刷新和剪贴板行为。
-- “常规”页开关的即时保存、重启保持、双向切换后预览内容和旧日志清理需要实机 GUI 验证。
-- 多台真实显示器依次进行 DDC 操作后，页面重建、刷新、休眠恢复、热插拔和接口切换时状态显示是否符合预期。
-- 本任务未启动正式应用，未执行真实局域网、USB、DDC、唤醒、输入源或系统设置操作。
+- 用户已确认最终测试包的诊断标签、刷新/复制、多显示器状态和真实局域网检测可用，单击检测不再导致程序卡死。
+- PR #65 新增“详细诊断记录”开关的即时保存、重启保持、双向切换后的预览内容和旧日志清理仍需实机 GUI 验证。
+- 休眠恢复、热插拔、接口切换和常见高 DPI/辅助功能仍需专项实机验证。
+- 本轮合并、构建和自动测试不执行新的真实网络、USB、DDC、唤醒、输入源或系统设置操作。
 
 ## 范围
 
 - 只修改 `Windows/` 和 `handoffs/windows.md`；未修改 macOS、共享协议/提案/合约、GitHub Actions、版本号、tag 或 Release。
-- 实现提交及 PR 已记录；最终文档提交和工作区状态以交付报告为准。
+- 实现已通过 PR #54、#60 集成到 `main`；正式安装器、商业签名、tag 和 Release 仍不在本任务范围。
+- PR #65 只承载新的按需详细诊断增量；最终 merge SHA、CI 和工作区状态以交付报告为准。

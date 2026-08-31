@@ -19,7 +19,7 @@ extern IOReturn IOAVServiceWriteI2C(
     IOAVService service,
     uint32_t chipAddress,
     uint32_t dataAddress,
-    void *inputBuffer,
+    const void *inputBuffer,
     uint32_t inputBufferSize
 );
 extern CFDictionaryRef CoreDisplay_DisplayCreateInfoDictionary(CGDirectDisplayID displayID);

@@ -25,28 +25,6 @@ struct DetectedDisplay: Equatable {
     let name: String
     let systemUUID: String
 
-    static func parseList(_ output: String) -> [DetectedDisplay] {
-        let pattern = #"^\[(\d+)\]\s+(.+?)\s+\(([0-9A-Fa-f-]{36})\)\s*$"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
-        return output.split(whereSeparator: { $0.isNewline }).compactMap { rawLine in
-            let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
-            let range = NSRange(line.startIndex..<line.endIndex, in: line)
-            guard let match = expression.firstMatch(in: line, range: range), match.numberOfRanges == 4,
-                  let indexRange = Range(match.range(at: 1), in: line),
-                  let nameRange = Range(match.range(at: 2), in: line),
-                  let uuidRange = Range(match.range(at: 3), in: line),
-                  let index = Int(line[indexRange]) else { return nil }
-            return DetectedDisplay(index: index,
-                                   name: String(line[nameRange]).trimmingCharacters(in: .whitespacesAndNewlines),
-                                   systemUUID: String(line[uuidRange]).uppercased())
-        }.sorted { $0.index < $1.index }
-    }
-}
-
-enum DDCControlChannel: String, Codable, CaseIterable {
-    case automatic = "auto"
-    case native
-    case fallback
 }
 
 struct DisplayConfigurationV4Display: Codable, Equatable {
@@ -124,7 +102,6 @@ struct DisplayConfigurationStoreV5Document: Codable, Equatable {
     let localEndpointID: String
     var localDeviceName: String
     var listenPort: Int
-    var controlChannel: DDCControlChannel
     var linkAllDisplays: Bool
     var displays: [DisplayConfigurationV4Display]
     var collaborationProfiles: [CollaborationProfile]
@@ -208,12 +185,34 @@ struct UserDefaultsDisplayConfigurationStorage: DisplayConfigurationStorage {
 
 enum LocalProfileIssue: String, Equatable, Hashable {
     case missingName, missingHost, invalidPort, invalidPairingCode, missingDisplayMapping, orphanedDisplayMapping
+
+    var userFacingDescription: String {
+        switch self {
+        case .missingName:
+            return "请填写配置名称。"
+        case .missingHost:
+            return "请填写对端地址。"
+        case .invalidPort:
+            return "通信端口必须在 1–65535 之间。"
+        case .invalidPairingCode:
+            return "配对码必须为 8–128 个 UTF-8 字节。"
+        case .missingDisplayMapping:
+            return "请为当前每台显示器填写对端输入源。"
+        case .orphanedDisplayMapping:
+            return "存在不再对应当前显示器的旧输入源映射，请重新保存配置。"
+        }
+    }
 }
 
 struct LocalProfileInspection: Equatable {
     let issues: [LocalProfileIssue]
     let ddcUnavailableDisplayIDs: [String]
     var isComplete: Bool { issues.isEmpty && ddcUnavailableDisplayIDs.isEmpty }
+}
+
+struct CollaborationProfileSaveDecision: Equatable {
+    let profile: CollaborationProfile
+    let disabledBecauseIncomplete: Bool
 }
 
 final class USBLearningSafetyGate {
@@ -274,7 +273,6 @@ enum DisplayConfigurationStore {
         let localEndpointID: String
         var localDeviceName: String
         var listenPort: Int
-        var controlChannel: DDCControlChannel
         var linkAllDisplays: Bool
         var usbAutomationEnabled: Bool
         var usbSwitchDisplaysOnArrival: Bool
@@ -358,7 +356,7 @@ enum DisplayConfigurationStore {
         let profiles = collaborationProfiles ?? current.collaborationProfiles
         let document = DisplayConfigurationStoreV5Document(schemaVersion: currentSchemaVersion,
             localEndpointID: current.document.localEndpointID, localDeviceName: current.document.localDeviceName,
-            listenPort: current.document.listenPort, controlChannel: current.document.controlChannel,
+            listenPort: current.document.listenPort,
             linkAllDisplays: current.document.linkAllDisplays,
             displays: displays, collaborationProfiles: profiles, usbSwitch: current.document.usbSwitch)
         try saveDocument(document, storage: storage, clearSafetyMarker: clearSafetyMarker, encodeDocument: encodeDocument)
@@ -429,6 +427,21 @@ enum DisplayConfigurationStore {
         return LocalProfileInspection(issues: issues.sorted { $0.rawValue < $1.rawValue }, ddcUnavailableDisplayIDs: unavailable)
     }
 
+    static func profileForSafeSave(_ profile: CollaborationProfile,
+                                   displays: [DisplayConfigurationV4Display]) -> CollaborationProfileSaveDecision {
+        guard profile.coordinationEnabled else {
+            return CollaborationProfileSaveDecision(profile: profile, disabledBecauseIncomplete: false)
+        }
+        let known = Set(displays.map { $0.id.lowercased() })
+        let inspection = inspectProfile(profile, displays: displays, ddcAvailableDisplayIDs: known)
+        guard !inspection.issues.isEmpty else {
+            return CollaborationProfileSaveDecision(profile: profile, disabledBecauseIncomplete: false)
+        }
+        var safeProfile = profile
+        safeProfile.coordinationEnabled = false
+        return CollaborationProfileSaveDecision(profile: safeProfile, disabledBecauseIncomplete: true)
+    }
+
     static func menuEligibleProfiles(in document: DisplayConfigurationStoreV5Document) -> [CollaborationProfile] {
         let knownDisplayIDs = Set(document.displays.map { $0.id.lowercased() })
         return document.collaborationProfiles.filter { profile in
@@ -488,7 +501,6 @@ enum DisplayConfigurationStore {
                 localEndpointID: legacy.localEndpointID,
                 localDeviceName: legacy.localDeviceName,
                 listenPort: legacy.listenPort,
-                controlChannel: legacy.controlChannel,
                 linkAllDisplays: legacy.linkAllDisplays,
                 displays: legacy.displays,
                 collaborationProfiles: legacy.collaborationProfiles,
@@ -561,7 +573,7 @@ enum DisplayConfigurationStore {
 
     private static func freshDocument() -> DisplayConfigurationStoreV5Document {
         DisplayConfigurationStoreV5Document(schemaVersion: currentSchemaVersion, localEndpointID: UUID().uuidString,
-            localDeviceName: "本机", listenPort: defaultPort, controlChannel: .automatic,
+            localDeviceName: "本机", listenPort: defaultPort,
             linkAllDisplays: false, displays: [], collaborationProfiles: [defaultProfile()], usbSwitch: .disabled)
     }
 
@@ -631,7 +643,7 @@ enum DisplayConfigurationStore {
                 displayInputs: mappings, triggerDevices: triggers)
         }
         return DisplayConfigurationStoreV5Document(schemaVersion: currentSchemaVersion, localEndpointID: endpoint,
-            localDeviceName: deviceName, listenPort: document.listenPort, controlChannel: document.controlChannel,
+            localDeviceName: deviceName, listenPort: document.listenPort,
             linkAllDisplays: document.linkAllDisplays,
             displays: displays, collaborationProfiles: profiles,
             usbSwitch: try validateUSBSwitch(document.usbSwitch))

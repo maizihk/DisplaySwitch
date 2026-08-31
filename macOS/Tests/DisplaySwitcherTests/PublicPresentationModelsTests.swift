@@ -15,6 +15,57 @@ private final class RecordingAboutMetadata: AboutBundleMetadataSource {
 }
 
 final class PublicPresentationModelsTests: XCTestCase {
+    func testLocalNetworkPermissionPresentationUsesFourConservativeStates() {
+        let notChecked = LocalNetworkPermissionPresentation.make(for: .notChecked)
+        let connected = LocalNetworkPermissionPresentation.make(for: .collaborationConnected)
+        let denied = LocalNetworkPermissionPresentation.make(for: .explicitSystemDenial)
+        let failed = LocalNetworkPermissionPresentation.make(for: .ordinaryNetworkFailure)
+
+        XCTAssertEqual(notChecked.statusText, "未检测")
+        XCTAssertEqual(connected.statusText, "协同连接正常")
+        XCTAssertEqual(denied.statusText, "系统明确拒绝")
+        XCTAssertEqual(failed.statusText, "连接失败，请检查权限、地址和防火墙")
+        XCTAssertTrue(denied.isExplicitlyDenied)
+        XCTAssertTrue(denied.detailText.contains("系统设置 → 隐私与安全性 → 本地网络"))
+    }
+
+    func testAmbiguousFailuresNeverClaimLocalNetworkPermissionWasDenied() {
+        let ambiguousEvidence: [LocalNetworkPermissionEvidence] = [
+            .timeout, .authenticationFailure, .ordinaryNetworkFailure
+        ]
+
+        for evidence in ambiguousEvidence {
+            let presentation = LocalNetworkPermissionPresentation.make(for: evidence)
+            XCTAssertEqual(presentation.statusText, "连接失败，请检查权限、地址和防火墙")
+            XCTAssertFalse(presentation.isExplicitlyDenied)
+            XCTAssertTrue(presentation.detailText.contains("未获得系统明确拒绝"))
+        }
+    }
+
+    func testPermissionEntryUsesOnlySimulatedInspectionAndHasZeroHardwareSideEffects() {
+        var networkInspectionCount = 0
+        let usbCount = 0
+        let ddcCount = 0
+        let wakeCount = 0
+        let inputSwitchCount = 0
+
+        let simulatedInspection: LocalNetworkPermissionInspectionAction.Inspection = { completion in
+            networkInspectionCount += 1
+            completion(.v2(endpointID: "00000000-0000-4000-8000-000000000001"))
+        }
+        var presentation: LocalNetworkPermissionPresentation?
+        LocalNetworkPermissionInspectionAction.perform(using: simulatedInspection) { _, evidence in
+            presentation = LocalNetworkPermissionPresentation.make(for: evidence)
+        }
+
+        XCTAssertEqual(presentation?.statusText, "协同连接正常")
+        XCTAssertEqual(networkInspectionCount, 1)
+        XCTAssertEqual(usbCount, 0)
+        XCTAssertEqual(ddcCount, 0)
+        XCTAssertEqual(wakeCount, 0)
+        XCTAssertEqual(inputSwitchCount, 0)
+    }
+
     func testOnlyExplicitSettingsReadUsesHardware() {
         let automaticEntryPoints: [DDCValuePresentationEntryPoint] = [
             .startup, .trayOpen, .displayDetection, .configurationReload
@@ -97,7 +148,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             schemaVersion: 5,
             localEndpointID: UUID().uuidString,
             localDeviceName: "本机",
-            listenPort: 49731, controlChannel: .automatic, linkAllDisplays: false,
+            listenPort: 49731, linkAllDisplays: false,
             displays: [display],
             collaborationProfiles: [eligible, incomplete, disabled]
         )
@@ -192,6 +243,94 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(entries, [
             DisplayCachedValuePresentation.Entry(stableID: "display-a", command: .luminance, value: 41)
         ])
+    }
+
+    func testM006DiagnosticReportPreviewsOnlyAnonymizedReadOnlyState() {
+        let privateValues = [
+            "192.0.2.44",
+            "private-pairing-code",
+            "11111111-2222-4333-8444-555555555555",
+            "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE",
+            "private-usb-reference",
+            "Private Monitor Name",
+            "Private Profile Name"
+        ]
+        let display = DisplayConfigurationV4Display(
+            id: privateValues[2], name: privateValues[5], selector: privateValues[3],
+            localInput: 17, readEnabled: true, brightnessEnabled: true,
+            contrastEnabled: false, volumeEnabled: false
+        )
+        let profile = CollaborationProfile(
+            id: "99999999-8888-4777-8666-555555555555",
+            name: privateValues[6], peerHost: privateValues[0], peerPort: 49_731,
+            pairingCode: privateValues[1],
+            peerEndpointID: "77777777-6666-4555-8444-333333333333",
+            peerProtocolVersion: 2, coordinationEnabled: true,
+            displayInputs: [DisplayInputMapping(displayID: display.id, peerInput: 15)],
+            triggerDevices: []
+        )
+        let document = DisplayConfigurationStoreV5Document(
+            schemaVersion: 5,
+            localEndpointID: "12345678-1234-4234-8234-123456789012",
+            localDeviceName: "Private Mac",
+            listenPort: 49_731,
+            linkAllDisplays: false,
+            displays: [display],
+            collaborationProfiles: [profile],
+            usbSwitch: USBSwitchConfiguration(
+                enabled: true,
+                triggerDevice: CollaborationTriggerDevice(
+                    kind: "usb", localReference: privateValues[4], displayName: "Private USB"
+                ),
+                collaborationWakeEnabled: true,
+                collaborationProfileID: profile.id,
+                displayInputs: [USBDisplayInputMapping(displayID: display.id, targetInput: 15)]
+            )
+        )
+        let diagnostic = NativeDDCDiagnosticSnapshot(
+            transportPath: .typeCDPAlt,
+            serviceMatched: true,
+            operationCategory: .readSucceeded,
+            rebuildCount: 0,
+            chipAddress: 0x37,
+            readDataAddress: 0x51,
+            readAttemptCount: 1,
+            requestChecksumMode: .legacy
+        )
+
+        let report = DiagnosticReport.make(
+            metadata: RecordingAboutMetadata(values: [
+                "CFBundleName": "DisplaySwitcher",
+                "CFBundleShortVersionString": "2.1.0",
+                "CFBundleVersion": "19"
+            ]),
+            architecture: "simulated-arch",
+            document: document,
+            safetyState: .ready,
+            collaborationStates: [.connected],
+            ddcBackendSummary: "Apple Silicon 原生 DDC",
+            ddcAvailability: .available,
+            ddcCapabilities: DDCBackendCapabilities(
+                canEnumerate: true, canReadVCP: true, canWriteVCP: true
+            ),
+            ddcDiagnostics: [diagnostic],
+            peerInspectionText: "inspection=I1 stage=completed result=v2-available",
+            inputSourceText: "op=O1 display=D1 stage=write-transport-result"
+        ).text
+
+        XCTAssertTrue(report.contains("protocol=v2 schema=5"))
+        XCTAssertTrue(report.contains("profile=P1 enabled=true endpoint-bound=true status=已连接"))
+        XCTAssertTrue(report.contains("trigger-configured=true"))
+        XCTAssertTrue(report.contains("display=D1 controls=luminance"))
+        XCTAssertTrue(report.contains("checksum legacy"))
+        XCTAssertTrue(report.contains("does not access the network"))
+        for privateValue in privateValues {
+            XCTAssertFalse(report.contains(privateValue))
+        }
+        XCTAssertFalse(report.contains(profile.id))
+        XCTAssertFalse(report.contains(document.localEndpointID))
+        XCTAssertFalse(report.contains("Private Mac"))
+        XCTAssertFalse(report.contains("Private USB"))
     }
 
     private func mappingDisplay(id: String, name: String) -> DisplayConfigurationV4Display {

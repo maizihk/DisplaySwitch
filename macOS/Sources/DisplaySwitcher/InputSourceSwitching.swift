@@ -97,6 +97,7 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
     private let maximumLineCount: Int
     private var displayIndexByStableID: [String: Int] = [:]
     private var serviceIndexByLocation: [Int: Int] = [:]
+    private var nextOperationIndex = 1
     private var lines: [String] = []
     private let timestampFormatter: ISO8601DateFormatter
 
@@ -122,9 +123,11 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
             displayIndex = displayIndexByStableID.count + 1
             displayIndexByStableID[normalized] = displayIndex
         }
+        let operationID = "O\(nextOperationIndex)"
+        nextOperationIndex += 1
         lock.unlock()
         let context = InputSourceDiagnosticContext(
-            operationID: UUID().uuidString.lowercased(),
+            operationID: operationID,
             displaySessionIndex: displayIndex,
             targetValue: targetValue,
             alternateValue: alternateValue
