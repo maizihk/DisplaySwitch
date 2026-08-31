@@ -5,6 +5,7 @@
 - 日期：2026-08-31
 - 分支：`codex/windows-detailed-diagnostics`
 - 最新主线基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`，通过普通 merge 合入；未 rebase、reset 或丢弃原提交。
+- 主线同步 merge 提交：`dbcce044c97315858869d7840523fb2f776da0cd`；冲突仅位于 Windows 清单与本交接文件，解决时同时保留 PR #54/#60 已合并及用户验收、DS-021 发布准备、新增按需详细记录待验收状态和既有实机边界。
 - 实现提交：`78d55050a4d775f961b86f5d135cea30ce930c06`
 - PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，目标改为 `main` 后保持 open，等待 Windows CI 与实机 GUI 验收。
 - 范围：按需详细诊断记录及其本机设置、测试和 Windows 文档；不修改协议、schemaVersion、版本、workflow、tag 或 Release。
@@ -55,6 +56,7 @@
 ## 自动验证
 
 - `Windows/build-windows.ps1` x64 Release 已编译原生应用、绿色版启动器与测试，并真实运行完整 `DisplaySwitcher.Tests.exe`；共通过 246 项检查。
+- 合入 `origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9` 后重新完成同一套验证：仍为 246 项检查全过，dist 共 9 个文件、1,824,709 字节，入口及 `runtime/` 完整，敏感信息扫描无命中。
 - 新测试使用临时配置与临时日志路径，证明新安装和缺字段旧配置默认关闭、设置可跨重启回读、关闭时 DDC/输入源/USB/协同网络入口零内存及零文件记录、开启后仅记录后续事件、任意切换清空旧轨迹。
 - 关闭状态的诊断投影即使收到人为注入的旧 sessions 也强制显示 0 且不输出事件；注入含 HANDLE、HRESULT、attempt、checksum 与 transport 的 DDC 错误后，用户界面投影仍只有简明“读取失败”。
 - W-005/W-203 测试向报告注入私网地址、密码、endpoint、合成 Windows 路径、显示器/USB 标识和设备名称，确认全部不存在，同时保留安全状态和匿名编号。
