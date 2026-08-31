@@ -1,25 +1,43 @@
 # macOS 交接记录
 
-## 当前状态：DS-024 托盘空显示器分组清理
+## 当前状态：DS-023 + DS-024 组合验收
 
 - 日期：2026-08-31
 - 分支：`codex/macos-tray-empty-group`
-- 基线：`origin/codex/macos-stable-local-signing@53024bb`
+- 堆叠基线：`origin/codex/macos-diagnostic-recording-toggle@d30516f`
 - 实现提交：`606f3164d3d3967753e2a61d72ad4504dedd95b0`
 - 托盘收敛提交：`37f8a74f76ffb5ea05ca86db1cc29a332f15f7c1`
-- PR：[#64](https://github.com/maizihk/DisplaySwitch/pull/64)，目标分支为 `codex/macos-stable-local-signing`，状态开放且可合并，不包含 PR #63 的诊断开关提交。
-- CI：当前无检查；macOS workflow 只监听目标为 `main` 的 PR。本任务不手动触发 `workflow_dispatch`，待前置 PR #62 合并并将 #64 改为 `main` 后运行最终 CI。
+- 前置诊断提交：`bef1ca9ccd44539d627a9f20894cb1e5908ca2c6`
+- PR：[#64](https://github.com/maizihk/DisplaySwitch/pull/64)，目标分支改为 `codex/macos-diagnostic-recording-toggle`，保持开放等待组合 GUI 验收。
+- CI：当前无检查；macOS workflow 只监听目标为 `main` 的 PR。本任务不手动触发 `workflow_dispatch`，待前置 PR 依次合并并将 #64 改为 `main` 后运行最终 CI。
+- 组合原因：PR #63 与 #64 原为共同基线 `53024bb` 上的兄弟分支，旧 #64 测试包没有包含 DS-023，导致详细诊断门控和简洁 DDC 状态回退；本轮通过普通 merge 建立 DS-023 → DS-024 堆叠关系，不改写历史。
 - 根因：`DisplaySettingsSemantics.trayCommands` 已正确过滤功能开关和“在托盘显示”，但 `rebuildDisplayMenuItems` 在过滤结果为空时仍无条件创建显示器 `NSMenuItem` 与子菜单，产生只有标题的空分组。
 - 追加根因：托盘 `linkedItem.state` 同时被用作滑杆联动业务真值，不能在隐藏该入口后继续保留；检测项还承担托盘进度文案，诊断跳转 action 只服务托盘入口。
 - 实现：新增纯 `TrayDisplayMenuProjection`，先按稳定显示器身份生成可见分组；只有至少一个托盘控制项时才交给 AppKit 创建显示器标题和子菜单。
 - 菜单收敛：静态托盘动作只保留“设置…”和“退出”；联动、检测和诊断预览仅移除托盘入口，设置窗口中的联动开关、检测按钮、诊断页及复制功能保留。
 - 联动与分隔线：`setControl` 直接读取持久 `linkAllDisplays`；动态协同/显示器区域为空时隐藏唯一分隔线，避免孤立或重复分隔线。
 - 行为边界：有可见控制项的显示器名称、滑杆和值以及协同菜单保持不变；未按品牌、型号、数量或枚举顺序特判。
-- 自动验证：六项 DS-024 纯模型回归通过；完整 XCTest 最终 155/155。首次完整运行仅有已知输入源 resolver 并发顺序断言波动，单项复跑及随后完整套件通过，本任务未修改输入源代码。
-- 构建验证：Release `build-app.sh`、稳定 Apple Development 签名的输出 App 与 ZIP 解压副本严格 codesign 验证通过。
-- 测试包：`macOS/outputs/DisplaySwitcher-DS-024-tray-menu-cleanup-macOS-test.zip`，SHA-256 `ace596e2474cc06d4d2518193d89c31885afb9dc4397b1a32591ac5f02f3e797`；此前 DS-024 测试包哈希作废。
+- 诊断边界：“常规”保留默认关闭的详细诊断开关；关闭时显示器页只展示简洁读写结果且不记录详细轨迹，开启后才记录并进入诊断预览，任意切换清空 DDC、输入源和协同会话记录。
+- 自动验证：DS-023/DS-024 定向回归 33/33、完整 XCTest 159/159 通过；仅有既存 InputSource QoS runtime warning，本任务未修改该路径。
+- 构建验证：Release `build-app.sh` 通过；输出 App 与组合 ZIP 解压副本均通过 Apple Development 完整信任链严格验签。
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-023-DS-024-combined-macOS-test.zip`，SHA-256 `fb0a8e3e265718dc71052448d6d92dd25c08f5dfa9623e783b68af8ee016722e`；此前 DS-023 与 DS-024 单项测试包及哈希均作废。
 - 待验证：真实托盘只剩动态协同/可见显示器、设置和退出；全部动态内容为空时无孤立分隔线；设置页联动、检测和诊断页继续可用。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作，未修改协议、schema、版本、系统权限或签名配置。
+
+## 堆叠前置任务：DS-023 按需详细诊断记录
+
+- 日期：2026-08-31
+- 分支：`codex/macos-diagnostic-recording-toggle`
+- 堆叠基线：`codex/macos-stable-local-signing@53024bb`；本任务 PR 应以该分支为 base，待 PR #62 合并后再改为 `main`。
+- 实现提交：`bef1ca9ccd44539d627a9f20894cb1e5908ca2c6`
+- PR：[#63](https://github.com/maizihk/DisplaySwitch/pull/63)，保持开放等待用户 GUI 验收。
+- 原因：显示器页直接拼接 DDC 内部诊断，同时 DDC、输入源和协同记录器始终工作，导致正常使用也持续保留排障轨迹；诊断采集与用户状态展示没有边界。
+- 实现：“常规”增加默认关闭的全局开关；关闭时只保留基本操作状态，开启后才记录详细轨迹；任意切换清空三类会话记录。显示器页只展示单行读取/写入结果，内部 transport、chip、offset、attempts、checksum、IOReturn 和 rebuild 仅在开启后的诊断预览出现。
+- 安全边界：开关是本机 `UserDefaults` 偏好，不修改 schema、协议或硬件路径；诊断预览仍为只读，自动测试未访问网络、USB、DDC、唤醒或输入源。
+- 自动验证：完整 XCTest 153/153 通过；已知 InputSource QoS runtime warning 仍存在且测试通过，本任务未修改该调度路径。
+- 构建：Apple Development 签名测试包 `DisplaySwitcher-DS-023-diagnostic-toggle-macOS-test.zip`，SHA-256 `bc47d960258a0195172317c65c2d70c95920e84cff0b93d2b090c896f2a71c3d`；输出 App 与 ZIP 解压副本均通过完整信任链严格验签。
+- CI：workflow 仅监听 base=`main` 的 PR，因此堆叠 PR #63 当前不会自动触发；不得用 `workflow_dispatch` 替代最终验证，PR #62 合并并将 #63 改为 `main` 后再检查正式 CI。
+- 待验证：真实 GUI 中确认开关默认关闭、关闭时预览无详细轨迹、开启并复现后出现轨迹、再次关闭后旧轨迹消失，以及显示器页状态保持单行简明。
 
 ## 上一任务：DS-022 稳定本地开发签名
 

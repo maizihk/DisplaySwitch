@@ -1358,12 +1358,14 @@ protocol DDCBackend: AnyObject {
                token: DDCCancellationToken) throws
     func cancelAll()
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot?
+    func clearDiagnostics()
 }
 
 extension DDCBackend {
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {}
     func cancelAll() {}
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? { nil }
+    func clearDiagnostics() {}
 }
 
 final class DDCBackendRouter {
@@ -1424,6 +1426,10 @@ final class DDCBackendRouter {
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
         backend.diagnostic(selector: selector)
+    }
+
+    func clearDiagnostics() {
+        backend.clearDiagnostics()
     }
 }
 
@@ -1650,6 +1656,10 @@ final class DDCControlService {
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
         router.diagnostic(selector: selector)
+    }
+
+    func clearDiagnostics() {
+        router.clearDiagnostics()
     }
 
     private func beginOperation() throws -> (id: UUID, token: DDCCancellationToken) {

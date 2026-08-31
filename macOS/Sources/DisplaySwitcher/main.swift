@@ -245,6 +245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             self?.makeDiagnosticReport()
                 ?? DiagnosticReport(text: "诊断状态暂不可用。")
         }
+        controller.onDetailedDiagnosticRecordingChanged = { [weak self] _ in
+            self?.clearDetailedDiagnostics()
+        }
         controller.onWriteDDC = { [weak self] stableID, command, value in
             guard let self,
                   let entry = self.configurations.first(where: {
@@ -312,14 +315,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                     self.displayControls[index]?.update(control, value: value)
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
-                        value: value, error: nil,
-                        diagnostic: self.ddcController.diagnostic(selector: request.selector)
+                        value: value, error: nil
                     )
                 case .failure(let error):
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
-                        value: nil, error: error,
-                        diagnostic: self.ddcController.diagnostic(selector: request.selector)
+                        value: nil, error: error
                     )
                     self.showError(title: "显示器调节失败", error: error)
                 }
@@ -520,12 +521,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             let batch = self.ddcController.read(targets: [target])
             let result = batch[target.stableID] ?? [:]
             let skipReason = batch.skipped[target.stableID]
-            let diagnostic = self.ddcController.diagnostic(selector: target.selector)
             DispatchQueue.main.async {
                 guard self.settingsWindowController.isSettingsVisible else { return }
                 self.settingsWindowController.updateDDCValues(
-                    stableID: target.stableID, values: result, diagnostic: diagnostic,
-                    skipReason: skipReason
+                    stableID: target.stableID, values: result, skipReason: skipReason
                 )
             }
         }
@@ -1128,10 +1127,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             ddcBackendSummary: DDCController.backendSummaryWithoutHardwareAccess,
             ddcAvailability: ddcController.availability,
             ddcCapabilities: ddcController.capabilities,
+            detailedRecordingEnabled: AppPreferences.detailedDiagnosticRecordingEnabled,
             ddcDiagnostics: diagnostics,
             peerInspectionText: peerInspectionDiagnostics.exportText(),
             inputSourceText: inputSourceDiagnostics.exportText()
         )
+    }
+
+    private func clearDetailedDiagnostics() {
+        ddcController.clearDiagnostics()
+        peerInspectionDiagnostics.clear()
+        inputSourceDiagnostics.clear()
     }
 
     private func reloadSettings() {
