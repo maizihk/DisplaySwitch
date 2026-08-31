@@ -5,8 +5,8 @@
 - 日期：2026-08-31
 - 分支：`codex/macos-usb-collaboration-layout`
 - 基线：`origin/codex/macos-tray-empty-group@f4b1cdf222c82822c23785ae41812838b1230b0d`，并以普通 merge 同步 `origin/main@0e377256d177cd40ce45fb47b9da300789100dce`；因此保留 DS-023/DS-024 堆叠实现，同时包含已合并 Windows PR #65 的最新主线事实。
-- 实现提交：本条交接记录所在提交。
-- PR：本分支推送后创建，保持开放等待 GUI 验收；前置依赖仍为 PR #62 → #63 → #64。
+- 实现提交：`6181b2a8010b6fb9cdb1b8d9ef959a62024c978d`。
+- PR：[#67](https://github.com/maizihk/DisplaySwitch/pull/67)，目标为 `codex/macos-tray-empty-group`，保持开放等待 GUI 验收；前置依赖仍为 PR #62 → #63 → #64。
 - 根因：USB 与协同页面仍沿用单个粗粒度卡片，自动切换、动态映射、网络检查和配置编辑混排；两页不是可滚动内容，3 台以上显示器容易挤压或溢出。
 - 实现：USB 固定为“自动切换 / 对端输入源 / 联动协同”三组；协同固定为“协同状态 / 当前配置 / 配置详情”三组。地址与端口、状态操作、联动目标与开关分别同行，动态映射以稳定显示器 ID 保持一台一行。
 - 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
