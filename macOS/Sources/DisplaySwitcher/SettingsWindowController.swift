@@ -289,7 +289,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             defer: false
         )
         window.title = "常规"
-        window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = .underPageBackgroundColor
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
         window.isReleasedWhenClosed = false
@@ -382,14 +382,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbCollaborationProfilePopup.target = self
         usbCollaborationProfilePopup.action = #selector(usbCollaborationProfileChanged(_:))
 
-        let tabs = [
-            ("常规", "gearshape.fill"),
-            ("USB 切换", "cable.connector"),
-            ("协同", "network"),
-            ("显示器", "display.2"),
-            ("诊断", "stethoscope"),
-            ("关于", "info.circle")
-        ]
+        let tabs = zip(SettingsPageLayoutProjection.tabLabels, [
+            "gearshape.fill",
+            "cable.connector",
+            "network",
+            "display.2",
+            "stethoscope",
+            "info.circle"
+        ])
         tabButtons = tabs.enumerated().map { index, tab in
             let button = SettingsTabButton(title: tab.0, symbolName: tab.1)
             button.tag = index

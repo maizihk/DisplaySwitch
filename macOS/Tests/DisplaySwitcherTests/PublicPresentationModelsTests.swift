@@ -20,30 +20,63 @@ final class PublicPresentationModelsTests: XCTestCase {
         let light = try XCTUnwrap(NSAppearance(named: .aqua))
         let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
         let card = SettingsCardView(frame: NSRect(x: 0, y: 0, width: 300, height: 120))
-        let page = SettingsPageBackgroundView(frame: card.frame)
 
         card.appearance = light
-        page.appearance = light
         card.updateLayer()
-        page.updateLayer()
         let lightCard = card.layer?.backgroundColor?.components ?? []
-        let lightPage = page.layer?.backgroundColor?.components ?? []
+        let lightCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: light).components ?? []
 
         XCTAssertEqual(card.layer?.cornerRadius, SettingsSurfaceStyle.cardCornerRadius)
         XCTAssertEqual(card.layer?.borderWidth, SettingsSurfaceStyle.cardBorderWidth)
         XCTAssertTrue(card.layer?.masksToBounds ?? false)
         XCTAssertNotNil(card.layer?.borderColor)
-        XCTAssertNotEqual(lightCard, lightPage)
+        XCTAssertNotEqual(lightCard, lightCanvas)
 
         card.appearance = dark
-        page.appearance = dark
         card.updateLayer()
-        page.updateLayer()
         let darkCard = card.layer?.backgroundColor?.components ?? []
-        let darkPage = page.layer?.backgroundColor?.components ?? []
+        let darkCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: dark).components ?? []
 
-        XCTAssertNotEqual(darkCard, darkPage)
+        XCTAssertNotEqual(darkCard, darkCanvas)
         XCTAssertNotEqual(lightCard, darkCard)
+        XCTAssertNotEqual(lightCanvas, darkCanvas)
+    }
+
+    func testPageContainersAreTransparentAndDoNotCreateSecondCanvas() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let page = SettingsPageBackgroundView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let document = SettingsPageBackgroundView(frame: page.frame)
+        let scroll = SettingsPageScrollView(frame: page.frame)
+
+        XCTAssertFalse(SettingsSurfaceStyle.pagePaintsBackground)
+        XCTAssertFalse(SettingsSurfaceStyle.scrollPaintsBackground)
+        XCTAssertFalse(page.isOpaque)
+        XCTAssertFalse(document.isOpaque)
+        XCTAssertFalse(scroll.drawsBackground)
+        XCTAssertFalse(scroll.contentView.drawsBackground)
+        XCTAssertEqual(scroll.backgroundColor, .clear)
+
+        page.appearance = light
+        document.appearance = light
+        scroll.appearance = light
+        scroll.viewDidChangeEffectiveAppearance()
+        XCTAssertNil(page.layer?.backgroundColor)
+        XCTAssertNil(document.layer?.backgroundColor)
+        XCTAssertFalse(scroll.contentView.drawsBackground)
+
+        let lightCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: light).components ?? []
+        let darkCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: dark).components ?? []
+        XCTAssertNotEqual(lightCanvas, darkCanvas)
+    }
+
+    func testAllSettingsPagesShareTheSingleCanvasConstructionContract() {
+        XCTAssertEqual(SettingsPageLayoutProjection.tabLabels, [
+            "常规", "USB 切换", "协同", "显示器", "诊断", "关于"
+        ])
+        XCTAssertTrue(SettingsPageLayoutProjection.tabLabels.allSatisfy { _ in
+            !SettingsSurfaceStyle.pagePaintsBackground && !SettingsSurfaceStyle.scrollPaintsBackground
+        })
     }
 
     func testSettingsActionButtonStyleAppliesOneNativeRegularContract() {

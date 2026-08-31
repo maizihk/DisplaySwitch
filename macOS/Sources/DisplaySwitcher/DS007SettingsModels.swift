@@ -14,6 +14,12 @@ extension NSColor {
 enum SettingsSurfaceStyle {
     static let cardCornerRadius: CGFloat = 12
     static let cardBorderWidth: CGFloat = 1
+    static let pagePaintsBackground = false
+    static let scrollPaintsBackground = false
+
+    static func pageBackgroundColor(using appearance: NSAppearance) -> CGColor {
+        NSColor.underPageBackgroundColor.cgColor(using: appearance)
+    }
 }
 
 final class SettingsCardView: NSView {
@@ -43,26 +49,17 @@ final class SettingsCardView: NSView {
 class SettingsPageBackgroundView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
     }
 
     required init?(coder: NSCoder) { nil }
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor(using: effectiveAppearance)
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-    }
+    override var isOpaque: Bool { false }
 }
 
 final class SettingsPageScrollView: NSScrollView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        drawsBackground = true
+        drawsBackground = SettingsSurfaceStyle.scrollPaintsBackground
+        borderType = .noBorder
         updateSemanticBackground()
     }
 
@@ -74,7 +71,8 @@ final class SettingsPageScrollView: NSScrollView {
     }
 
     private func updateSemanticBackground() {
-        backgroundColor = .underPageBackgroundColor
+        backgroundColor = .clear
+        contentView.drawsBackground = false
     }
 }
 
@@ -305,6 +303,8 @@ enum SettingsHorizontalRowAlignment: Equatable {
 }
 
 struct SettingsPageLayoutProjection: Equatable {
+    static let tabLabels = ["常规", "USB 切换", "协同", "显示器", "诊断", "关于"]
+
     enum GroupID: String, Equatable {
         case usbAutomation
         case usbPeerInputs
