@@ -12,6 +12,18 @@ private final class InputSourceSwitchRecorder {
     var onWriteStarted: ((String) -> Void)?
     var waitBeforeWriteReturns: ((String) -> Void)?
 
+    var resolvedSelectorsSnapshot: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return resolvedSelectors
+    }
+
+    var writesSnapshot: [(selector: String, value: UInt16)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return writes
+    }
+
     func recordResolve(_ selector: String) {
         lock.lock()
         resolvedSelectors.append(selector)
@@ -288,8 +300,11 @@ final class InputSourceSwitchingTests: XCTestCase {
             ),
             InputSourceSwitchOutcome(stableID: "display-b", failure: nil)
         ])
-        XCTAssertEqual(recorder.resolvedSelectors, ["selector-a", "selector-b"])
-        XCTAssertEqual(recorder.writes.map(\.selector), ["selector-b"])
+        // Different displays resolve concurrently; resolver call order is intentionally not a contract.
+        let resolvedSelectors = recorder.resolvedSelectorsSnapshot
+        XCTAssertEqual(resolvedSelectors.count, 2)
+        XCTAssertEqual(Set(resolvedSelectors), Set(["selector-a", "selector-b"]))
+        XCTAssertEqual(recorder.writesSnapshot.map(\.selector), ["selector-b"])
     }
 
     func testOrdinaryFailureAndValueCacheRemainIndependentFromInputSwitch() throws {
