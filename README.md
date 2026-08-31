@@ -64,6 +64,15 @@ macOS/outputs/DisplaySwitcher-macOS-<arch>.zip
 
 脚本会构建 Release、进行本地临时签名、严格验签，并解压 ZIP 再次验证。推荐分发和安装 ZIP，而不是直接复制构建目录中的 `.app`。
 
+需要在同一台开发 Mac 上稳定识别应用身份时，可以使用钥匙串中有效的 Apple Development 身份进行本地签名：
+
+```bash
+DISPLAYSWITCH_CODESIGN_IDENTITY="<codesigning identity SHA-1 or exact name>" \
+  ./macOS/scripts/build-app.sh
+```
+
+该环境变量不写入工程、配置或产物名称；未设置时脚本仍使用 ad-hoc 签名，GitHub Actions 也不访问个人证书。Apple Development 只用于本机开发测试，不等同于 Developer ID、公证或正式发行签名。为避免 macOS 本地网络权限把不同测试副本记录为多个应用，签名身份和 Bundle Identifier 应保持不变，并始终将测试 App 替换安装到固定的 `/Applications/DisplaySwitcher.app`，不要直接运行不同解压目录中的副本。既有重复权限记录不会因稳定签名自动消失。
+
 ### 安装与配置
 
 将 ZIP 解压到 `/Applications` 后启动 `DisplaySwitcher.app`。首次使用时：

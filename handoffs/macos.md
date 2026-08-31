@@ -1,6 +1,19 @@
 # macOS 交接记录
 
-## 当前状态：DS-021 发布准备事实同步
+## 当前状态：DS-022 稳定本地开发签名
+
+- 日期：2026-08-31
+- 分支：`codex/macos-stable-local-signing`
+- 基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`
+- 根因：持续使用 ad-hoc 签名并从不同解压路径启动测试包，不能为 macOS 本地网络权限提供稳定的 Apple 代码签名身份，造成大量同名权限记录；本机最初还只有已过期的旧 WWDR 中间证书，导致新 Apple Development 身份无法建立可信链。
+- 本机准备：用户已将 WWDR G3 导入登录钥匙串，`security find-identity -p codesigning -v` 确认 1 个有效 Apple Development 身份；证书和私钥不进入仓库。
+- 实现：`build-app.sh` 在可选环境变量设置时使用有效钥匙串身份，未设置时保持 ad-hoc；三份 App 均严格验签，身份模式额外拒绝 ad-hoc 或缺少 TeamIdentifier 的结果。
+- 自动验证：完整 XCTest 149/149 通过；默认 ad-hoc 与 Apple Development 两种 Release 构建成功；输出 App、打包副本及 ZIP 解压副本均通过 `codesign --verify --deep --strict`，身份模式确认包含 TeamIdentifier 且不是 ad-hoc。
+- 测试说明：完整套件首次运行有一项并行 resolver 调用顺序断言波动，单项复跑和随后完整 149 项复跑均通过；没有为签名任务修改输入源并发行为。
+- 使用边界：Apple Development 只用于同一开发 Mac，不替代 Developer ID、公证或正式发布；测试 App 固定替换到 `/Applications/DisplaySwitcher.app`，不会自动清理已有权限记录。
+- 待验证：固定路径替换后的本地网络权限复用；本任务未修改 TCC，也未执行网络、USB、DDC、唤醒或输入源动作。
+
+## 上一任务：DS-021 发布准备事实同步
 
 - 日期：2026-08-31
 - 分支：`codex/docs-ds-021-release-readiness`
