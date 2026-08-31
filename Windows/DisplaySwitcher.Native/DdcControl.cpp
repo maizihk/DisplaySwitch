@@ -46,10 +46,17 @@ namespace
     {
         return { DdcVcpCode::Brightness, DdcVcpCode::Contrast, DdcVcpCode::Volume };
     }
+
 }
 
 namespace DisplaySwitcher::Native
 {
+    bool IsDdcControlVcpCode(DdcVcpCode code) noexcept
+    {
+        return code == DdcVcpCode::Brightness || code == DdcVcpCode::Contrast
+            || code == DdcVcpCode::Volume;
+    }
+
     std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config)
     {
         std::vector<DdcTrayControl> result;
@@ -159,7 +166,7 @@ namespace DisplaySwitcher::Native
         if (code == DdcVcpCode::Brightness) return display.brightnessEnabled;
         if (code == DdcVcpCode::Contrast) return display.contrastEnabled;
         if (code == DdcVcpCode::Volume) return display.volumeEnabled;
-        return true;
+        return false;
     }
 
     bool DdcControlService::Allowed(AppConfig const& config, DdcCancellationToken const& cancellation) const
@@ -295,6 +302,12 @@ namespace DisplaySwitcher::Native
     {
         DdcControlBatchResult batch;
         if (!Allowed(config, cancellation)) { batch.canceled = true; return batch; }
+        if (!IsDdcControlVcpCode(code))
+        {
+            batch.items.push_back({ displayId, code, false, false, false, false, {}, {}, DdcAvailability::Unsupported,
+                DdcErrorKind::Unsupported, L"普通 DDC 控制不支持该 VCP 项" });
+            return batch;
+        }
         if (value < 0 || value > 65535)
         {
             batch.items.push_back({ displayId, code, false, false, false, false, {}, {}, DdcAvailability::Available,

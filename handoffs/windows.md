@@ -1,13 +1,32 @@
 # Windows 交接记录
 
-## 当前任务：Windows 按需详细诊断记录
+## 当前任务：W-206 输入源切换与 DDC 调节后端解耦
+
+- 日期：2026-08-31
+- 分支：`codex/windows-input-source-transport`
+- 基线：`origin/main@0e377256d177cd40ce45fb47b9da300789100dce`，已包含 PR #65 的按需详细诊断实现和界面收尾。
+- 实现提交：`19b601181aef40ec2cbef81ae6709c9568b57c25`。
+- PR：[#66](https://github.com/maizihk/DisplaySwitch/pull/66)，目标为 `main`，保持 open 等待评审和实机验收。
+- 根因：输入源和亮度/对比度/音量虽然业务入口不同，但共同依赖 `IDdcBackend::Write()`，且输入源 VCP 与普通三项混在 `DdcVcpCode`，无法从类型边界证明两条路径互不调用或互不污染。
+- 设计：新增独立 `IInputSourceTransport` 与 `InputSourceSwitchService`；`DdcBackendSet` 提供两个独立对象，但共享同一个原生物理显示器会话、句柄集合、解析缓存、topology generation 和全局串行锁。
+- 行为保持：USB 离开与协同切屏仍按原显示器映射执行同一 DXVA2 输入源写入，保留一次刷新重试、取消/安全门、离线/歧义零写入、拓扑变化丢弃旧结果和多显示器失败隔离。
+- 普通 DDC：`DdcVcpCode` 与 `DdcControlService` 只允许亮度、对比度和音量；旧输入源数值即使被强制构造也会在调用 backend 前拒绝。
+- PR #66 评审修复：普通 service 与原生 Read/Write 改为共用同一份三项 VCP 白名单，`0x60` 在显示器解析和 DXVA2 前以 `Unsupported` 拒绝；原生 `Capabilities().known` 保持为 false，不把接口白名单冒充为显示器 MCCS 能力确认。
+- generation 评审修复：一次刷新重试以最终结果的 `topologyGeneration` 与 transport 当前 generation 一致为成功条件；受控刷新本身不再被误判，显式 `TopologyChanged` 和外部变化造成的落后结果仍会丢弃并停止剩余显示器。
+- 测试边界：DDC fake 与输入源 fake 完全分离；自动测试不访问真实网络、USB、唤醒、DDC 或输入源。
+- 本机验证：`Windows/build-windows.ps1` x64 Release 成功，完整原生测试通过 254 项检查；新增受控刷新递增 generation 后重试成功、外部 generation 变化丢弃、service/native 同时拒绝 `0x60` 且 native generation 不变；v2 公共向量为 1 条规范化、4 条认证、20 条消息、6 条状态机，USB-001 至 USB-016 全部通过。
+- 产物验证：dist 共 9 个文件、1,828,805 字节，入口与 `runtime/` 完整，低于 20 MiB；扫描未发现配置、诊断日志、个人路径或测试秘密。
+- 实机待验：真实 USB 离开和协同切屏、显示器部分失败、句柄刷新重试、热插拔/接口切换后的目标稳定性。
+- 范围：只修改 `Windows/` 与本文件；不修改 macOS、协议、contracts、schemaVersion、版本、workflow、tag 或 Release。
+
+## 历史任务：Windows 按需详细诊断记录
 
 - 日期：2026-08-31
 - 分支：`codex/windows-detailed-diagnostics`
 - 最新主线基线：`origin/main@c7c08f999d4c8d58c37401379e15f60ad34969d9`，通过普通 merge 合入；未 rebase、reset 或丢弃原提交。
 - 主线同步 merge 提交：`dbcce044c97315858869d7840523fb2f776da0cd`；冲突仅位于 Windows 清单与本交接文件，解决时同时保留 PR #54/#60 已合并及用户验收、DS-021 发布准备、新增按需详细记录待验收状态和既有实机边界。
 - 实现提交：`78d55050a4d775f961b86f5d135cea30ce930c06`
-- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65)，目标改为 `main` 后保持 open，等待 Windows CI 与实机 GUI 验收。
+- PR：[#65](https://github.com/maizihk/DisplaySwitch/pull/65) 已合并为 `0e377256d177cd40ce45fb47b9da300789100dce`；按需详细诊断和界面收尾现已进入 main。
 - 范围：按需详细诊断记录及其本机设置、测试和 Windows 文档；不修改协议、schemaVersion、版本、workflow、tag 或 Release。
 
 ## 已合并基线与发布准备事实

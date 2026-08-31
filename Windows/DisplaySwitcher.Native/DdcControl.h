@@ -10,9 +10,10 @@ namespace DisplaySwitcher::Native
     {
         Brightness = 0x10,
         Contrast = 0x12,
-        InputSource = 0x60,
         Volume = 0x62,
     };
+
+    bool IsDdcControlVcpCode(DdcVcpCode code) noexcept;
 
     enum class DdcAvailability
     {
