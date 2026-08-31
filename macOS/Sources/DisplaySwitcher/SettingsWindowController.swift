@@ -11,6 +11,7 @@ private extension Array {
 private final class DisplayInputMappingRowView: NSStackView {
     let inputField = NSTextField()
     private let titleLabel = NSTextField(wrappingLabelWithString: "")
+    private var widthConstraint: NSLayoutConstraint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -28,7 +29,7 @@ private final class DisplayInputMappingRowView: NSStackView {
         alignment = .firstBaseline
         spacing = 10
         distribution = .fill
-        widthAnchor.constraint(equalToConstant: 590).isActive = true
+        setPreferredWidth(CGFloat(SettingsFormRowLayout.contentWidth))
     }
 
     required init?(coder: NSCoder) {
@@ -40,6 +41,12 @@ private final class DisplayInputMappingRowView: NSStackView {
         inputField.stringValue = value
         inputField.delegate = delegate
         inputField.setAccessibilityLabel("\(title)输入源")
+    }
+
+    func setPreferredWidth(_ width: CGFloat) {
+        widthConstraint?.isActive = false
+        widthConstraint = widthAnchor.constraint(equalToConstant: width)
+        widthConstraint?.isActive = true
     }
 }
 
@@ -235,6 +242,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let profilePopup = NSPopUpButton()
     private let profileNameField = NSTextField()
     private let profileMappingStack = NSStackView()
+    private let profileMappingContainerStack = NSStackView()
     private lazy var addProfileButton = NSButton(title: "添加配置", target: self, action: #selector(addProfile))
     private lazy var removeProfileButton = NSButton(title: "删除配置", target: self, action: #selector(removeProfile))
     private lazy var inspectProfileButton = NSButton(title: "检测连接", target: self, action: #selector(inspectCurrentProfile))
@@ -451,6 +459,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbMappingStack.orientation = .vertical
         usbMappingStack.alignment = .leading
         usbMappingStack.spacing = 8
+        profileMappingContainerStack.orientation = .vertical
+        profileMappingContainerStack.alignment = .leading
+        profileMappingContainerStack.spacing = 6
+        profileMappingContainerStack.setViews([profileMappingStack, profileMappingEmptyLabel], in: .center)
         for label in [usbMappingEmptyLabel, profileMappingEmptyLabel, peerTriggerDeviceStatusLabel] {
             label.textColor = .secondaryLabelColor
             label.font = .systemFont(ofSize: 11)
@@ -579,9 +591,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 peerAddressRow,
                 pairingRow,
                 separator(),
-                sectionTitle("对端输入源"),
-                profileMappingStack,
-                profileMappingEmptyLabel,
+                labeledVerticalControlRow(
+                    title: SettingsMappingListLayout.title,
+                    control: profileMappingContainerStack
+                ),
                 peerTriggerDeviceStatusLabel,
                 separator(),
                 profileActions
@@ -1124,7 +1137,19 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         row.alignment = .centerY
         row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
         row.distribution = .fill
-        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
+        row.widthAnchor.constraint(equalToConstant: CGFloat(SettingsFormRowLayout.contentWidth)).isActive = true
+        return row
+    }
+
+    private func labeledVerticalControlRow(title: String, control: NSView) -> NSView {
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        control.widthAnchor.constraint(equalToConstant: CGFloat(SettingsFormRowLayout.controlColumnWidth)).isActive = true
+        let row = NSStackView(views: [formLabel(title), control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
+        row.distribution = .fill
+        row.widthAnchor.constraint(equalToConstant: CGFloat(SettingsFormRowLayout.contentWidth)).isActive = true
         return row
     }
 
@@ -1183,7 +1208,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         row.alignment = .centerY
         row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
         row.distribution = .fill
-        row.widthAnchor.constraint(equalToConstant: 590).isActive = true
+        row.widthAnchor.constraint(equalToConstant: CGFloat(SettingsFormRowLayout.contentWidth)).isActive = true
         return row
     }
 
@@ -1516,6 +1541,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         var reconciled: [String: DisplayInputMappingRowView] = [:]
         for descriptor in descriptors {
             let row = usbMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
+            row.setPreferredWidth(CGFloat(SettingsFormRowLayout.contentWidth))
             row.update(
                 title: descriptor.title,
                 value: mappings[descriptor.displayID].map(String.init) ?? "",
@@ -1559,6 +1585,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         var reconciled: [String: DisplayInputMappingRowView] = [:]
         for descriptor in descriptors {
             let row = profileMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
+            row.setPreferredWidth(CGFloat(SettingsFormRowLayout.controlColumnWidth))
             row.update(
                 title: descriptor.title,
                 value: mappings[descriptor.displayID].map(String.init) ?? "",

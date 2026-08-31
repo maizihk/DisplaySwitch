@@ -351,8 +351,30 @@ final class PublicPresentationModelsTests: XCTestCase {
         let layout = SettingsFormRowLayout.leadingLabelFixedControlColumn
         XCTAssertTrue(layout.alignsLabelWithCardContentLeading)
         XCTAssertTrue(layout.keepsControlColumnStable)
+        XCTAssertEqual(SettingsFormRowLayout.contentWidth, 590)
         XCTAssertEqual(SettingsFormRowLayout.labelColumnWidth, 90)
         XCTAssertEqual(SettingsFormRowLayout.controlColumnSpacing, 10)
+        XCTAssertEqual(SettingsFormRowLayout.controlColumnWidth, 490)
+    }
+
+    func testCollaborationMappingListUsesCenteredTwoColumnFormRowForZeroOneAndManyDisplays() {
+        for count in [0, 1, 3] {
+            let layout = SettingsMappingListLayout.collaboration(displayCount: count)
+            XCTAssertEqual(layout.displayCount, count)
+            XCTAssertEqual(SettingsMappingListLayout.title, "对端输入源")
+            XCTAssertEqual(
+                SettingsMappingListLayout.labelColumnWidth,
+                SettingsFormRowLayout.labelColumnWidth
+            )
+            XCTAssertEqual(
+                SettingsMappingListLayout.listColumnWidth,
+                SettingsFormRowLayout.controlColumnWidth
+            )
+            XCTAssertTrue(layout.usesTwoColumnRow)
+            XCTAssertTrue(layout.centersTitleAgainstListContainer)
+            XCTAssertFalse(layout.usesManualVerticalOffset)
+            XCTAssertEqual(layout.showsEmptyState, count == 0)
+        }
     }
 
     func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {

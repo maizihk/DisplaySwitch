@@ -309,11 +309,32 @@ enum SettingsPageLayoutAction: String, Equatable {
 enum SettingsFormRowLayout: Equatable {
     case leadingLabelFixedControlColumn
 
+    static let contentWidth: Double = 590
     static let labelColumnWidth: Double = 90
     static let controlColumnSpacing: Double = 10
+    static var controlColumnWidth: Double {
+        contentWidth - labelColumnWidth - controlColumnSpacing
+    }
 
     var alignsLabelWithCardContentLeading: Bool { true }
     var keepsControlColumnStable: Bool { true }
+}
+
+struct SettingsMappingListLayout: Equatable {
+    let displayCount: Int
+
+    static let title = "对端输入源"
+    static let labelColumnWidth = SettingsFormRowLayout.labelColumnWidth
+    static let listColumnWidth = SettingsFormRowLayout.controlColumnWidth
+
+    var usesTwoColumnRow: Bool { true }
+    var centersTitleAgainstListContainer: Bool { true }
+    var usesManualVerticalOffset: Bool { false }
+    var showsEmptyState: Bool { displayCount == 0 }
+
+    static func collaboration(displayCount: Int) -> SettingsMappingListLayout {
+        SettingsMappingListLayout(displayCount: displayCount)
+    }
 }
 
 enum SettingsHorizontalRowAlignment: Equatable {
