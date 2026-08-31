@@ -16,7 +16,7 @@
 - 实机待验：连接 RDP 时设置页保留原物理目录且无虚拟条目；断开 RDP 返回本地后稳定 ID、名称、DDC/托盘开关、USB/协同映射恢复；随后经用户授权验证 DDC 和输入源仍指向正确物理显示器。
 - 实现提交：`72d319fca369b91cf837fb57baa229fe23ece465`。
 - PR：[#68](https://github.com/maizihk/DisplaySwitch/pull/68)，base 为 `codex/windows-input-source-transport`，保持 open，不自行合并。
-- CI：等待 PR 最新 head 的 Windows workflow；本机验证结果不冒充 GitHub 托管 CI。
+- CI：当前 Windows workflow 只监听以 `main` 为 base 的 PR，堆叠 PR #68 因此没有 GitHub check；262 项检查和 x64 Release 均为本机验证，不冒充 GitHub 托管 CI。待上游 PR #66 合并并将本 PR 改为 `main` 基线后再执行最终云端验证。
 
 ## 历史任务：W-206 输入源切换与 DDC 调节后端解耦
 
