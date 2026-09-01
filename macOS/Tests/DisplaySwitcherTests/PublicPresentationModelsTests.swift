@@ -495,7 +495,7 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(controller.state, .hidden)
         XCTAssertTrue(states.isEmpty)
 
-        controller.recordSaveSucceeded()
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
 
         XCTAssertEqual(controller.state, .visible(.saved))
         XCTAssertEqual(states, [.visible(.saved)])
@@ -512,8 +512,8 @@ final class PublicPresentationModelsTests: XCTestCase {
         let scheduler = ManualSettingsSaveFeedbackScheduler()
         let controller = SettingsSaveFeedbackController(scheduler: scheduler)
 
-        controller.recordSaveSucceeded()
-        controller.recordSaveSucceeded()
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
 
         XCTAssertEqual(scheduler.tasks.count, 2)
         XCTAssertTrue(scheduler.tasks[0].isCancelled)
@@ -530,15 +530,15 @@ final class PublicPresentationModelsTests: XCTestCase {
         let scheduler = ManualSettingsSaveFeedbackScheduler()
         let controller = SettingsSaveFeedbackController(scheduler: scheduler)
 
-        controller.recordSaveSucceeded()
-        controller.recordSaveFailed()
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.recordPersistenceResult(.failed, scope: .collaboration)
 
         XCTAssertTrue(scheduler.tasks[0].isCancelled)
         XCTAssertEqual(controller.state, .visible(.failedRestored))
         scheduler.tasks[0].fireEvenIfCancelled()
         XCTAssertEqual(controller.state, .visible(.failedRestored))
 
-        controller.recordSaveSucceeded()
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
 
         XCTAssertEqual(controller.state, .visible(.saved))
         XCTAssertEqual(scheduler.tasks.count, 2)
@@ -550,7 +550,7 @@ final class PublicPresentationModelsTests: XCTestCase {
         let scheduler = ManualSettingsSaveFeedbackScheduler()
         let controller = SettingsSaveFeedbackController(scheduler: scheduler)
 
-        controller.recordSaveSucceeded()
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
         controller.reset()
 
         XCTAssertTrue(scheduler.tasks[0].isCancelled)
@@ -563,13 +563,13 @@ final class PublicPresentationModelsTests: XCTestCase {
         let scheduler = ManualSettingsSaveFeedbackScheduler()
         let controller = SettingsSaveFeedbackController(scheduler: scheduler)
 
-        controller.recordSaveSucceeded()
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
         controller.dismissTransientSuccess()
 
         XCTAssertTrue(scheduler.tasks[0].isCancelled)
         XCTAssertEqual(controller.state, .hidden)
 
-        controller.recordSaveFailed()
+        controller.recordPersistenceResult(.failed, scope: .collaboration)
         controller.dismissTransientSuccess()
 
         XCTAssertEqual(controller.state, .visible(.failedRestored))
@@ -579,11 +579,36 @@ final class PublicPresentationModelsTests: XCTestCase {
         let scheduler = ManualSettingsSaveFeedbackScheduler()
         var controller: SettingsSaveFeedbackController? = SettingsSaveFeedbackController(scheduler: scheduler)
 
-        controller?.recordSaveSucceeded()
+        controller?.recordPersistenceResult(.succeeded, scope: .collaboration)
         controller = nil
 
         XCTAssertTrue(scheduler.tasks[0].isCancelled)
         scheduler.tasks[0].fireEvenIfCancelled()
+    }
+
+    func testNonCollaborationPersistenceResultsNeverPolluteCollaborationFeedback() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .none)
+        controller.recordPersistenceResult(.failed, scope: .none)
+
+        XCTAssertEqual(controller.state, .hidden)
+        XCTAssertTrue(scheduler.tasks.isEmpty)
+
+        controller.recordPersistenceResult(.failed, scope: .collaboration)
+        controller.recordPersistenceResult(.succeeded, scope: .none)
+        controller.recordPersistenceResult(.failed, scope: .none)
+
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+        XCTAssertTrue(scheduler.tasks.isEmpty)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.recordPersistenceResult(.failed, scope: .none)
+
+        XCTAssertEqual(controller.state, .visible(.saved))
+        XCTAssertEqual(scheduler.tasks.count, 1)
+        XCTAssertFalse(scheduler.tasks[0].isCancelled)
     }
 
     func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {

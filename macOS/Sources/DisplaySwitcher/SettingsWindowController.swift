@@ -1394,7 +1394,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profile.displayInputs = mapping
         let decision = DisplayConfigurationStore.profileForSafeSave(profile, displays: document.displays)
         peerCoordinationCheckbox.state = decision.profile.coordinationEnabled ? .on : .off
-        let didSave = persistDocument { value in
+        let didSave = persistDocument(feedbackScope: .collaboration) { value in
             value.collaborationProfiles[self.selectedProfileIndex] = decision.profile
         }
         if didSave, decision.disabledBecauseIncomplete {
@@ -1403,7 +1403,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @discardableResult
-    private func persistDocument(_ mutation: (inout DisplayConfigurationStoreV5Document) -> Void) -> Bool {
+    private func persistDocument(
+        feedbackScope: SettingsSaveFeedbackScope = .none,
+        _ mutation: (inout DisplayConfigurationStoreV5Document) -> Void
+    ) -> Bool {
         guard var document = configurationDocument else { return false }
         mutation(&document)
         do {
@@ -1413,18 +1416,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             clearValidationError()
             onSave?()
             reloadValues(rebuildDisplayForms: false)
-            peerSaveFeedbackController.recordSaveSucceeded()
+            peerSaveFeedbackController.recordPersistenceResult(.succeeded, scope: feedbackScope)
             return true
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
-            peerSaveFeedbackController.recordSaveFailed()
+            peerSaveFeedbackController.recordPersistenceResult(.failed, scope: feedbackScope)
             showValidationError("设置未保存，已恢复最后有效值：\n\(error.localizedDescription)")
             return false
         } catch {
             onConfigurationSaveFailure?(.writeFailed)
             reloadValues()
-            peerSaveFeedbackController.recordSaveFailed()
+            peerSaveFeedbackController.recordPersistenceResult(.failed, scope: feedbackScope)
             showValidationError("设置未保存，已恢复最后有效值。")
             return false
         }
@@ -1688,7 +1691,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             pairingCode: "", peerEndpointID: nil, peerProtocolVersion: nil, coordinationEnabled: false,
             displayInputs: [], triggerDevices: []))
         selectedProfileIndex = editingProfiles.count - 1
-        persistDocument { $0.collaborationProfiles = self.editingProfiles }
+        persistDocument(feedbackScope: .collaboration) {
+            $0.collaborationProfiles = self.editingProfiles
+        }
     }
 
     @objc private func removeProfile() {
@@ -1702,7 +1707,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let removedProfileID = editingProfiles[selectedProfileIndex].id
         editingProfiles.remove(at: selectedProfileIndex)
         selectedProfileIndex = min(selectedProfileIndex, editingProfiles.count - 1)
-        persistDocument {
+        persistDocument(feedbackScope: .collaboration) {
             $0.collaborationProfiles = self.editingProfiles
             if $0.usbSwitch.collaborationProfileID?.caseInsensitiveCompare(removedProfileID) == .orderedSame {
                 $0.usbSwitch.collaborationProfileID = nil
@@ -1785,7 +1790,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                       let current = self.editingProfiles.firstIndex(where: { $0.id == profileID }) else { return }
                 self.editingProfiles[current].peerEndpointID = endpointID.lowercased()
                 self.editingProfiles[current].peerProtocolVersion = 2
-                self.persistDocument { $0.collaborationProfiles = self.editingProfiles }
+                self.persistDocument(feedbackScope: .collaboration) {
+                    $0.collaborationProfiles = self.editingProfiles
+                }
             }
         case .authenticationFailed:
             peerStatusLabel.stringValue = "\(profile.name)：认证失败"

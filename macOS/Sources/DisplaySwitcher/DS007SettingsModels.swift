@@ -396,6 +396,16 @@ enum SettingsSaveFeedbackState: Equatable {
     case visible(SettingsSaveStatusPresentation)
 }
 
+enum SettingsSaveFeedbackScope: Equatable {
+    case none
+    case collaboration
+}
+
+enum SettingsPersistenceResult: Equatable {
+    case succeeded
+    case failed
+}
+
 protocol SettingsSaveFeedbackScheduledTask: AnyObject {
     func cancel()
 }
@@ -469,7 +479,18 @@ final class SettingsSaveFeedbackController {
         reset()
     }
 
-    func recordSaveSucceeded() {
+    func recordPersistenceResult(
+        _ result: SettingsPersistenceResult,
+        scope: SettingsSaveFeedbackScope
+    ) {
+        guard scope == .collaboration else { return }
+        switch result {
+        case .succeeded: recordSaveSucceeded()
+        case .failed: recordSaveFailed()
+        }
+    }
+
+    private func recordSaveSucceeded() {
         generation &+= 1
         let currentGeneration = generation
         scheduledHide?.cancel()
@@ -483,7 +504,7 @@ final class SettingsSaveFeedbackController {
         }
     }
 
-    func recordSaveFailed() {
+    private func recordSaveFailed() {
         generation &+= 1
         scheduledHide?.cancel()
         scheduledHide = nil
