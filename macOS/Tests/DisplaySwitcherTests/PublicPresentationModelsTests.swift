@@ -323,7 +323,7 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2）" })
     }
 
-    func testUSBSettingsLayoutUsesThreeGroupsAndDynamicDisplayRows() {
+    func testUSBSettingsLayoutUsesTwoGroupsAndMergesDynamicDisplayRows() {
         for count in [0, 1, 2, 3, 5] {
             let displays = (0..<count).map {
                 mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")
@@ -333,12 +333,17 @@ final class PublicPresentationModelsTests: XCTestCase {
             )
 
             XCTAssertEqual(layout.groups.map(\.id), [
-                .usbAutomation, .usbPeerInputs, .usbCollaboration
+                .usbAutomation, .usbCollaboration
             ])
-            XCTAssertEqual(layout.groups[0].rows.map(\.id), [
-                "usb-automatic-switch", "usb-trigger-device", "usb-connection-status", "usb-learn"
+            XCTAssertEqual(Array(layout.groups[0].rows.prefix(5)).map(\.id), [
+                "usb-automatic-switch", "usb-automation-controls-separator",
+                "usb-trigger-device", "usb-connection-status", "usb-peer-inputs-separator"
             ])
-            let mappingRows = layout.groups[1].rows
+            XCTAssertEqual(
+                layout.groups[0].rows.filter { $0.kind == .separator }.map(\.id),
+                ["usb-automation-controls-separator", "usb-peer-inputs-separator"]
+            )
+            let mappingRows = Array(layout.groups[0].rows.dropFirst(5))
             XCTAssertEqual(mappingRows.count, max(1, count))
             if count == 0 {
                 XCTAssertEqual(mappingRows.first?.id, "usb-mapping-empty")
@@ -346,7 +351,7 @@ final class PublicPresentationModelsTests: XCTestCase {
                 XCTAssertEqual(mappingRows.map(\.title), displays.map(\.name))
                 XCTAssertTrue(mappingRows.allSatisfy { $0.action == .editValue })
             }
-            XCTAssertEqual(layout.groups[2].rows.map(\.action), [
+            XCTAssertEqual(layout.groups[1].rows.map(\.action), [
                 .selectUSBWakeProfile, .toggleUSBWake
             ])
         }
@@ -359,7 +364,8 @@ final class PublicPresentationModelsTests: XCTestCase {
         )
         let rows = layout.groups[0].rows
 
-        XCTAssertFalse(rows.first { $0.id == "usb-learn" }?.isEnabled ?? true)
+        XCTAssertEqual(rows.first { $0.id == "usb-trigger-device" }?.action, .learnUSBDevice)
+        XCTAssertFalse(rows.first { $0.id == "usb-trigger-device" }?.isEnabled ?? true)
         XCTAssertTrue(rows.first { $0.id == "usb-automatic-switch" }?.isEnabled ?? false)
         XCTAssertTrue(rows.allSatisfy(\.isVisible))
     }
@@ -384,6 +390,79 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(SettingsFormRowLayout.labelColumnWidth, 90)
         XCTAssertEqual(SettingsFormRowLayout.controlColumnSpacing, 10)
         XCTAssertEqual(SettingsFormRowLayout.controlColumnWidth, 490)
+    }
+
+    func testProfileNameRowUsesOneStableControlColumnWithFlexibleFieldAndTrailingSwitch() throws {
+        let layout = SettingsTrailingAccessoryRowLayout()
+        XCTAssertTrue(layout.usesSingleControlColumn)
+        XCTAssertTrue(layout.leadingControlExpandsInsideColumn)
+        XCTAssertTrue(layout.trailingAccessoryIsPinnedInsideColumn)
+        XCTAssertFalse(layout.fixesLeadingControlWidth)
+        XCTAssertEqual(
+            SettingsTrailingAccessoryRowLayout.labelColumnWidth
+                + SettingsTrailingAccessoryRowLayout.columnSpacing
+                + SettingsTrailingAccessoryRowLayout.controlColumnWidth,
+            SettingsTrailingAccessoryRowLayout.contentWidth
+        )
+
+        let field = NSTextField()
+        let toggle = NSSwitch()
+        let row = labeledTrailingAccessoryControlRow(
+            title: "配置名称",
+            control: field,
+            accessory: toggle
+        )
+        let label = try XCTUnwrap(row.arrangedSubviews.first as? NSTextField)
+        let controlColumn = try XCTUnwrap(row.arrangedSubviews.last as? NSStackView)
+
+        XCTAssertEqual(row.arrangedSubviews.count, 2)
+        XCTAssertEqual(label.stringValue, "配置名称")
+        XCTAssertEqual(row.orientation, .horizontal)
+        XCTAssertEqual(row.alignment, .centerY)
+        XCTAssertEqual(row.spacing, CGFloat(SettingsTrailingAccessoryRowLayout.columnSpacing))
+        XCTAssertEqual(controlColumn.arrangedSubviews.count, 2)
+        XCTAssertTrue(controlColumn.arrangedSubviews[0] === field)
+        XCTAssertTrue(controlColumn.arrangedSubviews[1] === toggle)
+        XCTAssertEqual(controlColumn.orientation, .horizontal)
+        XCTAssertEqual(controlColumn.alignment, .centerY)
+        XCTAssertEqual(
+            controlColumn.spacing,
+            CGFloat(SettingsTrailingAccessoryRowLayout.controlAccessorySpacing)
+        )
+        XCTAssertLessThan(
+            field.contentHuggingPriority(for: .horizontal).rawValue,
+            toggle.contentHuggingPriority(for: .horizontal).rawValue
+        )
+        XCTAssertLessThan(
+            field.contentCompressionResistancePriority(for: .horizontal).rawValue,
+            toggle.contentCompressionResistancePriority(for: .horizontal).rawValue
+        )
+        XCTAssertFalse(field.constraints.contains {
+            $0.firstAttribute == .width && $0.relation == .equal && $0.constant > 0
+        })
+        XCTAssertTrue(controlColumn.constraints.contains {
+            $0.firstAttribute == .width
+                && $0.constant == CGFloat(SettingsTrailingAccessoryRowLayout.controlColumnWidth)
+        })
+        XCTAssertTrue(row.constraints.contains {
+            $0.firstAttribute == .width
+                && $0.constant == CGFloat(SettingsTrailingAccessoryRowLayout.contentWidth)
+        })
+
+        row.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: SettingsTrailingAccessoryRowLayout.contentWidth,
+            height: max(field.intrinsicContentSize.height, toggle.intrinsicContentSize.height)
+        )
+        row.layoutSubtreeIfNeeded()
+        controlColumn.layoutSubtreeIfNeeded()
+        let expectedFieldWidth = CGFloat(SettingsTrailingAccessoryRowLayout.controlColumnWidth)
+            - CGFloat(SettingsTrailingAccessoryRowLayout.controlAccessorySpacing)
+            - toggle.intrinsicContentSize.width
+        XCTAssertEqual(field.frame.width, expectedFieldWidth, accuracy: 1)
+        XCTAssertEqual(toggle.frame.maxX, controlColumn.bounds.maxX, accuracy: 1)
+        XCTAssertGreaterThan(field.frame.width, toggle.frame.width)
     }
 
     func testUSBAndCollaborationMappingListsShareCenteredTwoColumnContract() {
@@ -450,14 +529,12 @@ final class PublicPresentationModelsTests: XCTestCase {
         }
     }
 
-    func testUSBMappingCardShowsOnlyOneInlinePeerInputTitle() {
-        let group = SettingsPageLayoutProjection.GroupID.usbPeerInputs
-        let visibleTitles: [String] = [group.externalTitle, SettingsMappingListLayout.title]
-            .compactMap { $0 }
-
-        XCTAssertNil(group.externalTitle)
-        XCTAssertEqual(visibleTitles, ["对端输入源"])
-        XCTAssertEqual(SettingsPageLayoutProjection.GroupID.collaborationDetails.externalTitle, "配置详情")
+    func testMergedUSBModuleShowsOnlyOneInlinePeerInputTitle() {
+        let layout = SettingsPageLayoutProjection.usb(displays: [], learningInProgress: false)
+        XCTAssertEqual(layout.groups.map(\.id), [.usbAutomation, .usbCollaboration])
+        XCTAssertEqual(layout.groups.map { $0.id.title }, ["自动切换", "联动协同"])
+        XCTAssertFalse(layout.groups.map { $0.id.title }.contains(SettingsMappingListLayout.title))
+        XCTAssertEqual(SettingsMappingListLayout.title, "对端输入源")
     }
 
     func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {
@@ -473,31 +550,42 @@ final class PublicPresentationModelsTests: XCTestCase {
         )
 
         XCTAssertEqual(layout.groups.map(\.id), [
-            .collaborationStatus, .collaborationSelection, .collaborationDetails
+            .collaborationStatus, .collaborationConfiguration
         ])
+        XCTAssertEqual(layout.groups.map { $0.id.title }, ["协同状态", "配置"])
         XCTAssertEqual(layout.groups[0].rows.map(\.action), [
             nil, .requestLocalNetworkPermission, .inspectCollaboration
         ])
-        XCTAssertEqual(layout.groups[1].rows.map(\.action), [
-            .selectCollaborationProfile, .addCollaborationProfile
+        XCTAssertEqual(Array(layout.groups[1].rows.prefix(3)).map(\.id), [
+            "collaboration-selector", "collaboration-add",
+            "collaboration-selection-details-separator"
         ])
+        XCTAssertEqual(layout.groups[1].rows[2].kind, .separator)
         XCTAssertEqual(
-            layout.groups[2].rows.filter { $0.id.hasPrefix("collaboration-mapping-") }.map(\.title),
+            layout.groups[1].rows.filter { $0.kind == .separator }.map(\.id),
+            [
+                "collaboration-selection-details-separator",
+                "collaboration-peer-inputs-separator",
+                "collaboration-actions-separator"
+            ]
+        )
+        XCTAssertEqual(
+            layout.groups[1].rows.filter { $0.id.hasPrefix("collaboration-mapping-") }.map(\.title),
             displays.map(\.name)
         )
-        XCTAssertTrue(layout.groups[2].rows.contains {
+        XCTAssertTrue(layout.groups[1].rows.contains {
             $0.id == "collaboration-delete" && $0.action == .deleteCollaborationProfile && $0.isEnabled
         })
-        XCTAssertFalse(layout.groups[2].rows.contains {
+        XCTAssertFalse(layout.groups[1].rows.contains {
             $0.id == SettingsSaveStatusPresentation.rowID
         })
         XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
         XCTAssertFalse(layout.windowFooterRows[0].isVisible)
         XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
-        XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-up" })
-        XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-down" })
-        XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "上移配置" })
-        XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "下移配置" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.id == "collaboration-move-up" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.id == "collaboration-move-down" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.title == "上移配置" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.title == "下移配置" })
     }
 
     func testCollaborationSaveStatusIsSingleBottomFooterWithSemanticPresentation() {
@@ -671,7 +759,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             selectedProfileIndex: 0,
             inspectionInProgress: false
         )
-        XCTAssertTrue(empty.groups[2].rows.allSatisfy { !$0.isVisible })
+        XCTAssertTrue(empty.groups[1].rows.dropFirst(2).allSatisfy { !$0.isVisible })
         XCTAssertFalse(empty.groups[0].rows.first {
             $0.action == .inspectCollaboration
         }?.isEnabled ?? true)
@@ -688,7 +776,7 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertFalse(checking.groups[0].rows.first {
             $0.action == .inspectCollaboration
         }?.isEnabled ?? true)
-        XCTAssertFalse(checking.groups[2].rows.first {
+        XCTAssertFalse(checking.groups[1].rows.first {
             $0.action == .deleteCollaborationProfile
         }?.isEnabled ?? true)
     }

@@ -17,9 +17,10 @@
 - 固定窗口底栏保存状态提交：本任务提交。
 - 短暂真实保存事件反馈提交：本任务提交。
 - USB 对端输入源两列布局提交：本任务提交。
+- USB/协同卡片合并与配置名称列约束提交：本任务提交。
 - PR：[#67](https://github.com/maizihk/DisplaySwitch/pull/67)，目标为 `codex/macos-tray-empty-group`，保持开放等待 GUI 验收；前置依赖仍为 PR #62 → #63 → #64。
-- 根因：USB 与协同页面仍沿用单个粗粒度卡片，自动切换、动态映射、网络检查和配置编辑混排；两页不是可滚动内容，3 台以上显示器容易挤压或溢出。
-- 实现：USB 固定为“自动切换 / 对端输入源 / 联动协同”三组；协同固定为“协同状态 / 当前配置 / 配置详情”三组。地址与端口、状态操作、联动目标与开关分别同行，动态映射以稳定显示器 ID 保持一台一行。
+- 根因：USB 与协同页面最初沿用单个粗粒度卡片，拆分后又形成过多独立卡片；相关控制在视觉上被割裂。配置名称行把字段、弹性空白和开关放在同一 590 点行，空白吸收剩余宽度，字段只保留接近内容的固有宽度。
+- 实现：USB 固定为“自动切换 / 联动协同”两组，映射并入自动切换卡片；协同固定为“协同状态 / 配置”两组，当前配置与详情合并。配置名称改为 90 点标签列 + 490 点右控制列，字段只在右列内弹性扩展，开关固定尾部；当前配置下拉框与添加按钮复用相同合同。
 - 实机反馈与根因：功能流程正常，但“添加配置”“学习”和联动开关仍贴左；原因是横向 helper 使用 `NSStackView` 默认 `.gravityAreas`，空 spacer 只有低 hugging 而不会扩展，带 accessory 的行还未插 spacer。现统一使用 `.fill`，分栏行插入最低 hugging 的弹性间隔，需填充的配置下拉框单独扩展，尾部控件保持 required hugging/compression 并贴齐卡片右缘。
 - 第二轮视觉根因：原卡片用 `controlBackgroundColor`、页面用 `windowBackgroundColor`，两者在浅色下近似且卡片没有语义边框/裁切，深色下圆角轮廓同样不可辨；配置按钮又单独设为 small/texturedRounded，与其他默认按钮分裂。
 - 第二轮实现：共享 `SettingsCardView`、`SettingsPageBackgroundView` 和 `SettingsPageScrollView` 统一使用动态系统语义色、separator 边框、连续圆角及裁切，appearance 变化时实时更新；共享 `SettingsActionButtonStyle` 统一普通动作按钮的 regular/rounded 样式和最小高度，module 标题附件也复用 trailing 对齐。
@@ -41,11 +42,13 @@
 - 第十轮实现：为持久化入口增加显式 `SettingsSaveFeedbackScope`，默认 `.none`；只有协同 profile 编辑/启用、添加、删除和确认 endpoint 的调用点传 `.collaboration`。路由由纯状态模型处理，不读取当前标签猜测来源；USB、显示器、全显示器联动等成功或失败继续只走既有全局 validation 反馈，绝不改变协同保存状态。
 - 第十一轮视觉根因：USB“对端输入源”仍把同一文案作为卡片外部模块标题，并让映射行占满整卡 590 点；协同配置详情已使用左标签列 + 右列表容器的 90/490 两列表单合同，两个入口视觉结构不一致。
 - 第十一轮实现：USB 映射卡片取消外部标题，只在卡片内保留一次“对端输入源”；USB 与协同共同调用生产 `labeledVerticalControlRow`，左标签按右侧完整列表容器 `centerY`，不计算行数偏移。USB 右列新增与协同一致的列表/空态容器，映射行宽收敛到共享 490 点控制列；独立卡片、圆角、背景、间距、稳定 ID、显示器名称和输入框宽度均保持。
+- 第十二轮结构根因：USB 的自动切换与对端输入源、协同的当前配置与配置详情属于同一配置流程，继续各占一张卡会制造无必要的模块边界；生产投影仍保留三组时也会让测试与新 UI 结构不一致。配置名称行并不存在固定 490 点字段与开关的硬约束冲突，真实问题是字段和弹性 spacer 并列，spacer 占据剩余空间。
+- 第十二轮实现：USB 的映射列表通过语义 separator 并入自动切换卡，协同的选择行通过 separator 并入“配置”卡；两页生产投影均从三组收敛为两组，删除旧映射/选择/详情组 ID，并以显式 separator row 固定内部顺序。新增通用尾部附件表单行：顶层只包含 90 点标签与 490 点右列，右列内字段低 hugging、尾部开关或按钮 required，从结构上消除窄字段与列外附件竞争。
 - 协调端复查发现：完整 XCTest 首次出现 1 项间歇失败，`InputSourceSwitchingTests.testResolverFailureIsAttributedToStableIDAndDoesNotSkipNextTarget` 固定断言不同显示器并发 resolver 调用顺序为 A→B；生产并发设计没有也不应有该顺序合同，结果归因才是稳定合同。
 - 稳定性修复：只调整测试 recorder 快照和断言，验证 `selector-a`/`selector-b` 各解析一次且集合完整、`outcomes` 继续按输入顺序和 stable ID 归因、只有 `selector-b` 发生 write；未修改生产输入源并发、USB、协同或 DDC 逻辑。
 - 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
 - 行为边界：只调整设置页信息架构与展示模型；即时保存持久化语义、无效值回退、配置启用条件、USB 学习、v2 协同、DDC、网络和输入源行为均未修改。DS-023 详细诊断默认关闭、DS-024 托盘静态入口清理均未回退。
-- 自动验证：设置展示/AppKit 契约 36/36、完整 XCTest 182/182 通过。覆盖浅色/深色唯一画布、透明 page/scroll/document、圆角/裁切/边框、按钮样式幂等、显示器控制卡片不以分隔线开头、每台显示器读取模块继续保留有效分隔线、配置详情表单左基线、USB/协同对端输入源共同使用 0/1/3+ 行两列 `centerY` AppKit 合同、USB 文案只出现一次且无外部标题、保存状态只存在于窗口级非滚动且左对齐 footer、滚动内容 footer 为空，以及上移/下移 UI 不再出现在展示投影中。手动调度器测试覆盖初始隐藏、成功绿色显示、2 秒隐藏、连续成功重置、失败持续、失败后成功、导航只清成功、reset 与释放取消，并验证非协同 success/failure 在隐藏、失败持续和成功倒计时三种状态下均零污染；不使用真实 sleep。完整 XCTest 的既存 InputSource QoS runtime warning 与 Xcode `linkd.autoShortcut` 警告均不影响断言，本任务未修改对应生产路径。
+- 自动验证：设置展示/AppKit 契约 37/37、完整 XCTest 183/183 通过。覆盖浅色/深色唯一画布、透明 page/scroll/document、圆角/裁切/边框、按钮样式幂等、USB/协同各两张卡及顺序、合并卡内部 separator 语义、0/1/3+ 行共享两列 `centerY` 映射、旧外部标题和旧独立组消失、配置名称右控制列内字段弹性与开关尾随、保存状态固定非滚动且左对齐，以及上移/下移 UI 不再出现。手动调度器测试继续覆盖保存反馈全语义且不使用真实 sleep。完整 XCTest 的既存 InputSource QoS runtime warning 与 Xcode `linkd.autoShortcut` 警告均不影响断言，本任务未修改对应生产路径。
 - 构建验证：Release `./macOS/scripts/build-app.sh` 通过，使用本机有效 Apple Development 身份签名；App、打包暂存副本与 ZIP 解压副本均通过 `codesign --verify --deep --strict`，ZIP 完整性通过。
 - 待验证：窄窗口、0/1/2/3+ 台真实显示器下 USB/协同两列映射和空态、浅色/深色、键盘导航、VoiceOver，以及打开时无提示、切换时不残留成功态、真实编辑保存后左侧绿色提示约 2 秒消失和失败跨切换持续至下次成功，仍需 GUI 验收。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改协议、schema、版本、系统权限或签名配置。

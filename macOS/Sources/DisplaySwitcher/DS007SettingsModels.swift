@@ -345,6 +345,57 @@ func labeledVerticalControlRow(title: String, control: NSView) -> NSStackView {
     return row
 }
 
+struct SettingsTrailingAccessoryRowLayout: Equatable {
+    static let contentWidth = SettingsFormRowLayout.contentWidth
+    static let labelColumnWidth = SettingsFormRowLayout.labelColumnWidth
+    static let columnSpacing = SettingsFormRowLayout.controlColumnSpacing
+    static let controlColumnWidth = SettingsFormRowLayout.controlColumnWidth
+    static let controlAccessorySpacing: Double = 10
+
+    var usesSingleControlColumn: Bool { true }
+    var leadingControlExpandsInsideColumn: Bool { true }
+    var trailingAccessoryIsPinnedInsideColumn: Bool { true }
+    var fixesLeadingControlWidth: Bool { false }
+}
+
+func labeledTrailingAccessoryControlRow(
+    title: String,
+    control: NSView,
+    accessory: NSView
+) -> NSStackView {
+    let label = NSTextField(labelWithString: title)
+    label.font = .systemFont(ofSize: 12)
+    label.textColor = .secondaryLabelColor
+    label.alignment = .left
+    label.widthAnchor.constraint(
+        equalToConstant: CGFloat(SettingsTrailingAccessoryRowLayout.labelColumnWidth)
+    ).isActive = true
+
+    control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    accessory.setContentHuggingPriority(.required, for: .horizontal)
+    accessory.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+    let controlColumn = NSStackView(views: [control, accessory])
+    controlColumn.orientation = .horizontal
+    controlColumn.alignment = .centerY
+    controlColumn.spacing = CGFloat(SettingsTrailingAccessoryRowLayout.controlAccessorySpacing)
+    controlColumn.distribution = .fill
+    controlColumn.widthAnchor.constraint(
+        equalToConstant: CGFloat(SettingsTrailingAccessoryRowLayout.controlColumnWidth)
+    ).isActive = true
+
+    let row = NSStackView(views: [label, controlColumn])
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.spacing = CGFloat(SettingsTrailingAccessoryRowLayout.columnSpacing)
+    row.distribution = .fill
+    row.widthAnchor.constraint(
+        equalToConstant: CGFloat(SettingsTrailingAccessoryRowLayout.contentWidth)
+    ).isActive = true
+    return row
+}
+
 struct SettingsMappingListLayout: Equatable {
     let displayCount: Int
 
@@ -560,34 +611,59 @@ struct SettingsPageLayoutProjection: Equatable {
 
     enum GroupID: String, Equatable {
         case usbAutomation
-        case usbPeerInputs
         case usbCollaboration
         case collaborationStatus
-        case collaborationSelection
-        case collaborationDetails
+        case collaborationConfiguration
 
         var title: String {
             switch self {
             case .usbAutomation: return "自动切换"
-            case .usbPeerInputs: return "对端输入源"
             case .usbCollaboration: return "联动协同"
             case .collaborationStatus: return "协同状态"
-            case .collaborationSelection: return "当前配置"
-            case .collaborationDetails: return "配置详情"
+            case .collaborationConfiguration: return "配置"
             }
-        }
-
-        var externalTitle: String? {
-            self == .usbPeerInputs ? nil : title
         }
     }
 
     struct Row: Equatable {
+        enum Kind: Equatable {
+            case content
+            case separator
+        }
+
         let id: String
         let title: String
         let action: SettingsPageLayoutAction?
         let isVisible: Bool
         let isEnabled: Bool
+        let kind: Kind
+
+        init(
+            id: String,
+            title: String,
+            action: SettingsPageLayoutAction?,
+            isVisible: Bool,
+            isEnabled: Bool,
+            kind: Kind = .content
+        ) {
+            self.id = id
+            self.title = title
+            self.action = action
+            self.isVisible = isVisible
+            self.isEnabled = isEnabled
+            self.kind = kind
+        }
+
+        static func separator(id: String, isVisible: Bool = true) -> Row {
+            Row(
+                id: id,
+                title: "",
+                action: nil,
+                isVisible: isVisible,
+                isEnabled: false,
+                kind: .separator
+            )
+        }
     }
 
     struct Group: Equatable {
@@ -624,17 +700,16 @@ struct SettingsPageLayoutProjection: Equatable {
             Group(id: .usbAutomation, rows: [
                 Row(id: "usb-automatic-switch", title: "自动切换", action: .toggleUSBAutomation,
                     isVisible: true, isEnabled: true),
-                Row(id: "usb-trigger-device", title: "触发设备", action: nil,
-                    isVisible: true, isEnabled: true),
+                .separator(id: "usb-automation-controls-separator"),
+                Row(id: "usb-trigger-device", title: "触发设备", action: .learnUSBDevice,
+                    isVisible: true, isEnabled: !learningInProgress),
                 Row(id: "usb-connection-status", title: "当前状态", action: nil,
                     isVisible: true, isEnabled: true),
-                Row(id: "usb-learn", title: "学习", action: .learnUSBDevice,
-                    isVisible: true, isEnabled: !learningInProgress)
-            ]),
-            Group(id: .usbPeerInputs, rows: mappingRows.isEmpty ? [
+                .separator(id: "usb-peer-inputs-separator")
+            ] + (mappingRows.isEmpty ? [
                 Row(id: "usb-mapping-empty", title: "尚未检测到显示器", action: nil,
                     isVisible: true, isEnabled: false)
-            ] : mappingRows),
+            ] : mappingRows)),
             Group(id: .usbCollaboration, rows: [
                 Row(id: "usb-collaboration-target", title: "联动目标",
                     action: .selectUSBWakeProfile, isVisible: true, isEnabled: true),
@@ -662,6 +737,15 @@ struct SettingsPageLayoutProjection: Equatable {
             )
         }
         let details = [
+            Row(id: "collaboration-selector", title: "当前配置",
+                action: .selectCollaborationProfile, isVisible: true,
+                isEnabled: hasSelectedProfile),
+            Row(id: "collaboration-add", title: "添加配置",
+                action: .addCollaborationProfile, isVisible: true, isEnabled: true),
+            .separator(
+                id: "collaboration-selection-details-separator",
+                isVisible: hasSelectedProfile
+            ),
             Row(id: "collaboration-name", title: "配置名称", action: .editValue,
                 isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
             Row(id: "collaboration-enabled", title: "启用此配置",
@@ -672,13 +756,21 @@ struct SettingsPageLayoutProjection: Equatable {
             Row(id: "collaboration-port", title: "端口", action: .editValue,
                 isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
             Row(id: "collaboration-pairing-code", title: "配对密码", action: .editValue,
-                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile)
+                isVisible: hasSelectedProfile, isEnabled: hasSelectedProfile),
+            .separator(
+                id: "collaboration-peer-inputs-separator",
+                isVisible: hasSelectedProfile
+            )
         ] + (mappingRows.isEmpty ? [
             Row(id: "collaboration-mapping-empty", title: "尚未检测到显示器", action: nil,
                 isVisible: hasSelectedProfile, isEnabled: false)
         ] : mappingRows) + [
             Row(id: "collaboration-trigger-reference", title: "本机触发设备", action: nil,
                 isVisible: hasSelectedProfile, isEnabled: false),
+            .separator(
+                id: "collaboration-actions-separator",
+                isVisible: hasSelectedProfile
+            ),
             Row(id: "collaboration-delete", title: "删除配置",
                 action: .deleteCollaborationProfile,
                 isVisible: hasSelectedProfile, isEnabled: profileCount > 1)
@@ -699,14 +791,7 @@ struct SettingsPageLayoutProjection: Equatable {
                     action: .inspectCollaboration, isVisible: true,
                     isEnabled: hasSelectedProfile && !inspectionInProgress)
             ]),
-            Group(id: .collaborationSelection, rows: [
-                Row(id: "collaboration-selector", title: "当前配置",
-                    action: .selectCollaborationProfile, isVisible: true,
-                    isEnabled: hasSelectedProfile),
-                Row(id: "collaboration-add", title: "添加配置",
-                    action: .addCollaborationProfile, isVisible: true, isEnabled: true)
-            ]),
-            Group(id: .collaborationDetails, rows: details)
+            Group(id: .collaborationConfiguration, rows: details)
         ], windowFooterRows: [
             Row(id: SettingsSaveStatusPresentation.rowID,
                 title: SettingsSaveStatusPresentation.rowTitle, action: nil,

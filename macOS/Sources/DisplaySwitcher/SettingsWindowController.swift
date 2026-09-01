@@ -567,11 +567,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             primary: peerStatusLabel,
             actions: [requestLocalNetworkPermissionButton, inspectProfileButton]
         )
-        let profileSelectionRow = horizontalActionRow(
-            primary: profilePopup, actions: [addProfileButton], expandsPrimary: true
+        let profileSelectionRow = labeledTrailingAccessoryControlRow(
+            title: "当前配置",
+            control: profilePopup,
+            accessory: addProfileButton
         )
-        let profileNameRow = labeledControlRow(
-            title: "配置名称", control: profileNameField,
+        let profileNameRow = labeledTrailingAccessoryControlRow(
+            title: "配置名称",
+            control: profileNameField,
             accessory: peerCoordinationCheckbox
         )
         let peerAddressRow = addressAndPortRow()
@@ -589,9 +592,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 ),
                 separator(),
                 usbDeviceRow,
-                usbStateRow
-            ]),
-            module(title: SettingsPageLayoutProjection.GroupID.usbPeerInputs.externalTitle, views: [
+                usbStateRow,
+                separator(),
                 labeledVerticalControlRow(
                     title: SettingsMappingListLayout.title,
                     control: usbMappingContainerStack
@@ -611,10 +613,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 separator(),
                 peerHint
             ]),
-            module(title: SettingsPageLayoutProjection.GroupID.collaborationSelection.title, views: [
-                profileSelectionRow
-            ]),
-            module(title: SettingsPageLayoutProjection.GroupID.collaborationDetails.title, views: [
+            module(title: SettingsPageLayoutProjection.GroupID.collaborationConfiguration.title, views: [
+                profileSelectionRow,
+                separator(),
                 profileNameRow,
                 peerAddressRow,
                 pairingRow,
@@ -953,8 +954,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func module(title: String?, headerAccessory: NSView? = nil, views: [NSView]) -> NSView {
-        let header: NSView? = title.map { title in
+    private func module(title: String, headerAccessory: NSView? = nil, views: [NSView]) -> NSView {
+        let header: NSView = {
             let heading = sectionTitle(title)
             guard let headerAccessory else { return heading }
             let spacer = makeFlexibleSpacer()
@@ -967,7 +968,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             headerRow.distribution = .fill
             headerRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
             return headerRow
-        }
+        }()
         let card = SettingsCardView()
         card.translatesAutoresizingMaskIntoConstraints = false
 
@@ -985,7 +986,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)
         ])
 
-        let wrapper = NSStackView(views: [header, card].compactMap { $0 })
+        let wrapper = NSStackView(views: [header, card])
         wrapper.orientation = .vertical
         wrapper.alignment = .leading
         wrapper.spacing = 8
