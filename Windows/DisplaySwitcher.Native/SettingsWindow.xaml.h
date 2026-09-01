@@ -64,6 +64,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
         void RebuildUsbMappingEditors();
+        Microsoft::UI::Xaml::Controls::Grid CreatePeerInputMappingGrid(
+            std::function<Microsoft::UI::Xaml::Controls::Control(
+                ::DisplaySwitcher::Native::DisplayMappingRow const&)> const& createInput);
         void CaptureProfileEditors();
         void RebuildProfileEditors();
         void RefreshProfileSelectors();
@@ -125,6 +128,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
+        ::DisplaySwitcher::Native::DisplayMappingProjection mappingProjection_;
         std::vector<::DisplaySwitcher::Native::CollaborationProfile> workingProfiles_;
         std::wstring selectedProfileId_;
         std::wstring usbSelectedProfileId_;

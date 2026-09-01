@@ -256,6 +256,77 @@ namespace DisplaySwitcher::Native
         return result;
     }
 
+    bool DisplayMappingProjection::Refresh(std::vector<DisplayConfig> const& catalogue,
+        DisplayTopologyTrust topologyTrust)
+    {
+        if (topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative) return false;
+
+        uint64_t currentGeneration{};
+        for (auto const& display : catalogue)
+            currentGeneration = (std::max)(currentGeneration, display.topologyGeneration);
+
+        std::vector<DisplayMappingRow> next;
+        std::set<std::wstring> usedDisplayIds;
+        std::set<std::wstring> usedBindings;
+        for (auto const& display : catalogue)
+        {
+            if (display.bindingStatus != DisplayBindingStatus::Resolved || !currentGeneration
+                || display.topologyGeneration != currentGeneration || display.id.empty()
+                || !IsPersistedStrongMonitorBinding(display.nativeMonitorId)) continue;
+            auto displayId = display.id;
+            auto binding = display.nativeMonitorId;
+            std::transform(displayId.begin(), displayId.end(), displayId.begin(), towlower);
+            std::transform(binding.begin(), binding.end(), binding.begin(), towlower);
+            if (!usedDisplayIds.insert(displayId).second || !usedBindings.insert(binding).second) continue;
+            next.push_back({ display.id, display.name, display.topologyGeneration });
+        }
+
+        auto same = next.size() == rows_.size() && std::equal(next.begin(), next.end(), rows_.begin(),
+            [](auto const& left, auto const& right)
+            {
+                return EqualInsensitive(left.displayId, right.displayId)
+                    && left.displayName == right.displayName
+                    && left.topologyGeneration == right.topologyGeneration;
+            });
+        rows_ = std::move(next);
+        topologyGeneration_ = currentGeneration;
+        return !same;
+    }
+
+    std::vector<DisplayInputMapping> MergeVisibleProfileDisplayInputs(
+        std::vector<DisplayInputMapping> const& existing,
+        std::vector<VisibleDisplayInputEdit> const& visibleEdits)
+    {
+        auto result = existing;
+        for (auto const& edit : visibleEdits)
+        {
+            auto found = std::find_if(result.begin(), result.end(), [&](auto const& mapping)
+                { return EqualInsensitive(mapping.displayId, edit.displayId); });
+            if (!edit.value)
+            {
+                if (found != result.end()) result.erase(found);
+            }
+            else if (found != result.end()) found->peerInput = *edit.value;
+            else result.push_back({ edit.displayId, *edit.value });
+        }
+        return result;
+    }
+
+    std::vector<UsbDisplayInputMapping> MergeVisibleUsbDisplayInputs(
+        std::vector<UsbDisplayInputMapping> const& existing,
+        std::vector<VisibleDisplayInputEdit> const& visibleEdits)
+    {
+        auto result = existing;
+        for (auto const& edit : visibleEdits)
+        {
+            auto found = std::find_if(result.begin(), result.end(), [&](auto const& mapping)
+                { return EqualInsensitive(mapping.displayId, edit.displayId); });
+            if (found != result.end()) found->targetInput = edit.value;
+            else result.push_back({ edit.displayId, edit.value });
+        }
+        return result;
+    }
+
     bool RemoveOrphanedDisplayMappings(std::vector<DisplayConfig> const& displays,
         std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch)
     {

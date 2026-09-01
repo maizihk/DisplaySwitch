@@ -450,9 +450,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
         AppendLayoutElement(usbStatusRow, usbDeviceStatus_,
             ::DisplaySwitcher::Native::SettingsLayoutElement::UsbDeviceStatus,
             ::DisplaySwitcher::Native::SettingsLayoutRegion::UsbCurrentStatusRow);
-        auto usbMappingSection = StackPanel(); usbMappingSection.Spacing(8);
-        usbMappingSection.Children().Append(CreateSubheading(L"对端输入源"));
-        usbMappingSection.Children().Append(usbMappingsPanel_);
         auto usbLayout = ::DisplaySwitcher::Native::SettingsPageLayout(::DisplaySwitcher::Native::SettingsPage::Usb);
         auto usbAutoCard = StackPanel(); usbAutoCard.Spacing(16);
         usbAutoCard.Children().Append(LabeledToggleRow(L"自动切换", usbAutomation_));
@@ -460,7 +457,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbAutoCard.Children().Append(createDivider());
         usbAutoCard.Children().Append(usbStatusRow);
         usbAutoCard.Children().Append(createDivider());
-        usbAutoCard.Children().Append(usbMappingSection);
+        usbAutoCard.Children().Append(usbMappingsPanel_);
         auto usbLinkCard = StackPanel(); usbLinkCard.Spacing(16);
         usbLinkCard.Children().Append(LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同"));
         usbTab.Content(CreatePage({
@@ -745,6 +742,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbSelectedProfileId_ = config.usbSwitch.collaborationProfileId;
         workingDisplays_ = config.displays;
         workingProfiles_ = config.collaborationProfiles;
+        mappingProjection_.Refresh(workingDisplays_,
+            ::DisplaySwitcher::Native::DisplayTopologyTrust::LocalPhysicalAuthoritative);
         RebuildUsbMappingEditors();
         for (auto const& editor : usbMappingEditors_)
         {
@@ -949,6 +948,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
                 workingDisplays_, ddcMonitors_, enumeration.topologyTrust);
             workingDisplays_ = std::move(reconciled.displays);
+            mappingProjection_.Refresh(workingDisplays_, enumeration.topologyTrust);
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
             RebuildProfileEditors();
@@ -984,19 +984,64 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::map<std::wstring, std::wstring> previous;
         for (auto const& editor : usbMappingEditors_) previous[editor.displayId] = editor.targetInput.Text().c_str();
         usbMappingsPanel_.Children().Clear(); usbMappingEditors_.clear();
-        for (auto const& display : workingDisplays_)
+        auto grid = CreatePeerInputMappingGrid([&](auto const& display)
         {
             auto input = TextBox();
             input.HorizontalAlignment(HorizontalAlignment::Stretch);
-            auto old = previous.find(display.id);
+            input.MaxLength(5);
+            auto old = previous.find(display.displayId);
             if (old != previous.end()) input.Text(old->second);
-            else if (auto value = original_.UsbInputForDisplay(display.id)) input.Text(std::to_wstring(*value));
+            else if (auto value = original_.UsbInputForDisplay(display.displayId)) input.Text(std::to_wstring(*value));
             input.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
             input.KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
             { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
-            usbMappingsPanel_.Children().Append(LabeledControlRow(display.name, input));
-            usbMappingEditors_.push_back({ display.id, input });
+            usbMappingEditors_.push_back({ display.displayId, input });
+            return input;
+        });
+        usbMappingsPanel_.Children().Append(grid);
+    }
+
+    Grid SettingsWindow::CreatePeerInputMappingGrid(
+        std::function<Control(::DisplaySwitcher::Native::DisplayMappingRow const&)> const& createInput)
+    {
+        auto const layout = ::DisplaySwitcher::Native::PeerInputMappingLayoutModel{};
+        auto const& rows = mappingProjection_.Rows();
+        auto grid = Grid(); grid.ColumnSpacing(layout.columnSpacing); grid.RowSpacing(layout.rowSpacing);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ layout.labelColumnWidth });
+        auto nameColumn = ColumnDefinition(); nameColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto inputColumn = ColumnDefinition(); inputColumn.Width(GridLength{ layout.inputColumnWidth });
+        grid.ColumnDefinitions().Append(labelColumn); grid.ColumnDefinitions().Append(nameColumn);
+        grid.ColumnDefinitions().Append(inputColumn);
+        for (size_t index = 0; index < layout.LabelRowSpan(rows.size()); ++index)
+        {
+            auto row = RowDefinition(); row.Height(GridLengthHelper::Auto()); grid.RowDefinitions().Append(row);
         }
+
+        auto label = TextBlock(); label.Text(L"对端输入源");
+        label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(label, 0); Grid::SetRow(label, 0);
+        Grid::SetRowSpan(label, static_cast<int>(layout.LabelRowSpan(rows.size())));
+        grid.Children().Append(label);
+        if (rows.empty())
+        {
+            auto empty = TextBlock(); empty.Text(L"当前没有已解析且可唯一绑定的物理显示器。");
+            empty.Opacity(0.72); empty.TextWrapping(TextWrapping::Wrap);
+            Grid::SetColumn(empty, 1); Grid::SetColumnSpan(empty, 2); grid.Children().Append(empty);
+            return grid;
+        }
+        for (size_t index = 0; index < rows.size(); ++index)
+        {
+            auto name = TextBlock(); name.Text(rows[index].displayName);
+            name.VerticalAlignment(VerticalAlignment::Center);
+            name.TextTrimming(TextTrimming::CharacterEllipsis);
+            auto input = createInput(rows[index]);
+            input.HorizontalAlignment(HorizontalAlignment::Stretch);
+            AutomationProperties::SetName(input, rows[index].displayName + L" 输入源");
+            Grid::SetColumn(name, 1); Grid::SetRow(name, static_cast<int>(index));
+            Grid::SetColumn(input, 2); Grid::SetRow(input, static_cast<int>(index));
+            grid.Children().Append(name); grid.Children().Append(input);
+        }
+        return grid;
     }
 
     void SettingsWindow::RebuildDisplayEditors()
@@ -1144,13 +1189,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
             profile->peerHost = Trim(controls.peerHost.Text().c_str());
             profile->peerPort = ParseInteger(controls.peerPort.Text().c_str(), 10, 1, 65535).value_or(-1);
             profile->pairingCode = controls.pairingCode.Password().c_str();
-            profile->displayInputs.clear();
+            std::vector<::DisplaySwitcher::Native::VisibleDisplayInputEdit> visibleEdits;
             for (auto const& mapping : controls.mappings)
             {
                 auto text = Trim(mapping.peerInput.Text().c_str());
-                if (text.empty()) continue;
-                profile->displayInputs.push_back({ mapping.displayId, ParseInteger(text, 10, 0, 65535).value_or(-1) });
+                visibleEdits.push_back({ mapping.displayId,
+                    text.empty() ? std::optional<int>{} : ParseInteger(text, 10, 0, 65535).value_or(-1) });
             }
+            profile->displayInputs = ::DisplaySwitcher::Native::MergeVisibleProfileDisplayInputs(
+                profile->displayInputs, visibleEdits);
         }
     }
 
@@ -1190,30 +1237,19 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 L"配置名称", controls.name, controls.enabled, L"启用此协同配置"));
             fields.Children().Append(PeerAddressRow(controls.peerHost, controls.peerPort));
             fields.Children().Append(LabeledWideControlRow(L"配对密码", controls.pairingCode));
-            fields.Children().Append(CreateSubheading(L"对端输入源"));
-
-            auto addMapping = [&](std::wstring const& displayId, std::wstring const& label, bool unavailable)
+            auto mappingGrid = CreatePeerInputMappingGrid([&](auto const& display)
             {
-                ProfileMappingControls mapping; mapping.displayId = displayId; mapping.peerInput = TextBox();
-                Header(mapping.peerInput, label.c_str()); mapping.peerInput.MaxLength(5);
+                ProfileMappingControls mapping; mapping.displayId = display.displayId; mapping.peerInput = TextBox();
+                mapping.peerInput.MaxLength(5);
                 auto existing = std::find_if(profile.displayInputs.begin(), profile.displayInputs.end(), [&](auto const& item)
-                { return _wcsicmp(item.displayId.c_str(), displayId.c_str()) == 0; });
+                { return _wcsicmp(item.displayId.c_str(), display.displayId.c_str()) == 0; });
                 if (existing != profile.displayInputs.end()) mapping.peerInput.Text(std::to_wstring(existing->peerInput));
-                if (unavailable) mapping.peerInput.Description(box_value(L"该显示器已移除；映射保留但不会自动绑定到其他显示器。"));
                 mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
-                fields.Children().Append(LabeledControlRow(label, mapping.peerInput));
+                auto input = mapping.peerInput;
                 controls.mappings.push_back(std::move(mapping));
-            };
-            for (auto const& display : workingDisplays_) addMapping(display.id, display.name, false);
-            for (auto const& mapping : profile.displayInputs)
-                if (std::none_of(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
-                { return _wcsicmp(display.id.c_str(), mapping.displayId.c_str()) == 0; }))
-                    addMapping(mapping.displayId, L"已移除显示器", true);
-            if (workingDisplays_.empty() && profile.displayInputs.empty())
-            {
-                auto empty = TextBlock(); empty.Text(L"尚未添加显示器。此配置不会执行显示器写入。"); empty.Opacity(0.72);
-                fields.Children().Append(empty);
-            }
+                return input;
+            });
+            fields.Children().Append(mappingGrid);
 
             auto triggerSummary = TextBlock();
             triggerSummary.Text(profile.triggerDevices.empty() ? L"未引用本机触发设备" : L"已引用 " + std::to_wstring(profile.triggerDevices.size()) + L" 个本机触发设备");
@@ -1564,16 +1600,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
         CaptureDisplayEditors();
         if (usbAutomation_.IsOn() && workingDisplays_.empty())
         { reject(1, L"启用 USB 自动切换前，请先完成显示器配置。"); return false; }
-        std::vector<::DisplaySwitcher::Native::UsbDisplayInputMapping> usbMappings;
+        std::vector<::DisplaySwitcher::Native::VisibleDisplayInputEdit> visibleUsbEdits;
         bool hasUsbMapping{};
         for (auto const& editor : usbMappingEditors_)
         {
             auto text = Trim(editor.targetInput.Text().c_str());
             auto value = text.empty() ? std::optional<int>{} : ParseInteger(text, 10, 0, 65535);
             if (!text.empty() && !value) { reject(1, L"USB 显示器输入源必须为 0–65535。"); return false; }
-            usbMappings.push_back({ editor.displayId, value });
+            visibleUsbEdits.push_back({ editor.displayId, value });
             if (value) hasUsbMapping = true;
         }
+        auto usbMappings = ::DisplaySwitcher::Native::MergeVisibleUsbDisplayInputs(
+            original_.usbSwitch.displayInputs, visibleUsbEdits);
         if (usbAutomation_.IsOn() && (selectedUsbLocalReference_.empty() || !hasUsbMapping))
         { reject(1, L"启用 USB 自动切换前，必须选择一个设备并至少配置一台显示器输入源。"); return false; }
         if (usbSwitchDisplaysOnArrival_.IsOn())

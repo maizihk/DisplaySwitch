@@ -275,6 +275,19 @@ namespace DisplaySwitcher::Native
         int collaborationSaveFeedbackParentCount{};
     };
 
+    struct PeerInputMappingLayoutModel
+    {
+        double labelColumnWidth{ 200 };
+        double inputColumnWidth{ 120 };
+        double columnSpacing{ 16 };
+        double rowSpacing{ 8 };
+
+        size_t LabelRowSpan(size_t displayCount) const noexcept
+        {
+            return (std::max)(size_t{ 1 }, displayCount);
+        }
+    };
+
     inline SettingsPageContract SettingsPageLayout(SettingsPage page)
     {
         switch (page)

@@ -99,6 +99,49 @@ namespace
             Check(config.displays.size() == displayCount && containsRow(usb.cards[0].sections, L"对端输入源显示器列表"), L"USB 映射支持可变显示器数量");
         }
 
+        PeerInputMappingLayoutModel mappingLayout;
+        Check(mappingLayout.LabelRowSpan(0) == 1 && mappingLayout.LabelRowSpan(1) == 1
+            && mappingLayout.LabelRowSpan(3) == 3 && mappingLayout.labelColumnWidth == 200
+            && mappingLayout.inputColumnWidth == 120,
+            L"生产动态映射布局为 0、1、3 台显示器提供同一固定标签列和输入列");
+
+        auto catalogue = ConfigWithDisplays(4).displays;
+        for (size_t index = 0; index < catalogue.size(); ++index)
+        {
+            catalogue[index].nativeMonitorId = L"ds13:projection-" + std::to_wstring(index);
+            catalogue[index].bindingStatus = index < 2 ? DisplayBindingStatus::Resolved : DisplayBindingStatus::Offline;
+            catalogue[index].topologyGeneration = index < 2 ? 42 : 0;
+        }
+        std::vector<DisplayInputMapping> profileMappings;
+        std::vector<UsbDisplayInputMapping> usbMappings;
+        for (size_t index = 0; index < catalogue.size(); ++index)
+        {
+            profileMappings.push_back({ catalogue[index].id, static_cast<int>(20 + index) });
+            usbMappings.push_back({ catalogue[index].id, 30 + static_cast<int>(index) });
+        }
+        DisplayMappingProjection projection;
+        Check(projection.Refresh(catalogue, DisplayTopologyTrust::LocalPhysicalAuthoritative)
+            && projection.Rows().size() == 2 && projection.TopologyGeneration() == 42,
+            L"生产映射投影只显示当前代次中已解析且可唯一绑定的两台物理显示器");
+        auto projectedIds = std::vector<std::wstring>{ projection.Rows()[0].displayId, projection.Rows()[1].displayId };
+        Check(std::none_of(projectedIds.begin(), projectedIds.end(), [&](auto const& id)
+            { return id == catalogue[2].id || id == catalogue[3].id; }),
+            L"历史离线显示器不会进入 USB 或协同共用映射 UI 模型");
+        auto mergedProfile = MergeVisibleProfileDisplayInputs(profileMappings,
+            { { catalogue[0].id, 50 }, { catalogue[1].id, 51 } });
+        auto mergedUsb = MergeVisibleUsbDisplayInputs(usbMappings,
+            { { catalogue[0].id, 60 }, { catalogue[1].id, 61 } });
+        Check(mergedProfile.size() == 4 && mergedUsb.size() == 4
+            && mergedProfile[2].peerInput == 22 && mergedProfile[3].peerInput == 23
+            && mergedUsb[2].targetInput == 32 && mergedUsb[3].targetInput == 33,
+            L"只编辑两台当前物理显示器时四条目录映射完整保留，离线映射不删除、不重绑定");
+        auto retainedRows = projection.Rows();
+        Check(!projection.Refresh({}, DisplayTopologyTrust::RemoteSessionLimited)
+            && projection.Rows().size() == retainedRows.size()
+            && !projection.Refresh({}, DisplayTopologyTrust::IncompleteOrUnavailable)
+            && projection.Rows().size() == retainedRows.size(),
+            L"RDP 或枚举失败不会清空最后可信物理映射投影");
+
         auto peer = SettingsPageLayout(SettingsPage::Collaboration);
         Check(peer.cards.size() == 2, L"协同页面恰好有两个卡片");
         Check(peer.cards[0].title == L"协同状态" && peer.cards[1].title == L"配置", L"协同卡片顺序正确");
