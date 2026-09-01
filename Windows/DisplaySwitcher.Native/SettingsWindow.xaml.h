@@ -58,7 +58,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void StartUsbLearning(std::wstring const& profileId);
         void PollUsbLearning();
         void ShowUsbLearningCandidates();
-        void EndUsbLearning(std::wstring const& message = {});
+        void EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion completion =
+            ::DisplaySwitcher::Native::UsbLearningCompletion::None, std::wstring const& message = {});
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
@@ -83,7 +84,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void CopyDiagnosticPreview();
         bool Save(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, bool hideAfterSave = false);
         bool SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope);
-        void SetOperationFeedback(std::wstring const& message, bool failure = false);
+        void SetOperationFeedback(std::wstring const& message,
+            ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity severity =
+                ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity::Informational);
+        void SetOperationFeedback(std::wstring const& message, bool failure);
+        void AppendLayoutElement(Microsoft::UI::Xaml::Controls::Panel const& parent,
+            Microsoft::UI::Xaml::UIElement const& child, ::DisplaySwitcher::Native::SettingsLayoutElement element,
+            ::DisplaySwitcher::Native::SettingsLayoutRegion region);
         void ShowSaveFailure(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message);
         void ShowSaveSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message);
         void ResetSaveFeedbackTimer();
@@ -191,6 +198,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         Microsoft::UI::Xaml::Controls::Border statusPanelBorder_{ nullptr };
         Microsoft::UI::Dispatching::DispatcherQueueTimer saveFeedbackTimer_{ nullptr };
         ::DisplaySwitcher::Native::SettingsSaveFeedbackController saveFeedback_{};
+        ::DisplaySwitcher::Native::SettingsWindowLayoutPresenter layoutPresenter_{};
     };
 }
 

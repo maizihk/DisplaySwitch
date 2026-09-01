@@ -88,9 +88,11 @@ namespace
         Check(usb.cards[0].title == L"自动切换" && usb.cards[1].title == L"联动协同", L"USB 卡片顺序正确");
         Check(containsRow(usb.cards[0].sections, L"对端输入源显示器列表"), L"对端输入源已并入自动切换卡片");
         Check(!usb.cards[0].hasNestedCards && !usb.cards[1].hasNestedCards, L"USB 页面没有嵌套卡片");
-        auto usbDeviceRow = UsbDeviceRowLayoutContract();
-        Check(!usbDeviceRow.containsStatus && usbDeviceRow.statusParentCount == 1,
-            L"USB 当前状态只属于独立状态行，设备行不包含状态元素");
+        SettingsWindowLayoutPresenter layout;
+        Check(layout.Attach(SettingsLayoutElement::UsbDeviceStatus, SettingsLayoutRegion::UsbCurrentStatusRow) &&
+            !layout.Attach(SettingsLayoutElement::UsbDeviceStatus, SettingsLayoutRegion::UsbCurrentStatusRow) &&
+            layout.usbDeviceStatusParentCount == 1,
+            L"生产布局 Presenter 只允许 USB 当前状态挂载到一个父节点");
         for (auto displayCount : { size_t{ 0 }, size_t{ 1 }, size_t{ 3 }, size_t{ 4 } })
         {
             auto config = ConfigWithDisplays(displayCount);
@@ -103,11 +105,19 @@ namespace
         Check(peer.cards[1].sections.size() == 2, L"当前配置和配置详情属于同一卡片");
         Check(!peer.cards[1].hasNestedCards, L"配置详情没有嵌套卡片");
 
-        auto profileName = ProfileNameLayoutContract();
-        Check(profileName.inputUsesStarWidth && profileName.enabledToggleUsesAutoWidth && !profileName.hasFlexibleSpacer,
-            L"配置名称输入使用 Star 宽度且开关固定在尾部");
-        auto placement = StatusPlacementContract();
-        Check(placement.outsideScrollViewer && placement.leftAligned, L"保存提示固定在非滚动窗口底部且左对齐");
+        Check(layout.Attach(SettingsLayoutElement::CollaborationSaveFeedback, SettingsLayoutRegion::FixedWindowFooter) &&
+            !layout.Attach(SettingsLayoutElement::CollaborationSaveFeedback, SettingsLayoutRegion::UsbCurrentStatusRow) &&
+            layout.collaborationSaveFeedbackParentCount == 1,
+            L"生产布局 Presenter 只允许协同保存反馈挂载到固定窗口底部");
+
+        Check(NetworkAccessFeedbackSeverity(true) == SettingsOperationFeedbackSeverity::Success &&
+            NetworkAccessFeedbackSeverity(false) == SettingsOperationFeedbackSeverity::Failure,
+            L"网络权限结果按 ready 明确选择成功或失败状态");
+        Check(UsbLearningFeedbackSeverity(UsbLearningCompletion::Success) == SettingsOperationFeedbackSeverity::Success &&
+            UsbLearningFeedbackSeverity(UsbLearningCompletion::Cancelled) == SettingsOperationFeedbackSeverity::Cancelled &&
+            UsbLearningFeedbackSeverity(UsbLearningCompletion::TimedOut) == SettingsOperationFeedbackSeverity::Failure &&
+            UsbLearningFeedbackSeverity(UsbLearningCompletion::Failure) == SettingsOperationFeedbackSeverity::Failure,
+            L"USB 学习结束状态不依赖提示文字推断");
 
         SettingsSaveFeedbackController feedback;
         Check(!feedback.IsVisibleOn(SettingsPage::Collaboration, 0), L"首次打开不显示已保存");
@@ -118,10 +128,15 @@ namespace
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 2500);
         Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 4499), L"连续协同保存重置隐藏计时");
         Check(!feedback.IsVisibleOn(SettingsPage::Collaboration, 4500), L"成功保存两秒后隐藏");
-        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 5000);
-        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 999999) && feedback.feedback.failure, L"协同保存失败持续显示");
+        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 5000);
+        Check(feedback.successTimerActive && feedback.IsVisibleOn(SettingsPage::Collaboration, 5499),
+            L"协同成功提示在两秒窗口内保持活动");
+        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 5500);
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 999999) && feedback.feedback.failure &&
+            !feedback.successTimerActive, L"成功提示尚未消失时保存失败会停止计时并持续显示失败");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 10000);
-        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 10000) && !feedback.feedback.failure, L"下一次协同成功恢复成功状态");
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 10000) && !feedback.feedback.failure &&
+            feedback.successTimerActive, L"下一次协同成功恢复成功状态并重新启动计时");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 13000);
         for (auto scope : { SettingsSaveFeedbackScope::None, SettingsSaveFeedbackScope::None, SettingsSaveFeedbackScope::None })
             Check(feedback.RecordSaveResult(scope, true, true, L"已保存", 14000) == SettingsSaveFeedbackAction::None,

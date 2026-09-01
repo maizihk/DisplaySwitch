@@ -22,6 +22,7 @@ namespace DisplaySwitcher::Native
         ~Controller();
         void Dispose();
         void ShowError(std::wstring const& title, std::wstring const& message);
+        void ShowSettings();
 
     private:
         Controller(winrt::Microsoft::UI::Dispatching::DispatcherQueue const& dispatcher, std::function<void()> exitApplication);
@@ -64,7 +65,6 @@ namespace DisplaySwitcher::Native
         void RefreshTrayDdcControls();
         DiagnosticSnapshot BuildDiagnosticSnapshot();
         void OnDisplayTopologyChanged();
-        void ShowSettings();
         void SetStatus(std::wstring const& text);
         void SetPeerConnectionStatus(std::wstring const& text, bool connected);
         void Enqueue(std::function<void()> action);

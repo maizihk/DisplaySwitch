@@ -48,6 +48,40 @@ namespace DisplaySwitcher::Native
         ShowOperationFailure,
     };
 
+    enum class SettingsOperationFeedbackSeverity
+    {
+        Informational,
+        Success,
+        Cancelled,
+        Failure,
+    };
+
+    enum class UsbLearningCompletion
+    {
+        None,
+        Success,
+        Cancelled,
+        TimedOut,
+        Invalidated,
+        Failure,
+    };
+
+    inline SettingsOperationFeedbackSeverity NetworkAccessFeedbackSeverity(bool ready)
+    {
+        return ready ? SettingsOperationFeedbackSeverity::Success : SettingsOperationFeedbackSeverity::Failure;
+    }
+
+    inline SettingsOperationFeedbackSeverity UsbLearningFeedbackSeverity(UsbLearningCompletion completion)
+    {
+        switch (completion)
+        {
+        case UsbLearningCompletion::Success: return SettingsOperationFeedbackSeverity::Success;
+        case UsbLearningCompletion::Cancelled: return SettingsOperationFeedbackSeverity::Cancelled;
+        case UsbLearningCompletion::None: return SettingsOperationFeedbackSeverity::Informational;
+        default: return SettingsOperationFeedbackSeverity::Failure;
+        }
+    }
+
     struct SettingsSaveFeedback
     {
         std::wstring message;
@@ -95,6 +129,7 @@ namespace DisplaySwitcher::Native
     struct SettingsSaveFeedbackController
     {
         SettingsSaveFeedback feedback;
+        bool successTimerActive{};
 
         SettingsSaveFeedbackAction RecordSaveResult(SettingsSaveFeedbackScope scope, bool changed,
             bool succeeded, std::wstring const& message, int64_t nowMs)
@@ -105,15 +140,18 @@ namespace DisplaySwitcher::Native
             if (succeeded)
             {
                 feedback.RecordSuccess(scope, message, nowMs);
+                successTimerActive = true;
                 return SettingsSaveFeedbackAction::ShowCollaborationFeedback;
             }
             feedback.RecordFailure(scope, message);
+            successTimerActive = false;
             return SettingsSaveFeedbackAction::ShowCollaborationFeedback;
         }
 
         bool IsVisibleOn(SettingsPage page, int64_t nowMs)
         {
             feedback.HideIfExpired(nowMs);
+            if (!feedback.visible) successTimerActive = false;
             return page == SettingsPage::Collaboration && feedback.visible;
         }
     };
@@ -201,39 +239,41 @@ namespace DisplaySwitcher::Native
         };
     }
 
-    struct SettingsProfileNameLayoutContract
+    enum class SettingsLayoutElement
     {
-        bool inputUsesStarWidth{ true };
-        bool enabledToggleUsesAutoWidth{ true };
-        bool hasFlexibleSpacer{};
+        UsbDeviceStatus,
+        CollaborationSaveFeedback,
     };
 
-    inline SettingsProfileNameLayoutContract ProfileNameLayoutContract()
+    enum class SettingsLayoutRegion
     {
-        return {};
-    }
-
-    struct SettingsStatusPlacementContract
-    {
-        bool outsideScrollViewer{ true };
-        bool leftAligned{ true };
+        UsbCurrentStatusRow,
+        FixedWindowFooter,
     };
 
-    inline SettingsStatusPlacementContract StatusPlacementContract()
+    struct SettingsWindowLayoutPresenter
     {
-        return {};
-    }
+        bool Attach(SettingsLayoutElement element, SettingsLayoutRegion region)
+        {
+            auto expected = element == SettingsLayoutElement::UsbDeviceStatus
+                ? SettingsLayoutRegion::UsbCurrentStatusRow : SettingsLayoutRegion::FixedWindowFooter;
+            if (region != expected) return false;
+            auto& count = element == SettingsLayoutElement::UsbDeviceStatus
+                ? usbDeviceStatusParentCount : collaborationSaveFeedbackParentCount;
+            if (count != 0) return false;
+            ++count;
+            return true;
+        }
 
-    struct UsbDeviceRowContract
-    {
-        bool containsStatus{};
-        int statusParentCount{ 1 };
+        void Reset()
+        {
+            usbDeviceStatusParentCount = 0;
+            collaborationSaveFeedbackParentCount = 0;
+        }
+
+        int usbDeviceStatusParentCount{};
+        int collaborationSaveFeedbackParentCount{};
     };
-
-    inline UsbDeviceRowContract UsbDeviceRowLayoutContract()
-    {
-        return {};
-    }
 
     inline SettingsPageContract SettingsPageLayout(SettingsPage page)
     {
