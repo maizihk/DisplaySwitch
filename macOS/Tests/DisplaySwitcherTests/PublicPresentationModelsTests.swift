@@ -1,6 +1,35 @@
 import AppKit
 import XCTest
 
+private final class ManualSettingsSaveFeedbackScheduler: SettingsSaveFeedbackScheduling {
+    final class Task: SettingsSaveFeedbackScheduledTask {
+        let delay: TimeInterval
+        let action: () -> Void
+        private(set) var isCancelled = false
+
+        init(delay: TimeInterval, action: @escaping () -> Void) {
+            self.delay = delay
+            self.action = action
+        }
+
+        func cancel() {
+            isCancelled = true
+        }
+
+        func fireEvenIfCancelled() {
+            action()
+        }
+    }
+
+    private(set) var tasks: [Task] = []
+
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) -> SettingsSaveFeedbackScheduledTask {
+        let task = Task(delay: delay, action: action)
+        tasks.append(task)
+        return task
+    }
+}
+
 private final class RecordingAboutMetadata: AboutBundleMetadataSource {
     private(set) var requestedKeys: [String] = []
     let values: [String: String]
@@ -408,9 +437,8 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertFalse(layout.groups[2].rows.contains {
             $0.id == SettingsSaveStatusPresentation.rowID
         })
-        XCTAssertEqual(layout.windowFooterRows.filter {
-            $0.id == SettingsSaveStatusPresentation.rowID && $0.isVisible
-        }.count, 1)
+        XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertFalse(layout.windowFooterRows[0].isVisible)
         XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
         XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-up" })
         XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-down" })
@@ -424,12 +452,14 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertFalse(SettingsSaveStatusPresentation.isInsideScrollDocument)
         XCTAssertTrue(SettingsSaveStatusPresentation.isAnchoredToWindowBottom)
         XCTAssertFalse(SettingsSaveStatusPresentation.isInDetailsCard)
+        XCTAssertEqual(SettingsSaveStatusPresentation.horizontalAlignment, .leading)
+        XCTAssertEqual(SettingsSaveStatusPresentation.successVisibilityDuration, 2)
 
         let saved = SettingsSaveStatusPresentation.saved
         XCTAssertEqual(saved.text, "已保存")
         XCTAssertEqual(saved.symbolName, "checkmark.circle.fill")
-        XCTAssertEqual(saved.textColor, .secondary)
-        XCTAssertEqual(saved.iconColor, .secondary)
+        XCTAssertEqual(saved.textColor, .systemGreen)
+        XCTAssertEqual(saved.iconColor, .systemGreen)
         XCTAssertEqual(saved.accessibilityLabel, "协同配置保存状态")
         XCTAssertEqual(saved.accessibilityValue, "已保存")
 
@@ -446,13 +476,114 @@ final class PublicPresentationModelsTests: XCTestCase {
             hasSelectedProfile: true,
             profileCount: 1,
             selectedProfileIndex: 0,
-            inspectionInProgress: false
+            inspectionInProgress: false,
+            saveFeedbackState: .visible(.saved)
         )
         XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
         XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertTrue(layout.windowFooterRows[0].isVisible)
         XCTAssertFalse(layout.groups.flatMap(\.rows).contains {
             $0.id == SettingsSaveStatusPresentation.rowID
         })
+    }
+
+    func testSaveFeedbackIsInitiallyHiddenAndSuccessfulSaveAutoHidesAfterTwoSeconds() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        var states: [SettingsSaveFeedbackState] = []
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler) { states.append($0) }
+
+        XCTAssertEqual(controller.state, .hidden)
+        XCTAssertTrue(states.isEmpty)
+
+        controller.recordSaveSucceeded()
+
+        XCTAssertEqual(controller.state, .visible(.saved))
+        XCTAssertEqual(states, [.visible(.saved)])
+        XCTAssertEqual(scheduler.tasks.map(\.delay), [2])
+        XCTAssertFalse(scheduler.tasks[0].isCancelled)
+
+        scheduler.tasks[0].fireEvenIfCancelled()
+
+        XCTAssertEqual(controller.state, .hidden)
+        XCTAssertEqual(states, [.visible(.saved), .hidden])
+    }
+
+    func testConsecutiveSuccessfulSavesCancelAndSupersedePreviousHide() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordSaveSucceeded()
+        controller.recordSaveSucceeded()
+
+        XCTAssertEqual(scheduler.tasks.count, 2)
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertFalse(scheduler.tasks[1].isCancelled)
+
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .visible(.saved))
+
+        scheduler.tasks[1].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .hidden)
+    }
+
+    func testSaveFailurePersistsUntilNextSuccessThenUsesFreshAutoHide() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordSaveSucceeded()
+        controller.recordSaveFailed()
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+
+        controller.recordSaveSucceeded()
+
+        XCTAssertEqual(controller.state, .visible(.saved))
+        XCTAssertEqual(scheduler.tasks.count, 2)
+        scheduler.tasks[1].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .hidden)
+    }
+
+    func testSaveFeedbackResetCancelsPendingHideAndReturnsToInitialHiddenState() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordSaveSucceeded()
+        controller.reset()
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertEqual(controller.state, .hidden)
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .hidden)
+    }
+
+    func testNavigationDismissesOnlyTransientSuccessAndPreservesFailure() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordSaveSucceeded()
+        controller.dismissTransientSuccess()
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertEqual(controller.state, .hidden)
+
+        controller.recordSaveFailed()
+        controller.dismissTransientSuccess()
+
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+    }
+
+    func testSaveFeedbackControllerReleaseCancelsPendingHideSafely() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        var controller: SettingsSaveFeedbackController? = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller?.recordSaveSucceeded()
+        controller = nil
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        scheduler.tasks[0].fireEvenIfCancelled()
     }
 
     func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {

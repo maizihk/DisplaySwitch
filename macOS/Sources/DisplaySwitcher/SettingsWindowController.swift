@@ -267,9 +267,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let profileMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let peerTriggerDeviceStatusLabel = NSTextField(wrappingLabelWithString: "未引用本机触发设备")
     private let peerSaveStatusIconView = NSImageView()
-    private let peerSaveStatusLabel = NSTextField(labelWithString: SettingsSaveStatusPresentation.saved.text)
+    private let peerSaveStatusLabel = NSTextField(labelWithString: "")
     private let peerSaveStatusRow = NSStackView()
     private let settingsFooterStack = NSStackView()
+    private lazy var peerSaveFeedbackController = SettingsSaveFeedbackController(
+        scheduler: DispatchSettingsSaveFeedbackScheduler()
+    ) { [weak self] state in
+        self?.applyPeerSaveFeedback(state)
+    }
     private lazy var learnUSBButton = NSButton(title: "学习", target: self, action: #selector(learnUSBDevice))
     private var inputFields: [String: NSTextField] = [:]
     private var profileMappingRows: [String: DisplayInputMappingRowView] = [:]
@@ -314,6 +319,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func show(tabIndex: Int = 0) {
+        peerSaveFeedbackController.reset()
         reloadValues()
         selectTab(at: max(0, min(tabIndex, tabView.numberOfTabViewItems - 1)))
         showWindow(nil)
@@ -530,16 +536,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerSaveStatusRow.alignment = .centerY
         peerSaveStatusRow.spacing = 5
         peerSaveStatusRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
-        peerSaveStatusRow.setViews([peerSaveStatusIconView, peerSaveStatusLabel], in: .center)
+        peerSaveStatusRow.setViews([peerSaveStatusIconView, peerSaveStatusLabel], in: .leading)
         peerSaveStatusRow.setAccessibilityElement(true)
         peerSaveStatusRow.isHidden = true
-        updatePeerSaveStatus(.saved)
 
         settingsFooterStack.orientation = .vertical
         settingsFooterStack.alignment = .leading
         settingsFooterStack.spacing = 3
         settingsFooterStack.translatesAutoresizingMaskIntoConstraints = false
-        settingsFooterStack.setViews([peerSaveStatusRow, validationLabel], in: .center)
+        settingsFooterStack.setViews([peerSaveStatusRow, validationLabel], in: .leading)
         contentView.addSubview(settingsFooterStack)
 
         let usbDeviceRow = labeledControlRow(
@@ -660,6 +665,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func selectTab(at index: Int) {
         guard tabView.numberOfTabViewItems > index else { return }
+        peerSaveFeedbackController.dismissTransientSuccess()
         tabView.selectTabViewItem(at: index)
         tabButtons.enumerated().forEach { $0.element.state = $0.offset == index ? .on : .off }
         let label = tabView.tabViewItem(at: index).label
@@ -671,7 +677,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func updatePeerSaveStatusVisibility(forTabLabel label: String) {
-        peerSaveStatusRow.isHidden = label != "协同" || !editingProfiles.indices.contains(selectedProfileIndex)
+        let hasVisibleFeedback: Bool
+        switch peerSaveFeedbackController.state {
+        case .hidden: hasVisibleFeedback = false
+        case .visible: hasVisibleFeedback = true
+        }
+        peerSaveStatusRow.isHidden = label != "协同"
+            || !editingProfiles.indices.contains(selectedProfileIndex)
+            || !hasVisibleFeedback
     }
 
     private func makePage(label: String, views: [NSView]) -> NSTabViewItem {
@@ -1384,7 +1397,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let didSave = persistDocument { value in
             value.collaborationProfiles[self.selectedProfileIndex] = decision.profile
         }
-        updatePeerSaveStatus(didSave ? .saved : .failedRestored)
         if didSave, decision.disabledBecauseIncomplete {
             showValidationError("配置不完整，已自动停用并保存当前输入。请补全所有字段后重新启用。")
         }
@@ -1401,18 +1413,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             clearValidationError()
             onSave?()
             reloadValues(rebuildDisplayForms: false)
-            updatePeerSaveStatus(.saved)
+            peerSaveFeedbackController.recordSaveSucceeded()
             return true
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
-            updatePeerSaveStatus(.failedRestored)
+            peerSaveFeedbackController.recordSaveFailed()
             showValidationError("设置未保存，已恢复最后有效值：\n\(error.localizedDescription)")
             return false
         } catch {
             onConfigurationSaveFailure?(.writeFailed)
             reloadValues()
-            updatePeerSaveStatus(.failedRestored)
+            peerSaveFeedbackController.recordSaveFailed()
             showValidationError("设置未保存，已恢复最后有效值。")
             return false
         }
@@ -1593,7 +1605,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerTriggerDeviceStatusLabel.stringValue = profile.triggerDevices.isEmpty
             ? "未引用本机触发设备"
             : "已引用 \(profile.triggerDevices.count) 个本机触发设备"
-        updatePeerSaveStatus(.saved)
         rebuildProfileMappings(profile: profile)
     }
 
@@ -1627,7 +1638,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         updatePeerSaveStatusVisibility(forTabLabel: window?.title ?? "")
     }
 
-    private func updatePeerSaveStatus(_ presentation: SettingsSaveStatusPresentation) {
+    private func applyPeerSaveFeedback(_ state: SettingsSaveFeedbackState) {
+        guard case .visible(let presentation) = state else {
+            peerSaveStatusRow.isHidden = true
+            peerSaveStatusRow.setAccessibilityValue("")
+            return
+        }
         peerSaveStatusLabel.stringValue = presentation.text
         peerSaveStatusLabel.textColor = nsColor(for: presentation.textColor)
         peerSaveStatusIconView.image = NSImage(
@@ -1637,11 +1653,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerSaveStatusIconView.contentTintColor = nsColor(for: presentation.iconColor)
         peerSaveStatusRow.setAccessibilityLabel(presentation.accessibilityLabel)
         peerSaveStatusRow.setAccessibilityValue(presentation.accessibilityValue)
+        updatePeerSaveStatusVisibility(forTabLabel: window?.title ?? "")
     }
 
     private func nsColor(for role: SettingsSaveStatusColorRole) -> NSColor {
         switch role {
-        case .secondary: return .secondaryLabelColor
+        case .systemGreen: return .systemGreen
         case .systemRed: return .systemRed
         }
     }
@@ -1656,6 +1673,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func profileSelectionChanged(_ sender: NSPopUpButton) {
+        peerSaveFeedbackController.dismissTransientSuccess()
         selectedProfileIndex = max(0, sender.indexOfSelectedItem)
         reloadProfilePopup()
         loadSelectedProfileFields()
@@ -1670,8 +1688,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             pairingCode: "", peerEndpointID: nil, peerProtocolVersion: nil, coordinationEnabled: false,
             displayInputs: [], triggerDevices: []))
         selectedProfileIndex = editingProfiles.count - 1
-        let didSave = persistDocument { $0.collaborationProfiles = self.editingProfiles }
-        updatePeerSaveStatus(didSave ? .saved : .failedRestored)
+        persistDocument { $0.collaborationProfiles = self.editingProfiles }
     }
 
     @objc private func removeProfile() {
@@ -1685,14 +1702,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let removedProfileID = editingProfiles[selectedProfileIndex].id
         editingProfiles.remove(at: selectedProfileIndex)
         selectedProfileIndex = min(selectedProfileIndex, editingProfiles.count - 1)
-        let didSave = persistDocument {
+        persistDocument {
             $0.collaborationProfiles = self.editingProfiles
             if $0.usbSwitch.collaborationProfileID?.caseInsensitiveCompare(removedProfileID) == .orderedSame {
                 $0.usbSwitch.collaborationProfileID = nil
                 $0.usbSwitch.collaborationWakeEnabled = false
             }
         }
-        updatePeerSaveStatus(didSave ? .saved : .failedRestored)
     }
 
     @objc private func inspectCurrentProfile() {
@@ -1769,8 +1785,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                       let current = self.editingProfiles.firstIndex(where: { $0.id == profileID }) else { return }
                 self.editingProfiles[current].peerEndpointID = endpointID.lowercased()
                 self.editingProfiles[current].peerProtocolVersion = 2
-                let didSave = self.persistDocument { $0.collaborationProfiles = self.editingProfiles }
-                self.updatePeerSaveStatus(didSave ? .saved : .failedRestored)
+                self.persistDocument { $0.collaborationProfiles = self.editingProfiles }
             }
         case .authenticationFailed:
             peerStatusLabel.stringValue = "\(profile.name)：认证失败"
@@ -1865,6 +1880,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func windowWillClose(_ notification: Notification) {
+        peerSaveFeedbackController.reset()
         usbLearningPending = false
         learnUSBButton.isEnabled = true
         onCancelUSBLearning?()

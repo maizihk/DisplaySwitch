@@ -15,6 +15,7 @@
 - 对端输入源两列映射布局提交：本任务提交。
 - 底部唯一保存状态提交：本任务提交。
 - 固定窗口底栏保存状态提交：本任务提交。
+- 短暂真实保存事件反馈提交：本任务提交。
 - PR：[#67](https://github.com/maizihk/DisplaySwitch/pull/67)，目标为 `codex/macos-tray-empty-group`，保持开放等待 GUI 验收；前置依赖仍为 PR #62 → #63 → #64。
 - 根因：USB 与协同页面仍沿用单个粗粒度卡片，自动切换、动态映射、网络检查和配置编辑混排；两页不是可滚动内容，3 台以上显示器容易挤压或溢出。
 - 实现：USB 固定为“自动切换 / 对端输入源 / 联动协同”三组；协同固定为“协同状态 / 当前配置 / 配置详情”三组。地址与端口、状态操作、联动目标与开关分别同行，动态映射以稳定显示器 ID 保持一台一行。
@@ -33,13 +34,15 @@
 - 第七轮实现：复用原 `peerSaveStatusLabel` 与 `persistDocument` 保存结果，把唯一保存状态迁移到协同页内容底部；成功态为系统 checkmark 图标 + 次级文字“已保存”，失败态为红色错误图标 + “保存失败，已恢复”，并补充 VoiceOver label/value。配置详情卡片内不再保留重复保存状态。
 - 第八轮视觉根因：上一轮把保存状态放到协同页滚动内容末尾，仍属于 `NSScrollView` 的 documentView，长内容或滚动时不会固定在窗口底部。
 - 第八轮实现：新增窗口级固定 footer stack，`tabView` 在 footer 上方结束；`peerSaveStatusRow` 只在协同标签显示，并与全局错误提示共同锚定到窗口底部。展示模型改为 `windowFooterRows`，并明确 `scrollContentFooterRows` 为空，避免再次把保存状态放回滚动内容。
+- 第九轮视觉根因：`loadSelectedProfileFields()` 在磁盘加载和配置切换时无条件投影 `.saved`，而 footer 可见性只判断“协同标签 + 有当前配置”，导致没有任何保存事件也常驻“已保存”，状态反馈失去可信度。
+- 第九轮实现：增加可注入、可取消的纯 `SettingsSaveFeedbackController`。初始和磁盘加载保持隐藏，切换标签/配置只清除短暂成功态；仅 `persistDocument` 写盘成功后显示绿色 `checkmark.circle.fill` 与“已保存”约 2 秒。连续成功取消旧任务并以 generation 防止旧回调提前隐藏新提示；失败取消隐藏计划并持续显示红色“保存失败，已恢复”，跨标签/配置切换保留，直至下一次真实成功；窗口关闭和控制器释放均安全取消。footer 继续与 `tabView` 同级、位于所有滚动 documentView 外，并改为左对齐。
 - 协调端复查发现：完整 XCTest 首次出现 1 项间歇失败，`InputSourceSwitchingTests.testResolverFailureIsAttributedToStableIDAndDoesNotSkipNextTarget` 固定断言不同显示器并发 resolver 调用顺序为 A→B；生产并发设计没有也不应有该顺序合同，结果归因才是稳定合同。
 - 稳定性修复：只调整测试 recorder 快照和断言，验证 `selector-a`/`selector-b` 各解析一次且集合完整、`outcomes` 继续按输入顺序和 stable ID 归因、只有 `selector-b` 发生 write；未修改生产输入源并发、USB、协同或 DDC 逻辑。
 - 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
 - 行为边界：只调整设置页信息架构与展示模型；即时保存持久化语义、无效值回退、配置启用条件、USB 学习、v2 协同、DDC、网络和输入源行为均未修改。DS-023 详细诊断默认关闭、DS-024 托盘静态入口清理均未回退。
-- 自动验证：设置展示/AppKit 契约 27/27 通过；并发顺序目标测试连续 100/100 通过；InputSourceSwitchingTests 15/15 通过；完整 XCTest 本轮 173/173 通过。测试直接实例化生产卡片、页面容器、滚动承载层和按钮组件，覆盖浅色/深色唯一画布、透明 page/scroll/document、圆角/裁切/边框、按钮样式幂等、显示器控制卡片不以分隔线开头、每台显示器读取模块继续保留有效分隔线、配置详情表单左基线、对端输入源 0/1/3+ 行两列居中布局、保存状态只存在于窗口级非滚动 footer、滚动内容 footer 为空、成功/失败语义颜色和图标，以及上移/下移 UI 不再出现在展示投影中。完整 XCTest 仍有既存 InputSource QoS runtime warning，测试通过，本任务未修改生产调度路径。
-- 构建验证：Release `./macOS/scripts/build-app.sh` 通过，使用默认 ad-hoc 签名；`codesign --verify --deep --strict macOS/outputs/DisplaySwitcher.app` 通过。
-- 待验证：窄窗口、0/1/2/3+ 台真实显示器、浅色/深色、键盘导航、VoiceOver 和实际配置编辑流程仍需 GUI 验收。
+- 自动验证：设置展示/AppKit 契约 33/33、完整 XCTest 179/179 通过。覆盖浅色/深色唯一画布、透明 page/scroll/document、圆角/裁切/边框、按钮样式幂等、显示器控制卡片不以分隔线开头、每台显示器读取模块继续保留有效分隔线、配置详情表单左基线、对端输入源 0/1/3+ 行两列居中布局、保存状态只存在于窗口级非滚动且左对齐 footer、滚动内容 footer 为空，以及上移/下移 UI 不再出现在展示投影中。新增手动调度器测试覆盖初始隐藏、成功绿色显示、2 秒隐藏、连续成功重置、失败持续、失败后成功、导航只清成功、reset 与释放取消；不使用真实 sleep。完整 XCTest 的既存 InputSource QoS runtime warning 与 Xcode `linkd.autoShortcut` 警告均不影响断言，本任务未修改对应生产路径。
+- 构建验证：Release `./macOS/scripts/build-app.sh` 通过，使用本机有效 Apple Development 身份签名；App、打包暂存副本与 ZIP 解压副本均通过 `codesign --verify --deep --strict`，ZIP 完整性通过。
+- 待验证：窄窗口、0/1/2/3+ 台真实显示器、浅色/深色、键盘导航、VoiceOver，以及打开时无提示、切换时不残留成功态、真实编辑保存后左侧绿色提示约 2 秒消失和失败跨切换持续至下次成功，仍需 GUI 验收。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改协议、schema、版本、系统权限或签名配置。
 
 ## 上一状态：DS-023 + DS-024 组合验收

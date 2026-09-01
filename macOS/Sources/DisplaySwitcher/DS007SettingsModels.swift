@@ -338,8 +338,12 @@ struct SettingsMappingListLayout: Equatable {
 }
 
 enum SettingsSaveStatusColorRole: Equatable {
-    case secondary
+    case systemGreen
     case systemRed
+}
+
+enum SettingsSaveStatusHorizontalAlignment: Equatable {
+    case leading
 }
 
 struct SettingsSaveStatusPresentation: Equatable {
@@ -361,13 +365,15 @@ struct SettingsSaveStatusPresentation: Equatable {
     static let isInsideScrollDocument = false
     static let isAnchoredToWindowBottom = true
     static let isInDetailsCard = false
+    static let horizontalAlignment = SettingsSaveStatusHorizontalAlignment.leading
+    static let successVisibilityDuration: TimeInterval = 2
 
     static var saved: SettingsSaveStatusPresentation {
         SettingsSaveStatusPresentation(
             text: "已保存",
             symbolName: "checkmark.circle.fill",
-            textColor: .secondary,
-            iconColor: .secondary,
+            textColor: .systemGreen,
+            iconColor: .systemGreen,
             accessibilityLabel: "协同配置保存状态",
             accessibilityValue: "已保存"
         )
@@ -382,6 +388,111 @@ struct SettingsSaveStatusPresentation: Equatable {
             accessibilityLabel: "协同配置保存状态",
             accessibilityValue: "保存失败，已恢复"
         )
+    }
+}
+
+enum SettingsSaveFeedbackState: Equatable {
+    case hidden
+    case visible(SettingsSaveStatusPresentation)
+}
+
+protocol SettingsSaveFeedbackScheduledTask: AnyObject {
+    func cancel()
+}
+
+protocol SettingsSaveFeedbackScheduling {
+    @discardableResult
+    func schedule(
+        after delay: TimeInterval,
+        _ action: @escaping () -> Void
+    ) -> SettingsSaveFeedbackScheduledTask
+}
+
+private final class DispatchSettingsSaveFeedbackTask: SettingsSaveFeedbackScheduledTask {
+    let workItem: DispatchWorkItem
+
+    init(action: @escaping () -> Void) {
+        workItem = DispatchWorkItem(block: action)
+    }
+
+    func cancel() {
+        workItem.cancel()
+    }
+}
+
+struct DispatchSettingsSaveFeedbackScheduler: SettingsSaveFeedbackScheduling {
+    let queue: DispatchQueue
+
+    init(queue: DispatchQueue = .main) {
+        self.queue = queue
+    }
+
+    func schedule(
+        after delay: TimeInterval,
+        _ action: @escaping () -> Void
+    ) -> SettingsSaveFeedbackScheduledTask {
+        let task = DispatchSettingsSaveFeedbackTask(action: action)
+        queue.asyncAfter(deadline: .now() + delay, execute: task.workItem)
+        return task
+    }
+}
+
+final class SettingsSaveFeedbackController {
+    private let scheduler: SettingsSaveFeedbackScheduling
+    private let onStateChange: (SettingsSaveFeedbackState) -> Void
+    private var scheduledHide: SettingsSaveFeedbackScheduledTask?
+    private var generation: UInt = 0
+
+    private(set) var state = SettingsSaveFeedbackState.hidden
+
+    init(
+        scheduler: SettingsSaveFeedbackScheduling,
+        onStateChange: @escaping (SettingsSaveFeedbackState) -> Void = { _ in }
+    ) {
+        self.scheduler = scheduler
+        self.onStateChange = onStateChange
+    }
+
+    deinit {
+        scheduledHide?.cancel()
+    }
+
+    func reset() {
+        generation &+= 1
+        scheduledHide?.cancel()
+        scheduledHide = nil
+        transition(to: .hidden)
+    }
+
+    func dismissTransientSuccess() {
+        guard state == .visible(.saved) else { return }
+        reset()
+    }
+
+    func recordSaveSucceeded() {
+        generation &+= 1
+        let currentGeneration = generation
+        scheduledHide?.cancel()
+        transition(to: .visible(.saved))
+        scheduledHide = scheduler.schedule(
+            after: SettingsSaveStatusPresentation.successVisibilityDuration
+        ) { [weak self] in
+            guard let self, self.generation == currentGeneration else { return }
+            self.scheduledHide = nil
+            self.transition(to: .hidden)
+        }
+    }
+
+    func recordSaveFailed() {
+        generation &+= 1
+        scheduledHide?.cancel()
+        scheduledHide = nil
+        transition(to: .visible(.failedRestored))
+    }
+
+    private func transition(to newState: SettingsSaveFeedbackState) {
+        state = newState
+        onStateChange(newState)
     }
 }
 
@@ -484,7 +595,8 @@ struct SettingsPageLayoutProjection: Equatable {
         hasSelectedProfile: Bool,
         profileCount: Int,
         selectedProfileIndex: Int,
-        inspectionInProgress: Bool
+        inspectionInProgress: Bool,
+        saveFeedbackState: SettingsSaveFeedbackState = .hidden
     ) -> SettingsPageLayoutProjection {
         let mappings = DisplayInputMappingPresentation.rows(
             displays: displays, context: .collaboration
@@ -517,6 +629,11 @@ struct SettingsPageLayoutProjection: Equatable {
                 action: .deleteCollaborationProfile,
                 isVisible: hasSelectedProfile, isEnabled: profileCount > 1)
         ]
+        let isSaveFeedbackVisible: Bool
+        switch saveFeedbackState {
+        case .hidden: isSaveFeedbackVisible = false
+        case .visible: isSaveFeedbackVisible = true
+        }
         return SettingsPageLayoutProjection(groups: [
             Group(id: .collaborationStatus, rows: [
                 Row(id: "collaboration-status", title: "协同状态", action: nil,
@@ -539,7 +656,7 @@ struct SettingsPageLayoutProjection: Equatable {
         ], windowFooterRows: [
             Row(id: SettingsSaveStatusPresentation.rowID,
                 title: SettingsSaveStatusPresentation.rowTitle, action: nil,
-                isVisible: hasSelectedProfile, isEnabled: false)
+                isVisible: hasSelectedProfile && isSaveFeedbackVisible, isEnabled: false)
         ])
     }
 }
