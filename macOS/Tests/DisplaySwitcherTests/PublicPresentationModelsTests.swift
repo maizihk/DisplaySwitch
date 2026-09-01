@@ -408,9 +408,10 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertFalse(layout.groups[2].rows.contains {
             $0.id == SettingsSaveStatusPresentation.rowID
         })
-        XCTAssertEqual(layout.footerRows.filter {
+        XCTAssertEqual(layout.windowFooterRows.filter {
             $0.id == SettingsSaveStatusPresentation.rowID && $0.isVisible
         }.count, 1)
+        XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
         XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-up" })
         XCTAssertFalse(layout.groups[2].rows.contains { $0.id == "collaboration-move-down" })
         XCTAssertFalse(layout.groups[2].rows.contains { $0.title == "上移配置" })
@@ -418,7 +419,10 @@ final class PublicPresentationModelsTests: XCTestCase {
     }
 
     func testCollaborationSaveStatusIsSingleBottomFooterWithSemanticPresentation() {
-        XCTAssertTrue(SettingsSaveStatusPresentation.isBottomFooter)
+        XCTAssertEqual(SettingsSaveStatusPresentation.placement, .nonScrollingWindowFooter)
+        XCTAssertTrue(SettingsSaveStatusPresentation.isNonScrollingWindowFooter)
+        XCTAssertFalse(SettingsSaveStatusPresentation.isInsideScrollDocument)
+        XCTAssertTrue(SettingsSaveStatusPresentation.isAnchoredToWindowBottom)
         XCTAssertFalse(SettingsSaveStatusPresentation.isInDetailsCard)
 
         let saved = SettingsSaveStatusPresentation.saved
@@ -444,7 +448,8 @@ final class PublicPresentationModelsTests: XCTestCase {
             selectedProfileIndex: 0,
             inspectionInProgress: false
         )
-        XCTAssertEqual(layout.footerRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
+        XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
         XCTAssertFalse(layout.groups.flatMap(\.rows).contains {
             $0.id == SettingsSaveStatusPresentation.rowID
         })

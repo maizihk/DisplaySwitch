@@ -343,6 +343,10 @@ enum SettingsSaveStatusColorRole: Equatable {
 }
 
 struct SettingsSaveStatusPresentation: Equatable {
+    enum Placement: Equatable {
+        case nonScrollingWindowFooter
+    }
+
     let text: String
     let symbolName: String
     let textColor: SettingsSaveStatusColorRole
@@ -352,7 +356,10 @@ struct SettingsSaveStatusPresentation: Equatable {
 
     static let rowID = "collaboration-save-status"
     static let rowTitle = "即时保存状态"
-    static let isBottomFooter = true
+    static let placement = Placement.nonScrollingWindowFooter
+    static let isNonScrollingWindowFooter = true
+    static let isInsideScrollDocument = false
+    static let isAnchoredToWindowBottom = true
     static let isInDetailsCard = false
 
     static var saved: SettingsSaveStatusPresentation {
@@ -424,11 +431,17 @@ struct SettingsPageLayoutProjection: Equatable {
     }
 
     let groups: [Group]
-    let footerRows: [Row]
+    let scrollContentFooterRows: [Row]
+    let windowFooterRows: [Row]
 
-    init(groups: [Group], footerRows: [Row] = []) {
+    init(
+        groups: [Group],
+        scrollContentFooterRows: [Row] = [],
+        windowFooterRows: [Row] = []
+    ) {
         self.groups = groups
-        self.footerRows = footerRows
+        self.scrollContentFooterRows = scrollContentFooterRows
+        self.windowFooterRows = windowFooterRows
     }
 
     static func usb(
@@ -523,7 +536,7 @@ struct SettingsPageLayoutProjection: Equatable {
                     action: .addCollaborationProfile, isVisible: true, isEnabled: true)
             ]),
             Group(id: .collaborationDetails, rows: details)
-        ], footerRows: [
+        ], windowFooterRows: [
             Row(id: SettingsSaveStatusPresentation.rowID,
                 title: SettingsSaveStatusPresentation.rowTitle, action: nil,
                 isVisible: hasSelectedProfile, isEnabled: false)

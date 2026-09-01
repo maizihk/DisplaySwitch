@@ -269,6 +269,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let peerSaveStatusIconView = NSImageView()
     private let peerSaveStatusLabel = NSTextField(labelWithString: SettingsSaveStatusPresentation.saved.text)
     private let peerSaveStatusRow = NSStackView()
+    private let settingsFooterStack = NSStackView()
     private lazy var learnUSBButton = NSButton(title: "学习", target: self, action: #selector(learnUSBDevice))
     private var inputFields: [String: NSTextField] = [:]
     private var profileMappingRows: [String: DisplayInputMappingRowView] = [:]
@@ -433,7 +434,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         validationLabel.isHidden = true
         validationLabel.setAccessibilityLabel("设置错误")
         validationLabel.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(validationLabel)
+        validationLabel.widthAnchor.constraint(equalToConstant: 630).isActive = true
 
         tabView.addTabViewItem(makePage(label: "常规", views: [
             module(title: "常规", views: [
@@ -531,7 +532,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         peerSaveStatusRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
         peerSaveStatusRow.setViews([peerSaveStatusIconView, peerSaveStatusLabel], in: .center)
         peerSaveStatusRow.setAccessibilityElement(true)
+        peerSaveStatusRow.isHidden = true
         updatePeerSaveStatus(.saved)
+
+        settingsFooterStack.orientation = .vertical
+        settingsFooterStack.alignment = .leading
+        settingsFooterStack.spacing = 3
+        settingsFooterStack.translatesAutoresizingMaskIntoConstraints = false
+        settingsFooterStack.setViews([peerSaveStatusRow, validationLabel], in: .center)
+        contentView.addSubview(settingsFooterStack)
 
         let usbDeviceRow = labeledControlRow(
             title: "触发设备", control: usbDeviceLabel, accessory: learnUSBButton
@@ -605,8 +614,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 peerTriggerDeviceStatusLabel,
                 separator(),
                 profileActions
-            ]),
-            peerSaveStatusRow
+            ])
         ]))
 
         displayStack.orientation = .vertical
@@ -630,10 +638,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             tabView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             tabView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
             tabView.topAnchor.constraint(equalTo: navigationSeparator.bottomAnchor, constant: 4),
-            tabView.bottomAnchor.constraint(equalTo: validationLabel.topAnchor, constant: -8),
-            validationLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 38),
-            validationLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -38),
-            validationLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
+            tabView.bottomAnchor.constraint(equalTo: settingsFooterStack.topAnchor, constant: -8),
+            settingsFooterStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 38),
+            settingsFooterStack.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -38),
+            settingsFooterStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
             validationLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 14)
         ])
         selectTab(at: 0)
@@ -654,10 +662,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard tabView.numberOfTabViewItems > index else { return }
         tabView.selectTabViewItem(at: index)
         tabButtons.enumerated().forEach { $0.element.state = $0.offset == index ? .on : .off }
-        window?.title = tabView.tabViewItem(at: index).label
-        if tabView.tabViewItem(at: index).label == "诊断" {
+        let label = tabView.tabViewItem(at: index).label
+        window?.title = label
+        updatePeerSaveStatusVisibility(forTabLabel: label)
+        if label == "诊断" {
             refreshDiagnosticPreview()
         }
+    }
+
+    private func updatePeerSaveStatusVisibility(forTabLabel label: String) {
+        peerSaveStatusRow.isHidden = label != "协同" || !editingProfiles.indices.contains(selectedProfileIndex)
     }
 
     private func makePage(label: String, views: [NSView]) -> NSTabViewItem {
@@ -1610,6 +1624,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profileMappingEmptyLabel.isHidden = !descriptors.isEmpty
         profileMappingRows = reconciled
         inputFields = reconciled.mapValues(\.inputField)
+        updatePeerSaveStatusVisibility(forTabLabel: window?.title ?? "")
     }
 
     private func updatePeerSaveStatus(_ presentation: SettingsSaveStatusPresentation) {
