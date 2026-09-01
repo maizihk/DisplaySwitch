@@ -421,7 +421,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto diagnosticsHint = TextBlock();
         diagnosticsHint.Text(L"仅排障时开启；切换开关会清空已有详细记录。");
         diagnosticsHint.TextWrapping(TextWrapping::Wrap); diagnosticsHint.Opacity(0.72);
-        commonTab.Content(CreatePage({ CreateSection({
+        commonTab.Content(CreatePage({ CreateSection({}, {
             LabeledToggleRow(L"登录时启动", autoStart_),
             LabeledToggleRow(L"详细诊断记录", detailedDiagnostics_), diagnosticsHint }) }));
 
@@ -449,6 +449,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto usbMappingSection = StackPanel(); usbMappingSection.Spacing(8);
         usbMappingSection.Children().Append(CreateSubheading(L"对端输入源"));
         usbMappingSection.Children().Append(usbMappingsPanel_);
+        auto usbLayout = ::DisplaySwitcher::Native::SettingsPageLayout(::DisplaySwitcher::Native::SettingsPage::Usb);
         auto usbAutoCard = StackPanel(); usbAutoCard.Spacing(16);
         usbAutoCard.Children().Append(LabeledToggleRow(L"自动切换", usbAutomation_));
         usbAutoCard.Children().Append(UsbDeviceRow(usbDevices_, learnCurrentUsb));
@@ -459,8 +460,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto usbLinkCard = StackPanel(); usbLinkCard.Spacing(16);
         usbLinkCard.Children().Append(LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同"));
         usbTab.Content(CreatePage({
-            CreateSection({ usbAutoCard }),
-            CreateSection({ usbLinkCard }),
+            CreateSection(usbLayout.cards.at(0), { usbAutoCard }),
+            CreateSection(usbLayout.cards.at(1), { usbLinkCard }),
             usbHint }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -533,9 +534,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         profileConfigSection.Children().Append(CreateTwoColumn(profileSelector_, addProfile));
         profileConfigSection.Children().Append(createDivider());
         profileConfigSection.Children().Append(CreateSubheading(L"配置详情"));
+        auto peerLayout = ::DisplaySwitcher::Native::SettingsPageLayout(::DisplaySwitcher::Native::SettingsPage::Collaboration);
         peerTab.Content(CreatePage({
-            CreateSection({ CreateTwoColumn(peerStatus, peerActions), peerHint }),
-            CreateSection({ profileConfigSection, profileEditorsPanel_ }) }));
+            CreateSection(peerLayout.cards.at(0), { CreateTwoColumn(peerStatus, peerActions), peerHint }),
+            CreateSection(peerLayout.cards.at(1), { profileConfigSection, profileEditorsPanel_ }) }));
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
@@ -546,7 +548,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
-        displayTab.Content(CreatePage({ CreateSection({ displayHint,
+        displayTab.Content(CreatePage({ CreateSection({}, { displayHint,
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
@@ -572,7 +574,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto diagnosticActions = StackPanel(); diagnosticActions.Orientation(Orientation::Horizontal);
         diagnosticActions.Spacing(8); diagnosticActions.Children().Append(refreshDiagnostic);
         diagnosticActions.Children().Append(copyDiagnostic);
-        diagnosticTab.Content(CreatePage({ CreateSection({ diagnosticHint, diagnosticActions, diagnosticPreview_ }) }));
+        diagnosticTab.Content(CreatePage({ CreateSection({}, { diagnosticHint, diagnosticActions, diagnosticPreview_ }) }));
         RefreshDiagnosticPreview();
 
         auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -591,7 +593,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         aboutLinks.Children().Append(project); aboutLinks.Children().Append(license); aboutLinks.Children().Append(notices);
         auto buildNotice = TextBlock(); buildNotice.Text(info.buildNotice); buildNotice.TextWrapping(TextWrapping::Wrap);
         buildNotice.TextAlignment(TextAlignment::Center); buildNotice.Opacity(0.72);
-        aboutTab.Content(CreatePage({ CreateSection({ aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
+        aboutTab.Content(CreatePage({ CreateSection({}, { aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
         tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab);
@@ -603,6 +605,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto index = tabs_.SelectedIndex();
             if (index >= 0 && index < 6) Title(titles[index]);
             SetOperationFeedback({});
+            ApplySaveFeedback(std::chrono::milliseconds{});
         });
         Grid::SetRow(tabs_, 0); root.Children().Append(tabs_);
 
@@ -620,11 +623,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         return root;
     }
 
-    Border SettingsWindow::CreateSection(std::vector<UIElement> const& children)
+    Border SettingsWindow::CreateSection(::DisplaySwitcher::Native::SettingsCardContract const& contract,
+        std::vector<UIElement> const& children)
     {
         auto panel = StackPanel(); panel.Spacing(16);
         for (auto const& child : children) panel.Children().Append(child);
-        return CreateCard(panel);
+        auto card = CreateCard(panel);
+        if (!contract.title.empty()) AutomationProperties::SetName(card, contract.title);
+        return card;
     }
 
     Border SettingsWindow::CreateCard(UIElement const& child)
@@ -633,7 +639,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         border.CornerRadius(CornerRadius{ 8, 8, 8, 8 });
         border.BorderThickness(Thickness{ 1, 1, 1, 1 });
         border.Background(ThemeBrush(L"CardBackgroundFillColorDefaultBrush", Windows::UI::Colors::White()));
-        border.BorderBrush(ThemeBrush(L"CardBorderThemeBrush", Windows::UI::Colors::Transparent()));
+        border.BorderBrush(ThemeBrush(L"CardStrokeColorDefaultBrush", Windows::UI::Colors::Transparent()));
         return border;
     }
 
@@ -715,7 +721,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (!connectionStatus_ || !connectionDot_) return;
         connectionStatus_.Text(status);
         connectionDot_.Foreground(ThemeBrush(
-            connected ? L"SystemControlSuccessTextForegroundBrush" : L"TextFillColorSecondaryBrush",
+            connected ? L"SystemFillColorSuccessBrush" : L"TextFillColorSecondaryBrush",
             connected ? Colors::Green() : Colors::Gray()));
     }
 
@@ -1598,15 +1604,22 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         if (!saved_ || !saved_(result))
         {
-            if (scope == ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration)
-                ShowSaveFailure(scope, L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。");
-            else
+            auto action = saveFeedback_.RecordSaveResult(scope, true, false,
+                L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。", SteadyMs());
+            if (action == ::DisplaySwitcher::Native::SettingsSaveFeedbackAction::ShowOperationFailure)
                 SetOperationFeedback(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。", true);
+            else if (action == ::DisplaySwitcher::Native::SettingsSaveFeedbackAction::ShowCollaborationFeedback)
+                ApplySaveFeedback(std::chrono::milliseconds{});
             LoadValues(original_);
             return false;
         }
         original_ = result;
-        ShowSaveSuccess(scope, L"✓ 已保存");
+        auto action = saveFeedback_.RecordSaveResult(scope, true, true, L"✓ 已保存", SteadyMs());
+        if (action == ::DisplaySwitcher::Native::SettingsSaveFeedbackAction::ShowCollaborationFeedback)
+        {
+            ResetSaveFeedbackTimer();
+            ApplySaveFeedback(std::chrono::milliseconds{});
+        }
         if (hideAfterSave) appWindow_.Hide();
         return true;
     }
@@ -1649,7 +1662,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::ShowSaveFailure(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message)
     {
         if (scope != ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration) return;
-        saveFeedback_.RecordFailure(scope, message);
+        saveFeedback_.RecordSaveResult(scope, true, false, message, SteadyMs());
         if (saveFeedbackTimer_) saveFeedbackTimer_.Stop();
         ApplySaveFeedback(std::chrono::milliseconds{});
     }
@@ -1657,7 +1670,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     void SettingsWindow::ShowSaveSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message)
     {
         if (scope != ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration) return;
-        saveFeedback_.RecordSuccess(scope, message, SteadyMs());
+        saveFeedback_.RecordSaveResult(scope, true, true, message, SteadyMs());
         ResetSaveFeedbackTimer();
         ApplySaveFeedback(std::chrono::milliseconds{});
     }
@@ -1666,19 +1679,22 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (!saveFeedbackTimer_) return;
         saveFeedbackTimer_.Stop();
-        if (saveFeedback_.visible && !saveFeedback_.failure) saveFeedbackTimer_.Start();
+        if (saveFeedback_.feedback.visible && !saveFeedback_.feedback.failure) saveFeedbackTimer_.Start();
     }
 
     void SettingsWindow::ApplySaveFeedback(std::chrono::milliseconds const&)
     {
         if (!saveStatus_) return;
-        saveFeedback_.HideIfExpired(SteadyMs());
-        saveStatus_.Text(saveFeedback_.message);
+        auto collaborationTab = tabs_ && tabs_.SelectedIndex() == static_cast<int32_t>(::DisplaySwitcher::Native::SettingsPage::Collaboration);
+        auto visible = saveFeedback_.IsVisibleOn(
+            collaborationTab ? ::DisplaySwitcher::Native::SettingsPage::Collaboration : ::DisplaySwitcher::Native::SettingsPage::General,
+            SteadyMs());
+        saveStatus_.Text(saveFeedback_.feedback.message);
         saveStatus_.Foreground(ThemeBrush(
-            saveFeedback_.failure ? L"SystemControlErrorTextForegroundBrush" : L"SystemControlSuccessTextForegroundBrush",
-            saveFeedback_.failure ? Colors::Red() : Colors::Green()));
-        saveStatus_.Visibility(saveFeedback_.visible ? Visibility::Visible : Visibility::Collapsed);
-        if (!saveFeedback_.visible && saveFeedbackTimer_) saveFeedbackTimer_.Stop();
+            saveFeedback_.feedback.failure ? L"SystemFillColorCriticalBrush" : L"SystemFillColorSuccessBrush",
+            saveFeedback_.feedback.failure ? Colors::Red() : Colors::Green()));
+        saveStatus_.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+        if (!saveFeedback_.feedback.visible && saveFeedbackTimer_) saveFeedbackTimer_.Stop();
     }
 
     int64_t SettingsWindow::SteadyMs()

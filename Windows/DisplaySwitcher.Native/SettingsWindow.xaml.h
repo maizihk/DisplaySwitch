@@ -42,6 +42,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     private:
         Microsoft::UI::Xaml::UIElement BuildContent();
         Microsoft::UI::Xaml::Controls::Border CreateSection(
+            ::DisplaySwitcher::Native::SettingsCardContract const& contract,
             std::vector<Microsoft::UI::Xaml::UIElement> const& children);
         Microsoft::UI::Xaml::Controls::Border CreateCard(Microsoft::UI::Xaml::UIElement const& child);
         Microsoft::UI::Xaml::Controls::ScrollViewer CreatePage(
@@ -189,7 +190,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::wstring detectingProfileId_;
         Microsoft::UI::Xaml::Controls::Border statusPanelBorder_{ nullptr };
         Microsoft::UI::Dispatching::DispatcherQueueTimer saveFeedbackTimer_{ nullptr };
-        ::DisplaySwitcher::Native::SettingsSaveFeedback saveFeedback_{};
+        ::DisplaySwitcher::Native::SettingsSaveFeedbackController saveFeedback_{};
     };
 }
 

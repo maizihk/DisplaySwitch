@@ -31,6 +31,23 @@ namespace DisplaySwitcher::Native
         Collaboration,
     };
 
+    enum class SettingsPage
+    {
+        General,
+        Usb,
+        Collaboration,
+        Displays,
+        Diagnostics,
+        About,
+    };
+
+    enum class SettingsSaveFeedbackAction
+    {
+        None,
+        ShowCollaborationFeedback,
+        ShowOperationFailure,
+    };
+
     struct SettingsSaveFeedback
     {
         std::wstring message;
@@ -70,6 +87,34 @@ namespace DisplaySwitcher::Native
             visibleUntilMs = -1;
             message.clear();
             failure = false;
+        }
+    };
+
+    // Production routing boundary between a settings save and its presentation.
+    // It has no WinUI dependency, so tests exercise the same scope and timeout logic.
+    struct SettingsSaveFeedbackController
+    {
+        SettingsSaveFeedback feedback;
+
+        SettingsSaveFeedbackAction RecordSaveResult(SettingsSaveFeedbackScope scope, bool changed,
+            bool succeeded, std::wstring const& message, int64_t nowMs)
+        {
+            if (!changed) return SettingsSaveFeedbackAction::None;
+            if (scope == SettingsSaveFeedbackScope::None)
+                return succeeded ? SettingsSaveFeedbackAction::None : SettingsSaveFeedbackAction::ShowOperationFailure;
+            if (succeeded)
+            {
+                feedback.RecordSuccess(scope, message, nowMs);
+                return SettingsSaveFeedbackAction::ShowCollaborationFeedback;
+            }
+            feedback.RecordFailure(scope, message);
+            return SettingsSaveFeedbackAction::ShowCollaborationFeedback;
+        }
+
+        bool IsVisibleOn(SettingsPage page, int64_t nowMs)
+        {
+            feedback.HideIfExpired(nowMs);
+            return page == SettingsPage::Collaboration && feedback.visible;
         }
     };
 
@@ -188,5 +233,15 @@ namespace DisplaySwitcher::Native
     inline UsbDeviceRowContract UsbDeviceRowLayoutContract()
     {
         return {};
+    }
+
+    inline SettingsPageContract SettingsPageLayout(SettingsPage page)
+    {
+        switch (page)
+        {
+        case SettingsPage::Usb: return UsbTabLayoutContract();
+        case SettingsPage::Collaboration: return PeerTabLayoutContract();
+        default: return {};
+        }
     }
 }

@@ -83,7 +83,7 @@ namespace
             return false;
         };
 
-        auto usb = UsbTabLayoutContract();
+        auto usb = SettingsPageLayout(SettingsPage::Usb);
         Check(usb.cards.size() == 2, L"USB 页面恰好有两个卡片");
         Check(usb.cards[0].title == L"自动切换" && usb.cards[1].title == L"联动协同", L"USB 卡片顺序正确");
         Check(containsRow(usb.cards[0].sections, L"对端输入源显示器列表"), L"对端输入源已并入自动切换卡片");
@@ -97,7 +97,7 @@ namespace
             Check(config.displays.size() == displayCount && containsRow(usb.cards[0].sections, L"对端输入源显示器列表"), L"USB 映射支持可变显示器数量");
         }
 
-        auto peer = PeerTabLayoutContract();
+        auto peer = SettingsPageLayout(SettingsPage::Collaboration);
         Check(peer.cards.size() == 2, L"协同页面恰好有两个卡片");
         Check(peer.cards[0].title == L"协同状态" && peer.cards[1].title == L"配置", L"协同卡片顺序正确");
         Check(peer.cards[1].sections.size() == 2, L"当前配置和配置详情属于同一卡片");
@@ -109,31 +109,30 @@ namespace
         auto placement = StatusPlacementContract();
         Check(placement.outsideScrollViewer && placement.leftAligned, L"保存提示固定在非滚动窗口底部且左对齐");
 
-        SettingsSaveFeedback feedback;
-        Check(!feedback.visible, L"首次打开不显示已保存");
-        feedback.RecordSuccess(SettingsSaveFeedbackScope::Collaboration, L"✓ 已保存", 1000);
-        Check(feedback.visible && !feedback.failure, L"成功保存使用成功状态");
-        feedback.HideIfExpired(2999);
-        Check(feedback.visible, L"成功保存两秒前仍显示");
-        feedback.RecordSuccess(SettingsSaveFeedbackScope::Collaboration, L"✓ 已保存", 2500);
-        feedback.HideIfExpired(4499);
-        Check(feedback.visible, L"连续保存重置隐藏计时");
-        feedback.HideIfExpired(4500);
-        Check(!feedback.visible, L"成功保存两秒后隐藏");
-        feedback.RecordFailure(SettingsSaveFeedbackScope::Collaboration, L"保存失败");
-        feedback.HideIfExpired(999999);
-        Check(feedback.visible && feedback.failure, L"保存失败持续显示");
-        feedback.RecordSuccess(SettingsSaveFeedbackScope::Collaboration, L"✓ 已保存", 10000);
-        Check(feedback.visible && !feedback.failure, L"下一次成功保存恢复成功状态");
-        feedback.HideIfExpired(12000);
-        Check(!feedback.visible, L"恢复后的成功状态按时隐藏");
-
-        SettingsSaveFeedback collaborationSave;
-        collaborationSave.RecordSuccess(SettingsSaveFeedbackScope::None, L"✓ 已保存", 1000);
-        Check(!collaborationSave.visible, L"非协同保存不会触发协同保存提示");
-        collaborationSave.RecordFailure(SettingsSaveFeedbackScope::Collaboration, L"保存失败");
-        collaborationSave.RecordSuccess(SettingsSaveFeedbackScope::None, L"✓ 已保存", 2000);
-        Check(collaborationSave.visible && collaborationSave.failure, L"非协同保存不会清除协同保存失败状态");
+        SettingsSaveFeedbackController feedback;
+        Check(!feedback.IsVisibleOn(SettingsPage::Collaboration, 0), L"首次打开不显示已保存");
+        Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 1000) ==
+            SettingsSaveFeedbackAction::ShowCollaborationFeedback && feedback.IsVisibleOn(SettingsPage::Collaboration, 1000), L"协同成功保存显示绿色状态");
+        Check(!feedback.feedback.failure && !feedback.IsVisibleOn(SettingsPage::General, 1000), L"保存反馈只在协同页面可见");
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 2999), L"成功保存两秒前仍显示");
+        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 2500);
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 4499), L"连续协同保存重置隐藏计时");
+        Check(!feedback.IsVisibleOn(SettingsPage::Collaboration, 4500), L"成功保存两秒后隐藏");
+        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 5000);
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 999999) && feedback.feedback.failure, L"协同保存失败持续显示");
+        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 10000);
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 10000) && !feedback.feedback.failure, L"下一次协同成功恢复成功状态");
+        feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 13000);
+        for (auto scope : { SettingsSaveFeedbackScope::None, SettingsSaveFeedbackScope::None, SettingsSaveFeedbackScope::None })
+            Check(feedback.RecordSaveResult(scope, true, true, L"已保存", 14000) == SettingsSaveFeedbackAction::None,
+                L"USB、常规和显示器保存不会触发协同反馈");
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 14000) && feedback.feedback.failure,
+            L"非协同保存不会覆盖或清除协同失败状态");
+        Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::None, true, false, L"失败", 15000) ==
+            SettingsSaveFeedbackAction::ShowOperationFailure, L"非协同保存失败只更新操作状态");
+        Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, false, true, L"✓ 已保存", 16000) ==
+            SettingsSaveFeedbackAction::None && feedback.IsVisibleOn(SettingsPage::Collaboration, 16000) && feedback.feedback.failure,
+            L"无实际变化不显示也不重置保存状态");
     }
 
     struct FakeDdcBackend final : IDdcBackend
