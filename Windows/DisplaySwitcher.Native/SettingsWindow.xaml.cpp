@@ -1654,7 +1654,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (!operationStatus_) return;
         operationStatus_.Text(message);
         operationStatus_.Foreground(ThemeBrush(
-            failure ? L"SystemControlErrorTextForegroundBrush" : L"TextFillColorSecondaryBrush",
+            failure ? L"SystemFillColorCriticalBrush" : L"TextFillColorSecondaryBrush",
             failure ? Colors::Red() : Colors::Gray()));
         operationStatus_.Visibility(message.empty() ? Visibility::Collapsed : Visibility::Visible);
     }
