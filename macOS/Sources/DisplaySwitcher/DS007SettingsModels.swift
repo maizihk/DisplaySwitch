@@ -320,6 +320,31 @@ enum SettingsFormRowLayout: Equatable {
     var keepsControlColumnStable: Bool { true }
 }
 
+func labeledVerticalControlRow(title: String, control: NSView) -> NSStackView {
+    let label = NSTextField(labelWithString: title)
+    label.font = .systemFont(ofSize: 12)
+    label.textColor = .secondaryLabelColor
+    label.alignment = .left
+    label.widthAnchor.constraint(
+        equalToConstant: CGFloat(SettingsFormRowLayout.labelColumnWidth)
+    ).isActive = true
+
+    control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    control.widthAnchor.constraint(
+        equalToConstant: CGFloat(SettingsFormRowLayout.controlColumnWidth)
+    ).isActive = true
+
+    let row = NSStackView(views: [label, control])
+    row.orientation = .horizontal
+    row.alignment = .centerY
+    row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
+    row.distribution = .fill
+    row.widthAnchor.constraint(
+        equalToConstant: CGFloat(SettingsFormRowLayout.contentWidth)
+    ).isActive = true
+    return row
+}
+
 struct SettingsMappingListLayout: Equatable {
     let displayCount: Int
 
@@ -333,6 +358,10 @@ struct SettingsMappingListLayout: Equatable {
     var showsEmptyState: Bool { displayCount == 0 }
 
     static func collaboration(displayCount: Int) -> SettingsMappingListLayout {
+        SettingsMappingListLayout(displayCount: displayCount)
+    }
+
+    static func usb(displayCount: Int) -> SettingsMappingListLayout {
         SettingsMappingListLayout(displayCount: displayCount)
     }
 }
@@ -546,6 +575,10 @@ struct SettingsPageLayoutProjection: Equatable {
             case .collaborationSelection: return "当前配置"
             case .collaborationDetails: return "配置详情"
             }
+        }
+
+        var externalTitle: String? {
+            self == .usbPeerInputs ? nil : title
         }
     }
 

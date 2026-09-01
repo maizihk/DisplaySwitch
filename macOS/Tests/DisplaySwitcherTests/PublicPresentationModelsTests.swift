@@ -386,24 +386,78 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(SettingsFormRowLayout.controlColumnWidth, 490)
     }
 
-    func testCollaborationMappingListUsesCenteredTwoColumnFormRowForZeroOneAndManyDisplays() {
+    func testUSBAndCollaborationMappingListsShareCenteredTwoColumnContract() {
         for count in [0, 1, 3] {
-            let layout = SettingsMappingListLayout.collaboration(displayCount: count)
-            XCTAssertEqual(layout.displayCount, count)
-            XCTAssertEqual(SettingsMappingListLayout.title, "对端输入源")
-            XCTAssertEqual(
-                SettingsMappingListLayout.labelColumnWidth,
-                SettingsFormRowLayout.labelColumnWidth
-            )
-            XCTAssertEqual(
-                SettingsMappingListLayout.listColumnWidth,
-                SettingsFormRowLayout.controlColumnWidth
-            )
-            XCTAssertTrue(layout.usesTwoColumnRow)
-            XCTAssertTrue(layout.centersTitleAgainstListContainer)
-            XCTAssertFalse(layout.usesManualVerticalOffset)
-            XCTAssertEqual(layout.showsEmptyState, count == 0)
+            let layouts = [
+                SettingsMappingListLayout.usb(displayCount: count),
+                SettingsMappingListLayout.collaboration(displayCount: count)
+            ]
+            XCTAssertEqual(layouts[0], layouts[1])
+            for layout in layouts {
+                XCTAssertEqual(layout.displayCount, count)
+                XCTAssertEqual(SettingsMappingListLayout.title, "对端输入源")
+                XCTAssertEqual(
+                    SettingsMappingListLayout.labelColumnWidth,
+                    SettingsFormRowLayout.labelColumnWidth
+                )
+                XCTAssertEqual(
+                    SettingsMappingListLayout.listColumnWidth,
+                    SettingsFormRowLayout.controlColumnWidth
+                )
+                XCTAssertTrue(layout.usesTwoColumnRow)
+                XCTAssertTrue(layout.centersTitleAgainstListContainer)
+                XCTAssertFalse(layout.usesManualVerticalOffset)
+                XCTAssertEqual(layout.showsEmptyState, count == 0)
+            }
         }
+    }
+
+    func testUSBAndCollaborationUseSameCenteredAppKitMappingRowForZeroOneAndManyDisplays() throws {
+        for count in [0, 1, 3] {
+            let layouts = [
+                SettingsMappingListLayout.usb(displayCount: count),
+                SettingsMappingListLayout.collaboration(displayCount: count)
+            ]
+            for layout in layouts {
+                let list = NSStackView()
+                if layout.showsEmptyState {
+                    list.addArrangedSubview(NSTextField(labelWithString: "尚未检测到显示器。"))
+                } else {
+                    (0..<layout.displayCount).forEach { _ in list.addArrangedSubview(NSView()) }
+                }
+
+                let row = labeledVerticalControlRow(
+                    title: SettingsMappingListLayout.title,
+                    control: list
+                )
+                let title = try XCTUnwrap(row.arrangedSubviews.first as? NSTextField)
+
+                XCTAssertEqual(row.orientation, .horizontal)
+                XCTAssertEqual(row.alignment, .centerY)
+                XCTAssertEqual(row.spacing, CGFloat(SettingsFormRowLayout.controlColumnSpacing))
+                XCTAssertEqual(row.arrangedSubviews.count, 2)
+                XCTAssertEqual(title.stringValue, "对端输入源")
+                XCTAssertTrue(row.arrangedSubviews[1] === list)
+                XCTAssertTrue(row.constraints.contains {
+                    $0.firstAttribute == .width
+                        && $0.constant == CGFloat(SettingsFormRowLayout.contentWidth)
+                })
+                XCTAssertTrue(list.constraints.contains {
+                    $0.firstAttribute == .width
+                        && $0.constant == CGFloat(SettingsFormRowLayout.controlColumnWidth)
+                })
+            }
+        }
+    }
+
+    func testUSBMappingCardShowsOnlyOneInlinePeerInputTitle() {
+        let group = SettingsPageLayoutProjection.GroupID.usbPeerInputs
+        let visibleTitles: [String] = [group.externalTitle, SettingsMappingListLayout.title]
+            .compactMap { $0 }
+
+        XCTAssertNil(group.externalTitle)
+        XCTAssertEqual(visibleTitles, ["对端输入源"])
+        XCTAssertEqual(SettingsPageLayoutProjection.GroupID.collaborationDetails.externalTitle, "配置详情")
     }
 
     func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {

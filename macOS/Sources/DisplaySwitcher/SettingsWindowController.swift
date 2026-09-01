@@ -263,6 +263,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let usbDeviceLabel = NSTextField(wrappingLabelWithString: "未选择触发设备")
     private let usbStatusLabel = NSTextField(wrappingLabelWithString: "USB 切换未启用")
     private let usbMappingStack = NSStackView()
+    private let usbMappingContainerStack = NSStackView()
     private let usbMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let profileMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let peerTriggerDeviceStatusLabel = NSTextField(wrappingLabelWithString: "未引用本机触发设备")
@@ -468,6 +469,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         usbMappingStack.orientation = .vertical
         usbMappingStack.alignment = .leading
         usbMappingStack.spacing = 8
+        usbMappingContainerStack.orientation = .vertical
+        usbMappingContainerStack.alignment = .leading
+        usbMappingContainerStack.spacing = 6
+        usbMappingContainerStack.setViews([usbMappingStack, usbMappingEmptyLabel], in: .center)
         profileMappingContainerStack.orientation = .vertical
         profileMappingContainerStack.alignment = .leading
         profileMappingContainerStack.spacing = 6
@@ -586,9 +591,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 usbDeviceRow,
                 usbStateRow
             ]),
-            module(title: SettingsPageLayoutProjection.GroupID.usbPeerInputs.title, views: [
-                usbMappingStack,
-                usbMappingEmptyLabel
+            module(title: SettingsPageLayoutProjection.GroupID.usbPeerInputs.externalTitle, views: [
+                labeledVerticalControlRow(
+                    title: SettingsMappingListLayout.title,
+                    control: usbMappingContainerStack
+                )
             ]),
             module(title: SettingsPageLayoutProjection.GroupID.usbCollaboration.title, views: [
                 usbCollaborationRow
@@ -946,10 +953,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
-    private func module(title: String, headerAccessory: NSView? = nil, views: [NSView]) -> NSView {
-        let heading = sectionTitle(title)
-        let header: NSView
-        if let headerAccessory {
+    private func module(title: String?, headerAccessory: NSView? = nil, views: [NSView]) -> NSView {
+        let header: NSView? = title.map { title in
+            let heading = sectionTitle(title)
+            guard let headerAccessory else { return heading }
             let spacer = makeFlexibleSpacer()
             headerAccessory.setContentHuggingPriority(.required, for: .horizontal)
             headerAccessory.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -959,9 +966,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             headerRow.spacing = 10
             headerRow.distribution = .fill
             headerRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
-            header = headerRow
-        } else {
-            header = heading
+            return headerRow
         }
         let card = SettingsCardView()
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -980,7 +985,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             content.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10)
         ])
 
-        let wrapper = NSStackView(views: [header, card])
+        let wrapper = NSStackView(views: [header, card].compactMap { $0 })
         wrapper.orientation = .vertical
         wrapper.alignment = .leading
         wrapper.spacing = 8
@@ -1168,18 +1173,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             views.append(accessory)
         }
         let row = NSStackView(views: views)
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
-        row.distribution = .fill
-        row.widthAnchor.constraint(equalToConstant: CGFloat(SettingsFormRowLayout.contentWidth)).isActive = true
-        return row
-    }
-
-    private func labeledVerticalControlRow(title: String, control: NSView) -> NSView {
-        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        control.widthAnchor.constraint(equalToConstant: CGFloat(SettingsFormRowLayout.controlColumnWidth)).isActive = true
-        let row = NSStackView(views: [formLabel(title), control])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = CGFloat(SettingsFormRowLayout.controlColumnSpacing)
@@ -1581,7 +1574,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         var reconciled: [String: DisplayInputMappingRowView] = [:]
         for descriptor in descriptors {
             let row = usbMappingRows[descriptor.displayID] ?? DisplayInputMappingRowView()
-            row.setPreferredWidth(CGFloat(SettingsFormRowLayout.contentWidth))
+            row.setPreferredWidth(CGFloat(SettingsFormRowLayout.controlColumnWidth))
             row.update(
                 title: descriptor.title,
                 value: mappings[descriptor.displayID].map(String.init) ?? "",
