@@ -279,3 +279,11 @@
 - [x] Windows 全量自动测试通过 298 checks；`Windows/build-windows.ps1 -Architecture x64 -Configuration Release` 构建成功。
 - [x] 使用最终 x64 Release 实际打开 USB 切换与协同页并截图：两页无崩溃、无空白，左侧标签跨当前 2 行垂直居中，列宽一致，历史无名条目未显示。验证仅切换页面，未执行网络、USB、DDC、输入源、唤醒或保存操作。
 - [ ] 0、1、3 台以上实体显示器组合仍待更多实机确认；自动模型已覆盖。
+
+## PR #69 重复强绑定双遍统计（2026-09-01）
+
+- [x] `DisplayMappingProjection` 先筛选当前可信代次、`Resolved`、合法 displayId 和规范化后强绑定候选，再统计规范化 displayId/nativeMonitorId 频次，第二遍仅投影两类频次均为 1 的条目。
+- [x] 重复强绑定涉及的全部条目均排除，不再保留第一项；重复 displayId 和仅大小写不同的强绑定同样全部排除。
+- [x] 保留 2 台当前物理 + 2 条历史离线目录的既有测试，并验证目录和 USB/协同映射仍为 4 条；RDP/Incomplete 继续保留最后可信投影。
+- [x] Windows 全量自动测试通过 302 checks；x64 Release 构建成功，绿色包 1.78 MiB。
+- [ ] 最终两行脱敏截图待具备两台 `Resolved` 物理显示器的实机环境后补充。本次只读实机检查显示本机 4 条目录当前均为 Offline，最终 Release 因而正确显示 0 个映射行；未点击可能持久化目录的“重新检测显示器”，未执行或保存任何硬件操作。

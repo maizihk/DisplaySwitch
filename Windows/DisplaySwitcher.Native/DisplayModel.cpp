@@ -265,19 +265,36 @@ namespace DisplaySwitcher::Native
         for (auto const& display : catalogue)
             currentGeneration = (std::max)(currentGeneration, display.topologyGeneration);
 
-        std::vector<DisplayMappingRow> next;
-        std::set<std::wstring> usedDisplayIds;
-        std::set<std::wstring> usedBindings;
+        struct Candidate
+        {
+            DisplayConfig const* display{};
+            std::wstring normalizedDisplayId;
+            std::wstring normalizedBinding;
+        };
+        std::vector<Candidate> candidates;
+        std::map<std::wstring, size_t> displayIdFrequencies;
+        std::map<std::wstring, size_t> bindingFrequencies;
         for (auto const& display : catalogue)
         {
             if (display.bindingStatus != DisplayBindingStatus::Resolved || !currentGeneration
-                || display.topologyGeneration != currentGeneration || display.id.empty()
-                || !IsPersistedStrongMonitorBinding(display.nativeMonitorId)) continue;
+                || display.topologyGeneration != currentGeneration || !IsValidDisplayId(display.id)) continue;
             auto displayId = display.id;
             auto binding = display.nativeMonitorId;
             std::transform(displayId.begin(), displayId.end(), displayId.begin(), towlower);
             std::transform(binding.begin(), binding.end(), binding.begin(), towlower);
-            if (!usedDisplayIds.insert(displayId).second || !usedBindings.insert(binding).second) continue;
+            constexpr std::wstring_view strongBindingPrefix = L"ds13:";
+            if (!binding.starts_with(strongBindingPrefix) || binding.size() <= strongBindingPrefix.size()) continue;
+            candidates.push_back({ &display, displayId, binding });
+            ++displayIdFrequencies[displayId];
+            ++bindingFrequencies[binding];
+        }
+
+        std::vector<DisplayMappingRow> next;
+        for (auto const& candidate : candidates)
+        {
+            if (displayIdFrequencies[candidate.normalizedDisplayId] != 1
+                || bindingFrequencies[candidate.normalizedBinding] != 1) continue;
+            auto const& display = *candidate.display;
             next.push_back({ display.id, display.name, display.topologyGeneration });
         }
 

@@ -142,6 +142,56 @@ namespace
             && projection.Rows().size() == retainedRows.size(),
             L"RDP 或枚举失败不会清空最后可信物理映射投影");
 
+        auto duplicateBindingCatalogue = ConfigWithDisplays(2).displays;
+        for (auto& display : duplicateBindingCatalogue)
+        {
+            display.bindingStatus = DisplayBindingStatus::Resolved;
+            display.topologyGeneration = 50;
+            display.nativeMonitorId = L"ds13:duplicate-binding";
+        }
+        std::vector<DisplayInputMapping> duplicateProfileMappings{
+            { duplicateBindingCatalogue[0].id, 70 }, { duplicateBindingCatalogue[1].id, 71 } };
+        std::vector<UsbDisplayInputMapping> duplicateUsbMappings{
+            { duplicateBindingCatalogue[0].id, 80 }, { duplicateBindingCatalogue[1].id, 81 } };
+        DisplayMappingProjection duplicateBindingProjection;
+        duplicateBindingProjection.Refresh(duplicateBindingCatalogue,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
+        Check(duplicateBindingProjection.Rows().empty(),
+            L"两个当前 Resolved 条目共享同一强绑定时两项都不得投影，不能保留第一项");
+        Check(duplicateBindingCatalogue.size() == 2 && duplicateProfileMappings.size() == 2
+            && duplicateUsbMappings.size() == 2 && duplicateProfileMappings[0].peerInput == 70
+            && duplicateProfileMappings[1].peerInput == 71 && duplicateUsbMappings[0].targetInput == 80
+            && duplicateUsbMappings[1].targetInput == 81,
+            L"重复强绑定只影响 UI 投影，原目录及 USB 和协同映射全部保留");
+
+        auto duplicateDisplayIdCatalogue = ConfigWithDisplays(2).displays;
+        duplicateDisplayIdCatalogue[1].id = duplicateDisplayIdCatalogue[0].id;
+        for (size_t index = 0; index < duplicateDisplayIdCatalogue.size(); ++index)
+        {
+            duplicateDisplayIdCatalogue[index].bindingStatus = DisplayBindingStatus::Resolved;
+            duplicateDisplayIdCatalogue[index].topologyGeneration = 51;
+            duplicateDisplayIdCatalogue[index].nativeMonitorId = L"ds13:unique-binding-" + std::to_wstring(index);
+        }
+        DisplayMappingProjection duplicateDisplayIdProjection;
+        duplicateDisplayIdProjection.Refresh(duplicateDisplayIdCatalogue,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
+        Check(duplicateDisplayIdProjection.Rows().empty() && duplicateDisplayIdCatalogue.size() == 2,
+            L"当前代次重复 displayId 的所有项目都不得投影，原目录仍保持两项");
+
+        auto caseVariantCatalogue = ConfigWithDisplays(2).displays;
+        caseVariantCatalogue[0].nativeMonitorId = L"ds13:Case-Variant";
+        caseVariantCatalogue[1].nativeMonitorId = L"DS13:case-variant";
+        for (auto& display : caseVariantCatalogue)
+        {
+            display.bindingStatus = DisplayBindingStatus::Resolved;
+            display.topologyGeneration = 52;
+        }
+        DisplayMappingProjection caseVariantProjection;
+        caseVariantProjection.Refresh(caseVariantCatalogue,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative);
+        Check(caseVariantProjection.Rows().empty(),
+            L"大小写不同但规范化后相同的强绑定视为重复并排除全部项目");
+
         auto peer = SettingsPageLayout(SettingsPage::Collaboration);
         Check(peer.cards.size() == 2, L"协同页面恰好有两个卡片");
         Check(peer.cards[0].title == L"协同状态" && peer.cards[1].title == L"配置", L"协同卡片顺序正确");
