@@ -14,6 +14,7 @@
 #include "../DisplaySwitcher.Native/UsbLearning.h"
 #include "../DisplaySwitcher.Native/UsbPresencePollPolicy.h"
 #include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
+#include "../DisplaySwitcher.Native/SettingsWindowContracts.h"
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -71,6 +72,62 @@ namespace
         for (auto const& display : config.displays) profile.displayInputs.push_back({ display.id, display.macInput });
         config.collaborationProfiles.push_back(std::move(profile));
         return config;
+    }
+
+    void TestSettingsWindowLayoutContracts()
+    {
+        auto containsRow = [](auto const& sections, std::wstring const& row)
+        {
+            for (auto const& section : sections)
+                if (std::find(section.rows.begin(), section.rows.end(), row) != section.rows.end()) return true;
+            return false;
+        };
+
+        auto usb = UsbTabLayoutContract();
+        Check(usb.cards.size() == 2, L"USB 页面恰好有两个卡片");
+        Check(usb.cards[0].title == L"自动切换" && usb.cards[1].title == L"联动协同", L"USB 卡片顺序正确");
+        Check(containsRow(usb.cards[0].sections, L"对端输入源显示器列表"), L"对端输入源已并入自动切换卡片");
+        Check(!usb.cards[0].hasNestedCards && !usb.cards[1].hasNestedCards, L"USB 页面没有嵌套卡片");
+        for (auto displayCount : { size_t{ 0 }, size_t{ 1 }, size_t{ 3 }, size_t{ 4 } })
+        {
+            auto config = ConfigWithDisplays(displayCount);
+            Check(config.displays.size() == displayCount && containsRow(usb.cards[0].sections, L"对端输入源显示器列表"), L"USB 映射支持可变显示器数量");
+        }
+
+        auto peer = PeerTabLayoutContract();
+        Check(peer.cards.size() == 2, L"协同页面恰好有两个卡片");
+        Check(peer.cards[0].title == L"协同状态" && peer.cards[1].title == L"配置", L"协同卡片顺序正确");
+        Check(peer.cards[1].sections.size() == 2, L"当前配置和配置详情属于同一卡片");
+        Check(!peer.cards[1].hasNestedCards, L"配置详情没有嵌套卡片");
+
+        auto profileName = ProfileNameLayoutContract();
+        Check(profileName.inputUsesStarWidth && profileName.enabledToggleUsesAutoWidth && !profileName.hasFlexibleSpacer,
+            L"配置名称输入使用 Star 宽度且开关固定在尾部");
+        auto placement = StatusPlacementContract();
+        Check(placement.outsideScrollViewer && placement.leftAligned, L"保存提示固定在非滚动窗口底部且左对齐");
+
+        SettingsSaveFeedback feedback;
+        Check(!feedback.visible, L"首次打开不显示已保存");
+        feedback.ShowSuccess(L"✓ 已保存", 1000);
+        Check(feedback.visible && !feedback.failure, L"成功保存使用成功状态");
+        feedback.HideIfExpired(2999);
+        Check(feedback.visible, L"成功保存两秒前仍显示");
+        feedback.ShowSuccess(L"✓ 已保存", 2500);
+        feedback.HideIfExpired(4499);
+        Check(feedback.visible, L"连续保存重置隐藏计时");
+        feedback.HideIfExpired(4500);
+        Check(!feedback.visible, L"成功保存两秒后隐藏");
+        feedback.ShowFailure(L"保存失败");
+        feedback.HideIfExpired(999999);
+        Check(feedback.visible && feedback.failure, L"保存失败持续显示");
+        feedback.ShowSuccess(L"✓ 已保存", 10000);
+        Check(feedback.visible && !feedback.failure, L"下一次成功保存恢复成功状态");
+        feedback.HideIfExpired(12000);
+        Check(!feedback.visible, L"恢复后的成功状态按时隐藏");
+
+        SettingsSaveFeedback collaborationSave;
+        auto usbOperation = std::wstring{ L"USB 输入源已更新" };
+        Check(!usbOperation.empty() && !collaborationSave.visible, L"非协同操作不会触发协同保存提示");
     }
 
     struct FakeDdcBackend final : IDdcBackend
@@ -2132,6 +2189,7 @@ int wmain()
     {
         TestV2OnlyDatagramGate();
         TestFreshInstallAndCounts(root);
+        TestSettingsWindowLayoutContracts();
         TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);

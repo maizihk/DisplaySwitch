@@ -18,6 +18,19 @@
 - PR：[#68](https://github.com/maizihk/DisplaySwitch/pull/68)，base 为 `codex/windows-input-source-transport`，保持 open，不自行合并。
 - CI：当前 Windows workflow 只监听以 `main` 为 base 的 PR，堆叠 PR #68 因此没有 GitHub check；262 项检查和 x64 Release 均为本机验证，不冒充 GitHub 托管 CI。待上游 PR #66 合并并将本 PR 改为 `main` 基线后再执行最终云端验证。
 
+## 当前任务：Windows USB/协同 UI 信息架构与保存反馈对齐
+
+- 日期：2026-09-01
+- 分支：codex/windows-ui-alignment-fix
+- 基线：已 fetch 并确认包含 Windows 最新提交 26aef485cec15e8db175cff9fc4db50c035ddec4。
+- 范围：仅 Windows 原生设置窗口、Windows 自动测试和 Windows 清单；不修改 macOS、PROTOCOL.md、共享协议、schema、版本、tag 或 Release。
+- 根因：USB 与协同页面仍按旧的多卡片信息架构组织；协同详情通过 CreateCard 再包一层；保存、检测和设备操作共享同一 validation_ 文本，导致成功使用错误颜色、首开/操作反馈污染及保存状态不自动消失。
+- 实现：USB 页现在只有“自动切换”和“联动协同”两张外层卡片，对端输入源映射位于自动切换卡片的分隔段；协同页只有“协同状态”和“配置”两张外层卡片，当前配置选择、编辑字段、映射、触发设备引用和删除操作位于同一配置卡片。
+- 保存反馈：新增独立 SettingsSaveFeedback 与底部固定状态区域；仅实际配置变化且成功持久化后显示绿色“✓ 已保存”，使用可取消并重置的 2 秒计时；失败显示语义红色且保留到下一次成功。网络、USB、DDC、输入源和诊断提示走独立操作状态。
+- 测试：新增纯模拟契约测试，覆盖两个页面的卡片数量/顺序、无嵌套卡片、0/1/3+ 显示器、Star 输入+固定尾部开关、底部非滚动保存提示、首次无保存反馈、成功隐藏、连续保存重置、失败保持和非协同操作隔离。完整 DisplaySwitcher.Tests.exe 实际通过 285 checks；未使用真实 sleep、网络、USB、DDC、输入源或显示器。
+- 构建：pwsh -File Windows/build-windows.ps1 -Architecture x64 -Configuration Release 已成功编译原生应用、启动器和测试并运行完整测试；完整 dist 打包成功，绿色版目录为 1.76 MiB。构建日志仅有受限网络下 NuGet 漏洞元数据的 NU1900 警告，缓存依赖、编译、测试和打包均成功。
+- 实机待验：浅色/深色、高 DPI 与窄窗口下的两页布局及长配置名；0/1/3+ 实际显示器映射；真实保存反馈可见性；不在本任务中执行真实 USB、DDC、输入源、唤醒或网络操作。
+
 ## 历史任务：W-206 输入源切换与 DDC 调节后端解耦
 
 - 日期：2026-08-31

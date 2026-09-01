@@ -8,6 +8,7 @@
 #include "ProfileDetection.h"
 #include "SystemActions.h"
 #include "UsbWatcher.h"
+#include "SettingsWindowContracts.h"
 
 namespace winrt::DisplaySwitcher::Native::implementation
 {
@@ -81,7 +82,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void CopyDiagnosticPreview();
         bool Save(bool hideAfterSave = false);
         bool SaveImmediately();
-        void ShowValidationError(std::wstring const& message);
+        void SetOperationFeedback(std::wstring const& message, bool failure = false);
+        void ShowSaveFailure(std::wstring const& message);
+        void ShowSaveSuccess(std::wstring const& message);
+        void ResetSaveFeedbackTimer();
+        void ApplySaveFeedback(std::chrono::milliseconds const& hiddenAfter);
+        int64_t SteadyMs();
 
         ::DisplaySwitcher::Native::AppConfig original_;
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved_;
@@ -147,7 +153,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::vector<ProfileEditorControls> profileEditors_;
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock operationStatus_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock saveStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionDot_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbAutomation_{ nullptr };
@@ -180,6 +187,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         bool windowClosed_{};
         uint64_t profileDetectionGeneration_{};
         std::wstring detectingProfileId_;
+        Microsoft::UI::Xaml::Controls::Border statusPanelBorder_{ nullptr };
+        Microsoft::UI::Dispatching::DispatcherQueueTimer saveFeedbackTimer_{ nullptr };
+        ::DisplaySwitcher::Native::SettingsSaveFeedback saveFeedback_{};
     };
 }
 
