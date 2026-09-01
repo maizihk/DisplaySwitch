@@ -132,26 +132,23 @@ namespace
         return row;
     }
 
-    Grid UsbDeviceRow(ComboBox const& devices, Button const& learn, TextBlock const& status)
+    Grid UsbDeviceRow(ComboBox const& devices, Button const& learn)
     {
         devices.Header(nullptr); devices.HorizontalAlignment(HorizontalAlignment::Stretch);
         AutomationProperties::SetName(devices, L"USB 触发设备");
         learn.VerticalAlignment(VerticalAlignment::Center);
-        status.VerticalAlignment(VerticalAlignment::Center); status.TextWrapping(TextWrapping::NoWrap);
 
         auto row = Grid(); row.ColumnSpacing(12);
         auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
         row.ColumnDefinitions().Append(labelColumn);
         auto devicesColumn = ColumnDefinition(); devicesColumn.Width(GridLength{ 1, GridUnitType::Star });
-        auto statusColumn = ColumnDefinition(); statusColumn.Width(GridLengthHelper::Auto());
         auto learnColumn = ColumnDefinition(); learnColumn.Width(GridLengthHelper::Auto());
-        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(statusColumn);
-        row.ColumnDefinitions().Append(learnColumn);
+        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(learnColumn);
 
         auto label = TextBlock(); label.Text(L"触发设备"); label.VerticalAlignment(VerticalAlignment::Center);
-        Grid::SetColumn(devices, 1); Grid::SetColumn(status, 2); Grid::SetColumn(learn, 3);
+        Grid::SetColumn(devices, 1); Grid::SetColumn(learn, 2);
         row.Children().Append(label); row.Children().Append(devices);
-        row.Children().Append(learn); row.Children().Append(status);
+        row.Children().Append(learn);
         return row;
     }
 
@@ -380,11 +377,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         linkAllDisplays_ = ToggleSwitch();
         autoStart_ = ToggleSwitch();
         detailedDiagnostics_ = ToggleSwitch();
-        usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        autoStart_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        detailedDiagnostics_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
+        usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        autoStart_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        detailedDiagnostics_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
         {
             if (loading_) return;
@@ -395,7 +392,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             selectedUsbName_ = learned.displayName;
             selectedUsbVendorId_ = devices_[index].vendorId;
             selectedUsbProductId_ = devices_[index].productId;
-            SaveImmediately();
+            SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
             RefreshUsbDeviceSelection();
         });
         usbProfileSelector_.SelectionChanged([this](auto const&, auto const&)
@@ -404,7 +401,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto index = usbProfileSelector_.SelectedIndex();
             usbSelectedProfileId_ = index >= 0 && static_cast<size_t>(index) < workingProfiles_.size()
                 ? workingProfiles_[static_cast<size_t>(index)].id : L"";
-            SaveImmediately();
+            SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
         });
 
         auto root = Grid();
@@ -454,7 +451,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbMappingSection.Children().Append(usbMappingsPanel_);
         auto usbAutoCard = StackPanel(); usbAutoCard.Spacing(16);
         usbAutoCard.Children().Append(LabeledToggleRow(L"自动切换", usbAutomation_));
-        usbAutoCard.Children().Append(UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_));
+        usbAutoCard.Children().Append(UsbDeviceRow(usbDevices_, learnCurrentUsb));
         usbAutoCard.Children().Append(createDivider());
         usbAutoCard.Children().Append(usbStatusRow);
         usbAutoCard.Children().Append(createDivider());
@@ -517,7 +514,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             workingProfiles_.push_back(std::move(profile));
             selectedProfileId_ = workingProfiles_.back().id;
             RebuildProfileEditors();
-            SaveImmediately();
+            SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration);
         });
         profileSelector_ = ComboBox(); Header(profileSelector_, L"当前配置"); profileSelector_.HorizontalAlignment(HorizontalAlignment::Stretch);
         profileSelector_.SelectionChanged([this](auto const&, auto const&)
@@ -877,7 +874,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             selectedUsbVendorId_ = selected->vendorId;
             selectedUsbProductId_ = selected->productId;
             usbDevices_.SelectedIndex(-1);
-            auto saved = SaveImmediately();
+            auto saved = SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
             EndUsbLearning(saved ? L"已选择 USB 设备并保存。" :
                 L"USB 绑定未能保存；原配置已保留，自动操作保持停用。");
         });
@@ -932,7 +929,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
             RebuildProfileEditors();
-            if (reconciled.changed) SaveImmediately();
+            if (reconciled.changed) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
             if (ddcMonitors_.empty())
                 SetOperationFeedback(L"没有检测到支持 Windows 物理显示器接口的显示器。", true);
             else if (!enumeration.message.empty()) SetOperationFeedback(enumeration.message, true);
@@ -971,9 +968,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto old = previous.find(display.id);
             if (old != previous.end()) input.Text(old->second);
             else if (auto value = original_.UsbInputForDisplay(display.id)) input.Text(std::to_wstring(*value));
-            input.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
+            input.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
             input.KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
-            { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); });
+            { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
             usbMappingsPanel_.Children().Append(LabeledControlRow(display.name, input));
             usbMappingEditors_.push_back({ display.id, input });
         }
@@ -1071,9 +1068,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 enabled.Toggled([this, slider, showInTray](auto const& sender, auto const&)
                 {
                     auto on = sender.template as<ToggleSwitch>().IsOn(); slider.IsEnabled(on);
-                    showInTray.IsEnabled(on); if (!on) showInTray.IsOn(false); SaveImmediately();
+                    showInTray.IsEnabled(on); if (!on) showInTray.IsOn(false); SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
                 });
-                showInTray.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
+                showInTray.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
                 slider.ValueChanged([value](auto const& sender, auto const&) { value.Text(std::to_wstring(static_cast<int>(std::lround(sender.template as<Slider>().Value())))); });
                 slider.PointerCaptureLost(Microsoft::UI::Xaml::Input::PointerEventHandler(
                     [this, id = display.id, code, slider](IInspectable const&, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)
@@ -1151,16 +1148,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.peerPort = TextBox(); Header(controls.peerPort, L"对端端口"); controls.peerPort.Text(std::to_wstring(profile.peerPort)); controls.peerPort.MaxLength(5);
             controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对密码"); controls.pairingCode.Password(profile.pairingCode);
             controls.pairingCode.PlaceholderText(L"NFC 后 8–128 个 UTF-8 字节");
-            controls.enabled.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.name.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.peerHost.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.peerPort.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.pairingCode.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
+            controls.enabled.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.name.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.peerHost.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.peerPort.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.pairingCode.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
             auto commitOnReturn = [this](Control const& control)
             {
                 control.KeyUp(Microsoft::UI::Xaml::Input::KeyEventHandler(
                     [this](IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
-                    { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); }));
+                    { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); }));
             };
             commitOnReturn(controls.name); commitOnReturn(controls.peerHost);
             commitOnReturn(controls.peerPort); commitOnReturn(controls.pairingCode);
@@ -1180,7 +1177,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 { return _wcsicmp(item.displayId.c_str(), displayId.c_str()) == 0; });
                 if (existing != profile.displayInputs.end()) mapping.peerInput.Text(std::to_wstring(existing->peerInput));
                 if (unavailable) mapping.peerInput.Description(box_value(L"该显示器已移除；映射保留但不会自动绑定到其他显示器。"));
-                mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
+                mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
                 fields.Children().Append(LabeledControlRow(label, mapping.peerInput));
                 controls.mappings.push_back(std::move(mapping));
             };
@@ -1267,7 +1264,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 usbSelectedProfileId_.clear();
                 usbSwitchDisplaysOnArrival_.IsOn(false);
             }
-            RebuildProfileEditors(); SaveImmediately();
+            RebuildProfileEditors(); SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration);
         });
     }
 
@@ -1342,7 +1339,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (!result.endpointConfirmationRequired)
         {
             ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*profile, result, false);
-            if (SaveImmediately())
+            if (SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration))
             {
                 SetConnectionStatus(L"v2 可用", true);
                 SetOperationFeedback(L"v2 可用；检测结果已保存，未执行任何硬件操作。");
@@ -1375,7 +1372,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             confirmed.outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome::V2Available;
             confirmed.observedEndpointId = observed; confirmed.endpointConfirmationRequired = true;
             ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*target, confirmed, true);
-            if (self->SaveImmediately())
+            if (self->SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration))
             {
                 self->SetConnectionStatus(L"v2 可用，对端身份已确认", true);
                 self->SetOperationFeedback(L"对端身份已确认并保存。");
@@ -1506,7 +1503,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
     }
 
-    bool SettingsWindow::Save(bool hideAfterSave)
+    bool SettingsWindow::Save(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, bool hideAfterSave)
     {
         if (loading_) return false;
         ddcCancellation_.Cancel();
@@ -1601,20 +1598,23 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         if (!saved_ || !saved_(result))
         {
-            ShowSaveFailure(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。");
+            if (scope == ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration)
+                ShowSaveFailure(scope, L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。");
+            else
+                SetOperationFeedback(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。", true);
             LoadValues(original_);
             return false;
         }
         original_ = result;
-        ShowSaveSuccess(L"✓ 已保存");
+        ShowSaveSuccess(scope, L"✓ 已保存");
         if (hideAfterSave) appWindow_.Hide();
         return true;
     }
 
-    bool SettingsWindow::SaveImmediately()
+    bool SettingsWindow::SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope)
     {
         if (!detectingProfileId_.empty()) CancelProfileDetection();
-        return !loading_ && Save(false);
+        return !loading_ && Save(scope, false);
     }
 
     void SettingsWindow::RefreshDiagnosticPreview()
@@ -1646,16 +1646,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
         operationStatus_.Visibility(message.empty() ? Visibility::Collapsed : Visibility::Visible);
     }
 
-    void SettingsWindow::ShowSaveFailure(std::wstring const& message)
+    void SettingsWindow::ShowSaveFailure(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message)
     {
-        saveFeedback_.ShowFailure(message);
+        if (scope != ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration) return;
+        saveFeedback_.RecordFailure(scope, message);
         if (saveFeedbackTimer_) saveFeedbackTimer_.Stop();
         ApplySaveFeedback(std::chrono::milliseconds{});
     }
 
-    void SettingsWindow::ShowSaveSuccess(std::wstring const& message)
+    void SettingsWindow::ShowSaveSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message)
     {
-        saveFeedback_.ShowSuccess(message, SteadyMs());
+        if (scope != ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration) return;
+        saveFeedback_.RecordSuccess(scope, message, SteadyMs());
         ResetSaveFeedbackTimer();
         ApplySaveFeedback(std::chrono::milliseconds{});
     }

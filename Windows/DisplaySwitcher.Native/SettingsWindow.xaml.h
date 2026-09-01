@@ -80,11 +80,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             ::DisplaySwitcher::Native::DdcCancellationToken const& cancellation, bool write);
         void RefreshDiagnosticPreview();
         void CopyDiagnosticPreview();
-        bool Save(bool hideAfterSave = false);
-        bool SaveImmediately();
+        bool Save(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, bool hideAfterSave = false);
+        bool SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope);
         void SetOperationFeedback(std::wstring const& message, bool failure = false);
-        void ShowSaveFailure(std::wstring const& message);
-        void ShowSaveSuccess(std::wstring const& message);
+        void ShowSaveFailure(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message);
+        void ShowSaveSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message);
         void ResetSaveFeedbackTimer();
         void ApplySaveFeedback(std::chrono::milliseconds const& hiddenAfter);
         int64_t SteadyMs();

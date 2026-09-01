@@ -30,6 +30,8 @@
 - 测试：新增纯模拟契约测试，覆盖两个页面的卡片数量/顺序、无嵌套卡片、0/1/3+ 显示器、Star 输入+固定尾部开关、底部非滚动保存提示、首次无保存反馈、成功隐藏、连续保存重置、失败保持和非协同操作隔离。完整 DisplaySwitcher.Tests.exe 实际通过 285 checks；未使用真实 sleep、网络、USB、DDC、输入源或显示器。
 - 构建：pwsh -File Windows/build-windows.ps1 -Architecture x64 -Configuration Release 已成功编译原生应用、启动器和测试并运行完整测试；完整 dist 打包成功，绿色版目录为 1.76 MiB。构建日志仅有受限网络下 NuGet 漏洞元数据的 NU1900 警告，缓存依赖、编译、测试和打包均成功。
 - 实机待验：浅色/深色、高 DPI 与窄窗口下的两页布局及长配置名；0/1/3+ 实际显示器映射；真实保存反馈可见性；不在本任务中执行真实 USB、DDC、输入源、唤醒或网络操作。
+- PR #69 P1 后续：修复 UsbDeviceRow 重复接收 usbDeviceStatus_ 的所有权错误，状态元素现只挂载到独立“当前状态”行。SettingsSaveFeedbackScope 明确定义 None/Collaboration 边界；常规、USB 和显示器保存使用 None，协同字段、配置增删和协同检测持久化使用 Collaboration，非协同保存不会显示或清除协同保存状态。新增契约测试覆盖单一状态容器和非协同保存隔离；完整模拟测试、x64 Release 与 dist 打包通过 287 checks。
+- PR #69 P1 实机说明：已启动 freshly built 原生应用并确认托盘进程稳定；现有本机配置不是首次运行，托盘图标未向自动化公开可点击窗口，无法在不移动用户配置的前提下自动打开设置页。需用户从托盘手动打开“设置…”一次，确认没有 WinUI 父级异常；未执行真实 USB、DDC、输入源、唤醒或网络操作。
 
 ## 历史任务：W-206 输入源切换与 DDC 调节后端解耦
 

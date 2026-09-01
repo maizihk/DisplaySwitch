@@ -25,6 +25,12 @@ namespace DisplaySwitcher::Native
         std::vector<SettingsCardContract> cards;
     };
 
+    enum class SettingsSaveFeedbackScope
+    {
+        None,
+        Collaboration,
+    };
+
     struct SettingsSaveFeedback
     {
         std::wstring message;
@@ -34,16 +40,18 @@ namespace DisplaySwitcher::Native
 
         static constexpr int64_t SuccessDisplayDurationMs = 2000;
 
-        void ShowSuccess(std::wstring const& text, int64_t nowMs)
+        void RecordSuccess(SettingsSaveFeedbackScope scope, std::wstring const& text, int64_t nowMs)
         {
+            if (scope != SettingsSaveFeedbackScope::Collaboration) return;
             message = text;
             visible = true;
             failure = false;
             visibleUntilMs = nowMs + SuccessDisplayDurationMs;
         }
 
-        void ShowFailure(std::wstring const& text)
+        void RecordFailure(SettingsSaveFeedbackScope scope, std::wstring const& text)
         {
+            if (scope != SettingsSaveFeedbackScope::Collaboration) return;
             message = text;
             visible = true;
             failure = true;
@@ -167,6 +175,17 @@ namespace DisplaySwitcher::Native
     };
 
     inline SettingsStatusPlacementContract StatusPlacementContract()
+    {
+        return {};
+    }
+
+    struct UsbDeviceRowContract
+    {
+        bool containsStatus{};
+        int statusParentCount{ 1 };
+    };
+
+    inline UsbDeviceRowContract UsbDeviceRowLayoutContract()
     {
         return {};
     }
