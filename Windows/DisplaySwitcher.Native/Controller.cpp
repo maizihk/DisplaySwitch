@@ -270,7 +270,7 @@ namespace DisplaySwitcher::Native
                 auto self = weak.lock();
                 if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
                 auto tracker = self->displayDiagnostics_;
-                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.Lookup(NativeDdcBackendKey),
+                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.InputSource(),
                     [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
                     {
                         tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
@@ -712,7 +712,7 @@ namespace DisplaySwitcher::Native
             auto controller = weak.lock();
             if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
             auto tracker = controller->displayDiagnostics_;
-            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.Lookup(NativeDdcBackendKey),
+            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.InputSource(),
                 [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
                 {
                     tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,

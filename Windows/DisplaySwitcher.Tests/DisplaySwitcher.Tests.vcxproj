@@ -51,6 +51,7 @@
     <ClCompile Include="..\DisplaySwitcher.Native\DisplayModel.cpp"><Link>Native\DisplayModel.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DdcControl.cpp"><Link>Native\DdcControl.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DdcBackends.cpp"><Link>Native\DdcBackends.cpp</Link></ClCompile>
+    <ClCompile Include="..\DisplaySwitcher.Native\InputSourceControl.cpp"><Link>Native\InputSourceControl.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\Diagnostics.cpp"><Link>Native\Diagnostics.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DiagnosticReport.cpp"><Link>Native\DiagnosticReport.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\ProfileDetection.cpp"><Link>Native\ProfileDetection.cpp</Link></ClCompile>

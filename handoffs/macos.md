@@ -53,7 +53,7 @@
 - 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
 - 行为边界：即时原子保存、失败回退、USB 学习、v2 协同、网络与并发失败隔离保持；只把输入源值合同收紧到显式非零安全范围，并允许未配置显示器安全跳过。DS-023 详细诊断默认关闭、DS-024 托盘静态入口清理均未回退。
 - 自动验证：USB-001～016 公共向量按原始 expectedActions 逐条比较且不做筛选；完整 XCTest 194/194 通过。新增 fake 覆盖 USB 三台中一台留空只写两台并报告 `missing_mapping`、旧/输入 0 零写入且同样使用既有 `missing_mapping`、协同空映射跳过、最终 DDC 路由拒绝 0，以及 USB/协同保存反馈初始隐藏、成功定时隐藏、连续重置、失败持续、失败后成功和跨 scope 隔离；调度测试不使用真实 sleep。既有布局、失败隔离和诊断回归继续通过。
-- 构建验证：Release `./macOS/scripts/build-app.sh` 通过，使用本机有效 Apple Development 身份签名；App、打包暂存副本与 ZIP 解压副本均通过脚本内 `codesign --verify --deep --strict`，额外 App/解压副本严格验签与 ZIP 完整性通过。测试包 SHA-256：`ea5167058103d6a72a914b6997ec9939d85a6af4378c85fbe41b16a2694224a3`。
+- 构建验证：合入 `origin/main@553424f9cff5c16fbf88fd7789b56d3f97a6bfbc` 后，Release `./macOS/scripts/build-app.sh` 通过，使用本机有效 Apple Development 身份签名；App、打包暂存副本与 ZIP 解压副本均通过脚本内 `codesign --verify --deep --strict`，额外 App/解压副本严格验签与 ZIP 完整性通过。测试包 SHA-256：`1d50bffddbd001d84d09402aa4ae4c2dd551326edf5275aaeef409256c0fd6db`。
 - 待验证：窄窗口、0/1/2/3+ 台真实显示器下 USB/协同映射留空与部分填写、浅色/深色、键盘导航、VoiceOver，以及两页真实编辑后的隔离保存反馈，仍需 GUI 验收；不通过实机写入 0 验证安全门。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改协议、schema、版本、系统权限或签名配置。
 

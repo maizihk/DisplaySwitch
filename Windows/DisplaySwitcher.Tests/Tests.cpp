@@ -3,6 +3,7 @@
 #include "../DisplaySwitcher.Native/AboutInfo.h"
 #include "../DisplaySwitcher.Native/DdcBackends.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
+#include "../DisplaySwitcher.Native/InputSourceControl.h"
 #include "../DisplaySwitcher.Native/DiagnosticReport.h"
 #include "../DisplaySwitcher.Native/Diagnostics.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
@@ -120,6 +121,38 @@ namespace
             if (transient != transientWriteFailures.end() && transient->second-- > 0)
                 return { false, DdcErrorKind::WriteFailed, L"模拟句柄失效" };
             if (writeFailures.contains({ monitorId, code })) return { false, DdcErrorKind::WriteFailed, L"模拟写入失败" };
+            return { true, DdcErrorKind::None, {}, generation };
+        }
+    };
+
+    struct FakeInputSourceTransport final : IInputSourceTransport
+    {
+        DdcBackendStatus status{ DdcAvailability::Available, L"模拟输入源传输可用" };
+        std::set<std::wstring> writeFailures;
+        std::map<std::wstring, int> transientWriteFailures;
+        std::vector<std::pair<std::wstring, int>> writes;
+        std::function<void()> onWrite;
+        bool invalidateOnTransientFailure{};
+        std::atomic<uint64_t> topologyGeneration{ 1 };
+
+        DdcBackendStatus Status() const override { return status; }
+        uint64_t TopologyGeneration() const noexcept override { return topologyGeneration.load(); }
+        void InvalidateTopology() noexcept override { ++topologyGeneration; }
+        InputSourceWriteResult WriteInputSource(std::wstring const& monitorId, int value,
+            DdcCancellationToken const& cancellation) override
+        {
+            auto generation = TopologyGeneration();
+            writes.emplace_back(monitorId, value);
+            if (onWrite) onWrite();
+            if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"已取消" };
+            auto transient = transientWriteFailures.find(monitorId);
+            if (transient != transientWriteFailures.end() && transient->second-- > 0)
+            {
+                if (invalidateOnTransientFailure) ++topologyGeneration;
+                return { false, DdcErrorKind::WriteFailed, L"模拟输入源句柄失效" };
+            }
+            if (writeFailures.contains(monitorId))
+                return { false, DdcErrorKind::WriteFailed, L"模拟输入源写入失败" };
             return { true, DdcErrorKind::None, {}, generation };
         }
     };
@@ -764,9 +797,10 @@ namespace
         auto ambiguousWrite = FakeService(ambiguousBackend).Write(ambiguousConfig,
             ambiguousConfig.displays[0].id, DdcVcpCode::Brightness, 40, false, ambiguousCancellation.Begin());
         for (auto& display : ambiguousConfig.displays) display.macInput = 18;
-        auto ambiguousInput = SwitchDisplaysToMac(ambiguousConfig, &ambiguousBackend);
+        FakeInputSourceTransport ambiguousInputTransport;
+        auto ambiguousInput = SwitchDisplaysToMac(ambiguousConfig, &ambiguousInputTransport);
         Check(!ambiguousRead.success && !ambiguousWrite.success && !ambiguousInput.success && ambiguousBackend.reads.empty()
-            && ambiguousBackend.writes.empty(),
+            && ambiguousBackend.writes.empty() && ambiguousInputTransport.writes.empty(),
             L"DS-013: 歧义 target 必须保持亮度、对比度、音量和输入源 DDC 调用为零");
 
         auto duplicatePhysical = NormalizeDdcMonitorCollection({
@@ -1000,15 +1034,20 @@ namespace
             L"U-010: 托盘滑杆只写对应显示器和项目，成功后才提交缓存");
 
         native.writes.clear();
-        auto inputSwitch = SwitchDisplaysToMac(config, &native);
-        Check(inputSwitch.success && native.writes.size() == 2
-            && std::get<0>(native.writes[0]) == config.displays[0].nativeMonitorId
-            && std::get<1>(native.writes[0]) == DdcVcpCode::InputSource
-            && std::get<2>(native.writes[0]) == config.displays[0].macInput
-            && std::get<0>(native.writes[1]) == config.displays[1].nativeMonitorId
-            && std::get<1>(native.writes[1]) == DdcVcpCode::InputSource
-            && std::get<2>(native.writes[1]) == config.displays[1].macInput,
-            L"DS-013: 输入源写入必须与亮度、对比度和音量共用同一逻辑显示器绑定");
+        auto legacyInputCode = static_cast<DdcVcpCode>(96);
+        auto rejectedLegacyInput = service.Write(config, firstId, legacyInputCode, 17, false, cancellation.Begin());
+        Check(!rejectedLegacyInput.success && native.writes.empty() && IsDdcControlVcpCode(legacyInputCode) == false,
+            L"W-206: 普通 DDC 服务和共用白名单必须拒绝旧输入源 VCP 值");
+
+        native.writes.clear();
+        FakeInputSourceTransport inputTransport;
+        auto inputSwitch = SwitchDisplaysToMac(config, &inputTransport);
+        Check(inputSwitch.success && native.writes.empty() && inputTransport.writes.size() == 2
+            && inputTransport.writes[0].first == config.displays[0].nativeMonitorId
+            && inputTransport.writes[0].second == config.displays[0].macInput
+            && inputTransport.writes[1].first == config.displays[1].nativeMonitorId
+            && inputTransport.writes[1].second == config.displays[1].macInput,
+            L"W-206: 输入源切换必须只调用独立 transport，并继续使用相同逻辑显示器绑定");
 
         auto cachedFirst = config.displays[0];
         SetThreeValues(native, L"monitor-0", 0, 0, 0);
@@ -1061,13 +1100,91 @@ namespace
 
         DdcBackendSet productionBackends;
         Check(productionBackends.Lookup(NativeDdcBackendKey) != nullptr
+            && productionBackends.InputSource() != nullptr
             && productionBackends.Lookup(L"control_my_monitor") == nullptr
             && productionBackends.Lookup(L"auto") == nullptr,
-            L"DS-011: 正式后端集合必须只暴露 Windows 原生 Dxva2，不得保留选择或回退入口");
+            L"W-206/DS-011: 正式集合必须分别暴露原生 DDC 与输入源传输，且不得保留外部回退入口");
+        auto productionDdc = productionBackends.Lookup(NativeDdcBackendKey);
+        auto productionGeneration = productionDdc->TopologyGeneration();
+        DdcCancellationSource productionCancellation;
+        auto nativeRejectedRead = productionDdc->Read(L"unused", legacyInputCode, productionCancellation.Begin());
+        auto nativeRejectedWrite = productionDdc->Write(L"unused", legacyInputCode, 17, productionCancellation.Begin());
+        Check(!nativeRejectedRead.success && nativeRejectedRead.error == DdcErrorKind::Unsupported
+            && !nativeRejectedWrite.success && nativeRejectedWrite.error == DdcErrorKind::Unsupported
+            && productionDdc->TopologyGeneration() == productionGeneration,
+            L"W-206: 原生普通 DDC 边界必须在解析显示器或调用 DXVA2 前拒绝 0x60");
         auto topologyBeforeInvalidation = productionBackends.TopologyGeneration();
         productionBackends.InvalidateTopology();
-        Check(productionBackends.TopologyGeneration() > topologyBeforeInvalidation,
-            L"DS-013: WM_DISPLAYCHANGE/热插拔入口必须立即递增 topology generation 并失效旧缓存");
+        Check(productionBackends.TopologyGeneration() > topologyBeforeInvalidation
+            && productionBackends.InputSource()->TopologyGeneration() == productionBackends.TopologyGeneration(),
+            L"W-206/DS-013: 两个独立接口必须共享 topology generation 和失效入口");
+
+        auto inputConfig = ConfigWithDisplays(2);
+        for (auto& display : inputConfig.displays) EnableDdcControls(display);
+        FakeDdcBackend isolatedDdc;
+        FakeInputSourceTransport isolatedInput;
+        DdcCancellationSource inputCancellation;
+
+        isolatedInput.writeFailures.insert(L"monitor-1");
+        auto partialInput = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
+            inputConfig, inputCancellation.Begin());
+        Check(!partialInput.success && isolatedInput.writes.size() == 3 && isolatedDdc.writes.empty(),
+            L"W-206: 多显示器输入源单台失败必须隔离，继续其他目标且绝不调用普通 DDC backend");
+
+        isolatedInput.writes.clear(); isolatedInput.writeFailures.clear();
+        isolatedInput.transientWriteFailures[L"monitor-0"] = 1;
+        isolatedInput.invalidateOnTransientFailure = true;
+        auto oneDisplay = inputConfig; oneDisplay.displays.resize(1);
+        auto retriedInput = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
+            oneDisplay, inputCancellation.Begin());
+        Check(retriedInput.success && isolatedInput.writes.size() == 2
+            && isolatedInput.TopologyGeneration() == 2,
+            L"W-206: 受控刷新递增 generation 后的新句柄成功结果必须被接受");
+        isolatedInput.invalidateOnTransientFailure = false;
+
+        isolatedInput.writes.clear();
+        auto canceledInputToken = inputCancellation.Begin(); inputCancellation.Cancel();
+        auto canceledInput = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
+            inputConfig, canceledInputToken);
+        Check(!canceledInput.success && isolatedInput.writes.empty(),
+            L"W-206: 输入源切换开始前取消必须保持零 transport 写入");
+
+        isolatedInput.writes.clear();
+        isolatedInput.onWrite = [&] { ++isolatedInput.topologyGeneration; };
+        auto staleInput = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
+            inputConfig, inputCancellation.Begin());
+        Check(!staleInput.success && isolatedInput.writes.size() == 1,
+            L"W-206: 输入源写入期间 topology generation 变化必须丢弃结果并停止剩余目标");
+        isolatedInput.onWrite = {};
+
+        isolatedInput.writes.clear();
+        auto offlineInputConfig = oneDisplay;
+        offlineInputConfig.displays[0].bindingStatus = DisplayBindingStatus::Offline;
+        auto offlineInput = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
+            offlineInputConfig, inputCancellation.Begin());
+        offlineInputConfig.displays[0].bindingStatus = DisplayBindingStatus::Ambiguous;
+        auto ambiguousInputResult = InputSourceSwitchService(&isolatedInput).SwitchDisplaysToMac(
+            offlineInputConfig, inputCancellation.Begin());
+        Check(!offlineInput.success && !ambiguousInputResult.success && isolatedInput.writes.empty(),
+            L"W-206: 离线或歧义显示器必须保持零输入源 transport 写入");
+
+        FakeDdcBackend independentDdc;
+        SetThreeValues(independentDdc, L"monitor-0", 30, 40, 50);
+        independentDdc.writeFailures.insert({ L"monitor-0", DdcVcpCode::Brightness });
+        auto ddcFailed = FakeService(independentDdc).Write(inputConfig,
+            inputConfig.displays[0].id, DdcVcpCode::Brightness, 44, false, inputCancellation.Begin());
+        FakeInputSourceTransport independentInput;
+        auto inputAfterDdcFailure = InputSourceSwitchService(&independentInput).SwitchDisplaysToMac(
+            oneDisplay, inputCancellation.Begin());
+        independentInput.writeFailures.insert(L"monitor-0");
+        auto inputFailed = InputSourceSwitchService(&independentInput).SwitchDisplaysToMac(
+            oneDisplay, inputCancellation.Begin());
+        independentDdc.writeFailures.clear(); independentDdc.writes.clear();
+        auto ddcAfterInputFailure = FakeService(independentDdc).Write(inputConfig,
+            inputConfig.displays[0].id, DdcVcpCode::Brightness, 45, false, inputCancellation.Begin());
+        Check(!ddcFailed.success && inputAfterDdcFailure.success && !inputFailed.success
+            && ddcAfterInputFailure.success,
+            L"W-206: 普通 DDC 与输入源传输的失败状态必须双向隔离");
 
         auto reordered = config;
         std::swap(reordered.displays[0], reordered.displays[1]);
