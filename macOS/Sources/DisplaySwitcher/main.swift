@@ -57,7 +57,12 @@ private final class SliderRowView: NSView {
         usesLinkedPresentation: Bool = false
     ) {
         self.usesLinkedPresentation = usesLinkedPresentation
-        super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 48))
+        super.init(frame: NSRect(
+            x: 0,
+            y: 0,
+            width: TrayControlRowLayout.width,
+            height: TrayControlRowLayout.height
+        ))
         slider.setAccessibilityLabel("\(accessibilityPrefix)\(control.title)")
 
         let icon = NSImageView()
@@ -81,18 +86,20 @@ private final class SliderRowView: NSView {
         addSubview(slider)
 
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            icon.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            icon.widthAnchor.constraint(equalToConstant: 16),
-            icon.heightAnchor.constraint(equalToConstant: 16),
-            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
-            titleLabel.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            valueLabel.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-            valueLabel.widthAnchor.constraint(equalToConstant: 34),
-            slider.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            slider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            slider.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 2)
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TrayControlRowLayout.horizontalInset),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.iconWidth),
+            icon.heightAnchor.constraint(equalToConstant: TrayControlRowLayout.iconWidth),
+            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: TrayControlRowLayout.iconTitleSpacing),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.titleWidth),
+            slider.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: TrayControlRowLayout.titleSliderSpacing),
+            slider.centerYAnchor.constraint(equalTo: centerYAnchor),
+            slider.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.sliderWidth),
+            valueLabel.leadingAnchor.constraint(equalTo: slider.trailingAnchor, constant: TrayControlRowLayout.sliderValueSpacing),
+            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -TrayControlRowLayout.horizontalInset),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            valueLabel.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.valueWidth)
         ])
     }
 
@@ -237,6 +244,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var linkedDDCTopologyResolved = false
     private var settingsWindowHasBeenShown = false
 
+    private lazy var usbStatusItem: NSMenuItem = {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }()
+
     private lazy var settingsWindowController: SettingsWindowController = {
         let controller = SettingsWindowController()
         controller.onSave = { [weak self] in
@@ -301,6 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             self?.detectDisplays(showFailure: true)
         }
         controller.onWindowClosed = { [weak self] in
+            _ = NSApp.setActivationPolicy(SettingsWindowLifecycleState.closed.activationPolicy)
             self?.ddcWriteCoordinator.cancelAll()
             self?.ddcController.cancelAll()
             self?.refreshDDCOperationAccess()
@@ -317,12 +331,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private lazy var settingsItem: NSMenuItem = {
         let item = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         item.target = self
+        item.image = NSImage(
+            systemSymbolName: TraySemanticIcon.settings.symbolName,
+            accessibilityDescription: "设置"
+        )
         return item
     }()
 
     private lazy var quitItem: NSMenuItem = {
         let item = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         item.target = self
+        item.image = NSImage(
+            systemSymbolName: TraySemanticIcon.quit.symbolName,
+            accessibilityDescription: "退出"
+        )
         return item
     }()
 
@@ -382,6 +404,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         let menu = NSMenu()
         menu.delegate = self
+        menu.minimumWidth = TrayControlRowLayout.width
+        menu.addItem(usbStatusItem)
         menu.addItem(dynamicContentSeparator)
         for action in TrayStaticMenuAction.allCases {
             switch action {
@@ -390,6 +414,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             }
         }
         statusItem.menu = menu
+        statusItem.button?.sendAction(on: StatusItemClickRouting.supportedEventMask)
+        refreshTrayUSBStatus()
         rebuildProfileSwitchItems(in: menu)
         rebuildDisplayMenuItems()
         updateConfigurationSafetyUI()
@@ -739,6 +765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func configureUSBMonitor() {
         usbMonitor.stop()
+        refreshTrayUSBStatus()
         guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
         let document = AppPreferences.localConfiguration
         localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration(document: document))
@@ -797,6 +824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func startUSBLearning() {
         guard configurationSafetyGate.allows(.usb) else { return }
         usbLearningSafetyGate.begin()
+        refreshTrayUSBStatus()
         refreshDDCOperationAccess()
         localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration(learning: true))
         configurePeerTransport()
@@ -1223,6 +1251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     @objc private func showSettings() {
         settingsWindowHasBeenShown = true
+        _ = NSApp.setActivationPolicy(SettingsWindowLifecycleState.open.activationPolicy)
         settingsWindowController.show()
         if case .requiresUserReview(let error) = configurationSafetyGate.state {
             settingsWindowController.presentConfigurationSafetyWarning(error)
@@ -1342,7 +1371,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 self?.setControl(control, value: value, fromDisplay: id)
             }
             let displayItem = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-            displayItem.image = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
+            displayItem.image = NSImage(
+                systemSymbolName: TraySemanticIcon.display.symbolName,
+                accessibilityDescription: entry.title
+            )
             displayItem.submenu = controls.menu
             displayControls[displayID] = controls
             displayMenuItems[displayID] = displayItem
@@ -1361,9 +1393,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             let item = NSMenuItem(title: entry.title, action: #selector(switchToProfile(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = entry.profileID
-            item.image = NSImage(systemSymbolName: "arrow.right.to.line", accessibilityDescription: nil)
+            item.image = NSImage(
+                systemSymbolName: TraySemanticIcon.collaborationSwitch.symbolName,
+                accessibilityDescription: entry.title
+            )
             item.isEnabled = configurationSafetyGate.state == .ready
-            menu.insertItem(item, at: offset)
+            menu.insertItem(item, at: offset + 1)
             profileSwitchItems.append(item)
         }
         refreshDynamicContentSeparator()
@@ -1374,6 +1409,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             profileCount: profileSwitchItems.count,
             displayControlItemCount: displayMenuItems.count + linkedDisplayMenuItems.count
         )
+    }
+
+    private func refreshTrayUSBStatus() {
+        let operational = configurationSafetyGate.allows(.usb)
+            && usbLearningSafetyGate.allows(.usb)
+            && AppPreferences.localConfiguration.usbSwitch.enabled
+        let presentation = TrayUSBStatusPresentation(isOperational: operational)
+        usbStatusItem.title = presentation.title
+        usbStatusItem.image = NSImage(
+            systemSymbolName: presentation.symbolName,
+            accessibilityDescription: presentation.accessibilityLabel
+        )
+        usbStatusItem.setAccessibilityLabel(presentation.accessibilityLabel)
     }
 
     @objc private func quit() {
@@ -1642,6 +1690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         v2OutgoingMessages.removeAll(keepingCapacity: true)
         v2DatagramReplies.removeAll(keepingCapacity: true)
         updateConfigurationSafetyUI()
+        refreshTrayUSBStatus()
         refreshPeerConnectionStatus()
     }
 

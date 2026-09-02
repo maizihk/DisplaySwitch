@@ -313,7 +313,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         window.backgroundColor = .underPageBackgroundColor
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
-        window.isReleasedWhenClosed = false
+        window.level = SettingsWindowLifecycleState.open.windowLevel
+        window.hidesOnDeactivate = SettingsWindowLifecycleState.open.hidesOnDeactivate
+        window.isReleasedWhenClosed = SettingsWindowLifecycleState.open.isReleasedWhenClosed
         window.center()
         super.init(window: window)
         window.delegate = self
