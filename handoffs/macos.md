@@ -6,7 +6,7 @@
 - 分支：`codex/macos-tray-window-offline-display`
 - 基线：`origin/main@e9ba85513b98388e3aa64095ec945a8bc1d255be`。
 - 实现提交：DS-028 `075e5369af30a17ec8cac1490508af6d31fbc54e`；DS-029 `fc064b133c8e0b189a9311c40cb577aa63bc963c`。
-- PR：待创建，目标 `main`，不得自动合并。
+- PR：[#72](https://github.com/maizihk/DisplaySwitch/pull/72)，目标 `main`，保持开放等待 GUI/实机验收。
 - DS-028 根因：托盘 DDC 自定义视图固定为 280×48 的标题/滑杆两行，菜单没有 USB 总状态，静态动作缺少图标；设置窗口打开/关闭也没有显式管理应用 activation policy，所以 Dock 与普通窗口生命周期不完整。
 - DS-028 实现：新增匿名 `TrayUSBStatusPresentation` 和统一语义图标投影；逐显示器与联动 DDC 共用 252×30 的图标+名称+滑杆+值单行组件，菜单按内容最小宽度展示。状态栏按钮监听左右 mouse-up 且只绑定菜单；“设置…”显式切换 `.regular` 并复用/激活 key/main 普通窗口，关闭后切回 `.accessory`，窗口不随应用停用隐藏、不释放且不置顶。
 - DS-029 根因：旧 `DisplayConfigurationStore.merge` 只保存本次枚举结果，暂时未出现的物理显示器会连同所有设置被静默删除；运行时也没有“检测结果可信”和“明确离线”的独立证据，无法安全提供手动删除。
