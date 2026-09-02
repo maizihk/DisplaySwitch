@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cwctype>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -28,6 +30,7 @@ namespace DisplaySwitcher::Native
     enum class SettingsSaveFeedbackScope
     {
         None,
+        Usb,
         Collaboration,
     };
 
@@ -44,9 +47,45 @@ namespace DisplaySwitcher::Native
     enum class SettingsSaveFeedbackAction
     {
         None,
-        ShowCollaborationFeedback,
+        ShowScopedFeedback,
         ShowOperationFailure,
     };
+
+    enum class InputSourceTextStatus
+    {
+        Empty,
+        Valid,
+        Invalid,
+    };
+
+    struct InputSourceTextResult
+    {
+        InputSourceTextStatus status{ InputSourceTextStatus::Empty };
+        std::optional<int> value;
+    };
+
+    inline InputSourceTextResult ParseInputSourceText(std::wstring text)
+    {
+        auto whitespace = [](wchar_t value) { return iswspace(value) != 0; };
+        text.erase(text.begin(), std::find_if_not(text.begin(), text.end(), whitespace));
+        text.erase(std::find_if_not(text.rbegin(), text.rend(), whitespace).base(), text.end());
+        if (text.empty()) return {};
+        int value{};
+        for (auto character : text)
+        {
+            if (character < L'0' || character > L'9') return { InputSourceTextStatus::Invalid, std::nullopt };
+            auto digit = character - L'0';
+            if (value > (65535 - digit) / 10) return { InputSourceTextStatus::Invalid, std::nullopt };
+            value = value * 10 + digit;
+        }
+        if (value < 1 || value > 65535) return { InputSourceTextStatus::Invalid, std::nullopt };
+        return { InputSourceTextStatus::Valid, value };
+    }
+
+    inline std::wstring FormatInputSourceText(std::optional<int> value)
+    {
+        return value && *value >= 1 && *value <= 65535 ? std::to_wstring(*value) : L"";
+    }
 
     enum class SettingsOperationFeedbackSeverity
     {
@@ -93,7 +132,7 @@ namespace DisplaySwitcher::Native
 
         void RecordSuccess(SettingsSaveFeedbackScope scope, std::wstring const& text, int64_t nowMs)
         {
-            if (scope != SettingsSaveFeedbackScope::Collaboration) return;
+            if (scope == SettingsSaveFeedbackScope::None) return;
             message = text;
             visible = true;
             failure = false;
@@ -102,7 +141,7 @@ namespace DisplaySwitcher::Native
 
         void RecordFailure(SettingsSaveFeedbackScope scope, std::wstring const& text)
         {
-            if (scope != SettingsSaveFeedbackScope::Collaboration) return;
+            if (scope == SettingsSaveFeedbackScope::None) return;
             message = text;
             visible = true;
             failure = true;
@@ -122,14 +161,29 @@ namespace DisplaySwitcher::Native
             message.clear();
             failure = false;
         }
+
+        void ClearTransientSuccess()
+        {
+            if (visible && !failure) Clear();
+        }
     };
 
     // Production routing boundary between a settings save and its presentation.
     // It has no WinUI dependency, so tests exercise the same scope and timeout logic.
     struct SettingsSaveFeedbackController
     {
-        SettingsSaveFeedback feedback;
-        bool successTimerActive{};
+        SettingsSaveFeedback usbFeedback;
+        SettingsSaveFeedback collaborationFeedback;
+
+        SettingsSaveFeedback& FeedbackFor(SettingsSaveFeedbackScope scope)
+        {
+            return scope == SettingsSaveFeedbackScope::Usb ? usbFeedback : collaborationFeedback;
+        }
+
+        SettingsSaveFeedback const& FeedbackFor(SettingsSaveFeedbackScope scope) const
+        {
+            return scope == SettingsSaveFeedbackScope::Usb ? usbFeedback : collaborationFeedback;
+        }
 
         SettingsSaveFeedbackAction RecordSaveResult(SettingsSaveFeedbackScope scope, bool changed,
             bool succeeded, std::wstring const& message, int64_t nowMs)
@@ -139,20 +193,44 @@ namespace DisplaySwitcher::Native
                 return succeeded ? SettingsSaveFeedbackAction::None : SettingsSaveFeedbackAction::ShowOperationFailure;
             if (succeeded)
             {
-                feedback.RecordSuccess(scope, message, nowMs);
-                successTimerActive = true;
-                return SettingsSaveFeedbackAction::ShowCollaborationFeedback;
+                FeedbackFor(scope).RecordSuccess(scope, message, nowMs);
+                return SettingsSaveFeedbackAction::ShowScopedFeedback;
             }
-            feedback.RecordFailure(scope, message);
-            successTimerActive = false;
-            return SettingsSaveFeedbackAction::ShowCollaborationFeedback;
+            FeedbackFor(scope).RecordFailure(scope, message);
+            return SettingsSaveFeedbackAction::ShowScopedFeedback;
         }
 
         bool IsVisibleOn(SettingsPage page, int64_t nowMs)
         {
+            auto scope = page == SettingsPage::Usb ? SettingsSaveFeedbackScope::Usb :
+                (page == SettingsPage::Collaboration ? SettingsSaveFeedbackScope::Collaboration : SettingsSaveFeedbackScope::None);
+            if (scope == SettingsSaveFeedbackScope::None) return false;
+            auto& feedback = FeedbackFor(scope);
             feedback.HideIfExpired(nowMs);
-            if (!feedback.visible) successTimerActive = false;
-            return page == SettingsPage::Collaboration && feedback.visible;
+            return feedback.visible;
+        }
+
+        SettingsSaveFeedback const* VisibleFeedback(SettingsPage page, int64_t nowMs)
+        {
+            if (!IsVisibleOn(page, nowMs)) return nullptr;
+            return &FeedbackFor(page == SettingsPage::Usb ? SettingsSaveFeedbackScope::Usb : SettingsSaveFeedbackScope::Collaboration);
+        }
+
+        void ClearTransientSuccess(SettingsSaveFeedbackScope scope)
+        {
+            if (scope != SettingsSaveFeedbackScope::None) FeedbackFor(scope).ClearTransientSuccess();
+        }
+
+        void ClearTransientSuccesses()
+        {
+            usbFeedback.ClearTransientSuccess();
+            collaborationFeedback.ClearTransientSuccess();
+        }
+
+        bool HasActiveSuccess() const noexcept
+        {
+            return (usbFeedback.visible && !usbFeedback.failure) ||
+                (collaborationFeedback.visible && !collaborationFeedback.failure);
         }
     };
 
@@ -242,7 +320,7 @@ namespace DisplaySwitcher::Native
     enum class SettingsLayoutElement
     {
         UsbDeviceStatus,
-        CollaborationSaveFeedback,
+        ScopedSaveFeedback,
     };
 
     enum class SettingsLayoutRegion
@@ -259,7 +337,7 @@ namespace DisplaySwitcher::Native
                 ? SettingsLayoutRegion::UsbCurrentStatusRow : SettingsLayoutRegion::FixedWindowFooter;
             if (region != expected) return false;
             auto& count = element == SettingsLayoutElement::UsbDeviceStatus
-                ? usbDeviceStatusParentCount : collaborationSaveFeedbackParentCount;
+                ? usbDeviceStatusParentCount : scopedSaveFeedbackParentCount;
             if (count != 0) return false;
             ++count;
             return true;
@@ -268,11 +346,11 @@ namespace DisplaySwitcher::Native
         void Reset()
         {
             usbDeviceStatusParentCount = 0;
-            collaborationSaveFeedbackParentCount = 0;
+            scopedSaveFeedbackParentCount = 0;
         }
 
         int usbDeviceStatusParentCount{};
-        int collaborationSaveFeedbackParentCount{};
+        int scopedSaveFeedbackParentCount{};
     };
 
     struct PeerInputMappingLayoutModel

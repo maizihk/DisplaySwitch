@@ -2,6 +2,14 @@
 
 namespace DisplaySwitcher::Native
 {
+    inline constexpr int MinimumInputSourceValue = 1;
+    inline constexpr int MaximumInputSourceValue = 65535;
+
+    inline bool IsValidInputSourceValue(int value) noexcept
+    {
+        return value >= MinimumInputSourceValue && value <= MaximumInputSourceValue;
+    }
+
     std::wstring GenerateIdentifier();
 
     enum class DisplayBindingStatus

@@ -198,10 +198,10 @@ namespace
         Check(peer.cards[1].sections.size() == 2, L"当前配置和配置详情属于同一卡片");
         Check(!peer.cards[1].hasNestedCards, L"配置详情没有嵌套卡片");
 
-        Check(layout.Attach(SettingsLayoutElement::CollaborationSaveFeedback, SettingsLayoutRegion::FixedWindowFooter) &&
-            !layout.Attach(SettingsLayoutElement::CollaborationSaveFeedback, SettingsLayoutRegion::UsbCurrentStatusRow) &&
-            layout.collaborationSaveFeedbackParentCount == 1,
-            L"生产布局 Presenter 只允许协同保存反馈挂载到固定窗口底部");
+        Check(layout.Attach(SettingsLayoutElement::ScopedSaveFeedback, SettingsLayoutRegion::FixedWindowFooter) &&
+            !layout.Attach(SettingsLayoutElement::ScopedSaveFeedback, SettingsLayoutRegion::UsbCurrentStatusRow) &&
+            layout.scopedSaveFeedbackParentCount == 1,
+            L"生产布局 Presenter 只允许 USB/协同作用域保存反馈挂载到固定窗口底部");
 
         Check(NetworkAccessFeedbackSeverity(true) == SettingsOperationFeedbackSeverity::Success &&
             NetworkAccessFeedbackSeverity(false) == SettingsOperationFeedbackSeverity::Failure,
@@ -215,32 +215,48 @@ namespace
         SettingsSaveFeedbackController feedback;
         Check(!feedback.IsVisibleOn(SettingsPage::Collaboration, 0), L"首次打开不显示已保存");
         Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 1000) ==
-            SettingsSaveFeedbackAction::ShowCollaborationFeedback && feedback.IsVisibleOn(SettingsPage::Collaboration, 1000), L"协同成功保存显示绿色状态");
-        Check(!feedback.feedback.failure && !feedback.IsVisibleOn(SettingsPage::General, 1000), L"保存反馈只在协同页面可见");
+            SettingsSaveFeedbackAction::ShowScopedFeedback && feedback.IsVisibleOn(SettingsPage::Collaboration, 1000), L"协同成功保存显示绿色状态");
+        Check(!feedback.collaborationFeedback.failure && !feedback.IsVisibleOn(SettingsPage::General, 1000), L"保存反馈只在所属页面可见");
         Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 2999), L"成功保存两秒前仍显示");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 2500);
         Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 4499), L"连续协同保存重置隐藏计时");
         Check(!feedback.IsVisibleOn(SettingsPage::Collaboration, 4500), L"成功保存两秒后隐藏");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 5000);
-        Check(feedback.successTimerActive && feedback.IsVisibleOn(SettingsPage::Collaboration, 5499),
+        Check(feedback.HasActiveSuccess() && feedback.IsVisibleOn(SettingsPage::Collaboration, 5499),
             L"协同成功提示在两秒窗口内保持活动");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 5500);
-        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 999999) && feedback.feedback.failure &&
-            !feedback.successTimerActive, L"成功提示尚未消失时保存失败会停止计时并持续显示失败");
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 999999) && feedback.collaborationFeedback.failure &&
+            !feedback.HasActiveSuccess(), L"成功提示尚未消失时保存失败会停止计时并持续显示失败");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, true, L"✓ 已保存", 10000);
-        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 10000) && !feedback.feedback.failure &&
-            feedback.successTimerActive, L"下一次协同成功恢复成功状态并重新启动计时");
+        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 10000) && !feedback.collaborationFeedback.failure &&
+            feedback.HasActiveSuccess(), L"下一次协同成功恢复成功状态并重新启动计时");
         feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, true, false, L"保存失败", 13000);
-        for (auto scope : { SettingsSaveFeedbackScope::None, SettingsSaveFeedbackScope::None, SettingsSaveFeedbackScope::None })
-            Check(feedback.RecordSaveResult(scope, true, true, L"已保存", 14000) == SettingsSaveFeedbackAction::None,
-                L"USB、常规和显示器保存不会触发协同反馈");
-        Check(feedback.IsVisibleOn(SettingsPage::Collaboration, 14000) && feedback.feedback.failure,
-            L"非协同保存不会覆盖或清除协同失败状态");
+        Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::Usb, true, true, L"✓ 已保存", 14000) ==
+            SettingsSaveFeedbackAction::ShowScopedFeedback && feedback.IsVisibleOn(SettingsPage::Usb, 14000)
+            && feedback.IsVisibleOn(SettingsPage::Collaboration, 14000),
+            L"USB 成功回显与协同失败状态必须分别保存在各自作用域");
+        feedback.ClearTransientSuccesses();
+        Check(!feedback.IsVisibleOn(SettingsPage::Usb, 14001)
+            && feedback.IsVisibleOn(SettingsPage::Collaboration, 14001)
+            && feedback.collaborationFeedback.failure,
+            L"切换页面或重新加载只清除短暂成功态，绝不清除失败态");
         Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::None, true, false, L"失败", 15000) ==
-            SettingsSaveFeedbackAction::ShowOperationFailure, L"非协同保存失败只更新操作状态");
+            SettingsSaveFeedbackAction::ShowOperationFailure, L"非 USB/协同保存失败只更新操作状态");
         Check(feedback.RecordSaveResult(SettingsSaveFeedbackScope::Collaboration, false, true, L"✓ 已保存", 16000) ==
-            SettingsSaveFeedbackAction::None && feedback.IsVisibleOn(SettingsPage::Collaboration, 16000) && feedback.feedback.failure,
+            SettingsSaveFeedbackAction::None && feedback.IsVisibleOn(SettingsPage::Collaboration, 16000)
+            && feedback.collaborationFeedback.failure,
             L"无实际变化不显示也不重置保存状态");
+
+        for (auto const& value : { L"", L"   " })
+            Check(ParseInputSourceText(value).status == InputSourceTextStatus::Empty
+                && !ParseInputSourceText(value).value, L"空白输入源应解析为 null");
+        Check(ParseInputSourceText(L"1").value == 1 && ParseInputSourceText(L"65535").value == 65535,
+            L"输入源边界 1 和 65535 应有效");
+        for (auto const& value : { L"0", L"-1", L"abc", L"65536" })
+            Check(ParseInputSourceText(value).status == InputSourceTextStatus::Invalid,
+                L"0、负数、非数字和溢出输入源必须拒绝");
+        Check(FormatInputSourceText(std::nullopt).empty() && FormatInputSourceText(0).empty()
+            && FormatInputSourceText(17) == L"17", L"重新加载 null 或旧零映射必须显示空白");
     }
 
     struct FakeDdcBackend final : IDdcBackend
@@ -1099,6 +1115,76 @@ namespace
         Check(released == 2, L"DS-013: 拓扑销毁时每个唯一物理句柄必须恰好释放一次");
     }
 
+    void TestInputSourceNullSafetyAndMigration(std::filesystem::path const& root)
+    {
+        auto path = root / L"input-source-zero-migration.json";
+        auto config = ConfigWithDisplays(1);
+        auto& profile = config.collaborationProfiles[0];
+        profile.coordinationEnabled = true;
+        profile.peerEndpointId = GenerateIdentifier();
+        profile.peerProtocolVersion = 2;
+        config.usbSwitch.enabled = true;
+        config.usbSwitch.deviceLocalReference = L"synthetic-local-reference";
+        config.usbSwitch.deviceName = L"模拟设备";
+        config.usbSwitch.vendorId = 1;
+        config.usbSwitch.productId = 2;
+        config.usbSwitch.displayInputs = { { config.displays[0].id, 17 } };
+        config.usbSwitch.collaborationWakeEnabled = true;
+        config.usbSwitch.collaborationProfileId = profile.id;
+        config.SaveToPath(path);
+
+        auto legacy = ReadObject(path);
+        legacy.GetNamedArray(L"CollaborationProfiles").GetObjectAt(0)
+            .GetNamedArray(L"DisplayInputs").GetObjectAt(0)
+            .Insert(L"PeerInput", JsonValue::CreateNumberValue(0));
+        legacy.GetNamedObject(L"UsbSwitch").GetNamedArray(L"DisplayInputs").GetObjectAt(0)
+            .Insert(L"TargetInput", JsonValue::CreateNumberValue(0));
+        WriteObject(path, legacy);
+        auto loaded = AppConfig::LoadFromPath(path);
+        Check(!loaded.usbSwitch.enabled && !loaded.usbSwitch.collaborationWakeEnabled
+            && !loaded.collaborationProfiles[0].coordinationEnabled
+            && !loaded.UsbInputForDisplay(loaded.displays[0].id)
+            && loaded.PeerInputForDisplay(loaded.collaborationProfiles[0].id, loaded.displays[0].id, -1) == -1,
+            L"旧 USB 和协同输入源 0 必须原子迁移为空映射并关闭无有效映射的执行入口");
+        auto migrated = ReadObject(path);
+        Check(migrated.GetNamedObject(L"UsbSwitch").GetNamedArray(L"DisplayInputs").GetObjectAt(0)
+            .GetNamedValue(L"TargetInput").ValueType() == JsonValueType::Null
+            && migrated.GetNamedArray(L"CollaborationProfiles").GetObjectAt(0)
+                .GetNamedArray(L"DisplayInputs").Size() == 0,
+            L"迁移保存后空映射必须保持 null/缺失，不能重新补成 0");
+
+        auto partial = ConfigWithDisplays(2);
+        auto& partialProfile = partial.collaborationProfiles[0];
+        partialProfile.coordinationEnabled = true;
+        partialProfile.peerEndpointId = GenerateIdentifier();
+        partialProfile.peerProtocolVersion = 2;
+        partialProfile.displayInputs.erase(partialProfile.displayInputs.begin());
+        auto partialPath = root / L"partial-input-mapping.json";
+        partial.SaveToPath(partialPath);
+        auto partialLoaded = AppConfig::LoadFromPath(partialPath);
+        auto selected = partialLoaded.SelectProfileDisplays(partialProfile.id);
+        Check(partialLoaded.EnabledCompleteProfiles().size() == 1
+            && selected.mappedDisplays.size() == 1 && selected.missingDisplayIds.size() == 1,
+            L"协同配置至少一台有效映射即可启用，空映射只产生 missing_mapping 且不阻止其他显示器");
+
+        auto failurePath = root / L"input-source-zero-migration-failure.json";
+        config.usbSwitch.enabled = true;
+        config.collaborationProfiles[0].coordinationEnabled = true;
+        config.SaveToPath(failurePath);
+        auto failureObject = ReadObject(failurePath);
+        failureObject.GetNamedArray(L"CollaborationProfiles").GetObjectAt(0)
+            .GetNamedArray(L"DisplayInputs").GetObjectAt(0)
+            .Insert(L"PeerInput", JsonValue::CreateNumberValue(0));
+        failureObject.GetNamedObject(L"UsbSwitch").GetNamedArray(L"DisplayInputs").GetObjectAt(0)
+            .Insert(L"TargetInput", JsonValue::CreateNumberValue(0));
+        WriteObject(failurePath, failureObject);
+        auto originalBytes = ReadBytes(failurePath);
+        auto failed = AppConfig::LoadFromPath(failurePath, nullptr, AppConfigSaveFaultForTesting::TemporaryWrite);
+        Check(failed.displayConfigurationSafeMode && !failed.usbSwitch.enabled
+            && failed.EnabledCompleteProfiles().empty() && ReadBytes(failurePath) == originalBytes,
+            L"零值迁移写入失败必须保留原始数据并进入跨副作用安全状态");
+    }
+
     void TestRemoteSessionDisplayTopology()
     {
         Check(IsRemoteDisplaySession({ true, 4, 4 })
@@ -1242,6 +1328,21 @@ namespace
 
     void TestUsbTriggerStability()
     {
+        UsbSwitchInitialState zeroMappingState;
+        zeroMappingState.enabled = true;
+        zeroMappingState.baselinePresence = true;
+        zeroMappingState.displayMappings = {
+            { L"display-zero", 0, true, true }, { L"display-valid", 17, true, true } };
+        UsbSwitchCoordinator zeroMappingCoordinator(zeroMappingState);
+        auto zeroMappingActions = zeroMappingCoordinator.ObserveUsb(1, false);
+        Check(std::count_if(zeroMappingActions.begin(), zeroMappingActions.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SwitchDisplay && action.targetInput == 17; }) == 1
+            && std::count_if(zeroMappingActions.begin(), zeroMappingActions.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::Report && action.reason == L"missing_mapping"; }) == 1
+            && std::none_of(zeroMappingActions.begin(), zeroMappingActions.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SwitchDisplay && action.targetInput == 0; }),
+            L"USB 自动切换必须把 0 当作 missing_mapping，同时继续调度其他有效显示器");
+
         UsbSwitchInitialState initial;
         initial.enabled = true;
         initial.baselinePresence = true;
@@ -1384,6 +1485,27 @@ namespace
             && inputTransport.writes[1].first == config.displays[1].nativeMonitorId
             && inputTransport.writes[1].second == config.displays[1].macInput,
             L"W-206: 输入源切换必须只调用独立 transport，并继续使用相同逻辑显示器绑定");
+
+        auto zeroAndValid = config;
+        zeroAndValid.displays[0].macInput = 0;
+        FakeInputSourceTransport zeroGuardTransport;
+        DdcCancellationSource zeroGuardCancellation;
+        auto zeroGuardResult = InputSourceSwitchService(&zeroGuardTransport).SwitchDisplaysToMac(
+            zeroAndValid, zeroGuardCancellation.Begin());
+        Check(!zeroGuardResult.success && zeroGuardResult.error.find(L"missing_mapping") != std::wstring::npos
+            && zeroGuardTransport.writes.size() == 1
+            && zeroGuardTransport.writes[0].first == zeroAndValid.displays[1].nativeMonitorId
+            && zeroGuardTransport.writes[0].second == zeroAndValid.displays[1].macInput,
+            L"手动和协同共用输入源服务必须跳过 0 映射并继续其他有效显示器");
+        zeroGuardTransport.writes.clear();
+        auto directZero = WriteInputSourceWithOneRefresh(zeroGuardTransport, L"monitor-0", 0,
+            zeroGuardCancellation.Begin());
+        Check(!directZero.success && directZero.error == DdcErrorKind::InvalidValue
+            && zeroGuardTransport.writes.empty(),
+            L"输入源服务边界必须在 transport 调用前拒绝 0");
+        Check(!IsValidNativeInputSourceValue(0) && IsValidNativeInputSourceValue(1)
+            && IsValidNativeInputSourceValue(65535) && !IsValidNativeInputSourceValue(65536),
+            L"原生 DXVA2 最终传输边界必须只接受 1–65535，确保 0 永不进入 SetVCPFeature");
 
         auto cachedFirst = config.displays[0];
         SetThreeValues(native, L"monitor-0", 0, 0, 0);
@@ -2306,6 +2428,7 @@ int wmain()
         TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);
+        TestInputSourceNullSafetyAndMigration(root);
         TestImmediateCommitSafety(root);
         TestOrphansInspectionAndSelection();
         TestLegacyConfigResetToSafeV4(root);

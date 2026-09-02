@@ -15,6 +15,7 @@ namespace DisplaySwitcher::Native
     bool IsRemoteOrMirroringDisplayDevice(uint32_t stateFlags) noexcept;
     DisplayTopologyTrust ClassifyDisplayTopology(bool remoteSession, uint32_t queryError,
         bool partialFailure, size_t localPhysicalTargetCount) noexcept;
+    bool IsValidNativeInputSourceValue(int value) noexcept;
 
     class NativeMonitorHandleLease final
     {

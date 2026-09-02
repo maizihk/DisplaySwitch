@@ -185,7 +185,8 @@ namespace
         return display;
     }
 
-    DisplaySwitcher::Native::CollaborationProfile ReadProfile(JsonObject const& object, bool readLegacyTriggers)
+    DisplaySwitcher::Native::CollaborationProfile ReadProfile(JsonObject const& object, bool readLegacyTriggers,
+        bool* migratedZeroInput = nullptr)
     {
         DisplaySwitcher::Native::CollaborationProfile profile;
         profile.id = RequiredString(object, L"Id");
@@ -199,7 +200,14 @@ namespace
         for (auto const& value : RequiredArray(object, L"DisplayInputs"))
         {
             auto item = value.GetObject();
-            profile.displayInputs.push_back({ RequiredString(item, L"DisplayId"), RequiredInteger(item, L"PeerInput", 0, 65535) });
+            auto displayId = RequiredString(item, L"DisplayId");
+            auto peerInput = RequiredInteger(item, L"PeerInput", 0, 65535);
+            if (peerInput == 0)
+            {
+                if (migratedZeroInput) *migratedZeroInput = true;
+                continue;
+            }
+            profile.displayInputs.push_back({ std::move(displayId), peerInput });
         }
         if (readLegacyTriggers)
             for (auto const& value : RequiredArray(object, L"TriggerDevices"))
@@ -231,7 +239,8 @@ namespace
                 (!display.contrastEnabled && display.contrastShowInTray) ||
                 (!display.volumeEnabled && display.volumeShowInTray))
                 throw std::runtime_error("disabled display feature cannot be shown in tray");
-            if (display.localInput && (*display.localInput < 0 || *display.localInput > 65535)) throw std::runtime_error("invalid local input");
+            if (display.localInput && !DisplaySwitcher::Native::IsValidInputSourceValue(*display.localInput))
+                throw std::runtime_error("invalid local input");
         }
     }
 
@@ -259,7 +268,7 @@ namespace
             std::set<std::wstring> mappingIds;
             for (auto const& mapping : profile.displayInputs)
                 if (!DisplaySwitcher::Native::IsValidDisplayId(mapping.displayId) || !mappingIds.insert(Lower(mapping.displayId)).second
-                    || mapping.peerInput < 0 || mapping.peerInput > 65535)
+                    || !DisplaySwitcher::Native::IsValidInputSourceValue(mapping.peerInput))
                     throw std::runtime_error("invalid display mapping");
             for (auto const& trigger : profile.triggerDevices)
                 if ((trigger.kind != L"usb" && trigger.kind != L"bluetooth") || trigger.localReference.empty())
@@ -279,9 +288,10 @@ namespace
         {
             if (!DisplaySwitcher::Native::IsValidDisplayId(mapping.displayId) ||
                 !usbDisplayIds.insert(Lower(mapping.displayId)).second ||
-                (mapping.targetInput && (*mapping.targetInput < 0 || *mapping.targetInput > 65535)))
+                (mapping.targetInput && !DisplaySwitcher::Native::IsValidInputSourceValue(*mapping.targetInput)))
                 throw std::runtime_error("invalid usb display mapping");
-            if (mapping.targetInput && DisplaySwitcher::Native::FindDisplayById(config.displays, mapping.displayId)) hasUsbMapping = true;
+            if (mapping.targetInput && DisplaySwitcher::Native::IsValidInputSourceValue(*mapping.targetInput)
+                && DisplaySwitcher::Native::FindDisplayById(config.displays, mapping.displayId)) hasUsbMapping = true;
         }
         if (config.usbSwitch.enabled &&
             (config.usbSwitch.deviceLocalReference.empty() || config.usbSwitch.vendorId < 0 ||
@@ -297,8 +307,7 @@ namespace
         for (auto const& profile : config.collaborationProfiles)
             if (profile.coordinationEnabled && (profile.peerProtocolVersion != 2
                 || !DisplaySwitcher::Native::IsValidDisplayId(profile.peerEndpointId)
-                || !config.InspectProfile(profile.id).complete
-                || !config.IsProfileDisplayMappingComplete(profile.id)))
+                || !config.InspectProfile(profile.id).complete))
                 throw std::runtime_error("enabled collaboration profile is incomplete");
     }
 
@@ -317,13 +326,16 @@ namespace
         config.linkAllDisplays = RequiredBoolean(object, L"LinkAllDisplays");
         config.startWithWindows = RequiredBoolean(object, L"StartWithWindows");
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
-        for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), true));
+        for (auto const& value : RequiredArray(object, L"CollaborationProfiles"))
+            config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), true));
         for (auto& profile : config.collaborationProfiles) profile.triggerDevices.clear();
+        for (auto& profile : config.collaborationProfiles)
+            if (profile.coordinationEnabled && profile.displayInputs.empty()) profile.coordinationEnabled = false;
         ValidateConfig(config);
         return config;
     }
 
-    DisplaySwitcher::Native::AppConfig ReadCompleteV5Config(JsonObject const& object)
+    DisplaySwitcher::Native::AppConfig ReadCompleteV5Config(JsonObject const& object, bool* migratedZeroInput = nullptr)
     {
         if (SchemaVersion(object) != CurrentConfigVersion) throw std::runtime_error("invalid settings schema");
         DisplaySwitcher::Native::AppConfig config;
@@ -335,7 +347,8 @@ namespace
         config.detailedDiagnosticRecording = object.HasKey(L"DetailedDiagnosticRecording")
             ? RequiredBoolean(object, L"DetailedDiagnosticRecording") : false;
         for (auto const& value : RequiredArray(object, L"Displays")) config.displays.push_back(ReadV4Display(value.GetObject()));
-        for (auto const& value : RequiredArray(object, L"CollaborationProfiles")) config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), false));
+        for (auto const& value : RequiredArray(object, L"CollaborationProfiles"))
+            config.collaborationProfiles.push_back(ReadProfile(value.GetObject(), false, migratedZeroInput));
         auto usb = object.GetNamedObject(L"UsbSwitch");
         config.usbSwitch.enabled = RequiredBoolean(usb, L"Enabled");
         config.usbSwitch.collaborationWakeEnabled = RequiredBoolean(usb, L"CollaborationWakeEnabled");
@@ -352,8 +365,24 @@ namespace
         for (auto const& value : RequiredArray(usb, L"DisplayInputs"))
         {
             auto mapping = value.GetObject();
-            config.usbSwitch.displayInputs.push_back({ RequiredString(mapping, L"DisplayId"),
-                NullableInteger(mapping, L"TargetInput", 0, 65535, true) });
+            auto targetInput = NullableInteger(mapping, L"TargetInput", 0, 65535, true);
+            if (targetInput && *targetInput == 0)
+            {
+                targetInput.reset();
+                if (migratedZeroInput) *migratedZeroInput = true;
+            }
+            config.usbSwitch.displayInputs.push_back({ RequiredString(mapping, L"DisplayId"), targetInput });
+        }
+        if (config.usbSwitch.enabled && std::none_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
+            [](auto const& mapping) { return mapping.targetInput && DisplaySwitcher::Native::IsValidInputSourceValue(*mapping.targetInput); }))
+            config.usbSwitch.enabled = false;
+        for (auto& profile : config.collaborationProfiles)
+            if (profile.coordinationEnabled && profile.displayInputs.empty()) profile.coordinationEnabled = false;
+        if (config.usbSwitch.collaborationWakeEnabled)
+        {
+            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
+            if (!profile || !profile->coordinationEnabled || !config.InspectProfile(profile->id).complete)
+                config.usbSwitch.collaborationWakeEnabled = false;
         }
         ValidateConfig(config);
         return config;
@@ -547,7 +576,7 @@ namespace DisplaySwitcher::Native
             hardwareId = L"native_ddc:" + hardwareId;
             if (!hardwareIds.insert(Lower(hardwareId)).second) return false;
         }
-        return profileId.empty() || IsProfileDisplayMappingComplete(profileId);
+        return profileId.empty() || HasValidProfileDisplayMapping(profileId);
     }
 
     bool AppConfig::HasCollaborationProfile(std::wstring const& id) const noexcept { return FindCollaborationProfile(id) != nullptr; }
@@ -607,11 +636,12 @@ namespace DisplaySwitcher::Native
         return result;
     }
 
-    bool AppConfig::IsProfileDisplayMappingComplete(std::wstring const& profileId) const noexcept
+    bool AppConfig::HasValidProfileDisplayMapping(std::wstring const& profileId) const noexcept
     {
         if (!FindCollaborationProfile(profileId) || displays.empty()) return false;
-        for (auto const& display : displays) if (PeerInputForDisplay(profileId, display.id, -1) < 0) return false;
-        return true;
+        for (auto const& display : displays)
+            if (IsValidInputSourceValue(PeerInputForDisplay(profileId, display.id, -1))) return true;
+        return false;
     }
 
     int AppConfig::PeerInputForDisplay(std::wstring const& profileId, std::wstring const& displayId, int fallback) const noexcept
@@ -619,14 +649,15 @@ namespace DisplaySwitcher::Native
         auto profile = FindCollaborationProfile(profileId);
         if (!profile) return fallback;
         for (auto const& mapping : profile->displayInputs)
-            if (EqualInsensitive(mapping.displayId, displayId)) return mapping.peerInput;
+            if (EqualInsensitive(mapping.displayId, displayId) && IsValidInputSourceValue(mapping.peerInput)) return mapping.peerInput;
         return fallback;
     }
 
     std::optional<int> AppConfig::UsbInputForDisplay(std::wstring const& displayId) const noexcept
     {
         for (auto const& mapping : usbSwitch.displayInputs)
-            if (EqualInsensitive(mapping.displayId, displayId)) return mapping.targetInput;
+            if (EqualInsensitive(mapping.displayId, displayId) && mapping.targetInput
+                && IsValidInputSourceValue(*mapping.targetInput)) return mapping.targetInput;
         return std::nullopt;
     }
 
@@ -640,9 +671,14 @@ namespace DisplaySwitcher::Native
         if (profile->peerHost.empty()) result.problems.push_back(L"未填写对端主机");
         if (profile->peerPort < 1 || profile->peerPort > 65535) result.problems.push_back(L"端口无效");
         if (!IsValidPairingCode(profile->pairingCode)) result.problems.push_back(L"配对密码无效");
-        if (profile->displayInputs.empty()) result.problems.push_back(L"未配置显示器输入映射");
+        bool hasValidMapping{};
         for (auto const& mapping : profile->displayInputs)
-            if (!FindDisplayById(displays, mapping.displayId)) result.problems.push_back(L"显示器映射已不可用");
+        {
+            if (!IsValidInputSourceValue(mapping.peerInput)) result.problems.push_back(L"显示器输入源无效");
+            else if (!FindDisplayById(displays, mapping.displayId)) result.problems.push_back(L"显示器映射已不可用");
+            else hasValidMapping = true;
+        }
+        if (!hasValidMapping) result.problems.push_back(L"未配置显示器输入映射");
         if (!observedEndpointId.empty())
         {
             if (!IsValidDisplayId(observedEndpointId)) result.problems.push_back(L"检测到的 endpointID 无效");
@@ -662,7 +698,7 @@ namespace DisplaySwitcher::Native
         for (auto const& display : displays)
         {
             auto input = PeerInputForDisplay(profileId, display.id, -1);
-            if (input < 0) result.missingDisplayIds.push_back(display.id);
+            if (!IsValidInputSourceValue(input)) result.missingDisplayIds.push_back(display.id);
             else { auto selected = display; selected.macInput = input; result.mappedDisplays.push_back(std::move(selected)); }
         }
         return result;
@@ -688,7 +724,8 @@ namespace DisplaySwitcher::Native
 
     AppConfig AppConfig::Load(bool* firstRun) { return LoadFromPath(ConfigPath(), firstRun); }
 
-    AppConfig AppConfig::LoadFromPath(std::filesystem::path const& path, bool* firstRun)
+    AppConfig AppConfig::LoadFromPath(std::filesystem::path const& path, bool* firstRun,
+        AppConfigSaveFaultForTesting migrationFault)
     {
         auto defaults = NewConfig();
         auto const configurationExists = std::filesystem::exists(path);
@@ -731,7 +768,13 @@ namespace DisplaySwitcher::Native
 
             if (schema != CurrentConfigVersion) throw std::runtime_error("unsupported settings schema");
 
-            auto config = ReadCompleteV5Config(object);
+            bool migratedZeroInput{};
+            auto config = ReadCompleteV5Config(object, &migratedZeroInput);
+            if (migratedZeroInput)
+            {
+                try { WriteAtomic(config, path, !markerPresent, migrationFault); }
+                catch (...) { SetMarker(path); EnterSafeMode(config); return config; }
+            }
             if (markerPresent) EnterSafeMode(config);
             return config;
         }

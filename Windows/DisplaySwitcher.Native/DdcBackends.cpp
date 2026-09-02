@@ -640,7 +640,7 @@ namespace
             DdcCancellationToken const& cancellation) override
         {
             if (cancellation.IsCanceled()) return { false, DdcErrorKind::Canceled, L"操作已取消" };
-            if (value < 0 || value > 65535)
+            if (!IsValidNativeInputSourceValue(value))
                 return { false, DdcErrorKind::InvalidValue, L"输入源值超出有效范围" };
             std::scoped_lock lock(nativeDdcMutex);
             auto& native = RefreshLocked(*session_, false);
@@ -673,6 +673,11 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
+    bool IsValidNativeInputSourceValue(int value) noexcept
+    {
+        return IsValidInputSourceValue(value);
+    }
+
     DdcBackendSet::DdcBackendSet()
     {
         auto session = std::make_shared<NativeMonitorSession>();
