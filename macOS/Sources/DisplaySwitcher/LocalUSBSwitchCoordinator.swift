@@ -26,6 +26,7 @@ struct LocalUSBSwitchRuntimeConfiguration: Equatable {
 }
 
 enum LocalUSBSwitchReportReason: String, Equatable {
+    case missingMapping = "missing_mapping"
     case invalidMapping = "invalid_mapping"
     case displayUnavailable = "display_unavailable"
     case ddcFailed = "ddc_failed"
@@ -100,6 +101,7 @@ final class LocalUSBSwitchCoordinator {
         var deferredReports: [(String, LocalUSBSwitchReportReason)] = []
         for display in configuration.displays {
             guard let targetInput = display.targetInput else {
+                deferredReports.append((display.displayID, .missingMapping))
                 continue
             }
             guard InputSourceValuePolicy.isSafe(targetInput) else {

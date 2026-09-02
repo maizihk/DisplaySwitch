@@ -46,9 +46,7 @@ final class LocalUSBSwitchTests: XCTestCase {
                 }
             }
 
-            let expectedActions = vector.expectedActions
-                .filter { $0.reason != "missing_mapping" }
-                .map(USBTimedAction.init(expected:))
+            let expectedActions = vector.expectedActions.map(USBTimedAction.init(expected:))
             XCTAssertEqual(sink.actions, expectedActions,
                            "\(vector.id): \(vector.description)")
         }
@@ -82,7 +80,12 @@ final class LocalUSBSwitchTests: XCTestCase {
         XCTAssertEqual(sink.actions.filter { $0.kind == "switchDisplay" }.map(\.displayID), [
             "display-a", "display-c"
         ])
-        XCTAssertFalse(sink.actions.contains { $0.displayID == "display-b" })
+        XCTAssertFalse(sink.actions.contains { $0.kind == "switchDisplay" && $0.displayID == "display-b" })
+        XCTAssertTrue(sink.actions.contains {
+            $0.kind == "report"
+                && $0.displayID == "display-b"
+                && $0.reason == LocalUSBSwitchReportReason.missingMapping.rawValue
+        })
     }
 
     func testZeroMappingProducesNoWriteAndReportsSafeValidationFailure() {
