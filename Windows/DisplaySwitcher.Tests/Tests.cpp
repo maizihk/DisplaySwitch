@@ -1475,8 +1475,8 @@ namespace
         Check(BuildDdcControlProjection(noDisplays,
             DisplayTopologyTrust::LocalPhysicalAuthoritative, false).empty(),
             L"DS-027: 零显示器时不投影任何公共 DDC 控件");
-        auto oneDisplay = config; oneDisplay.displays.resize(1);
-        auto oneProjection = BuildDdcControlProjection(oneDisplay,
+        auto oneDisplayProjectionConfig = config; oneDisplayProjectionConfig.displays.resize(1);
+        auto oneProjection = BuildDdcControlProjection(oneDisplayProjectionConfig,
             DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
         Check(oneProjection.size() == 3 && oneProjection[0].targetDisplayIds.size() == 1,
             L"DS-027: 单显示器联动投影仍使用同一公共模型");
