@@ -4,6 +4,18 @@
 
 namespace DisplaySwitcher::Native
 {
+    struct DisplaySessionProbe
+    {
+        bool remoteSessionMetric{};
+        std::optional<uint32_t> currentSessionId;
+        std::optional<uint32_t> glassSessionId;
+    };
+
+    bool IsRemoteDisplaySession(DisplaySessionProbe const& probe) noexcept;
+    bool IsRemoteOrMirroringDisplayDevice(uint32_t stateFlags) noexcept;
+    DisplayTopologyTrust ClassifyDisplayTopology(bool remoteSession, uint32_t queryError,
+        bool partialFailure, size_t localPhysicalTargetCount) noexcept;
+
     class NativeMonitorHandleLease final
     {
     public:

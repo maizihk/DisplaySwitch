@@ -3,6 +3,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <wtsapi32.h>
 #include <bcrypt.h>
 #include <dwmapi.h>
 #include <shellapi.h>

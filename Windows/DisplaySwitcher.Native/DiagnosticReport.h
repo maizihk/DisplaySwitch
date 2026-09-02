@@ -30,6 +30,7 @@ namespace DisplaySwitcher::Native
     struct DiagnosticBackendSummary
     {
         DdcAvailability availability{ DdcAvailability::TemporarilyUnavailable };
+        DisplayTopologyTrust topologyTrust{ DisplayTopologyTrust::IncompleteOrUnavailable };
         bool enumerateSupported{};
         bool readSupported{};
         bool writeSupported{};
