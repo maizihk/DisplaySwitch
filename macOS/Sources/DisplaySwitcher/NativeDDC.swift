@@ -304,6 +304,20 @@ final class NativeDDCBackend: DDCBackend {
         diagnosticsLock.unlock()
     }
 
+    func removeLocalState(selector: String) {
+        let key = selector.uppercased()
+        cacheLock.lock()
+        displaysByUUID.removeValue(forKey: key)
+        readPreferenceCache.invalidate(selector: selector)
+        cacheLock.unlock()
+        transportLocksLock.lock()
+        transportLocks.removeValue(forKey: key)
+        transportLocksLock.unlock()
+        diagnosticsLock.lock()
+        diagnosticsBySelector.removeValue(forKey: key)
+        diagnosticsLock.unlock()
+    }
+
     private func recordDiagnostic(selector: String, path: NativeDDCTransportPath,
                                   serviceMatched: Bool, category: NativeDDCOperationCategory,
                                   replyIssue: NativeDDCReplyIssue? = nil,

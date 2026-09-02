@@ -1518,6 +1518,26 @@ struct DDCReadBatchResult: Equatable {
 protocol DDCValueCache: AnyObject {
     func value(stableID: String, command: DDCCommand) -> Int?
     func setValue(_ value: Int, stableID: String, command: DDCCommand)
+    func removeValues(stableID: String)
+}
+
+enum DDCLocalCacheKeys {
+    static func stableValue(stableID: String, command: DDCCommand) -> String {
+        "LastValue.stable.\(stableID.lowercased()).\(command.cacheKeyComponent)"
+    }
+
+    static func selectorLegacyValue(selector: String, command: DDCCommand) -> String {
+        "LastValue.device.\(selector).\(command.cacheKeyComponent)"
+    }
+
+    static func removableKeys(stableID: String, selector: String) -> Set<String> {
+        Set(DDCCommand.userControls.flatMap { command in
+            [
+                stableValue(stableID: stableID, command: command),
+                selectorLegacyValue(selector: selector, command: command)
+            ]
+        })
+    }
 }
 
 final class UserDefaultsDDCValueCache: DDCValueCache {
@@ -1537,8 +1557,14 @@ final class UserDefaultsDDCValueCache: DDCValueCache {
         defaults.set(value, forKey: cacheKey(stableID: stableID, command: command))
     }
 
+    func removeValues(stableID: String) {
+        for command in DDCCommand.userControls {
+            defaults.removeObject(forKey: cacheKey(stableID: stableID, command: command))
+        }
+    }
+
     private func cacheKey(stableID: String, command: DDCCommand) -> String {
-        "LastValue.stable.\(stableID.lowercased()).\(command.cacheKeyComponent)"
+        DDCLocalCacheKeys.stableValue(stableID: stableID, command: command)
     }
 }
 
@@ -1658,6 +1684,10 @@ final class DDCControlService {
 
     func cachedValue(stableID: String, command: DDCCommand) -> Int? {
         cache.value(stableID: stableID, command: command)
+    }
+
+    func removeCachedValues(stableID: String) {
+        cache.removeValues(stableID: stableID)
     }
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {

@@ -2,6 +2,7 @@ import Foundation
 
 final class DDCController {
     private let service: DDCControlService
+    private let nativeBackend: NativeDDCBackend
 
     init() {
         let native = NativeDDCBackend(
@@ -14,6 +15,7 @@ final class DDCController {
             router: DDCBackendRouter(backend: native),
             cache: UserDefaultsDDCValueCache()
         )
+        nativeBackend = native
     }
 
     /// Pure capability hint used by settings validation. It does not enumerate displays or issue DDC traffic.
@@ -98,6 +100,19 @@ final class DDCController {
 
     func clearDiagnostics() {
         service.clearDiagnostics()
+    }
+
+    func removeLocalState(stableID: String, selector: String) {
+        service.removeCachedValues(stableID: stableID)
+        nativeBackend.removeLocalState(selector: selector)
+        for command in DDCCommand.userControls {
+            UserDefaults.standard.removeObject(
+                forKey: DDCLocalCacheKeys.selectorLegacyValue(
+                    selector: selector,
+                    command: command
+                )
+            )
+        }
     }
 
     private static func knownDisplays(from configurations: [DisplayConfiguration]) -> [DDCKnownDisplay] {

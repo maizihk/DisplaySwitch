@@ -242,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var configurations: [Int: DisplayConfiguration] = [:]
     private var linkedDDCRuntimeConfigurations: [Int: DisplayConfiguration] = [:]
     private var linkedDDCTopologyResolved = false
+    private let displayDeletionAvailabilityTracker = DisplayDeletionAvailabilityTracker()
     private var settingsWindowHasBeenShown = false
 
     private lazy var usbStatusItem: NSMenuItem = {
@@ -287,6 +288,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.resolvedDisplayConfigurations = { [weak self] in
             guard let self, self.linkedDDCTopologyResolved else { return [] }
             return self.linkedDDCRuntimeConfigurations.values.sorted { $0.index < $1.index }
+        }
+        controller.displayDeletionAvailability = { [weak self] in
+            guard let self, self.configurationSafetyGate.state == .ready else {
+                return DisplayDeletionAvailability(
+                    detectionState: .untrusted,
+                    offlineStableIDs: []
+                )
+            }
+            return self.displayDeletionAvailabilityTracker.availability
+        }
+        controller.onDisplayDeleted = { [weak self] stableID, selector in
+            guard let self else { return }
+            self.ddcWriteCoordinator.cancelAll()
+            self.ddcController.removeLocalState(stableID: stableID, selector: selector)
+            self.ddcValueSamples.removeValue(forKey: stableID.lowercased())
+            self.displayDeletionAvailabilityTracker.remove(stableID: stableID)
+            self.reloadRuntimeAfterDisplayDeletion()
         }
         controller.diagnosticReportProvider = { [weak self] in
             self?.makeDiagnosticReport()
@@ -510,14 +528,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         ddcWriteCoordinator.cancelAll()
+        let existing = AppPreferences.loadDisplayConfigurations().configurations
+        displayDeletionAvailabilityTracker.beginDetection()
+        configurations.removeAll()
         linkedDDCTopologyResolved = false
+        linkedDDCRuntimeConfigurations.removeAll()
         rebuildDisplayMenuItems()
         if settingsWindowHasBeenShown {
             settingsWindowController.refreshDisplayConfigurationProjection()
         }
         refreshDDCOperationAccess()
         let ddcController = ddcController
-        let existing = configurations.values.sorted { $0.index < $1.index }
 
         workerQueue.async { [weak self] in
             do {
@@ -531,16 +552,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         return
                     }
                     do {
-                        let merged = try DisplayConfigurationStore.merge(
+                        let reconciliation = DisplayConfigurationStore.reconcileDetectedDisplays(
                             detected: detectedDisplays,
                             existing: existing
                         )
-                        self.configurations = Dictionary(uniqueKeysWithValues: merged.map {
+                        try DisplayConfigurationStore.saveAll(
+                            reconciliation.persistedConfigurations,
+                            clearSafetyMarker: false
+                        )
+                        self.configurations = Dictionary(uniqueKeysWithValues: reconciliation.onlineConfigurations.map {
                             ($0.index, $0)
                         })
                         self.linkedDDCRuntimeConfigurations = self.configurations
                         self.linkedDDCTopologyResolved = true
-                        ddcController.updateConfigurations(merged)
+                        let savedDocument = AppPreferences.localConfiguration
+                        self.displayDeletionAvailabilityTracker.recordSuccessfulDetection(
+                            detected: detectedDisplays,
+                            savedDisplays: savedDocument.displays
+                        )
+                        ddcController.updateConfigurations(reconciliation.onlineConfigurations)
                         self.rebuildDisplayMenuItems()
                         if self.settingsWindowHasBeenShown {
                             self.settingsWindowController.refreshDisplayConfigurationProjection()
@@ -561,6 +591,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             } catch {
                 DispatchQueue.main.async {
                     self?.linkedDDCTopologyResolved = false
+                    self?.linkedDDCRuntimeConfigurations.removeAll()
+                    self?.displayDeletionAvailabilityTracker.recordFailureOrUntrustedResult()
                     self?.rebuildDisplayMenuItems()
                     if self?.settingsWindowHasBeenShown == true {
                         self?.settingsWindowController.refreshDisplayConfigurationProjection()
@@ -778,6 +810,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func configurePeerTransport() {
         peerTransport.stop()
+        let document = AppPreferences.localConfiguration
+        let peerRuntime = applyPeerRuntimeConfiguration(document)
+        if peerRuntime.v2Enabled || peerRuntime.unboundProbeEnabled {
+            peerTransport.start(port: document.listenPort)
+        }
+        if peerRuntime.v2Enabled { scheduleV2StatusProbes() }
+    }
+
+    private func applyPeerRuntimeConfiguration(
+        _ document: DisplayConfigurationStoreV5Document
+    ) -> (v2Enabled: Bool, unboundProbeEnabled: Bool) {
         for (_, item) in pendingSchedulerItems {
             item.cancel()
         }
@@ -787,9 +830,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         for inspectionID in interruptedInspections {
             completePeerCapabilityInspection(inspectionID, result: .noResponse)
         }
-
         let networkAllowed = configurationSafetyGate.allows(.network)
-        let document = AppPreferences.localConfiguration
         v2RoutingTable = V2EndpointRoutingTable.build(from: document)
         collaborationStatusStore.removeMissingProfiles(Set(document.collaborationProfiles.map(\.id)))
         let configuredEndpointIDs = Set(v2RoutingTable.routesByEndpointID.keys)
@@ -815,10 +856,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             }
         )
         refreshPeerConnectionStatus()
-        if v2Enabled || unboundProbeEnabled {
-            peerTransport.start(port: document.listenPort)
-        }
-        if v2Enabled { scheduleV2StatusProbes() }
+        return (v2Enabled, unboundProbeEnabled)
     }
 
     private func startUSBLearning() {
@@ -1297,19 +1335,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         inputSourceDiagnostics.clear()
     }
 
-    private func reloadSettings() {
+    @discardableResult
+    private func applyPersistedDisplayRuntimeState() -> DisplayConfigurationStoreV5Document {
         ddcWriteCoordinator.cancelAll()
         let result = AppPreferences.loadDisplayConfigurations()
         configurationSafetyGate.apply(result)
         refreshDDCOperationAccess()
         let values = result.configurations
-        configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
-        ddcController.updateConfigurations(values)
+        if linkedDDCTopologyResolved {
+            let onlineSelectors = Set(linkedDDCRuntimeConfigurations.values.map {
+                $0.selector.lowercased()
+            })
+            let onlineValues = values.filter { onlineSelectors.contains($0.selector.lowercased()) }
+            configurations = Dictionary(uniqueKeysWithValues: onlineValues.map { ($0.index, $0) })
+            linkedDDCRuntimeConfigurations = configurations
+            ddcController.updateConfigurations(onlineValues)
+        } else {
+            configurations.removeAll()
+            linkedDDCRuntimeConfigurations.removeAll()
+            ddcController.updateConfigurations([])
+        }
+        return result.document
+    }
+
+    private func reloadSettings() {
+        _ = applyPersistedDisplayRuntimeState()
         rebuildDisplayMenuItems()
         if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
         configureUSBMonitor()
         configurePeerTransport()
         updateConfigurationSafetyUI()
+        refreshTrayUSBStatus()
+        presentDDCValues(for: .configurationReload)
+    }
+
+    private func reloadRuntimeAfterDisplayDeletion() {
+        let document = applyPersistedDisplayRuntimeState()
+        rebuildDisplayMenuItems()
+        if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
+
+        // A deletion is configuration-only: refresh the safety projections in memory, but do not
+        // restart USB monitoring, stop/start the peer listener, or schedule network probes.
+        localUSBSwitchCoordinator.updateConfiguration(
+            localUSBRuntimeConfiguration(document: document)
+        )
+        _ = applyPeerRuntimeConfiguration(document)
+        updateConfigurationSafetyUI()
+        refreshTrayUSBStatus()
+        settingsWindowController.refreshDisplayConfigurationProjection()
         presentDDCValues(for: .configurationReload)
     }
 

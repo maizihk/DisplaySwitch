@@ -315,6 +315,42 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: "LastValue.stable.display-a.contrast"), 44)
     }
 
+    func testDS029DisplayCacheRemovalIsScopedToStableIDAndSelector() {
+        let suite = "DisplaySwitcher.DDC.Delete.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = UserDefaultsDDCValueCache(defaults: defaults)
+        cache.setValue(31, stableID: "display-a", command: .luminance)
+        cache.setValue(47, stableID: "display-b", command: .luminance)
+
+        let selectorA = DDCLocalCacheKeys.selectorLegacyValue(
+            selector: "selector-a", command: .contrast
+        )
+        let selectorB = DDCLocalCacheKeys.selectorLegacyValue(
+            selector: "selector-b", command: .contrast
+        )
+        let indexLegacy = "LastValue.display1.contrast"
+        defaults.set(52, forKey: selectorA)
+        defaults.set(63, forKey: selectorB)
+        defaults.set(74, forKey: indexLegacy)
+
+        cache.removeValues(stableID: "display-a")
+        for key in DDCLocalCacheKeys.removableKeys(
+            stableID: "display-a", selector: "selector-a"
+        ).filter({ $0.hasPrefix("LastValue.device.") }) {
+            defaults.removeObject(forKey: key)
+        }
+
+        XCTAssertNil(cache.value(stableID: "display-a", command: .luminance))
+        XCTAssertEqual(cache.value(stableID: "display-b", command: .luminance), 47)
+        XCTAssertNil(defaults.object(forKey: selectorA))
+        XCTAssertEqual(defaults.integer(forKey: selectorB), 63)
+        XCTAssertEqual(defaults.integer(forKey: indexLegacy), 74)
+        XCTAssertFalse(DDCLocalCacheKeys.removableKeys(
+            stableID: "display-a", selector: "selector-a"
+        ).contains(indexLegacy))
+    }
+
     func testProductNamesAndSameModelStableLocalOrdinalsSurviveEnumerationReorder() {
         let known = [
             DDCKnownDisplay(stableID: "stable-b", name: "显示器 1", selector: "selector-b"),
@@ -1578,6 +1614,10 @@ private final class MockDDCCache: DDCValueCache {
     func setValue(_ value: Int, stableID: String, command: DDCCommand) {
         values[stableID, default: [:]][command] = value
         writeCount += 1
+    }
+
+    func removeValues(stableID: String) {
+        values.removeValue(forKey: stableID)
     }
 }
 
