@@ -1564,6 +1564,7 @@ namespace
             && std::get<0>(native.writes[0]) == L"monitor-0" && std::get<2>(native.writes[0]) == 55,
             L"DS-027: 部分显示器离线时必须继续调节其他合格目标，且不向离线项写入");
         config.displays[1].bindingStatus = DisplayBindingStatus::Resolved;
+        native.writes.clear();
         config.displays[0].brightnessMax.reset(); config.displays[1].brightnessMax.reset();
 
         auto normal = service.Read(config, {}, cancellation.Begin());
