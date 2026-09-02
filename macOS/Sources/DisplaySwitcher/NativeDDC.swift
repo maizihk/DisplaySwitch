@@ -31,6 +31,22 @@ private struct NativeRegistryTransport {
     let serviceIdentity: UInt64
 }
 
+private struct NativeRegistryTransportEnumeration {
+    let transports: [NativeRegistryTransport]
+    let externalServiceCount: Int
+    let succeeded: Bool
+}
+
+private struct NativeOnlineDisplayEnumeration {
+    let displayIDs: [CGDirectDisplayID]
+    let succeeded: Bool
+}
+
+private struct NativeDDCDiscoverySnapshot {
+    let displays: [NativeDDCDisplay]
+    let physicalEvidence: DDCPhysicalEnumerationEvidence
+}
+
 private struct NativeRegistryFramebuffer {
     let topology: NativeFramebufferTopologyNode
     let ioDisplayLocation: String
@@ -94,12 +110,13 @@ final class NativeDDCBackend: DDCBackend {
         cacheLock.unlock()
     }
 
-    private func discover() -> [NativeDDCDisplay] {
+    private func discover() -> NativeDDCDiscoverySnapshot {
         #if arch(arm64)
         cacheLock.lock()
         let knownDisplays = self.knownDisplays
         cacheLock.unlock()
-        let displays = Self.discoverDisplays(knownDisplays: knownDisplays)
+        let snapshot = Self.discoverSnapshot(knownDisplays: knownDisplays)
+        let displays = snapshot.displays
         cacheLock.lock()
         displaysByUUID = Dictionary(uniqueKeysWithValues: displays.map { ($0.systemUUID.uppercased(), $0) })
         readPreferenceCache.retainOnly(Set(displays.compactMap { display in
@@ -119,26 +136,30 @@ final class NativeDDCBackend: DDCBackend {
                 serviceIdentity: display.serviceIdentity
             )
         }
-        return displays
+        return snapshot
         #else
-        return []
+        return NativeDDCDiscoverySnapshot(displays: [], physicalEvidence: .untrusted)
         #endif
     }
 
-    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
+    func enumerateDisplays(token: DDCCancellationToken) throws -> DDCBackendEnumeration {
         try token.throwIfCancelled()
         guard availability == .available else { throw DDCBackendError.unavailable(backend: identifier) }
-        let displays = discover()
+        let snapshot = discover()
         try token.throwIfCancelled()
         cacheLock.lock()
         let known = knownDisplays
         cacheLock.unlock()
-        return displays.map { display in
+        let displays = snapshot.displays.map { display in
             let stableID = known.first { knownDisplay in
                 knownDisplay.selector.caseInsensitiveCompare(display.systemUUID) == .orderedSame
             }?.stableID ?? display.systemUUID
             return DDCBackendDisplay(stableID: stableID, name: display.name, selector: display.systemUUID)
         }
+        return DDCBackendEnumeration(
+            displays: displays,
+            physicalEvidence: snapshot.physicalEvidence
+        )
     }
 
     func read(stableID: String, selector: String, command: DDCCommand,
@@ -465,8 +486,24 @@ final class NativeDDCBackend: DDCBackend {
         diagnosticContext: InputSourceDiagnosticContext? = nil,
         diagnostics: InputSourceDiagnosticRecording? = nil
     ) -> [NativeDDCDisplay] {
-        let identities = onlineExternalDisplayIDs().compactMap(displayInfo(for:))
-        let transports = registryTransports(ioDisplayLocations: Set(identities.map(\.ioLocation)))
+        discoverSnapshot(
+            knownDisplays: knownDisplays,
+            diagnosticSelector: diagnosticSelector,
+            diagnosticContext: diagnosticContext,
+            diagnostics: diagnostics
+        ).displays
+    }
+
+    private static func discoverSnapshot(
+        knownDisplays: [DDCKnownDisplay],
+        diagnosticSelector: String? = nil,
+        diagnosticContext: InputSourceDiagnosticContext? = nil,
+        diagnostics: InputSourceDiagnosticRecording? = nil
+    ) -> NativeDDCDiscoverySnapshot {
+        let online = onlineExternalDisplayIDs()
+        let identities = online.displayIDs.compactMap(displayInfo(for:))
+        let registry = registryTransports(ioDisplayLocations: Set(identities.map(\.ioLocation)))
+        let transports = registry.transports
         let matches = NativeDisplayMatcher.matches(
             identities: identities.map {
                 NativeDisplayIdentity(
@@ -524,7 +561,7 @@ final class NativeDDCBackend: DDCBackend {
                 diagnostics.record(.failed(reason: "service-unmatched"), context: diagnosticContext)
             }
         }
-        return identities.map { identity in
+        let displays = identities.map { identity in
             let transport = matches[identity.systemUUID].flatMap { transportByLocation[$0] }
             let savedName = knownBySelector[identity.systemUUID.uppercased()]?.name ?? ""
             let name = !identity.productName.isEmpty ? identity.productName
@@ -541,14 +578,35 @@ final class NativeDDCBackend: DDCBackend {
                 isOnline: true
             )
         }
+        let matchedPhysicalTransportCount = displays.filter {
+            $0.service != nil && $0.serviceIdentity != 0 && $0.transportPath != .unmatched
+        }.count
+        return NativeDDCDiscoverySnapshot(
+            displays: displays,
+            physicalEvidence: DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: online.succeeded,
+                externalCGDisplayCount: online.displayIDs.count,
+                extractedIdentityCount: identities.count,
+                registryEnumerationSucceeded: registry.succeeded,
+                externalRegistryServiceCount: registry.externalServiceCount,
+                matchedPhysicalTransportCount: matchedPhysicalTransportCount
+            )
+        )
     }
 
-    private static func onlineExternalDisplayIDs() -> [CGDirectDisplayID] {
+    private static func onlineExternalDisplayIDs() -> NativeOnlineDisplayEnumeration {
         var count: UInt32 = 0
-        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success else {
+            return NativeOnlineDisplayEnumeration(displayIDs: [], succeeded: false)
+        }
         var displayIDs = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        guard CGGetOnlineDisplayList(count, &displayIDs, &count) == .success else { return [] }
-        return Array(displayIDs.prefix(Int(count))).filter { CGDisplayIsBuiltin($0) == 0 }
+        guard count == 0 || CGGetOnlineDisplayList(count, &displayIDs, &count) == .success else {
+            return NativeOnlineDisplayEnumeration(displayIDs: [], succeeded: false)
+        }
+        return NativeOnlineDisplayEnumeration(
+            displayIDs: Array(displayIDs.prefix(Int(count))).filter { CGDisplayIsBuiltin($0) == 0 },
+            succeeded: true
+        )
     }
 
     private static func displayInfo(for displayID: CGDirectDisplayID) -> (
@@ -602,9 +660,13 @@ final class NativeDDCBackend: DDCBackend {
     }
 
     private static func registryTransports(ioDisplayLocations: Set<String>)
-        -> [NativeRegistryTransport] {
+        -> NativeRegistryTransportEnumeration {
         let root = IORegistryGetRootEntry(kIOMainPortDefault)
-        guard root != IO_OBJECT_NULL else { return [] }
+        guard root != IO_OBJECT_NULL else {
+            return NativeRegistryTransportEnumeration(
+                transports: [], externalServiceCount: 0, succeeded: false
+            )
+        }
         defer { IOObjectRelease(root) }
 
         var iterator: io_iterator_t = 0
@@ -613,13 +675,18 @@ final class NativeDDCBackend: DDCBackend {
             kIOServicePlane,
             IOOptionBits(kIORegistryIterateRecursively),
             &iterator
-        ) == KERN_SUCCESS else { return [] }
+        ) == KERN_SUCCESS else {
+            return NativeRegistryTransportEnumeration(
+                transports: [], externalServiceCount: 0, succeeded: false
+            )
+        }
         defer { IOObjectRelease(iterator) }
 
         var framebuffers: [NativeRegistryFramebuffer] = []
         var services: [NativeRegistryService] = []
         var framebufferLocation = 0
         var serviceLocation = 0
+        var externalServiceCount = 0
         while true {
             let entry = IOIteratorNext(iterator)
             guard entry != IO_OBJECT_NULL else { break }
@@ -650,11 +717,12 @@ final class NativeDDCBackend: DDCBackend {
                 ))
                 continue
             }
-            guard
-                entryName == "DCPAVServiceProxy",
-                property(entry: entry, key: "Location") as? String == "External",
-                let unmanagedService = IOAVServiceCreateWithService(kCFAllocatorDefault, entry)
-            else { continue }
+            guard entryName == "DCPAVServiceProxy",
+                  property(entry: entry, key: "Location") as? String == "External" else { continue }
+            externalServiceCount += 1
+            guard let unmanagedService = IOAVServiceCreateWithService(kCFAllocatorDefault, entry) else {
+                continue
+            }
             serviceLocation += 1
             let topology = transportTopology(for: entry)
             var registryEntryID: UInt64 = 0
@@ -678,7 +746,7 @@ final class NativeDDCBackend: DDCBackend {
         let servicesByLocation = Dictionary(uniqueKeysWithValues: services.map {
             ($0.topology.location, $0)
         })
-        return framebuffers.compactMap { framebuffer in
+        let transports: [NativeRegistryTransport] = framebuffers.compactMap { framebuffer in
             guard let matchedServiceLocation = topologyMatches[framebuffer.topology.location],
                   let service = servicesByLocation[matchedServiceLocation] else { return nil }
             return NativeRegistryTransport(
@@ -696,6 +764,11 @@ final class NativeDDCBackend: DDCBackend {
                 serviceIdentity: service.serviceIdentity
             )
         }
+        return NativeRegistryTransportEnumeration(
+            transports: transports,
+            externalServiceCount: externalServiceCount,
+            succeeded: true
+        )
     }
 
     private static func transportTopology(for proxy: io_registry_entry_t)

@@ -409,6 +409,54 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(Set(matches.values).count, matches.count)
     }
 
+    func testDS029PhysicalEnumerationTrustRequiresOneToOneCompleteTopology() {
+        let trusted = DDCPhysicalEnumerationEvidence(
+            cgEnumerationSucceeded: true,
+            externalCGDisplayCount: 3,
+            extractedIdentityCount: 3,
+            registryEnumerationSucceeded: true,
+            externalRegistryServiceCount: 3,
+            matchedPhysicalTransportCount: 3
+        )
+        XCTAssertTrue(trusted.isCompletePhysicalSnapshot)
+
+        let variants = [
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 3,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 2,
+                matchedPhysicalTransportCount: 2
+            ),
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 3,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 4,
+                matchedPhysicalTransportCount: 3
+            ),
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 2,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 3,
+                matchedPhysicalTransportCount: 2
+            ),
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 3,
+                registryEnumerationSucceeded: false,
+                externalRegistryServiceCount: 3,
+                matchedPhysicalTransportCount: 3
+            )
+        ]
+        XCTAssertTrue(variants.allSatisfy { !$0.isCompletePhysicalSnapshot })
+    }
+
     func testNativeServiceMatchingRejectsTiedSameModelCandidates() {
         let identities = [
             NativeDisplayIdentity(
@@ -1532,7 +1580,10 @@ final class DDCBackendTests: XCTestCase {
         ]
         let service = makeService(backend: backend, cache: MockDDCCache())
 
-        XCTAssertEqual(try service.enumerateDisplays().map(\.stableID), ["display-b", "display-a"])
+        XCTAssertEqual(
+            try service.enumerateDisplays().displays.map(\.stableID),
+            ["display-b", "display-a"]
+        )
         let result = service.read([
             target(id: "display-b", selector: "selector-b", commands: [.luminance]),
             target(id: "display-a", selector: "selector-a", commands: [.luminance])
@@ -1627,6 +1678,7 @@ private final class MockDDCBackend: DDCBackend {
     var availability: DDCBackendAvailability { availabilityValue }
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
     var displays: [DDCBackendDisplay] = []
+    var physicalEvidence: DDCPhysicalEnumerationEvidence = .untrusted
     var readings: [String: [DDCCommand: DDCReading]] = [:]
     var readFailures: [String: Set<DDCCommand>] = [:]
     var writeFailures: [String: Set<DDCCommand>] = [:]
@@ -1641,10 +1693,10 @@ private final class MockDDCBackend: DDCBackend {
         self.identifier = identifier
     }
 
-    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
+    func enumerateDisplays(token: DDCCancellationToken) throws -> DDCBackendEnumeration {
         try token.throwIfCancelled()
         enumerateCount += 1
-        return displays
+        return DDCBackendEnumeration(displays: displays, physicalEvidence: physicalEvidence)
     }
 
     func read(stableID: String, selector: String, command: DDCCommand,

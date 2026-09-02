@@ -10,10 +10,10 @@
 - DS-028 根因：托盘 DDC 自定义视图固定为 280×48 的标题/滑杆两行，菜单没有 USB 总状态，静态动作缺少图标；设置窗口打开/关闭也没有显式管理应用 activation policy，所以 Dock 与普通窗口生命周期不完整。
 - DS-028 实现：新增匿名 `TrayUSBStatusPresentation` 和统一语义图标投影；逐显示器与联动 DDC 共用 252×30 的图标+名称+滑杆+值单行组件，菜单按内容最小宽度展示。状态栏按钮监听左右 mouse-up 且只绑定菜单；“设置…”显式切换 `.regular` 并复用/激活 key/main 普通窗口，关闭后切回 `.accessory`，窗口不随应用停用隐藏、不释放且不置顶。
 - DS-029 根因：旧 `DisplayConfigurationStore.merge` 只保存本次枚举结果，暂时未出现的物理显示器会连同所有设置被静默删除；运行时也没有“检测结果可信”和“明确离线”的独立证据，无法安全提供手动删除。
-- DS-029 实现：检测协调改为分别产出持久全集与在线运行时集合，未出现的保存条目继续留在磁盘。删除资格要求连续两次非空且 selector 唯一的可信检测均缺失；失败、空集、重复 selector、检测中和单次缺失全部拒绝。确认删除通过现有原子文档写入一次级联移除 USB/协同映射，并按 DS-026 完整性规则仅在没有有效映射时停用；成功后只清理该 stable ID/selector 的缓存和内存安全投影，不重启 USB/网络或执行硬件动作。
-- 自动验证：DS-007、配置存储与 DDC 定向 XCTest 124/124 通过；完整 XCTest 218/218 通过。覆盖精确 USB 文案、图标、紧凑单行、左右键、窗口生命周期、可信离线判定、取消/确认级联、部分映射、最后映射停用、保存失败回滚、身份不猜测和缓存隔离。
-- 构建/签名：Release `build-app.sh` 使用本机有效 Apple Development 身份完成；输出 App 与 ZIP 解压副本均通过 `codesign --verify --deep --strict --verbose=4`，ZIP `unzip -t` 完整性通过。测试包 `macOS/outputs/DisplaySwitcher-macOS-arm64.zip`，SHA-256 `2ee6e21a47fce56776c897f5e0ce289e0f807287294aa53dd7b4f71f3fdcafca`。
-- CI：PR #72 的 macOS run `33645211021` 全绿，完成 Debug、218 项 XCTest、Release 构建/打包、严格验签、artifact 校验与上传。
+- DS-029 实现：检测协调改为分别产出持久全集与在线运行时集合，未出现的保存条目继续留在磁盘。删除资格先要求 CG 外接身份与 IOKit 外部 DCPAV/IOAV 物理服务数量一致且全部唯一匹配，再要求连续两次缺失；虚拟/未解析 CG 身份、CG 漏掉仍存在的物理服务、CoreDisplay 身份抽取不完整、IORegistry 失败、空集、重复 selector、检测中和单次缺失全部拒绝并清空连续证据。确认删除通过现有原子文档写入一次级联移除 USB/协同映射，并按 DS-026 完整性规则仅在没有有效映射时停用；成功后只清理该 stable ID/selector 的缓存和内存安全投影，不重启 USB/网络或执行硬件动作。
+- 自动验证：原 DS-007/配置/DDC 定向 XCTest 124/124 通过；物理拓扑可信度复核后的 DDC/配置定向 XCTest 95/95、完整 XCTest 220/220 通过。覆盖精确 USB 文案、图标、紧凑单行、左右键、窗口生命周期、虚拟/不完整枚举拒绝、可信离线判定、取消/确认级联、部分映射、最后映射停用、保存失败回滚、身份不猜测和缓存隔离。
+- 构建/签名：Release `build-app.sh` 使用本机有效 Apple Development 身份完成；输出 App 与 ZIP 解压副本均通过 `codesign --verify --deep --strict --verbose=4`，ZIP `unzip -t` 完整性通过。测试包 `macOS/outputs/DisplaySwitcher-macOS-arm64.zip`，SHA-256 `fe19df1042be556c4737919d21b126fd9650b9d8d9ba55484454f6afaf9e6ebb`。
+- CI：PR #72 使用 macOS workflow 验证；本轮物理拓扑可信度修复 push 后以最新 head 的检查状态为准，禁止合并未通过检查的 head。
 - 待验证：真实托盘左右键与宽度、长名称/键盘/VoiceOver、Dock 图标 regular/accessory 切换、切换 App 后窗口保留；真实显示器断开/重接后的两次可信检测、删除确认/取消和保存失败 UI。
 - 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改 Windows、`PROTOCOL.md`、共享合同、schema、版本、系统权限或签名配置。
 

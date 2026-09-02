@@ -470,9 +470,13 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(tracker.availability.detectionState, .detecting)
         XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
 
-        tracker.recordSuccessfulDetection(detected: [online], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [online], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
         XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
-        tracker.recordSuccessfulDetection(detected: [online], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [online], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
         XCTAssertTrue(tracker.availability.allowsDeletion(stableID: stableID))
     }
 
@@ -483,17 +487,27 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let other = DetectedDisplay(index: 1, name: "Online", systemUUID: UUID().uuidString)
         let tracker = DisplayDeletionAvailabilityTracker()
 
-        tracker.recordSuccessfulDetection(detected: [other], savedDisplays: saved)
-        tracker.recordSuccessfulDetection(detected: [other], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
         XCTAssertTrue(tracker.availability.allowsDeletion(stableID: stableID))
 
         tracker.beginDetection()
         XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
         tracker.recordFailureOrUntrustedResult()
         XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
-        tracker.recordSuccessfulDetection(detected: [], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [], physicalEvidence: .untrusted, savedDisplays: saved
+        )
         XCTAssertEqual(tracker.availability.detectionState, .untrusted)
-        tracker.recordSuccessfulDetection(detected: [other, other], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [other, other],
+            physicalEvidence: trustedPhysicalEvidence(count: 2),
+            savedDisplays: saved
+        )
         XCTAssertEqual(tracker.availability.detectionState, .untrusted)
     }
 
@@ -504,16 +518,72 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         let same = DetectedDisplay(index: 1, name: "Online", systemUUID: selector)
         let tracker = DisplayDeletionAvailabilityTracker()
 
-        tracker.recordSuccessfulDetection(detected: [same], savedDisplays: saved)
-        tracker.recordSuccessfulDetection(detected: [same], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [same], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        tracker.recordSuccessfulDetection(
+            detected: [same], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
         XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
 
         let other = DetectedDisplay(index: 1, name: "Other", systemUUID: UUID().uuidString)
-        tracker.recordSuccessfulDetection(detected: [other], savedDisplays: saved)
-        tracker.recordSuccessfulDetection(detected: [other], savedDisplays: saved)
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
         XCTAssertTrue(tracker.availability.allowsDeletion(stableID: stableID))
         tracker.remove(stableID: stableID)
         XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+    }
+
+    func testDS029VirtualOrIncompleteEnumerationsCannotAccumulateOfflineMisses() {
+        let stableID = UUID().uuidString
+        let selector = UUID().uuidString
+        let saved = [deletionDisplay(id: stableID, selector: selector)]
+        let other = DetectedDisplay(index: 1, name: "Other", systemUUID: UUID().uuidString)
+        let untrustedEvidence = [
+            // A CG identity without an IOAV transport is virtual or unresolved.
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 1,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 0,
+                matchedPhysicalTransportCount: 0
+            ),
+            // An extra physical service means CG omitted part of the local topology.
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 1,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 2,
+                matchedPhysicalTransportCount: 1
+            ),
+            // CoreDisplay failed to produce an identity for every online external display.
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 2,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 1,
+                matchedPhysicalTransportCount: 1
+            )
+        ]
+
+        for evidence in untrustedEvidence {
+            let tracker = DisplayDeletionAvailabilityTracker()
+            tracker.recordSuccessfulDetection(
+                detected: [other], physicalEvidence: evidence, savedDisplays: saved
+            )
+            tracker.recordSuccessfulDetection(
+                detected: [other], physicalEvidence: evidence, savedDisplays: saved
+            )
+            XCTAssertEqual(tracker.availability.detectionState, .untrusted)
+            XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+        }
     }
 
     private func deletionDisplay(id: String, selector: String) -> DisplayConfigurationV4Display {
@@ -523,6 +593,17 @@ final class DisplayConfigurationStoreTests: XCTestCase {
             selector: selector,
             localInput: nil,
             readEnabled: false
+        )
+    }
+
+    private func trustedPhysicalEvidence(count: Int = 1) -> DDCPhysicalEnumerationEvidence {
+        DDCPhysicalEnumerationEvidence(
+            cgEnumerationSucceeded: true,
+            externalCGDisplayCount: count,
+            extractedIdentityCount: count,
+            registryEnumerationSucceeded: true,
+            externalRegistryServiceCount: count,
+            matchedPhysicalTransportCount: count
         )
     }
 

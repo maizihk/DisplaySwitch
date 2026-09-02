@@ -542,9 +542,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         workerQueue.async { [weak self] in
             do {
-                let detectedDisplays = try ddcController.detectDisplays(
+                let detectedScan = try ddcController.detectDisplays(
                     existingConfigurations: existing
                 )
+                let detectedDisplays = detectedScan.displays
 
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -568,6 +569,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         let savedDocument = AppPreferences.localConfiguration
                         self.displayDeletionAvailabilityTracker.recordSuccessfulDetection(
                             detected: detectedDisplays,
+                            physicalEvidence: detectedScan.physicalEvidence,
                             savedDisplays: savedDocument.displays
                         )
                         ddcController.updateConfigurations(reconciliation.onlineConfigurations)

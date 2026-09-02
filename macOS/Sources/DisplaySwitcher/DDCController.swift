@@ -1,5 +1,10 @@
 import Foundation
 
+struct DetectedDisplayScan {
+    let displays: [DetectedDisplay]
+    let physicalEvidence: DDCPhysicalEnumerationEvidence
+}
+
 final class DDCController {
     private let service: DDCControlService
     private let nativeBackend: NativeDDCBackend
@@ -46,10 +51,11 @@ final class DDCController {
         service.cancelAll()
     }
 
-    func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> [DetectedDisplay] {
+    func detectDisplays(existingConfigurations: [DisplayConfiguration]) throws -> DetectedDisplayScan {
         let known = Self.knownDisplays(from: existingConfigurations)
         service.updateKnownDisplays(known)
-        let detected = try service.enumerateDisplays()
+        let enumeration = try service.enumerateDisplays()
+        let detected = enumeration.displays
         let presentationNames = DisplayPresentationNameResolver.names(
             for: detected, knownDisplays: known
         )
@@ -61,13 +67,17 @@ final class DDCController {
             let rhsRank = rank[rhs.element.stableID.lowercased()] ?? (known.count + rhs.offset)
             return lhsRank < rhsRank
         }.map(\.element)
-        return ordered.enumerated().map { offset, display in
+        let displays = ordered.enumerated().map { offset, display in
             DetectedDisplay(
                 index: offset + 1,
                 name: presentationNames[display.stableID.lowercased()] ?? display.name,
                 systemUUID: display.selector.uppercased()
             )
         }
+        return DetectedDisplayScan(
+            displays: displays,
+            physicalEvidence: enumeration.physicalEvidence
+        )
     }
 
     func updateConfigurations(_ configurations: [DisplayConfiguration]) {

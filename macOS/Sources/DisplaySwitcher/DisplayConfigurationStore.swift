@@ -127,8 +127,13 @@ final class DisplayDeletionAvailabilityTracker {
 
     func recordSuccessfulDetection(
         detected: [DetectedDisplay],
+        physicalEvidence: DDCPhysicalEnumerationEvidence,
         savedDisplays: [DisplayConfigurationV4Display]
     ) {
+        guard physicalEvidence.isCompletePhysicalSnapshot else {
+            recordFailureOrUntrustedResult()
+            return
+        }
         let normalizedSelectors = detected.map {
             $0.systemUUID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         }
