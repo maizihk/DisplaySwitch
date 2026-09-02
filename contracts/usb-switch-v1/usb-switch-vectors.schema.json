@@ -16,7 +16,7 @@
       "required": ["displayID", "targetInput", "available", "switchSucceeds"],
       "properties": {
         "displayID": { "type": "string", "pattern": "^display-[a-z]$" },
-        "targetInput": { "type": ["integer", "null"], "minimum": 0, "maximum": 65535 },
+        "targetInput": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
         "available": { "type": "boolean" },
         "switchSucceeds": { "type": "boolean" }
       },
@@ -58,7 +58,7 @@
         "atMs": { "type": "integer", "minimum": 0 },
         "kind": { "type": "string", "enum": ["establishBaseline", "switchDisplay", "wakeDisplay", "sendWakeDisplay", "report"] },
         "displayID": { "type": "string", "pattern": "^display-[a-z]$" },
-        "targetInput": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "targetInput": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "succeeded": { "type": "boolean" },
         "reason": { "type": "string", "enum": ["missing_mapping", "display_unavailable", "ddc_failed", "wake_not_sent"] }
       },

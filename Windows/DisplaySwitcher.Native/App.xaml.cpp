@@ -5,6 +5,20 @@ using namespace winrt;
 using namespace Microsoft::UI;
 using namespace Microsoft::UI::Xaml;
 
+namespace
+{
+    bool HasCommandLineArgument(std::wstring_view expected)
+    {
+        int count{};
+        auto arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+        if (!arguments) return false;
+        auto found = std::any_of(arguments + 1, arguments + count,
+            [&](wchar_t const* value) { return expected == value; });
+        LocalFree(arguments);
+        return found;
+    }
+}
+
 namespace winrt::DisplaySwitcher::Native::implementation
 {
     App::App() = default;
@@ -23,6 +37,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         controller_ = ::DisplaySwitcher::Native::Controller::Create(
             Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread(),
             [this] { ExitApplication(); });
+        if (HasCommandLineArgument(L"--show-settings")) controller_->ShowSettings();
     }
 
     void App::ExitApplication()

@@ -2,6 +2,14 @@
 
 namespace DisplaySwitcher::Native
 {
+    inline constexpr int MinimumInputSourceValue = 1;
+    inline constexpr int MaximumInputSourceValue = 65535;
+
+    inline bool IsValidInputSourceValue(int value) noexcept
+    {
+        return value >= MinimumInputSourceValue && value <= MaximumInputSourceValue;
+    }
+
     std::wstring GenerateIdentifier();
 
     enum class DisplayBindingStatus
@@ -137,6 +145,31 @@ namespace DisplaySwitcher::Native
         size_t removed{};
     };
 
+    struct DisplayMappingRow
+    {
+        std::wstring displayId;
+        std::wstring displayName;
+        uint64_t topologyGeneration{};
+    };
+
+    struct VisibleDisplayInputEdit
+    {
+        std::wstring displayId;
+        std::optional<int> value;
+    };
+
+    class DisplayMappingProjection
+    {
+    public:
+        bool Refresh(std::vector<DisplayConfig> const& catalogue, DisplayTopologyTrust topologyTrust);
+        std::vector<DisplayMappingRow> const& Rows() const noexcept { return rows_; }
+        uint64_t TopologyGeneration() const noexcept { return topologyGeneration_; }
+
+    private:
+        std::vector<DisplayMappingRow> rows_;
+        uint64_t topologyGeneration_{};
+    };
+
     DisplayConfig CreateDisplayConfig(std::wstring const& name = {});
     std::wstring CanonicalDdcMonitorId(std::wstring const& id);
     bool IsPersistedStrongMonitorBinding(std::wstring const& id) noexcept;
@@ -146,6 +179,12 @@ namespace DisplaySwitcher::Native
         std::vector<DisplayConfig> const& existing,
         std::vector<DdcMonitorInfo> const& connected,
         DisplayTopologyTrust topologyTrust);
+    std::vector<DisplayInputMapping> MergeVisibleProfileDisplayInputs(
+        std::vector<DisplayInputMapping> const& existing,
+        std::vector<VisibleDisplayInputEdit> const& visibleEdits);
+    std::vector<UsbDisplayInputMapping> MergeVisibleUsbDisplayInputs(
+        std::vector<UsbDisplayInputMapping> const& existing,
+        std::vector<VisibleDisplayInputEdit> const& visibleEdits);
     bool RemoveOrphanedDisplayMappings(std::vector<DisplayConfig> const& displays,
         std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch);
     bool IsValidDisplayId(std::wstring const& id) noexcept;

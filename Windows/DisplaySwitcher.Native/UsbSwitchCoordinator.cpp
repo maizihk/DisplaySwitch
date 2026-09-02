@@ -1,4 +1,5 @@
 #include "pch.h"
+#include "DisplayModel.h"
 #include "UsbSwitchCoordinator.h"
 
 namespace DisplaySwitcher::Native
@@ -53,7 +54,7 @@ namespace DisplaySwitcher::Native
         std::vector<UsbSwitchAction> actions;
         for (auto const& mapping : state_.displayMappings)
         {
-            if (!mapping.targetInput || !mapping.available)
+            if (!mapping.targetInput || !IsValidInputSourceValue(*mapping.targetInput) || !mapping.available)
             {
                 actions.push_back({ UsbSwitchAction::Kind::Report, mapping.displayId, {}, {}, L"missing_mapping" });
                 continue;

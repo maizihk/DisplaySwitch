@@ -49,7 +49,7 @@ namespace DisplaySwitcher::Native
         std::vector<CollaborationProfile> UnboundBootstrapProfiles() const;
         std::optional<int> V2ListenerPort() const;
         std::vector<std::wstring> OrderedDisplayIds() const;
-        bool IsProfileDisplayMappingComplete(std::wstring const& profileId) const noexcept;
+        bool HasValidProfileDisplayMapping(std::wstring const& profileId) const noexcept;
         int PeerInputForDisplay(std::wstring const& profileId, std::wstring const& displayId, int fallback = -1) const noexcept;
         std::optional<int> UsbInputForDisplay(std::wstring const& displayId) const noexcept;
         ProfileInspectionResult InspectProfile(std::wstring const& profileId,
@@ -59,7 +59,8 @@ namespace DisplaySwitcher::Native
         static std::wstring NormalizeNfc(std::wstring const& text);
         static bool IsValidConfigurationPath(std::wstring const& path) noexcept;
         static AppConfig Load(bool* firstRun = nullptr);
-        static AppConfig LoadFromPath(std::filesystem::path const& path, bool* firstRun = nullptr);
+        static AppConfig LoadFromPath(std::filesystem::path const& path, bool* firstRun = nullptr,
+            AppConfigSaveFaultForTesting migrationFault = AppConfigSaveFaultForTesting::None);
         void EnterSafeState() noexcept;
         void Save() const;
         void SaveToPath(std::filesystem::path const& path,

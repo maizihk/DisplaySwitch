@@ -124,7 +124,8 @@ namespace DisplaySwitcher::Native
         else diagnosticHeartbeats_.Reconcile(config.localEndpointId, config.collaborationProfiles);
         auto usbConfigured = config.HasUsbDeviceConfiguration();
         auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
-            [&](auto const& mapping) { return mapping.targetInput && FindDisplayById(config.displays, mapping.displayId); });
+            [&](auto const& mapping) { return mapping.targetInput && IsValidInputSourceValue(*mapping.targetInput)
+                && FindDisplayById(config.displays, mapping.displayId); });
         auto automationConfigured = usbConfigured && hasUsbMapping;
         usbWatcher_->Reconfigure(config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.vendorId : -1,
             config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.productId : -1,
@@ -256,7 +257,8 @@ namespace DisplaySwitcher::Native
         std::vector<DisplayConfig> selected;
         for (auto const& action : actions)
         {
-            if (action.kind != UsbSwitchAction::Kind::SwitchDisplay || !action.targetInput) continue;
+            if (action.kind != UsbSwitchAction::Kind::SwitchDisplay || !action.targetInput
+                || !IsValidInputSourceValue(*action.targetInput)) continue;
             auto index = FindDisplayById(config.displays, action.displayId);
             if (!index) continue;
             auto display = config.displays[*index]; display.macInput = *action.targetInput; selected.push_back(std::move(display));

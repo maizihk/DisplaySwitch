@@ -8,6 +8,7 @@
 #include "ProfileDetection.h"
 #include "SystemActions.h"
 #include "UsbWatcher.h"
+#include "SettingsWindowContracts.h"
 
 namespace winrt::DisplaySwitcher::Native::implementation
 {
@@ -41,6 +42,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
     private:
         Microsoft::UI::Xaml::UIElement BuildContent();
         Microsoft::UI::Xaml::Controls::Border CreateSection(
+            ::DisplaySwitcher::Native::SettingsCardContract const& contract,
             std::vector<Microsoft::UI::Xaml::UIElement> const& children);
         Microsoft::UI::Xaml::Controls::Border CreateCard(Microsoft::UI::Xaml::UIElement const& child);
         Microsoft::UI::Xaml::Controls::ScrollViewer CreatePage(
@@ -56,11 +58,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void StartUsbLearning(std::wstring const& profileId);
         void PollUsbLearning();
         void ShowUsbLearningCandidates();
-        void EndUsbLearning(std::wstring const& message = {});
+        void EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion completion =
+            ::DisplaySwitcher::Native::UsbLearningCompletion::None, std::wstring const& message = {});
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
         void RebuildUsbMappingEditors();
+        Microsoft::UI::Xaml::Controls::Grid CreatePeerInputMappingGrid(
+            std::function<Microsoft::UI::Xaml::Controls::Control(
+                ::DisplaySwitcher::Native::DisplayMappingRow const&)> const& createInput);
         void CaptureProfileEditors();
         void RebuildProfileEditors();
         void RefreshProfileSelectors();
@@ -79,9 +85,20 @@ namespace winrt::DisplaySwitcher::Native::implementation
             ::DisplaySwitcher::Native::DdcCancellationToken const& cancellation, bool write);
         void RefreshDiagnosticPreview();
         void CopyDiagnosticPreview();
-        bool Save(bool hideAfterSave = false);
-        bool SaveImmediately();
-        void ShowValidationError(std::wstring const& message);
+        bool Save(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, bool hideAfterSave = false);
+        bool SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope);
+        void SetOperationFeedback(std::wstring const& message,
+            ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity severity =
+                ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity::Informational);
+        void SetOperationFeedback(std::wstring const& message, bool failure);
+        void AppendLayoutElement(Microsoft::UI::Xaml::Controls::Panel const& parent,
+            Microsoft::UI::Xaml::UIElement const& child, ::DisplaySwitcher::Native::SettingsLayoutElement element,
+            ::DisplaySwitcher::Native::SettingsLayoutRegion region);
+        void ShowSaveFailure(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message);
+        void ShowSaveSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message);
+        void ResetSaveFeedbackTimer();
+        void ApplySaveFeedback(std::chrono::milliseconds const& hiddenAfter);
+        int64_t SteadyMs();
 
         ::DisplaySwitcher::Native::AppConfig original_;
         std::function<bool(::DisplaySwitcher::Native::AppConfig const&)> saved_;
@@ -111,6 +128,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::vector<::DisplaySwitcher::Native::UsbDeviceInfo> devices_;
         std::vector<::DisplaySwitcher::Native::DdcMonitorInfo> ddcMonitors_;
         std::vector<::DisplaySwitcher::Native::DisplayConfig> workingDisplays_;
+        ::DisplaySwitcher::Native::DisplayMappingProjection mappingProjection_;
         std::vector<::DisplaySwitcher::Native::CollaborationProfile> workingProfiles_;
         std::wstring selectedProfileId_;
         std::wstring usbSelectedProfileId_;
@@ -147,7 +165,8 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::vector<ProfileEditorControls> profileEditors_;
         Microsoft::UI::Windowing::AppWindow appWindow_{ nullptr };
         Microsoft::UI::Xaml::Controls::TabView tabs_{ nullptr };
-        Microsoft::UI::Xaml::Controls::TextBlock validation_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock operationStatus_{ nullptr };
+        Microsoft::UI::Xaml::Controls::TextBlock saveStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionDot_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBlock connectionStatus_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch usbAutomation_{ nullptr };
@@ -180,6 +199,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         bool windowClosed_{};
         uint64_t profileDetectionGeneration_{};
         std::wstring detectingProfileId_;
+        Microsoft::UI::Xaml::Controls::Border statusPanelBorder_{ nullptr };
+        Microsoft::UI::Dispatching::DispatcherQueueTimer saveFeedbackTimer_{ nullptr };
+        ::DisplaySwitcher::Native::SettingsSaveFeedbackController saveFeedback_{};
+        ::DisplaySwitcher::Native::SettingsWindowLayoutPresenter layoutPresenter_{};
     };
 }
 

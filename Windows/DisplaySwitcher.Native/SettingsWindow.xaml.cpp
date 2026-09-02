@@ -132,26 +132,23 @@ namespace
         return row;
     }
 
-    Grid UsbDeviceRow(ComboBox const& devices, Button const& learn, TextBlock const& status)
+    Grid UsbDeviceRow(ComboBox const& devices, Button const& learn)
     {
         devices.Header(nullptr); devices.HorizontalAlignment(HorizontalAlignment::Stretch);
         AutomationProperties::SetName(devices, L"USB 触发设备");
         learn.VerticalAlignment(VerticalAlignment::Center);
-        status.VerticalAlignment(VerticalAlignment::Center); status.TextWrapping(TextWrapping::NoWrap);
 
         auto row = Grid(); row.ColumnSpacing(12);
         auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 200 });
         row.ColumnDefinitions().Append(labelColumn);
         auto devicesColumn = ColumnDefinition(); devicesColumn.Width(GridLength{ 1, GridUnitType::Star });
-        auto statusColumn = ColumnDefinition(); statusColumn.Width(GridLengthHelper::Auto());
         auto learnColumn = ColumnDefinition(); learnColumn.Width(GridLengthHelper::Auto());
-        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(statusColumn);
-        row.ColumnDefinitions().Append(learnColumn);
+        row.ColumnDefinitions().Append(devicesColumn); row.ColumnDefinitions().Append(learnColumn);
 
         auto label = TextBlock(); label.Text(L"触发设备"); label.VerticalAlignment(VerticalAlignment::Center);
-        Grid::SetColumn(devices, 1); Grid::SetColumn(status, 2); Grid::SetColumn(learn, 3);
+        Grid::SetColumn(devices, 1); Grid::SetColumn(learn, 2);
         row.Children().Append(label); row.Children().Append(devices);
-        row.Children().Append(learn); row.Children().Append(status);
+        row.Children().Append(learn);
         return row;
     }
 
@@ -172,6 +169,100 @@ namespace
         auto number = std::wcstol(value.c_str(), &end, base);
         if (errno || end != value.c_str() + value.size() || number < minimum || number > maximum) return std::nullopt;
         return static_cast<int>(number);
+    }
+
+    Microsoft::UI::Xaml::Media::Brush ThemeBrush(std::wstring const& key,
+        Windows::UI::Color fallback)
+    {
+        auto resources = Application::Current().Resources();
+        auto themed = resources.TryLookup(box_value(key));
+        auto brush = themed.try_as<Microsoft::UI::Xaml::Media::SolidColorBrush>();
+        return brush ? brush : Microsoft::UI::Xaml::Media::SolidColorBrush(fallback);
+    }
+
+    void ApplyStandardButtonGeometry(Button const& button, double minWidth = 88.0)
+    {
+        button.MinWidth(minWidth);
+        button.MinHeight(32);
+    }
+
+    bool DisplayConfigEquals(::DisplaySwitcher::Native::DisplayConfig const& left,
+        ::DisplaySwitcher::Native::DisplayConfig const& right)
+    {
+        return left.id == right.id && left.name == right.name && left.localInput == right.localInput &&
+            left.readEnabled == right.readEnabled && left.brightnessEnabled == right.brightnessEnabled &&
+            left.brightnessShowInTray == right.brightnessShowInTray && left.contrastEnabled == right.contrastEnabled &&
+            left.contrastShowInTray == right.contrastShowInTray && left.volumeEnabled == right.volumeEnabled &&
+            left.volumeShowInTray == right.volumeShowInTray && left.macInput == right.macInput &&
+            left.nativeMonitorId == right.nativeMonitorId && left.brightnessMax == right.brightnessMax &&
+            left.contrastMax == right.contrastMax && left.volumeMax == right.volumeMax &&
+            left.brightnessValue == right.brightnessValue && left.contrastValue == right.contrastValue &&
+            left.volumeValue == right.volumeValue;
+    }
+
+    bool UsbInputMappingEquals(::DisplaySwitcher::Native::UsbDisplayInputMapping const& left,
+        ::DisplaySwitcher::Native::UsbDisplayInputMapping const& right)
+    {
+        return left.displayId == right.displayId && left.targetInput == right.targetInput;
+    }
+
+    bool DisplayInputMappingEquals(::DisplaySwitcher::Native::DisplayInputMapping const& left,
+        ::DisplaySwitcher::Native::DisplayInputMapping const& right)
+    {
+        return left.displayId == right.displayId && left.peerInput == right.peerInput;
+    }
+
+    bool TriggerDeviceReferenceEquals(::DisplaySwitcher::Native::TriggerDeviceReference const& left,
+        ::DisplaySwitcher::Native::TriggerDeviceReference const& right)
+    {
+        return left.kind == right.kind && left.localReference == right.localReference && left.displayName == right.displayName;
+    }
+
+    bool CollaborationProfileEquals(::DisplaySwitcher::Native::CollaborationProfile const& left,
+        ::DisplaySwitcher::Native::CollaborationProfile const& right)
+    {
+        if (left.id != right.id || left.name != right.name || left.coordinationEnabled != right.coordinationEnabled ||
+            left.peerHost != right.peerHost || left.peerPort != right.peerPort || left.pairingCode != right.pairingCode ||
+            left.peerEndpointId != right.peerEndpointId || left.peerProtocolVersion != right.peerProtocolVersion)
+            return false;
+        if (left.displayInputs.size() != right.displayInputs.size()) return false;
+        for (size_t index = 0; index < left.displayInputs.size(); ++index)
+            if (!DisplayInputMappingEquals(left.displayInputs[index], right.displayInputs[index])) return false;
+        if (left.triggerDevices.size() != right.triggerDevices.size()) return false;
+        for (size_t index = 0; index < left.triggerDevices.size(); ++index)
+            if (!TriggerDeviceReferenceEquals(left.triggerDevices[index], right.triggerDevices[index])) return false;
+        return true;
+    }
+
+    bool UsbSwitchEquals(::DisplaySwitcher::Native::UsbSwitchConfig const& left,
+        ::DisplaySwitcher::Native::UsbSwitchConfig const& right)
+    {
+        if (left.enabled != right.enabled || left.deviceLocalReference != right.deviceLocalReference ||
+            left.deviceName != right.deviceName || left.vendorId != right.vendorId || left.productId != right.productId ||
+            left.collaborationWakeEnabled != right.collaborationWakeEnabled ||
+            left.collaborationProfileId != right.collaborationProfileId)
+            return false;
+        if (left.displayInputs.size() != right.displayInputs.size()) return false;
+        for (size_t index = 0; index < left.displayInputs.size(); ++index)
+            if (!UsbInputMappingEquals(left.displayInputs[index], right.displayInputs[index])) return false;
+        return true;
+    }
+
+    bool AppConfigEquals(::DisplaySwitcher::Native::AppConfig const& left, ::DisplaySwitcher::Native::AppConfig const& right)
+    {
+        if (left.linkAllDisplays != right.linkAllDisplays || left.localEndpointId != right.localEndpointId ||
+            left.localDeviceName != right.localDeviceName || left.listenPort != right.listenPort ||
+            left.startWithWindows != right.startWithWindows ||
+            left.detailedDiagnosticRecording != right.detailedDiagnosticRecording ||
+            left.displayConfigurationSafeMode != right.displayConfigurationSafeMode) return false;
+        if (left.displays.size() != right.displays.size()) return false;
+        for (size_t index = 0; index < left.displays.size(); ++index)
+            if (!DisplayConfigEquals(left.displays[index], right.displays[index])) return false;
+        if (!UsbSwitchEquals(left.usbSwitch, right.usbSwitch)) return false;
+        if (left.collaborationProfiles.size() != right.collaborationProfiles.size()) return false;
+        for (size_t index = 0; index < left.collaborationProfiles.size(); ++index)
+            if (!CollaborationProfileEquals(left.collaborationProfiles[index], right.collaborationProfiles[index])) return false;
+        return true;
     }
 
     int64_t SteadyMilliseconds()
@@ -263,8 +354,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     UIElement SettingsWindow::BuildContent()
     {
-        validation_ = TextBlock(); validation_.Foreground(SolidColorBrush(Windows::UI::Color{ 255, 196, 43, 28 }));
-        validation_.TextWrapping(TextWrapping::Wrap); validation_.Visibility(Visibility::Collapsed);
+        layoutPresenter_.Reset();
+        auto createDivider = []
+        {
+            auto divider = Border();
+            divider.Height(1);
+            divider.Background(ThemeBrush(L"CardStrokeColorDefaultBrush", Colors::Gray()));
+            return divider;
+        };
+        operationStatus_ = TextBlock();
+        operationStatus_.TextWrapping(TextWrapping::Wrap); operationStatus_.Visibility(Visibility::Collapsed);
+        operationStatus_.HorizontalAlignment(HorizontalAlignment::Left);
+        saveStatus_ = TextBlock();
+        saveStatus_.TextWrapping(TextWrapping::Wrap); saveStatus_.Visibility(Visibility::Collapsed);
+        saveStatus_.HorizontalAlignment(HorizontalAlignment::Left);
+        saveStatus_.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
         usbAutomation_ = ToggleSwitch();
         usbSwitchDisplaysOnArrival_ = ToggleSwitch();
         usbProfileSelector_ = ComboBox();
@@ -274,11 +378,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
         linkAllDisplays_ = ToggleSwitch();
         autoStart_ = ToggleSwitch();
         detailedDiagnostics_ = ToggleSwitch();
-        usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        autoStart_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-        detailedDiagnostics_.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
+        usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb); });
+        usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb); });
+        linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        autoStart_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        detailedDiagnostics_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
         {
             if (loading_) return;
@@ -289,7 +393,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             selectedUsbName_ = learned.displayName;
             selectedUsbVendorId_ = devices_[index].vendorId;
             selectedUsbProductId_ = devices_[index].productId;
-            SaveImmediately();
+            SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb);
             RefreshUsbDeviceSelection();
         });
         usbProfileSelector_.SelectionChanged([this](auto const&, auto const&)
@@ -298,7 +402,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto index = usbProfileSelector_.SelectedIndex();
             usbSelectedProfileId_ = index >= 0 && static_cast<size_t>(index) < workingProfiles_.size()
                 ? workingProfiles_[static_cast<size_t>(index)].id : L"";
-            SaveImmediately();
+            SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb);
         });
 
         auto root = Grid();
@@ -318,13 +422,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto diagnosticsHint = TextBlock();
         diagnosticsHint.Text(L"仅排障时开启；切换开关会清空已有详细记录。");
         diagnosticsHint.TextWrapping(TextWrapping::Wrap); diagnosticsHint.Opacity(0.72);
-        commonTab.Content(CreatePage({ CreateSection({
+        commonTab.Content(CreatePage({ CreateSection({}, {
             LabeledToggleRow(L"登录时启动", autoStart_),
             LabeledToggleRow(L"详细诊断记录", detailedDiagnostics_), diagnosticsHint }) }));
 
         auto learnCurrentUsb = Button(); learnCurrentUsb.Content(box_value(L"学习"));
         AutomationProperties::SetName(learnCurrentUsb, L"学习 USB 触发设备");
         learnCurrentUsb.HorizontalAlignment(HorizontalAlignment::Left);
+        ApplyStandardButtonGeometry(learnCurrentUsb);
         learnCurrentUsb.Click([this](auto const&, auto const&)
         {
             StartUsbLearning(L"usb-switch");
@@ -334,14 +439,30 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbMappingsPanel_ = StackPanel(); usbMappingsPanel_.Spacing(8);
         auto usbHint = TextBlock(); usbHint.Text(L"只监听明确选择的一个本机设备。USB 离开立即切换显示器；接入只唤醒本机。联动协同默认关闭。");
         usbHint.TextWrapping(TextWrapping::Wrap); usbHint.Opacity(0.72);
-        auto usbMappingTitle = CreateSubheading(L"对端输入源");
+        auto usbStatusLabel = TextBlock(); usbStatusLabel.Text(L"当前状态");
+        usbStatusLabel.VerticalAlignment(VerticalAlignment::Center);
+        auto usbStatusRow = Grid(); usbStatusRow.ColumnSpacing(16); auto usbStatusLabelColumn = ColumnDefinition();
+        usbStatusLabelColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto usbStatusValueColumn = ColumnDefinition(); usbStatusValueColumn.Width(GridLengthHelper::Auto());
+        usbStatusRow.ColumnDefinitions().Append(usbStatusLabelColumn); usbStatusRow.ColumnDefinitions().Append(usbStatusValueColumn);
+        Grid::SetColumn(usbStatusLabel, 0); Grid::SetColumn(usbDeviceStatus_, 1);
+        usbStatusRow.Children().Append(usbStatusLabel);
+        AppendLayoutElement(usbStatusRow, usbDeviceStatus_,
+            ::DisplaySwitcher::Native::SettingsLayoutElement::UsbDeviceStatus,
+            ::DisplaySwitcher::Native::SettingsLayoutRegion::UsbCurrentStatusRow);
+        auto usbLayout = ::DisplaySwitcher::Native::SettingsPageLayout(::DisplaySwitcher::Native::SettingsPage::Usb);
+        auto usbAutoCard = StackPanel(); usbAutoCard.Spacing(16);
+        usbAutoCard.Children().Append(LabeledToggleRow(L"自动切换", usbAutomation_));
+        usbAutoCard.Children().Append(UsbDeviceRow(usbDevices_, learnCurrentUsb));
+        usbAutoCard.Children().Append(createDivider());
+        usbAutoCard.Children().Append(usbStatusRow);
+        usbAutoCard.Children().Append(createDivider());
+        usbAutoCard.Children().Append(usbMappingsPanel_);
+        auto usbLinkCard = StackPanel(); usbLinkCard.Spacing(16);
+        usbLinkCard.Children().Append(LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同"));
         usbTab.Content(CreatePage({
-            CreateSection({
-                LabeledToggleRow(L"自动切换", usbAutomation_),
-                UsbDeviceRow(usbDevices_, learnCurrentUsb, usbDeviceStatus_) }),
-            CreateSection({ usbMappingTitle, usbMappingsPanel_ }),
-            CreateSection({
-                LabeledControlToggleRow(L"联动目标", usbProfileSelector_, usbSwitchDisplaysOnArrival_, L"联动协同") }),
+            CreateSection(usbLayout.cards.at(0), { usbAutoCard }),
+            CreateSection(usbLayout.cards.at(1), { usbLinkCard }),
             usbHint }));
 
         auto peerTab = TabViewItem(); peerTab.IsClosable(false); peerTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -354,24 +475,26 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto peerHint = TextBlock(); peerHint.Text(L"先检查网络权限，再检测连接。两项操作都不会执行 USB、唤醒或显示器操作。");
         peerHint.TextWrapping(TextWrapping::Wrap); peerHint.Opacity(0.72);
         auto checkNetwork = Button(); checkNetwork.Content(box_value(L"检查网络权限"));
+        ApplyStandardButtonGeometry(checkNetwork);
         checkNetwork.Click([this](auto const&, auto const&)
         {
-            if (!checkNetworkAccess_) { ShowValidationError(L"网络权限检查服务不可用。"); return; }
+            if (!checkNetworkAccess_) { SetOperationFeedback(L"网络权限检查服务不可用。", true); return; }
             CaptureDisplayEditors(); CaptureProfileEditors();
             auto config = original_; config.displays = workingDisplays_; config.collaborationProfiles = workingProfiles_;
-            validation_.Text(L"正在检查本机 UDP 监听；若 Windows 弹出提示，请允许专用网络访问。");
-            validation_.Visibility(Visibility::Visible);
+            SetOperationFeedback(L"正在检查本机 UDP 监听；若 Windows 弹出提示，请允许专用网络访问。");
             auto weak = get_weak();
             checkNetworkAccess_(config, [weak](bool ready, std::wstring const& message)
             {
                 if (auto self = weak.get(); self && !self->windowClosed_)
                 {
-                    self->validation_.Text(message); self->validation_.Visibility(Visibility::Visible);
+                    self->SetOperationFeedback(message,
+                        ::DisplaySwitcher::Native::NetworkAccessFeedbackSeverity(ready));
                     if (!ready) self->SetConnectionStatus(L"网络权限未就绪", false);
                 }
             });
         });
         detectProfileButton_ = Button(); detectProfileButton_.Content(box_value(L"检测连接"));
+        ApplyStandardButtonGeometry(detectProfileButton_);
         detectProfileButton_.Click([this](auto const&, auto const&)
         {
             CaptureProfileEditors();
@@ -381,6 +504,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         peerActions.Children().Append(checkNetwork); peerActions.Children().Append(detectProfileButton_);
         auto addProfile = Button(); addProfile.Content(box_value(L"添加配置"));
         addProfile.VerticalAlignment(VerticalAlignment::Bottom);
+        ApplyStandardButtonGeometry(addProfile);
         addProfile.Click([this](auto const&, auto const&)
         {
             CaptureProfileEditors();
@@ -393,7 +517,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             workingProfiles_.push_back(std::move(profile));
             selectedProfileId_ = workingProfiles_.back().id;
             RebuildProfileEditors();
-            SaveImmediately();
+            SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration);
         });
         profileSelector_ = ComboBox(); Header(profileSelector_, L"当前配置"); profileSelector_.HorizontalAlignment(HorizontalAlignment::Stretch);
         profileSelector_.SelectionChanged([this](auto const&, auto const&)
@@ -404,23 +528,32 @@ namespace winrt::DisplaySwitcher::Native::implementation
             auto index = profileSelector_.SelectedIndex();
             selectedProfileId_ = index >= 0 && static_cast<size_t>(index) < workingProfiles_.size()
                 ? workingProfiles_[static_cast<size_t>(index)].id : L"";
+            saveFeedback_.ClearTransientSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration);
+            ResetSaveFeedbackTimer();
+            ApplySaveFeedback(std::chrono::milliseconds{});
             RebuildProfileEditors();
         });
         profileEditorsPanel_ = StackPanel(); profileEditorsPanel_.Spacing(14);
+        auto profileConfigSection = StackPanel(); profileConfigSection.Spacing(12);
+        profileConfigSection.Children().Append(CreateSubheading(L"当前配置"));
+        profileConfigSection.Children().Append(CreateTwoColumn(profileSelector_, addProfile));
+        profileConfigSection.Children().Append(createDivider());
+        profileConfigSection.Children().Append(CreateSubheading(L"配置详情"));
+        auto peerLayout = ::DisplaySwitcher::Native::SettingsPageLayout(::DisplaySwitcher::Native::SettingsPage::Collaboration);
         peerTab.Content(CreatePage({
-            CreateSection({ CreateTwoColumn(peerStatus, peerActions), peerHint }),
-            CreateSection({ CreateTwoColumn(LabeledWideControlRow(L"当前配置", profileSelector_), addProfile) }),
-            profileEditorsPanel_ }));
+            CreateSection(peerLayout.cards.at(0), { CreateTwoColumn(peerStatus, peerActions), peerHint }),
+            CreateSection(peerLayout.cards.at(1), { profileConfigSection, profileEditorsPanel_ }) }));
 
         auto displayTab = TabViewItem(); displayTab.IsClosable(false); displayTab.HorizontalContentAlignment(HorizontalAlignment::Center);
         displayTab.Header(CreateTabHeader(L"\uE7F4", L"显示器"));
         auto displayHint = TextBlock(); displayHint.Text(L"新显示器的功能和托盘开关默认关闭。读取只访问亮度、对比度和音量。");
         displayHint.TextWrapping(TextWrapping::Wrap); displayHint.Opacity(0.72);
         auto refreshDdc = Button(); refreshDdc.Content(box_value(L"重新检测显示器"));
+        ApplyStandardButtonGeometry(refreshDdc, 132);
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
-        displayTab.Content(CreatePage({ CreateSection({ displayHint,
+        displayTab.Content(CreatePage({ CreateSection({}, { displayHint,
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
             refreshDdc, displayEditorsPanel_ }) }));
 
@@ -438,13 +571,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
         ScrollViewer::SetHorizontalScrollBarVisibility(diagnosticPreview_, ScrollBarVisibility::Auto);
         AutomationProperties::SetName(diagnosticPreview_, L"诊断预览");
         auto refreshDiagnostic = Button(); refreshDiagnostic.Content(box_value(L"刷新预览"));
+        ApplyStandardButtonGeometry(refreshDiagnostic);
         refreshDiagnostic.Click([this](auto const&, auto const&) { RefreshDiagnosticPreview(); });
         auto copyDiagnostic = Button(); copyDiagnostic.Content(box_value(L"复制诊断"));
+        ApplyStandardButtonGeometry(copyDiagnostic);
         copyDiagnostic.Click([this](auto const&, auto const&) { CopyDiagnosticPreview(); });
         auto diagnosticActions = StackPanel(); diagnosticActions.Orientation(Orientation::Horizontal);
         diagnosticActions.Spacing(8); diagnosticActions.Children().Append(refreshDiagnostic);
         diagnosticActions.Children().Append(copyDiagnostic);
-        diagnosticTab.Content(CreatePage({ CreateSection({ diagnosticHint, diagnosticActions, diagnosticPreview_ }) }));
+        diagnosticTab.Content(CreatePage({ CreateSection({}, { diagnosticHint, diagnosticActions, diagnosticPreview_ }) }));
         RefreshDiagnosticPreview();
 
         auto aboutTab = TabViewItem(); aboutTab.IsClosable(false); aboutTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -463,7 +598,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         aboutLinks.Children().Append(project); aboutLinks.Children().Append(license); aboutLinks.Children().Append(notices);
         auto buildNotice = TextBlock(); buildNotice.Text(info.buildNotice); buildNotice.TextWrapping(TextWrapping::Wrap);
         buildNotice.TextAlignment(TextAlignment::Center); buildNotice.Opacity(0.72);
-        aboutTab.Content(CreatePage({ CreateSection({ aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
+        aboutTab.Content(CreatePage({ CreateSection({}, { aboutIcon, aboutName, aboutDetails, aboutLinks, buildNotice }) }));
 
         tabs_.TabItems().Append(commonTab); tabs_.TabItems().Append(usbTab);
         tabs_.TabItems().Append(peerTab); tabs_.TabItems().Append(displayTab);
@@ -474,20 +609,38 @@ namespace winrt::DisplaySwitcher::Native::implementation
             static constexpr wchar_t const* titles[]{ L"常规", L"USB 切换", L"协同", L"显示器", L"诊断", L"关于" };
             auto index = tabs_.SelectedIndex();
             if (index >= 0 && index < 6) Title(titles[index]);
-            validation_.Visibility(Visibility::Collapsed);
+            SetOperationFeedback({});
+            saveFeedback_.ClearTransientSuccesses();
+            ResetSaveFeedbackTimer();
+            ApplySaveFeedback(std::chrono::milliseconds{});
         });
         Grid::SetRow(tabs_, 0); root.Children().Append(tabs_);
 
-        auto statusPanel = Border(); statusPanel.Padding(Thickness{ 24, 8, 24, 12 }); statusPanel.Child(validation_);
-        Grid::SetRow(statusPanel, 1); root.Children().Append(statusPanel);
+        auto statusPanel = StackPanel(); statusPanel.Spacing(4); statusPanel.HorizontalAlignment(HorizontalAlignment::Left);
+        statusPanel.Children().Append(operationStatus_);
+        AppendLayoutElement(statusPanel, saveStatus_,
+            ::DisplaySwitcher::Native::SettingsLayoutElement::ScopedSaveFeedback,
+            ::DisplaySwitcher::Native::SettingsLayoutRegion::FixedWindowFooter);
+        statusPanelBorder_ = Border(); statusPanelBorder_.Padding(Thickness{ 24, 8, 24, 12 });
+        statusPanelBorder_.Child(statusPanel);
+        Grid::SetRow(statusPanelBorder_, 1); root.Children().Append(statusPanelBorder_);
+        saveFeedbackTimer_ = DispatcherQueue().CreateTimer();
+        saveFeedbackTimer_.IsRepeating(true);
+        saveFeedbackTimer_.Interval(std::chrono::milliseconds(150));
+        auto statusWeak = get_weak();
+        saveFeedbackTimer_.Tick([statusWeak](auto const&, auto const&) { if (auto self = statusWeak.get()) self->ApplySaveFeedback(std::chrono::milliseconds{}); });
 
         return root;
     }
 
-    Border SettingsWindow::CreateSection(std::vector<UIElement> const& children)
+    Border SettingsWindow::CreateSection(::DisplaySwitcher::Native::SettingsCardContract const& contract,
+        std::vector<UIElement> const& children)
     {
         auto panel = StackPanel(); panel.Spacing(16);
-        for (auto const& child : children) panel.Children().Append(child); return CreateCard(panel);
+        for (auto const& child : children) panel.Children().Append(child);
+        auto card = CreateCard(panel);
+        if (!contract.title.empty()) AutomationProperties::SetName(card, contract.title);
+        return card;
     }
 
     Border SettingsWindow::CreateCard(UIElement const& child)
@@ -495,8 +648,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
         auto border = Border(); border.Child(child); border.Padding(Thickness{ 20, 20, 20, 20 });
         border.CornerRadius(CornerRadius{ 8, 8, 8, 8 });
         border.BorderThickness(Thickness{ 1, 1, 1, 1 });
-        border.Background(SolidColorBrush(Windows::UI::Color{ 20, 128, 128, 128 }));
-        border.BorderBrush(SolidColorBrush(Windows::UI::Color{ 28, 128, 128, 128 })); return border;
+        border.Background(ThemeBrush(L"CardBackgroundFillColorDefaultBrush", Windows::UI::Colors::White()));
+        border.BorderBrush(ThemeBrush(L"CardStrokeColorDefaultBrush", Windows::UI::Colors::Transparent()));
+        return border;
     }
 
     ScrollViewer SettingsWindow::CreatePage(std::vector<UIElement> const& children)
@@ -576,12 +730,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (!connectionStatus_ || !connectionDot_) return;
         connectionStatus_.Text(status);
-        auto color = connected ? Windows::UI::Color{ 255, 16, 124, 16 } : Windows::UI::Color{ 255, 96, 96, 96 };
-        connectionDot_.Foreground(SolidColorBrush(color));
+        connectionDot_.Foreground(ThemeBrush(
+            connected ? L"SystemFillColorSuccessBrush" : L"TextFillColorSecondaryBrush",
+            connected ? Colors::Green() : Colors::Gray()));
     }
 
     void SettingsWindow::LoadValues(::DisplaySwitcher::Native::AppConfig const& config)
     {
+        saveFeedback_.ClearTransientSuccesses();
+        ResetSaveFeedbackTimer();
         loading_ = true;
         usbAutomation_.IsOn(config.usbSwitch.enabled);
         usbSwitchDisplaysOnArrival_.IsOn(config.usbSwitch.collaborationWakeEnabled);
@@ -592,11 +749,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbSelectedProfileId_ = config.usbSwitch.collaborationProfileId;
         workingDisplays_ = config.displays;
         workingProfiles_ = config.collaborationProfiles;
+        mappingProjection_.Refresh(workingDisplays_,
+            ::DisplaySwitcher::Native::DisplayTopologyTrust::LocalPhysicalAuthoritative);
         RebuildUsbMappingEditors();
         for (auto const& editor : usbMappingEditors_)
         {
             auto value = config.UsbInputForDisplay(editor.displayId);
-            editor.targetInput.Text(value ? std::to_wstring(*value) : L"");
+            editor.targetInput.Text(::DisplaySwitcher::Native::FormatInputSourceText(value));
         }
         RebuildDisplayEditors();
         RebuildProfileEditors();
@@ -627,10 +786,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             }
             loading_ = wasLoading;
             RefreshUsbDeviceSelection();
-            validation_.Visibility(Visibility::Collapsed);
+            SetOperationFeedback({});
         }
-        catch (hresult_error const& error) { loading_ = false; ShowValidationError(L"读取 USB 失败：" + std::wstring(error.message())); }
-        catch (...) { loading_ = false; ShowValidationError(L"读取 USB 失败。"); }
+        catch (hresult_error const& error) { loading_ = false; SetOperationFeedback(L"读取 USB 失败：" + std::wstring(error.message()), true); }
+        catch (...) { loading_ = false; SetOperationFeedback(L"读取 USB 失败。", true); }
     }
 
     void SettingsWindow::StartUsbLearning(std::wstring const& profileId)
@@ -649,13 +808,12 @@ namespace winrt::DisplaySwitcher::Native::implementation
             usbLearningTimer_.IsRepeating(true);
             usbLearningTimer_.Tick([this](auto const&, auto const&) { PollUsbLearning(); });
             usbLearningTimer_.Start();
-            validation_.Text(L"正在学习本机 USB 设备：请在 30 秒内接入目标设备。学习完成前网络和硬件操作保持暂停。");
-            validation_.Visibility(Visibility::Visible);
+            SetOperationFeedback(L"正在学习本机 USB 设备：请在 30 秒内接入目标设备。学习完成前网络和硬件操作保持暂停。");
         }
         catch (...)
         {
             EndUsbLearning();
-            ShowValidationError(L"无法开始 USB 学习；原绑定保持不变。");
+            SetOperationFeedback(L"无法开始 USB 学习；原绑定保持不变。", true);
         }
     }
 
@@ -671,13 +829,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         catch (...)
         {
-            EndUsbLearning(L"读取 USB 设备失败；原绑定保持不变。");
+            EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion::Failure,
+                L"读取 USB 设备失败；原绑定保持不变。");
             return;
         }
         if (!usbLearning_.Active())
         {
-            EndUsbLearning(profileExists ? L"USB 学习已在 30 秒后超时；原绑定保持不变。" :
-                L"目标配置已删除；原 USB 绑定保持不变。");
+            EndUsbLearning(profileExists ? ::DisplaySwitcher::Native::UsbLearningCompletion::TimedOut :
+                ::DisplaySwitcher::Native::UsbLearningCompletion::Invalidated,
+                profileExists ? L"USB 学习已在 30 秒后超时；原绑定保持不变。" :
+                    L"目标配置已删除；原 USB 绑定保持不变。");
             return;
         }
         if (!usbLearning_.Candidates().empty()) ShowUsbLearningCandidates();
@@ -714,21 +875,24 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (status != Windows::Foundation::AsyncStatus::Completed || operation.GetResults() != ContentDialogResult::Primary)
             {
                 usbLearning_.Cancel(generation);
-                EndUsbLearning(L"USB 学习已取消；原绑定保持不变。");
+                EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion::Cancelled,
+                    L"USB 学习已取消；原绑定保持不变。");
                 return;
             }
             auto index = picker.SelectedIndex();
             if (index < 0 || static_cast<size_t>(index) >= candidates.size() || profileId != L"usb-switch")
             {
                 usbLearning_.Cancel(generation);
-                EndUsbLearning(L"目标配置或候选已失效；原 USB 绑定保持不变。");
+                EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion::Invalidated,
+                    L"目标配置或候选已失效；原 USB 绑定保持不变。");
                 return;
             }
             auto selected = usbLearning_.Confirm(generation, candidates[static_cast<size_t>(index)].localReference,
                 SteadyMilliseconds(), true);
             if (!selected)
             {
-                EndUsbLearning(L"USB 学习已超时或结果已失效；原绑定保持不变。");
+                EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion::TimedOut,
+                    L"USB 学习已超时或结果已失效；原绑定保持不变。");
                 return;
             }
             selectedUsbLocalReference_ = selected->localReference;
@@ -736,13 +900,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             selectedUsbVendorId_ = selected->vendorId;
             selectedUsbProductId_ = selected->productId;
             usbDevices_.SelectedIndex(-1);
-            auto saved = SaveImmediately();
-            EndUsbLearning(saved ? L"已选择 USB 设备并保存。" :
-                L"USB 绑定未能保存；原配置已保留，自动操作保持停用。");
+            auto saved = SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb);
+            EndUsbLearning(saved ? ::DisplaySwitcher::Native::UsbLearningCompletion::Success :
+                ::DisplaySwitcher::Native::UsbLearningCompletion::Failure,
+                saved ? L"已选择 USB 设备并保存。" :
+                    L"USB 绑定未能保存；原配置已保留，自动操作保持停用。");
         });
     }
 
-    void SettingsWindow::EndUsbLearning(std::wstring const& message)
+    void SettingsWindow::EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion completion,
+        std::wstring const& message)
     {
         if (usbLearningTimer_)
         {
@@ -757,8 +924,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
         if (!message.empty())
         {
-            validation_.Text(message);
-            validation_.Visibility(Visibility::Visible);
+            SetOperationFeedback(message, ::DisplaySwitcher::Native::UsbLearningFeedbackSeverity(completion));
         }
     }
 
@@ -773,32 +939,33 @@ namespace winrt::DisplaySwitcher::Native::implementation
                     L"Windows 原生 DDC 后端不可用", {}, false };
             if (!enumeration.success)
             {
-                ShowValidationError(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message);
+                SetOperationFeedback(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message, true);
                 return;
             }
             if (!enumeration.IsTrustedNonEmptySnapshot())
             {
-                ShowValidationError(enumeration.topologyTrust == ::DisplaySwitcher::Native::DisplayTopologyTrust::RemoteSessionLimited
+                SetOperationFeedback(enumeration.topologyTrust == ::DisplaySwitcher::Native::DisplayTopologyTrust::RemoteSessionLimited
                     ? L"远程桌面会话中，已保留本地物理显示器配置，返回本地后重新检测。"
                     : enumeration.monitors.empty()
                     ? L"暂未检测到显示器；已保留现有设置和映射，显示器可能处于休眠或短暂断开状态。"
-                    : L"显示器枚举结果不完整；已保留现有设置和映射。");
+                    : L"显示器枚举结果不完整；已保留现有设置和映射。", true);
                 return;
             }
             ddcMonitors_ = std::move(enumeration.monitors);
             auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
                 workingDisplays_, ddcMonitors_, enumeration.topologyTrust);
             workingDisplays_ = std::move(reconciled.displays);
+            mappingProjection_.Refresh(workingDisplays_, enumeration.topologyTrust);
             RebuildDisplayEditors();
             RebuildUsbMappingEditors();
             RebuildProfileEditors();
-            if (reconciled.changed) SaveImmediately();
+            if (reconciled.changed) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
             if (ddcMonitors_.empty())
-                ShowValidationError(L"没有检测到支持 Windows 物理显示器接口的显示器。");
-            else if (!enumeration.message.empty()) ShowValidationError(enumeration.message);
-            else validation_.Visibility(Visibility::Collapsed);
+                SetOperationFeedback(L"没有检测到支持 Windows 物理显示器接口的显示器。", true);
+            else if (!enumeration.message.empty()) SetOperationFeedback(enumeration.message, true);
+            else SetOperationFeedback({});
         }
-        catch (...) { ShowValidationError(L"读取原生 DDC/CI 显示器失败。"); }
+        catch (...) { SetOperationFeedback(L"读取原生 DDC/CI 显示器失败。", true); }
     }
 
     void SettingsWindow::CaptureDisplayEditors()
@@ -824,19 +991,64 @@ namespace winrt::DisplaySwitcher::Native::implementation
         std::map<std::wstring, std::wstring> previous;
         for (auto const& editor : usbMappingEditors_) previous[editor.displayId] = editor.targetInput.Text().c_str();
         usbMappingsPanel_.Children().Clear(); usbMappingEditors_.clear();
-        for (auto const& display : workingDisplays_)
+        auto grid = CreatePeerInputMappingGrid([&](auto const& display)
         {
             auto input = TextBox();
             input.HorizontalAlignment(HorizontalAlignment::Stretch);
-            auto old = previous.find(display.id);
+            input.MaxLength(5);
+            auto old = previous.find(display.displayId);
             if (old != previous.end()) input.Text(old->second);
-            else if (auto value = original_.UsbInputForDisplay(display.id)) input.Text(std::to_wstring(*value));
-            input.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
+            else input.Text(::DisplaySwitcher::Native::FormatInputSourceText(original_.UsbInputForDisplay(display.displayId)));
+            input.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb); });
             input.KeyDown([this](auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
-            { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); });
-            usbMappingsPanel_.Children().Append(LabeledControlRow(display.name, input));
-            usbMappingEditors_.push_back({ display.id, input });
+            { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb); });
+            usbMappingEditors_.push_back({ display.displayId, input });
+            return input;
+        });
+        usbMappingsPanel_.Children().Append(grid);
+    }
+
+    Grid SettingsWindow::CreatePeerInputMappingGrid(
+        std::function<Control(::DisplaySwitcher::Native::DisplayMappingRow const&)> const& createInput)
+    {
+        auto const layout = ::DisplaySwitcher::Native::PeerInputMappingLayoutModel{};
+        auto const& rows = mappingProjection_.Rows();
+        auto grid = Grid(); grid.ColumnSpacing(layout.columnSpacing); grid.RowSpacing(layout.rowSpacing);
+        auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ layout.labelColumnWidth });
+        auto nameColumn = ColumnDefinition(); nameColumn.Width(GridLength{ 1, GridUnitType::Star });
+        auto inputColumn = ColumnDefinition(); inputColumn.Width(GridLength{ layout.inputColumnWidth });
+        grid.ColumnDefinitions().Append(labelColumn); grid.ColumnDefinitions().Append(nameColumn);
+        grid.ColumnDefinitions().Append(inputColumn);
+        for (size_t index = 0; index < layout.LabelRowSpan(rows.size()); ++index)
+        {
+            auto row = RowDefinition(); row.Height(GridLengthHelper::Auto()); grid.RowDefinitions().Append(row);
         }
+
+        auto label = TextBlock(); label.Text(L"对端输入源");
+        label.VerticalAlignment(VerticalAlignment::Center);
+        Grid::SetColumn(label, 0); Grid::SetRow(label, 0);
+        Grid::SetRowSpan(label, static_cast<int>(layout.LabelRowSpan(rows.size())));
+        grid.Children().Append(label);
+        if (rows.empty())
+        {
+            auto empty = TextBlock(); empty.Text(L"当前没有已解析且可唯一绑定的物理显示器。");
+            empty.Opacity(0.72); empty.TextWrapping(TextWrapping::Wrap);
+            Grid::SetColumn(empty, 1); Grid::SetColumnSpan(empty, 2); grid.Children().Append(empty);
+            return grid;
+        }
+        for (size_t index = 0; index < rows.size(); ++index)
+        {
+            auto name = TextBlock(); name.Text(rows[index].displayName);
+            name.VerticalAlignment(VerticalAlignment::Center);
+            name.TextTrimming(TextTrimming::CharacterEllipsis);
+            auto input = createInput(rows[index]);
+            input.HorizontalAlignment(HorizontalAlignment::Stretch);
+            AutomationProperties::SetName(input, rows[index].displayName + L" 输入源");
+            Grid::SetColumn(name, 1); Grid::SetRow(name, static_cast<int>(index));
+            Grid::SetColumn(input, 2); Grid::SetRow(input, static_cast<int>(index));
+            grid.Children().Append(name); grid.Children().Append(input);
+        }
+        return grid;
     }
 
     void SettingsWindow::RebuildDisplayEditors()
@@ -931,9 +1143,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 enabled.Toggled([this, slider, showInTray](auto const& sender, auto const&)
                 {
                     auto on = sender.template as<ToggleSwitch>().IsOn(); slider.IsEnabled(on);
-                    showInTray.IsEnabled(on); if (!on) showInTray.IsOn(false); SaveImmediately();
+                    showInTray.IsEnabled(on); if (!on) showInTray.IsOn(false); SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
                 });
-                showInTray.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
+                showInTray.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
                 slider.ValueChanged([value](auto const& sender, auto const&) { value.Text(std::to_wstring(static_cast<int>(std::lround(sender.template as<Slider>().Value())))); });
                 slider.PointerCaptureLost(Microsoft::UI::Xaml::Input::PointerEventHandler(
                     [this, id = display.id, code, slider](IInspectable const&, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)
@@ -984,13 +1196,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             profile->peerHost = Trim(controls.peerHost.Text().c_str());
             profile->peerPort = ParseInteger(controls.peerPort.Text().c_str(), 10, 1, 65535).value_or(-1);
             profile->pairingCode = controls.pairingCode.Password().c_str();
-            profile->displayInputs.clear();
+            std::vector<::DisplaySwitcher::Native::VisibleDisplayInputEdit> visibleEdits;
             for (auto const& mapping : controls.mappings)
             {
-                auto text = Trim(mapping.peerInput.Text().c_str());
-                if (text.empty()) continue;
-                profile->displayInputs.push_back({ mapping.displayId, ParseInteger(text, 10, 0, 65535).value_or(-1) });
+                auto parsed = ::DisplaySwitcher::Native::ParseInputSourceText(mapping.peerInput.Text().c_str());
+                visibleEdits.push_back({ mapping.displayId,
+                    parsed.status == ::DisplaySwitcher::Native::InputSourceTextStatus::Invalid
+                        ? std::optional<int>{ -1 } : parsed.value });
             }
+            profile->displayInputs = ::DisplaySwitcher::Native::MergeVisibleProfileDisplayInputs(
+                profile->displayInputs, visibleEdits);
         }
     }
 
@@ -1011,16 +1226,16 @@ namespace winrt::DisplaySwitcher::Native::implementation
             controls.peerPort = TextBox(); Header(controls.peerPort, L"对端端口"); controls.peerPort.Text(std::to_wstring(profile.peerPort)); controls.peerPort.MaxLength(5);
             controls.pairingCode = PasswordBox(); Header(controls.pairingCode, L"配对密码"); controls.pairingCode.Password(profile.pairingCode);
             controls.pairingCode.PlaceholderText(L"NFC 后 8–128 个 UTF-8 字节");
-            controls.enabled.Toggled([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.name.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.peerHost.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.peerPort.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-            controls.pairingCode.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
+            controls.enabled.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.name.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.peerHost.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.peerPort.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+            controls.pairingCode.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
             auto commitOnReturn = [this](Control const& control)
             {
                 control.KeyUp(Microsoft::UI::Xaml::Input::KeyEventHandler(
                     [this](IInspectable const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
-                    { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(); }));
+                    { if (args.Key() == Windows::System::VirtualKey::Enter) SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); }));
             };
             commitOnReturn(controls.name); commitOnReturn(controls.peerHost);
             commitOnReturn(controls.peerPort); commitOnReturn(controls.pairingCode);
@@ -1030,40 +1245,29 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 L"配置名称", controls.name, controls.enabled, L"启用此协同配置"));
             fields.Children().Append(PeerAddressRow(controls.peerHost, controls.peerPort));
             fields.Children().Append(LabeledWideControlRow(L"配对密码", controls.pairingCode));
-            fields.Children().Append(CreateSubheading(L"对端输入源"));
-
-            auto addMapping = [&](std::wstring const& displayId, std::wstring const& label, bool unavailable)
+            auto mappingGrid = CreatePeerInputMappingGrid([&](auto const& display)
             {
-                ProfileMappingControls mapping; mapping.displayId = displayId; mapping.peerInput = TextBox();
-                Header(mapping.peerInput, label.c_str()); mapping.peerInput.MaxLength(5);
+                ProfileMappingControls mapping; mapping.displayId = display.displayId; mapping.peerInput = TextBox();
+                mapping.peerInput.MaxLength(5);
                 auto existing = std::find_if(profile.displayInputs.begin(), profile.displayInputs.end(), [&](auto const& item)
-                { return _wcsicmp(item.displayId.c_str(), displayId.c_str()) == 0; });
-                if (existing != profile.displayInputs.end()) mapping.peerInput.Text(std::to_wstring(existing->peerInput));
-                if (unavailable) mapping.peerInput.Description(box_value(L"该显示器已移除；映射保留但不会自动绑定到其他显示器。"));
-                mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(); });
-                fields.Children().Append(LabeledControlRow(label, mapping.peerInput));
+                { return _wcsicmp(item.displayId.c_str(), display.displayId.c_str()) == 0; });
+                if (existing != profile.displayInputs.end())
+                    mapping.peerInput.Text(::DisplaySwitcher::Native::FormatInputSourceText(existing->peerInput));
+                mapping.peerInput.LostFocus([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration); });
+                auto input = mapping.peerInput;
                 controls.mappings.push_back(std::move(mapping));
-            };
-            for (auto const& display : workingDisplays_) addMapping(display.id, display.name, false);
-            for (auto const& mapping : profile.displayInputs)
-                if (std::none_of(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
-                { return _wcsicmp(display.id.c_str(), mapping.displayId.c_str()) == 0; }))
-                    addMapping(mapping.displayId, L"已移除显示器", true);
-            if (workingDisplays_.empty() && profile.displayInputs.empty())
-            {
-                auto empty = TextBlock(); empty.Text(L"尚未添加显示器。此配置不会执行显示器写入。"); empty.Opacity(0.72);
-                fields.Children().Append(empty);
-            }
+                return input;
+            });
+            fields.Children().Append(mappingGrid);
 
             auto triggerSummary = TextBlock();
             triggerSummary.Text(profile.triggerDevices.empty() ? L"未引用本机触发设备" : L"已引用 " + std::to_wstring(profile.triggerDevices.size()) + L" 个本机触发设备");
             triggerSummary.Opacity(0.72); fields.Children().Append(triggerSummary);
             auto remove = Button(); remove.Content(box_value(L"删除配置")); remove.IsEnabled(workingProfiles_.size() > 1);
             remove.Click([this, id = profile.id](auto const&, auto const&) { RemoveProfile(id); });
-            auto autoSave = TextBlock(); autoSave.Text(L"修改已自动保存"); autoSave.Opacity(0.72);
-            autoSave.VerticalAlignment(VerticalAlignment::Center);
-            fields.Children().Append(CreateTwoColumn(remove, autoSave));
-            profileEditorsPanel_.Children().Append(CreateCard(fields));
+            ApplyStandardButtonGeometry(remove);
+            fields.Children().Append(remove);
+            profileEditorsPanel_.Children().Append(fields);
             profileEditors_.push_back(std::move(controls));
         }
     }
@@ -1110,8 +1314,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         CaptureProfileEditors();
         if (usbLearning_.Active() && _wcsicmp(usbLearning_.ProfileId().c_str(), id.c_str()) == 0)
-            EndUsbLearning(L"目标配置已删除；原 USB 绑定保持不变。");
-        if (workingProfiles_.size() <= 1) { ShowValidationError(L"至少保留一个协同配置。"); return; }
+            EndUsbLearning(::DisplaySwitcher::Native::UsbLearningCompletion::Invalidated,
+                L"目标配置已删除；原 USB 绑定保持不变。");
+        if (workingProfiles_.size() <= 1) { SetOperationFeedback(L"至少保留一个协同配置。", true); return; }
         auto found = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item) { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
         if (found == workingProfiles_.end()) return;
         auto dialog = ContentDialog(); dialog.Title(box_value(L"删除协同配置？"));
@@ -1128,7 +1333,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 usbSelectedProfileId_.clear();
                 usbSwitchDisplaysOnArrival_.IsOn(false);
             }
-            RebuildProfileEditors(); SaveImmediately();
+            RebuildProfileEditors(); SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration);
         });
     }
 
@@ -1149,11 +1354,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             SetConnectionStatus(L"本机配置不完整", false);
             std::wstring message = L"本机配置不完整";
             for (auto const& problem : result.problems) message += L"；" + problem;
-            ShowValidationError(message);
+            SetOperationFeedback(message, true);
             return;
         }
-        validation_.Text(L"正在检测；不会执行 USB、蓝牙、唤醒或显示器操作。");
-        validation_.Visibility(Visibility::Visible);
+        SetOperationFeedback(L"正在检测；不会执行 USB、蓝牙、唤醒或显示器操作。");
         SetConnectionStatus(L"正在检测…", false);
         detectingProfileId_ = id;
         auto generation = ++profileDetectionGeneration_;
@@ -1178,24 +1382,24 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (result.outcome == Outcome::NetworkNotReady)
         {
             SetConnectionStatus(L"网络权限未就绪", false);
-            ShowValidationError(L"请先点击“检查网络权限”，确认本机 UDP 监听已就绪后再检测连接。"); return;
+            SetOperationFeedback(L"请先点击“检查网络权限”，确认本机 UDP 监听已就绪后再检测连接。", true); return;
         }
         if (result.outcome == Outcome::SendFailed)
         {
             SetConnectionStatus(L"探测发送失败", false);
-            ShowValidationError(L"无法发送状态探测。请检查对端地址、端口和本机网络状态。"); return;
+            SetOperationFeedback(L"无法发送状态探测。请检查对端地址、端口和本机网络状态。", true); return;
         }
         if (result.outcome == Outcome::LocalConfigurationIncomplete)
         {
-            SetConnectionStatus(L"本机配置不完整", false); ShowValidationError(L"本机配置不完整，未发送探测消息。"); return;
+            SetConnectionStatus(L"本机配置不完整", false); SetOperationFeedback(L"本机配置不完整，未发送探测消息。", true); return;
         }
         if (result.outcome == Outcome::AuthenticationFailed)
         {
-            SetConnectionStatus(L"认证失败", false); ShowValidationError(L"v2 对端已响应，但认证失败。请检查配对密码。"); return;
+            SetConnectionStatus(L"认证失败", false); SetOperationFeedback(L"v2 对端已响应，但认证失败。请检查配对密码。", true); return;
         }
         if (result.outcome == Outcome::NoResponse)
         {
-            SetConnectionStatus(L"无响应", false); ShowValidationError(L"v2 状态探测无响应。"); return;
+            SetConnectionStatus(L"无响应", false); SetOperationFeedback(L"v2 状态探测无响应。", true); return;
         }
         auto profile = std::find_if(workingProfiles_.begin(), workingProfiles_.end(), [&](auto const& item)
         { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
@@ -1204,10 +1408,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (!result.endpointConfirmationRequired)
         {
             ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*profile, result, false);
-            if (SaveImmediately())
+            if (SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration))
             {
                 SetConnectionStatus(L"v2 可用", true);
-                validation_.Text(L"v2 可用；检测结果已保存，未执行任何硬件操作。"); validation_.Visibility(Visibility::Visible);
+                SetOperationFeedback(L"v2 可用；检测结果已保存，未执行任何硬件操作。");
             }
             return;
         }
@@ -1228,7 +1432,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (status != Windows::Foundation::AsyncStatus::Completed || operation.GetResults() != ContentDialogResult::Primary)
             {
                 self->SetConnectionStatus(L"v2 可用，对端身份未确认", false);
-                self->validation_.Text(L"未确认对端身份；原配置保持不变。"); self->validation_.Visibility(Visibility::Visible); return;
+                self->SetOperationFeedback(L"未确认对端身份；原配置保持不变。"); return;
             }
             auto target = std::find_if(self->workingProfiles_.begin(), self->workingProfiles_.end(), [&](auto const& item)
             { return _wcsicmp(item.id.c_str(), id.c_str()) == 0; });
@@ -1237,10 +1441,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
             confirmed.outcome = ::DisplaySwitcher::Native::ProfileDetectionOutcome::V2Available;
             confirmed.observedEndpointId = observed; confirmed.endpointConfirmationRequired = true;
             ::DisplaySwitcher::Native::ApplyProfileDetectionResult(*target, confirmed, true);
-            if (self->SaveImmediately())
+            if (self->SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Collaboration))
             {
                 self->SetConnectionStatus(L"v2 可用，对端身份已确认", true);
-                self->validation_.Text(L"对端身份已确认并保存。"); self->validation_.Visibility(Visibility::Visible);
+                self->SetOperationFeedback(L"对端身份已确认并保存。");
             }
         });
     }
@@ -1274,13 +1478,13 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::ReadDdc(std::wstring const& displayId)
     {
-        if (!readDdc_) { ShowValidationError(L"硬件 DDC 读取服务不可用。"); return; }
+        if (!readDdc_) { SetOperationFeedback(L"硬件 DDC 读取服务不可用。", true); return; }
         auto config = WorkingDdcConfig();
         auto token = ddcCancellation_.Begin();
         auto operation = readDdc_;
         auto dispatcher = DispatcherQueue();
         auto strong = get_strong();
-        validation_.Text(L"正在读取硬件 DDC 状态…"); validation_.Visibility(Visibility::Visible);
+        SetOperationFeedback(L"正在读取硬件 DDC 状态…");
         std::thread([strong, dispatcher, operation, config = std::move(config), displayId, token]() mutable
         {
             ::DisplaySwitcher::Native::DdcControlBatchResult result;
@@ -1295,14 +1499,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
 
     void SettingsWindow::WriteDdc(std::wstring const& displayId, ::DisplaySwitcher::Native::DdcVcpCode code, int value)
     {
-        if (!writeDdc_) { ShowValidationError(L"硬件 DDC 写入服务不可用。"); return; }
+        if (!writeDdc_) { SetOperationFeedback(L"硬件 DDC 写入服务不可用。", true); return; }
         auto config = WorkingDdcConfig();
         auto token = ddcCancellation_.Begin();
         auto operation = writeDdc_;
         auto linkAll = original_.linkAllDisplays;
         auto dispatcher = DispatcherQueue();
         auto strong = get_strong();
-        validation_.Text(L"正在提交硬件 DDC 设置…"); validation_.Visibility(Visibility::Visible);
+        SetOperationFeedback(L"正在提交硬件 DDC 设置…");
         std::thread([strong, dispatcher, operation, config = std::move(config), displayId, code, value, linkAll, token]() mutable
         {
             ::DisplaySwitcher::Native::DdcControlBatchResult result;
@@ -1337,7 +1541,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             if (!commitDdcCache_ || !commitDdcCache_(cacheDisplays))
             {
                 ddcCancellation_.Cancel();
-                ShowValidationError(L"无法保存 DDC 估计缓存；当前进程已进入安全状态。");
+                SetOperationFeedback(L"无法保存 DDC 估计缓存；当前进程已进入安全状态。", true);
                 return;
             }
             workingDisplays_ = std::move(cacheDisplays);
@@ -1354,22 +1558,21 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 failed != result.items.end() ? *failed : *first, write));
         }
         auto failures = std::count_if(result.items.begin(), result.items.end(), [](auto const& item) { return !item.success || !item.trusted; });
-        if (result.items.empty()) ShowValidationError(L"未执行 DDC 操作：功能可能已关闭或显示器配置不完整。");
+        if (result.items.empty()) SetOperationFeedback(L"未执行 DDC 操作：功能可能已关闭或显示器配置不完整。", true);
         else if (failures)
         {
             auto first = std::find_if(result.items.begin(), result.items.end(), [](auto const& item) { return !item.success || !item.trusted; });
-            ShowValidationError(first->error == ::DisplaySwitcher::Native::DdcErrorKind::AmbiguousMonitor
+            SetOperationFeedback(first->error == ::DisplaySwitcher::Native::DdcErrorKind::AmbiguousMonitor
                 ? L"硬件 DDC 操作失败：显示器匹配不唯一。"
-                : (write ? L"部分硬件 DDC 写入失败。" : L"部分硬件 DDC 读取失败。"));
+                : (write ? L"部分硬件 DDC 写入失败。" : L"部分硬件 DDC 读取失败。"), true);
         }
         else
         {
-            validation_.Text(write ? L"硬件 DDC 设置已提交。" : L"硬件 DDC 状态已读取。");
-            validation_.Visibility(Visibility::Visible);
+            SetOperationFeedback(write ? L"硬件 DDC 设置已提交。" : L"硬件 DDC 状态已读取。");
         }
     }
 
-    bool SettingsWindow::Save(bool hideAfterSave)
+    bool SettingsWindow::Save(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, bool hideAfterSave)
     {
         if (loading_) return false;
         ddcCancellation_.Cancel();
@@ -1377,7 +1580,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         {
             tabs_.SelectedIndex(tab);
             LoadValues(original_);
-            ShowValidationError(message);
+            SetOperationFeedback(message, true);
         };
         CaptureProfileEditors();
         std::set<std::wstring> profileNames;
@@ -1392,7 +1595,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
             { reject(2, profile.name + L"的配对密码在 NFC 规范化后必须为 8–128 个 UTF-8 字节。"); return false; }
             profile.pairingCode = ::DisplaySwitcher::Native::AppConfig::NormalizeNfc(profile.pairingCode);
             for (auto const& mapping : profile.displayInputs)
-                if (mapping.peerInput < 0 || mapping.peerInput > 65535)
+                if (!::DisplaySwitcher::Native::IsValidInputSourceValue(mapping.peerInput))
                 { reject(2, profile.name + L"包含无效的显示器输入源编号。"); return false; }
             if (profile.coordinationEnabled)
             {
@@ -1406,16 +1609,18 @@ namespace winrt::DisplaySwitcher::Native::implementation
         CaptureDisplayEditors();
         if (usbAutomation_.IsOn() && workingDisplays_.empty())
         { reject(1, L"启用 USB 自动切换前，请先完成显示器配置。"); return false; }
-        std::vector<::DisplaySwitcher::Native::UsbDisplayInputMapping> usbMappings;
+        std::vector<::DisplaySwitcher::Native::VisibleDisplayInputEdit> visibleUsbEdits;
         bool hasUsbMapping{};
         for (auto const& editor : usbMappingEditors_)
         {
-            auto text = Trim(editor.targetInput.Text().c_str());
-            auto value = text.empty() ? std::optional<int>{} : ParseInteger(text, 10, 0, 65535);
-            if (!text.empty() && !value) { reject(1, L"USB 显示器输入源必须为 0–65535。"); return false; }
-            usbMappings.push_back({ editor.displayId, value });
-            if (value) hasUsbMapping = true;
+            auto parsed = ::DisplaySwitcher::Native::ParseInputSourceText(editor.targetInput.Text().c_str());
+            if (parsed.status == ::DisplaySwitcher::Native::InputSourceTextStatus::Invalid)
+            { reject(1, L"USB 显示器输入源必须留空或填写 1–65535。"); return false; }
+            visibleUsbEdits.push_back({ editor.displayId, parsed.value });
+            if (parsed.value) hasUsbMapping = true;
         }
+        auto usbMappings = ::DisplaySwitcher::Native::MergeVisibleUsbDisplayInputs(
+            original_.usbSwitch.displayInputs, visibleUsbEdits);
         if (usbAutomation_.IsOn() && (selectedUsbLocalReference_.empty() || !hasUsbMapping))
         { reject(1, L"启用 USB 自动切换前，必须选择一个设备并至少配置一台显示器输入源。"); return false; }
         if (usbSwitchDisplaysOnArrival_.IsOn())
@@ -1457,22 +1662,40 @@ namespace winrt::DisplaySwitcher::Native::implementation
         for (auto& display : result.displays) display.macInput = -1;
         result.displayConfigurationSafeMode = false; result.startWithWindows = autoStart_.IsOn();
         result.detailedDiagnosticRecording = detailedDiagnostics_.IsOn();
+        if (AppConfigEquals(original_, result))
+        {
+            if (hideAfterSave) appWindow_.Hide();
+            return true;
+        }
         if (!saved_ || !saved_(result))
         {
-            ShowValidationError(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。");
+            auto action = saveFeedback_.RecordSaveResult(scope, true, false,
+                L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。", SteadyMs());
+            if (action == ::DisplaySwitcher::Native::SettingsSaveFeedbackAction::ShowOperationFailure)
+                SetOperationFeedback(L"设置未保存；旧配置已保留，自动协同和硬件操作已安全停用。", true);
+            else if (action == ::DisplaySwitcher::Native::SettingsSaveFeedbackAction::ShowScopedFeedback)
+            {
+                ResetSaveFeedbackTimer();
+                ApplySaveFeedback(std::chrono::milliseconds{});
+            }
             LoadValues(original_);
             return false;
         }
         original_ = result;
-        validation_.Text(L"已保存"); validation_.Visibility(Visibility::Visible);
+        auto action = saveFeedback_.RecordSaveResult(scope, true, true, L"✓ 已保存", SteadyMs());
+        if (action == ::DisplaySwitcher::Native::SettingsSaveFeedbackAction::ShowScopedFeedback)
+        {
+            ResetSaveFeedbackTimer();
+            ApplySaveFeedback(std::chrono::milliseconds{});
+        }
         if (hideAfterSave) appWindow_.Hide();
         return true;
     }
 
-    bool SettingsWindow::SaveImmediately()
+    bool SettingsWindow::SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope)
     {
         if (!detectingProfileId_.empty()) CancelProfileDetection();
-        return !loading_ && Save(false);
+        return !loading_ && Save(scope, false);
     }
 
     void SettingsWindow::RefreshDiagnosticPreview()
@@ -1491,12 +1714,81 @@ namespace winrt::DisplaySwitcher::Native::implementation
         package.SetText(visible);
         Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
         Windows::ApplicationModel::DataTransfer::Clipboard::Flush();
-        validation_.Text(L"已复制当前可见的诊断预览。");
-        validation_.Visibility(Visibility::Visible);
+        SetOperationFeedback(L"已复制当前可见的诊断预览。");
     }
 
-    void SettingsWindow::ShowValidationError(std::wstring const& message)
+    void SettingsWindow::SetOperationFeedback(std::wstring const& message,
+        ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity severity)
     {
-        validation_.Text(message); validation_.Visibility(Visibility::Visible);
+        if (!operationStatus_) return;
+        operationStatus_.Text(message);
+        auto success = severity == ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity::Success;
+        auto failure = severity == ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity::Failure;
+        operationStatus_.Foreground(ThemeBrush(
+            success ? L"SystemFillColorSuccessBrush" :
+                (failure ? L"SystemFillColorCriticalBrush" : L"TextFillColorSecondaryBrush"),
+            success ? Colors::Green() : (failure ? Colors::Red() : Colors::Gray())));
+        operationStatus_.Visibility(message.empty() ? Visibility::Collapsed : Visibility::Visible);
+    }
+
+    void SettingsWindow::SetOperationFeedback(std::wstring const& message, bool failure)
+    {
+        SetOperationFeedback(message, failure ?
+            ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity::Failure :
+            ::DisplaySwitcher::Native::SettingsOperationFeedbackSeverity::Informational);
+    }
+
+    void SettingsWindow::AppendLayoutElement(Panel const& parent, UIElement const& child,
+        ::DisplaySwitcher::Native::SettingsLayoutElement element,
+        ::DisplaySwitcher::Native::SettingsLayoutRegion region)
+    {
+        if (!layoutPresenter_.Attach(element, region))
+            throw hresult_illegal_method_call(L"Settings layout element has an invalid or duplicate parent.");
+        parent.Children().Append(child);
+    }
+
+    void SettingsWindow::ShowSaveFailure(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message)
+    {
+        if (scope == ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None) return;
+        saveFeedback_.RecordSaveResult(scope, true, false, message, SteadyMs());
+        ResetSaveFeedbackTimer();
+        ApplySaveFeedback(std::chrono::milliseconds{});
+    }
+
+    void SettingsWindow::ShowSaveSuccess(::DisplaySwitcher::Native::SettingsSaveFeedbackScope scope, std::wstring const& message)
+    {
+        if (scope == ::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None) return;
+        saveFeedback_.RecordSaveResult(scope, true, true, message, SteadyMs());
+        ResetSaveFeedbackTimer();
+        ApplySaveFeedback(std::chrono::milliseconds{});
+    }
+
+    void SettingsWindow::ResetSaveFeedbackTimer()
+    {
+        if (!saveFeedbackTimer_) return;
+        saveFeedbackTimer_.Stop();
+        if (saveFeedback_.HasActiveSuccess()) saveFeedbackTimer_.Start();
+    }
+
+    void SettingsWindow::ApplySaveFeedback(std::chrono::milliseconds const&)
+    {
+        if (!saveStatus_) return;
+        auto selected = tabs_ ? tabs_.SelectedIndex() : -1;
+        auto page = selected >= 0 && selected <= static_cast<int32_t>(::DisplaySwitcher::Native::SettingsPage::About)
+            ? static_cast<::DisplaySwitcher::Native::SettingsPage>(selected)
+            : ::DisplaySwitcher::Native::SettingsPage::General;
+        auto feedback = saveFeedback_.VisibleFeedback(page, SteadyMs());
+        saveStatus_.Text(feedback ? feedback->message : L"");
+        saveStatus_.Foreground(ThemeBrush(
+            feedback && feedback->failure ? L"SystemFillColorCriticalBrush" : L"SystemFillColorSuccessBrush",
+            feedback && feedback->failure ? Colors::Red() : Colors::Green()));
+        saveStatus_.Visibility(feedback ? Visibility::Visible : Visibility::Collapsed);
+        if (!saveFeedback_.HasActiveSuccess() && saveFeedbackTimer_) saveFeedbackTimer_.Stop();
+    }
+
+    int64_t SettingsWindow::SteadyMs()
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 }

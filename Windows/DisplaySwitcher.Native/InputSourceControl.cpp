@@ -7,6 +7,8 @@ namespace DisplaySwitcher::Native
     InputSourceWriteResult WriteInputSourceWithOneRefresh(IInputSourceTransport& transport,
         std::wstring const& monitorId, int value, DdcCancellationToken const& cancellation)
     {
+        if (!IsValidInputSourceValue(value))
+            return { false, DdcErrorKind::InvalidValue, L"缺少有效输入源映射" };
         auto result = transport.WriteInputSource(monitorId, value, cancellation);
         if (!result.success && !cancellation.IsCanceled()
             && (result.error == DdcErrorKind::WriteFailed || result.error == DdcErrorKind::MonitorUnavailable))
@@ -44,7 +46,12 @@ namespace DisplaySwitcher::Native
             if (topologyChanged || !Allowed(config, cancellation)) break;
             ActionResult item;
             DdcErrorKind itemError{ DdcErrorKind::None };
-            if (!IsDisplayDdcResolved(display))
+            if (!IsValidInputSourceValue(display.macInput))
+            {
+                itemError = DdcErrorKind::InvalidValue;
+                item = { false, L"missing_mapping" };
+            }
+            else if (!IsDisplayDdcResolved(display))
             {
                 itemError = display.bindingStatus == DisplayBindingStatus::Ambiguous
                     || display.bindingStatus == DisplayBindingStatus::NeedsConfirmation
