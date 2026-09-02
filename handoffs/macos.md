@@ -1,6 +1,21 @@
 # macOS 交接记录
 
-## 当前状态：DS-025 USB 与协同设置布局对齐
+## 当前状态：DS-027 联动 DDC 统一控件
+
+- 日期：2026-09-02
+- 分支：`codex/macos-linked-ddc-unified-controls`
+- 基线：`origin/main@b7d2cc9ccef26b757f8b82d3aeaa0831c98f3908`。
+- 实现提交：本任务提交。
+- PR：本任务创建，目标 `main`，保持开放等待 GUI/实机验收。
+- 根因：持久配置 `linkAllDisplays` 只在 `setControl` 中扩大写入目标；设置页仍为每台显示器创建完整滑杆，托盘仍为每台显示器创建子菜单，因此“联动”没有对应的展示投影。另一个隐患是任意设置保存都会从磁盘重载 `configurations`，不能把该数组继续当作可信在线拓扑。
+- 实现：新增纯 `LinkedDDCControlProjection`，分别投影已配置可见性和最后一次成功检测后在线、稳定 ID/selector 均唯一的写入目标。联动开启时，设置页统一投影亮度/对比度/音量公共滑杆；逐显示器卡片只保留功能、托盘开关、读取按钮和状态。托盘改为最多三个顶层公共滑杆，不再创建显示器分组；联动关闭时原逐显示器结构原样恢复。
+- 值与安全：所有目标可信值相同才显示该值；不同显示“混合”，缺任一可信值显示“—”，不求平均。最大值取所有在线目标有效最大值的最小值，未知最大值以 100 参与安全交集；越界值生成零请求。一次拖动向所有启用该功能的在线唯一目标提交相同绝对值，仍由原 `DDCLatestWinsCoordinator` 提供按目标 latest-wins、取消、代次与部分失败隔离。
+- 运行时拓扑：最后一次成功检测的目标另存于运行时集合；磁盘保存/重载只更新功能与托盘偏好，不会把离线持久条目重新加入写入目标。检测开始或失败期间公共滑杆保留配置可见性但无运行目标并禁用；成功后设置页与托盘立即重建。
+- 自动验证：DS-007/DS-024 定向投影及 fake 写入 66/66 通过；完整 XCTest 201/201 通过，仅保留既有 `InputSourceSwitching.swift` QoS runtime warning。Release `build-app.sh` 使用有效 Apple Development 身份完成，输出 App 与 ZIP 解压副本均通过 `codesign --verify --deep --strict --verbose=4`，ZIP 完整性通过；测试包 SHA-256 `05dc5114aef441d400ffdd27a3c9816012a513ef6e587989ce93fa95025f8eb0`。未运行真实 DDC、USB、网络、唤醒或输入源动作。
+- 待验证：真实 0/1/多显示器、值相同/不同、不同最大值、离线/重新检测、联动开关即时重建、托盘扁平布局、浅/深色与 VoiceOver，以及单台写入失败不影响其他目标。
+- 安全边界：未修改 Windows、`PROTOCOL.md`、共享合同、schema、版本、系统权限或签名配置；未执行真实硬件或网络动作。
+
+## 上一状态：DS-025 USB 与协同设置布局对齐
 
 - 日期：2026-09-02
 - 分支：`codex/macos-safe-input-mapping-feedback`（普通快进更新 PR head `codex/macos-usb-collaboration-layout`）

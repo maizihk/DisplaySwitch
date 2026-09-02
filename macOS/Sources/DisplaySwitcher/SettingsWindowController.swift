@@ -217,11 +217,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onInspectPeer: ((CollaborationProfile, @escaping (PeerCapabilityInspectionResult) -> Void) -> Void)?
     var onReadDDC: ((String) -> Void)?
     var onWriteDDC: ((String, DDCCommand, Int) -> Void)?
+    var onWriteLinkedDDC: ((DDCCommand, Int) -> Void)?
     var onRefreshDisplays: (() -> Void)?
     var onDetailedDiagnosticRecordingChanged: ((Bool) -> Void)?
     var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
     var cachedDDCValue: ((String, DDCCommand) -> Int?)?
+    var resolvedDisplayConfigurations: (() -> [DisplayConfiguration])?
     var diagnosticReportProvider: (() -> DiagnosticReport)?
 
     var isSettingsVisible: Bool { window?.isVisible == true }
@@ -284,6 +286,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var displaySliders: [Int: [DDCCommand: NSSlider]] = [:]
     private var displayValueLabels: [Int: [DDCCommand: NSTextField]] = [:]
     private var displayStatusLabels: [Int: NSTextField] = [:]
+    private var linkedDisplaySliders: [DDCCommand: NSSlider] = [:]
+    private var linkedDisplayValueLabels: [DDCCommand: NSTextField] = [:]
+    private var displayValueSamples: [String: [DDCCommand: DDCControlValueSample]] = [:]
+    private var runtimeDisplayConfigurations: [DisplayConfiguration] = []
     private let displayStack = NSStackView()
     private var usbLearningPending = false
     private var usbInputFields: [String: NSTextField] = [:]
@@ -347,6 +353,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }) else { return }
         let index = offset + 1
         for (command, resolved) in values {
+            displayValueSamples[stableID.lowercased(), default: [:]][command] = DDCControlValueSample(
+                value: resolved.reading.current,
+                maximum: resolved.reading.maximum,
+                estimated: resolved.estimated
+            )
             displaySliders[index]?[command]?.maxValue = Double(max(1, resolved.reading.maximum))
             displaySliders[index]?[command]?.integerValue = resolved.reading.current
             displayValueLabels[index]?[command]?.stringValue = resolved.estimated
@@ -355,6 +366,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayStatusLabels[index]?.stringValue = DisplayDDCStatusPresentation.read(
             values: values, skipReason: skipReason
         )
+        refreshLinkedDisplayControls()
     }
 
     func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?) {
@@ -363,16 +375,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         }) else { return }
         let index = offset + 1
         if let value {
+            let previousMaximum = displayValueSamples[stableID.lowercased()]?[command]?.maximum
+                ?? LinkedDDCControlProjection.safeDefaultMaximum
+            displayValueSamples[stableID.lowercased(), default: [:]][command] = DDCControlValueSample(
+                value: value,
+                maximum: max(previousMaximum, max(value, 1)),
+                estimated: false
+            )
             displayValueLabels[index]?[command]?.stringValue = "\(value)"
         }
         displayStatusLabels[index]?.stringValue = DisplayDDCStatusPresentation.write(
             value: value, error: error
         )
+        refreshLinkedDisplayControls()
     }
 
     func updateUSBSwitchStatus(_ text: String, isError: Bool) {
         usbStatusLabel.stringValue = text
         usbStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    func refreshDisplayConfigurationProjection() {
+        guard isSettingsVisible else { return }
+        reloadValues()
     }
 
     func presentConfigurationSafetyWarning(_ error: DisplayConfigurationStoreError) {
@@ -925,6 +950,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displaySliders.removeAll()
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
+        linkedDisplaySliders.removeAll()
+        linkedDisplayValueLabels.removeAll()
 
         displayStack.addArrangedSubview(module(
             title: "显示器控制",
@@ -992,7 +1019,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func displayControlModuleViews() -> [NSView] {
-        DisplayControlModuleContent.items.compactMap { item in
+        let layout = displayControlLayoutProjection()
+        return DisplayControlModuleContent.items(
+            showsLinkedControls: layout.showsLinkedControls
+        ).compactMap { item in
             switch item {
             case .separator:
                 return separator()
@@ -1003,6 +1033,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                     description: "只联动同时开启相同控制项的显示器。",
                     symbolName: "link"
                 )
+            case .linkedDisplayControls:
+                return linkedDisplayControlForm()
             case .displayReadStatus, .displayControls:
                 return nil
             }
@@ -1018,7 +1050,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 return separator()
             case .displayControls:
                 return displayForm(index: index)
-            case .linkAllDisplays:
+            case .linkAllDisplays, .linkedDisplayControls:
                 return nil
             }
         }
@@ -1092,11 +1124,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func displayForm(index: Int) -> NSView {
-        let headings = NSStackView(views: [
+        let showsIndividualSliders = displayControlLayoutProjection().showsIndividualSliders
+        var headingViews: [NSView] = [
             fixedLabel("", width: 64), fixedLabel("功能", width: 44),
-            fixedLabel("在托盘显示", width: 82), fixedLabel("", width: 300),
-            fixedLabel("数值", width: 42)
-        ])
+            fixedLabel("在托盘显示", width: 82)
+        ]
+        if showsIndividualSliders {
+            headingViews.append(fixedLabel("", width: 300))
+            headingViews.append(fixedLabel("数值", width: 42))
+        }
+        let headings = NSStackView(views: headingViews)
         headings.orientation = .horizontal
         headings.spacing = 8
 
@@ -1104,30 +1141,76 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let rows = controls.map { title, command -> NSView in
             let feature = NSSwitch()
             let tray = NSSwitch()
-            let slider = NSSlider(value: 50, minValue: 0, maxValue: 100,
-                                  target: self, action: #selector(displaySliderChanged(_:)))
-            let value = fixedLabel("—", width: 42)
             let tag = index * 1_000 + Int(command.rawValue)
             feature.tag = tag
             tray.tag = tag
-            slider.tag = tag
             feature.target = self
             feature.action = #selector(displaySettingChanged(_:))
             tray.target = self
             tray.action = #selector(displaySettingChanged(_:))
-            slider.isContinuous = true
-            slider.widthAnchor.constraint(equalToConstant: 300).isActive = true
             feature.setAccessibilityLabel("\(title)功能")
             tray.setAccessibilityLabel("\(title)在托盘显示")
-            slider.setAccessibilityLabel("\(title)数值")
             displayFeatureSwitches[index, default: [:]][command] = feature
             displayTraySwitches[index, default: [:]][command] = tray
-            displaySliders[index, default: [:]][command] = slider
-            displayValueLabels[index, default: [:]][command] = value
-            let row = NSStackView(views: [fixedLabel(title, width: 64), feature, tray, slider, value])
+            var rowViews: [NSView] = [fixedLabel(title, width: 64), feature, tray]
+            if showsIndividualSliders {
+                let slider = NSSlider(value: 50, minValue: 0, maxValue: 100,
+                                      target: self, action: #selector(displaySliderChanged(_:)))
+                let value = fixedLabel("—", width: 42)
+                slider.tag = tag
+                slider.isContinuous = true
+                slider.widthAnchor.constraint(equalToConstant: 300).isActive = true
+                slider.setAccessibilityLabel("\(title)数值")
+                displaySliders[index, default: [:]][command] = slider
+                displayValueLabels[index, default: [:]][command] = value
+                rowViews.append(slider)
+                rowViews.append(value)
+            }
+            let row = NSStackView(views: rowViews)
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 8
+            return row
+        }
+
+        let form = NSStackView(views: [headings] + rows)
+        form.orientation = .vertical
+        form.alignment = .leading
+        form.spacing = 8
+        return form
+    }
+
+    private func linkedDisplayControlForm() -> NSView {
+        let headings = NSStackView(views: [
+            fixedLabel("统一调节", width: 76), fixedLabel("", width: 424),
+            fixedLabel("数值", width: 74)
+        ])
+        headings.orientation = .horizontal
+        headings.spacing = 8
+
+        let rows = linkedDisplayControlEntries().map { entry -> NSView in
+            let slider = NSSlider(
+                value: 0,
+                minValue: 0,
+                maxValue: Double(entry.maximum),
+                target: self,
+                action: #selector(linkedDisplaySliderChanged(_:))
+            )
+            slider.tag = Int(entry.command.rawValue)
+            slider.isContinuous = true
+            slider.widthAnchor.constraint(equalToConstant: 424).isActive = true
+            slider.setAccessibilityLabel("统一\(entry.command.userFacingName)")
+            let value = fixedLabel(entry.value.displayText, width: 74)
+            value.alignment = .left
+            linkedDisplaySliders[entry.command] = slider
+            linkedDisplayValueLabels[entry.command] = value
+            let row = NSStackView(views: [
+                fixedLabel(entry.command.userFacingName, width: 76), slider, value
+            ])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 8
+            applyLinkedDisplayEntry(entry, to: slider, valueLabel: value)
             return row
         }
 
@@ -1286,12 +1369,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func displaySettingChanged(_ sender: NSSwitch) {
         if sender === linkedCheckbox {
-            persistDocument { $0.linkAllDisplays = sender.state == .on }
+            persistDocument(rebuildDisplayFormsAfterSave: true) {
+                $0.linkAllDisplays = sender.state == .on
+            }
             return
         }
         let index = sender.tag / 1_000
         guard let command = DDCCommand(rawValue: UInt8(sender.tag % 1_000)) else { return }
-        persistDocument { document in
+        persistDocument(rebuildDisplayFormsAfterSave: true) { document in
             guard document.displays.indices.contains(index - 1) else { return }
             var display = document.displays[index - 1]
             let isFeature = self.displayFeatureSwitches[index]?[command] === sender
@@ -1317,6 +1402,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displayValueLabels[index]?[command]?.stringValue = "\(value)"
         displayStatusLabels[index]?.stringValue = "正在应用"
         onWriteDDC?(display.id, command, value)
+    }
+
+    @objc private func linkedDisplaySliderChanged(_ sender: NSSlider) {
+        guard let command = DDCCommand(rawValue: UInt8(sender.tag)),
+              let entry = linkedDisplayControlEntries().first(where: { $0.command == command }),
+              sender.integerValue <= entry.maximum else { return }
+        let value = sender.integerValue
+        linkedDisplayValueLabels[command]?.stringValue = "\(value)"
+        sender.setAccessibilityValue("\(value)")
+        let targetIDs = Set(entry.targets.map { $0.stableID.lowercased() })
+        for (offset, display) in (configurationDocument?.displays ?? []).enumerated()
+            where targetIDs.contains(display.id.lowercased()) {
+            displayStatusLabels[offset + 1]?.stringValue = "正在应用"
+        }
+        onWriteLinkedDDC?(command, value)
     }
 
     @objc private func readDisplayDDC(_ sender: NSButton) {
@@ -1432,6 +1532,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     @discardableResult
     private func persistDocument(
         feedbackScope: SettingsSaveFeedbackScope = .none,
+        rebuildDisplayFormsAfterSave: Bool = false,
         _ mutation: (inout DisplayConfigurationStoreV5Document) -> Void
     ) -> Bool {
         guard var document = configurationDocument else { return false }
@@ -1446,7 +1547,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             editingProfiles = document.collaborationProfiles
             clearValidationError()
             onSave?()
-            reloadValues(rebuildDisplayForms: false)
+            reloadValues(rebuildDisplayForms: rebuildDisplayFormsAfterSave)
             saveFeedbackController.recordPersistenceResult(.succeeded, scope: feedbackScope)
             return true
         } catch let error as DisplayConfigurationStoreError {
@@ -1527,6 +1628,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         reloadUSBControls(document: loaded.document)
         refreshSelectedCollaborationStatus()
         let configurations = loaded.configurations
+        runtimeDisplayConfigurations = (resolvedDisplayConfigurations?() ?? [])
+            .sorted(by: { $0.index < $1.index })
+        reconcileDDCValueSamples(in: loaded.document)
         if shouldRebuildDisplayForms {
             rebuildDisplayForms(configurations)
         }
@@ -1562,19 +1666,81 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func restoreCachedDDCValues(in document: DisplayConfigurationStoreV5Document) {
-        guard let cachedDDCValue else { return }
-        let entries = DisplayCachedValuePresentation.entries(
-            displays: document.displays,
-            cachedValue: cachedDDCValue
-        )
         let indexByStableID = Dictionary(uniqueKeysWithValues: document.displays.enumerated().map {
             ($0.element.id.lowercased(), $0.offset + 1)
         })
-        for entry in entries {
-            guard let index = indexByStableID[entry.stableID] else { continue }
-            displaySliders[index]?[entry.command]?.integerValue = entry.value
-            displayValueLabels[index]?[entry.command]?.stringValue = entry.label
+        for (stableID, values) in displayValueSamples {
+            guard let index = indexByStableID[stableID] else { continue }
+            for (command, sample) in values {
+                displaySliders[index]?[command]?.maxValue = Double(max(1, sample.maximum))
+                displaySliders[index]?[command]?.integerValue = sample.value
+                displayValueLabels[index]?[command]?.stringValue = sample.estimated
+                    ? "≈\(sample.value)" : "\(sample.value)"
+            }
         }
+        refreshLinkedDisplayControls()
+    }
+
+    private func reconcileDDCValueSamples(in document: DisplayConfigurationStoreV5Document) {
+        let validIDs = Set(document.displays.map { $0.id.lowercased() })
+        displayValueSamples = displayValueSamples.filter { validIDs.contains($0.key) }
+        guard let cachedDDCValue else { return }
+        for display in document.displays {
+            let stableID = display.id.lowercased()
+            for command in DisplaySettingsSemantics.enabledCommands(for: display)
+                where displayValueSamples[stableID]?[command] == nil {
+                guard let value = cachedDDCValue(display.id, command) else { continue }
+                displayValueSamples[stableID, default: [:]][command] = DDCControlValueSample(
+                    value: value,
+                    maximum: LinkedDDCControlProjection.safeDefaultMaximum,
+                    estimated: true
+                )
+            }
+        }
+    }
+
+    private func linkedDisplayControlEntries() -> [LinkedDDCControlProjection.Entry] {
+        guard let document = configurationDocument, document.linkAllDisplays else { return [] }
+        return LinkedDDCControlProjection.entries(
+            configurations: runtimeDisplayConfigurations,
+            displays: document.displays,
+            visibility: .settings,
+            sample: { [displayValueSamples] stableID, command in
+                displayValueSamples[stableID.lowercased()]?[command]
+            }
+        )
+    }
+
+    private func displayControlLayoutProjection() -> DisplaySettingsControlProjection {
+        DisplaySettingsControlProjection.make(
+            linkAllDisplays: configurationDocument?.linkAllDisplays == true,
+            linkedEntries: linkedDisplayControlEntries()
+        )
+    }
+
+    private func refreshLinkedDisplayControls() {
+        for entry in linkedDisplayControlEntries() {
+            guard let slider = linkedDisplaySliders[entry.command],
+                  let valueLabel = linkedDisplayValueLabels[entry.command] else { continue }
+            applyLinkedDisplayEntry(entry, to: slider, valueLabel: valueLabel)
+        }
+    }
+
+    private func applyLinkedDisplayEntry(
+        _ entry: LinkedDDCControlProjection.Entry,
+        to slider: NSSlider,
+        valueLabel: NSTextField
+    ) {
+        slider.maxValue = Double(entry.maximum)
+        slider.isEnabled = !entry.targets.isEmpty
+        switch entry.value {
+        case let .uniform(value, _):
+            slider.integerValue = min(max(value, 0), entry.maximum)
+        case .mixed, .unknown:
+            break
+        }
+        valueLabel.stringValue = entry.value.displayText
+        slider.setAccessibilityValue(entry.value.accessibilityValue)
     }
 
     private func reloadProfilePopup() {

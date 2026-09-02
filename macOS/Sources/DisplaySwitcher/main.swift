@@ -43,8 +43,9 @@ private final class SliderRowView: NSView {
         return slider
     }()
 
-    init(control: DisplayControl) {
+    init(control: DisplayControl, accessibilityPrefix: String = "") {
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 48))
+        slider.setAccessibilityLabel("\(accessibilityPrefix)\(control.title)")
 
         let icon = NSImageView()
         icon.image = NSImage(systemSymbolName: control.symbolName, accessibilityDescription: control.title)
@@ -92,6 +93,17 @@ private final class SliderRowView: NSView {
         }
         slider.integerValue = min(max(value, 0), Int(slider.maxValue))
         valueLabel.stringValue = estimated ? "≈\(slider.integerValue)" : "\(slider.integerValue)"
+        slider.setAccessibilityValue(valueLabel.stringValue)
+    }
+
+    func update(aggregate: DDCAggregateValue, maximum: Int, isEnabled: Bool) {
+        slider.maxValue = Double(max(maximum, 1))
+        slider.isEnabled = isEnabled
+        if case let .uniform(value, _) = aggregate {
+            slider.integerValue = min(max(value, 0), Int(slider.maxValue))
+        }
+        valueLabel.stringValue = aggregate.displayText
+        slider.setAccessibilityValue(aggregate.accessibilityValue)
     }
 
     @objc private func valueChanged() {
@@ -203,8 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var inspectionEventTracker = PeerInspectionEventTracker()
     private var displayControls: [Int: DisplayControls] = [:]
     private var displayMenuItems: [Int: NSMenuItem] = [:]
+    private var linkedDisplayControlRows: [DDCCommand: SliderRowView] = [:]
+    private var linkedDisplayMenuItems: [DDCCommand: NSMenuItem] = [:]
+    private var ddcValueSamples: [String: [DDCCommand: DDCControlValueSample]] = [:]
     private var profileSwitchItems: [NSMenuItem] = []
     private var configurations: [Int: DisplayConfiguration] = [:]
+    private var linkedDDCRuntimeConfigurations: [Int: DisplayConfiguration] = [:]
+    private var linkedDDCTopologyResolved = false
     private var settingsWindowHasBeenShown = false
 
     private lazy var settingsWindowController: SettingsWindowController = {
@@ -241,6 +258,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.cachedDDCValue = { [weak self] stableID, command in
             self?.ddcController.cachedValue(stableID: stableID, command: command)
         }
+        controller.resolvedDisplayConfigurations = { [weak self] in
+            guard let self, self.linkedDDCTopologyResolved else { return [] }
+            return self.linkedDDCRuntimeConfigurations.values.sorted { $0.index < $1.index }
+        }
         controller.diagnosticReportProvider = { [weak self] in
             self?.makeDiagnosticReport()
                 ?? DiagnosticReport(text: "诊断状态暂不可用。")
@@ -255,6 +276,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                   }),
                   let control = DisplayControl.allCases.first(where: { $0.ddcCommand == command }) else { return }
             self.setControl(control, value: value, fromDisplay: entry.key)
+        }
+        controller.onWriteLinkedDDC = { [weak self] command, value in
+            guard let self,
+                  let control = DisplayControl.allCases.first(where: {
+                      $0.ddcCommand == command
+                  }) else { return }
+            self.setLinkedControl(control, value: value)
         }
         controller.onRefreshDisplays = { [weak self] in
             self?.detectDisplays(showFailure: true)
@@ -312,7 +340,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         ($0.value.id ?? $0.value.selector).caseInsensitiveCompare(request.key.stableID) == .orderedSame
                     })?.key,
                     let control = DisplayControl.allCases.first(where: { $0.ddcCommand == request.key.command }) else { return }
+                    let previousMaximum = self.ddcValueSamples[request.key.stableID.lowercased()]?[request.key.command]?.maximum
+                        ?? LinkedDDCControlProjection.safeDefaultMaximum
+                    self.ddcValueSamples[request.key.stableID.lowercased(), default: [:]][request.key.command] = DDCControlValueSample(
+                        value: value,
+                        maximum: max(previousMaximum, max(value, 1)),
+                        estimated: false
+                    )
                     self.displayControls[index]?.update(control, value: value)
+                    self.refreshLinkedTrayControlRows()
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
                         value: value, error: nil
@@ -435,6 +471,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         ddcWriteCoordinator.cancelAll()
+        linkedDDCTopologyResolved = false
+        rebuildDisplayMenuItems()
+        if settingsWindowHasBeenShown {
+            settingsWindowController.refreshDisplayConfigurationProjection()
+        }
         refreshDDCOperationAccess()
         let ddcController = ddcController
         let existing = configurations.values.sorted { $0.index < $1.index }
@@ -458,8 +499,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         self.configurations = Dictionary(uniqueKeysWithValues: merged.map {
                             ($0.index, $0)
                         })
+                        self.linkedDDCRuntimeConfigurations = self.configurations
+                        self.linkedDDCTopologyResolved = true
                         ddcController.updateConfigurations(merged)
                         self.rebuildDisplayMenuItems()
+                        if self.settingsWindowHasBeenShown {
+                            self.settingsWindowController.refreshDisplayConfigurationProjection()
+                        }
                         self.presentDDCValues(for: .displayDetection)
                     } catch let error as DisplayConfigurationStoreError {
                         self.enterConfigurationSafetyState(error)
@@ -475,6 +521,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 }
             } catch {
                 DispatchQueue.main.async {
+                    self?.linkedDDCTopologyResolved = false
+                    self?.rebuildDisplayMenuItems()
+                    if self?.settingsWindowHasBeenShown == true {
+                        self?.settingsWindowController.refreshDisplayConfigurationProjection()
+                    }
                     if showFailure {
                         self?.showError(title: "显示器检测失败", error: error)
                     }
@@ -485,23 +536,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func setControl(_ control: DisplayControl, value: Int, fromDisplay displayID: Int) {
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else { return }
-        let currentConfigurations = configurations
         let document = AppPreferences.localConfiguration
-        let targetDisplays = DisplayControlTargetProjection.displayIDs(
-            selectedDisplayID: displayID,
-            availableDisplayIDs: Array(currentConfigurations.keys),
-            linkAllDisplays: document.linkAllDisplays
-        )
-        let targets = targetDisplays.compactMap { currentConfigurations[$0] }
-            .map { Self.ddcTarget(for: $0, document: document) }
-            .filter { $0.enabledCommands.contains(control.ddcCommand) }
+        if document.linkAllDisplays {
+            setLinkedControl(control, value: value)
+            return
+        }
+        guard let configuration = configurations[displayID] else { return }
+        let target = Self.ddcTarget(for: configuration, document: document)
+        guard target.enabledCommands.contains(control.ddcCommand) else { return }
+        ddcWriteCoordinator.submit(DDCWriteRequest(
+            key: DDCWriteKey(stableID: target.stableID, command: control.ddcCommand),
+            selector: target.selector,
+            value: value
+        ))
+    }
 
-        for target in targets {
-            ddcWriteCoordinator.submit(DDCWriteRequest(
-                key: DDCWriteKey(stableID: target.stableID, command: control.ddcCommand),
-                selector: target.selector,
-                value: value
-            ))
+    private func setLinkedControl(_ control: DisplayControl, value: Int) {
+        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else { return }
+        let document = AppPreferences.localConfiguration
+        guard linkedDDCTopologyResolved,
+              document.linkAllDisplays,
+              let entry = linkedDDCEntries(visibility: .settings).first(where: {
+                  $0.command == control.ddcCommand
+              }) else { return }
+        for request in LinkedDDCControlProjection.writeRequests(
+            command: control.ddcCommand,
+            value: value,
+            entry: entry
+        ) {
+            ddcWriteCoordinator.submit(request)
         }
     }
 
@@ -519,6 +582,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             let skipReason = batch.skipped[target.stableID]
             DispatchQueue.main.async {
                 guard self.settingsWindowController.isSettingsVisible else { return }
+                for (command, resolved) in result {
+                    self.ddcValueSamples[target.stableID.lowercased(), default: [:]][command] = DDCControlValueSample(
+                        value: resolved.reading.current,
+                        maximum: resolved.reading.maximum,
+                        estimated: resolved.estimated
+                    )
+                }
+                self.refreshLinkedTrayControlRows()
                 self.settingsWindowController.updateDDCValues(
                     stableID: target.stableID, values: result, skipReason: skipReason
                 )
@@ -541,6 +612,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         return UserDefaults.standard.integer(forKey: legacyKey)
     }
 
+    private func linkedDDCEntries(
+        visibility: LinkedDDCControlProjection.Visibility
+    ) -> [LinkedDDCControlProjection.Entry] {
+        guard linkedDDCTopologyResolved else { return [] }
+        let document = AppPreferences.localConfiguration
+        return LinkedDDCControlProjection.entries(
+            configurations: Array(linkedDDCRuntimeConfigurations.values),
+            displays: document.displays,
+            visibility: visibility,
+            sample: { [weak self] stableID, command in
+                guard let self else { return nil }
+                if let sample = self.ddcValueSamples[stableID.lowercased()]?[command] {
+                    return sample
+                }
+                guard let value = self.ddcController.cachedValue(
+                    stableID: stableID,
+                    command: command
+                ) else { return nil }
+                return DDCControlValueSample(
+                    value: value,
+                    maximum: LinkedDDCControlProjection.safeDefaultMaximum,
+                    estimated: true
+                )
+            }
+        )
+    }
+
     private static func ddcTarget(
         for configuration: DisplayConfiguration,
         document: DisplayConfigurationStoreV5Document
@@ -556,9 +654,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         for displayID in configurations.keys.sorted() {
             for control in DisplayControl.allCases {
                 if let value = cachedValue(displayID: displayID, control: control) {
+                    let configuration = configurations[displayID]
+                    let stableID = configuration.map { $0.id ?? $0.selector }
+                    if let stableID,
+                       ddcValueSamples[stableID.lowercased()]?[control.ddcCommand] == nil {
+                        ddcValueSamples[stableID.lowercased(), default: [:]][control.ddcCommand] = DDCControlValueSample(
+                            value: value,
+                            maximum: LinkedDDCControlProjection.safeDefaultMaximum,
+                            estimated: true
+                        )
+                    }
                     displayControls[displayID]?.update(control, value: value, estimated: true)
                 }
             }
+        }
+        refreshLinkedTrayControlRows()
+    }
+
+    private func refreshLinkedTrayControlRows() {
+        for entry in linkedDDCEntries(visibility: .tray) {
+            linkedDisplayControlRows[entry.command]?.update(
+                aggregate: entry.value,
+                maximum: entry.maximum,
+                isEnabled: !entry.targets.isEmpty
+            )
         }
     }
 
@@ -1158,15 +1277,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         for item in displayMenuItems.values {
             menu.removeItem(item)
         }
+        for item in linkedDisplayMenuItems.values {
+            menu.removeItem(item)
+        }
         displayMenuItems.removeAll()
         displayControls.removeAll()
+        linkedDisplayMenuItems.removeAll()
+        linkedDisplayControlRows.removeAll()
 
         guard var insertionIndex = menu.items.firstIndex(of: dynamicContentSeparator) else { return }
         let document = AppPreferences.localConfiguration
-        let entries = TrayDisplayMenuProjection.entries(
-            configurations: Array(configurations.values), displays: document.displays
+        let displayConfigurations: [DisplayConfiguration]
+        if document.linkAllDisplays {
+            displayConfigurations = linkedDDCTopologyResolved
+                ? Array(linkedDDCRuntimeConfigurations.values)
+                : []
+        } else {
+            displayConfigurations = Array(configurations.values)
+        }
+        let projection = TrayDisplayMenuProjection.projection(
+            configurations: displayConfigurations,
+            displays: document.displays,
+            linkAllDisplays: document.linkAllDisplays
         )
-        for entry in entries {
+        for command in projection.linkedCommands {
+            guard let control = DisplayControl.allCases.first(where: {
+                $0.ddcCommand == command
+            }) else { continue }
+            let row = SliderRowView(control: control, accessibilityPrefix: "统一")
+            row.onChange = { [weak self] value in
+                self?.setLinkedControl(control, value: value)
+            }
+            let item = NSMenuItem()
+            item.isEnabled = true
+            item.view = row
+            linkedDisplayControlRows[command] = row
+            linkedDisplayMenuItems[command] = item
+            menu.insertItem(item, at: insertionIndex)
+            insertionIndex += 1
+        }
+        for entry in projection.displayEntries {
             let displayID = entry.displayID
             let enabledControls = Set(DisplayControl.allCases.filter {
                 entry.commands.contains($0.ddcCommand)
@@ -1182,6 +1332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             menu.insertItem(displayItem, at: insertionIndex)
             insertionIndex += 1
         }
+        refreshLinkedTrayControlRows()
         refreshDynamicContentSeparator()
     }
 
@@ -1204,7 +1355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func refreshDynamicContentSeparator() {
         dynamicContentSeparator.isHidden = !TrayMenuSeparatorProjection.showsDynamicContentSeparator(
             profileCount: profileSwitchItems.count,
-            displayGroupCount: displayMenuItems.count
+            displayControlItemCount: displayMenuItems.count + linkedDisplayMenuItems.count
         )
     }
 

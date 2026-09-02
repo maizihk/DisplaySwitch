@@ -224,6 +224,218 @@ struct TrayDisplayMenuProjection {
             return Entry(displayID: configuration.index, title: configuration.name, commands: commands)
         }
     }
+
+    struct Projection: Equatable {
+        let displayEntries: [Entry]
+        let linkedCommands: [DDCCommand]
+
+        var dynamicItemCount: Int {
+            displayEntries.count + linkedCommands.count
+        }
+    }
+
+    static func projection(
+        configurations: [DisplayConfiguration],
+        displays: [DisplayConfigurationV4Display],
+        linkAllDisplays: Bool
+    ) -> Projection {
+        if linkAllDisplays {
+            let entries = LinkedDDCControlProjection.entries(
+                configurations: configurations,
+                displays: displays,
+                visibility: .tray,
+                sample: { _, _ in nil }
+            )
+            return Projection(
+                displayEntries: [],
+                linkedCommands: entries.map(\.command)
+            )
+        }
+        return Projection(
+            displayEntries: entries(configurations: configurations, displays: displays),
+            linkedCommands: []
+        )
+    }
+}
+
+struct DDCControlValueSample: Equatable {
+    let value: Int
+    let maximum: Int
+    let estimated: Bool
+}
+
+enum DDCAggregateValue: Equatable {
+    case unknown
+    case mixed
+    case uniform(value: Int, estimated: Bool)
+
+    var displayText: String {
+        switch self {
+        case .unknown:
+            return "—"
+        case .mixed:
+            return "混合"
+        case let .uniform(value, estimated):
+            return estimated ? "≈\(value)" : "\(value)"
+        }
+    }
+
+    var accessibilityValue: String {
+        switch self {
+        case .unknown:
+            return "未知"
+        case .mixed:
+            return "混合"
+        case let .uniform(value, estimated):
+            return estimated ? "约 \(value)" : "\(value)"
+        }
+    }
+}
+
+struct LinkedDDCControlProjection {
+    enum Visibility: Equatable {
+        case settings
+        case tray
+    }
+
+    struct Target: Equatable {
+        let displayID: Int
+        let stableID: String
+        let selector: String
+    }
+
+    struct Entry: Equatable {
+        let command: DDCCommand
+        let targets: [Target]
+        let value: DDCAggregateValue
+        let maximum: Int
+    }
+
+    static let safeDefaultMaximum = 100
+    static let orderedCommands: [DDCCommand] = [.luminance, .contrast, .volume]
+
+    static func entries(
+        configurations: [DisplayConfiguration],
+        displays: [DisplayConfigurationV4Display],
+        visibility: Visibility,
+        sample: (String, DDCCommand) -> DDCControlValueSample?
+    ) -> [Entry] {
+        let stableIDCounts = Dictionary(grouping: configurations) {
+            ($0.id ?? $0.selector).lowercased()
+        }.mapValues(\.count)
+        let selectorCounts = Dictionary(grouping: configurations) {
+            $0.selector.lowercased()
+        }.mapValues(\.count)
+        let storedGroups = Dictionary(grouping: displays) { $0.id.lowercased() }
+        let storedByID = storedGroups.compactMapValues { matches in
+            matches.count == 1 ? matches[0] : nil
+        }
+        let resolved = configurations
+            .filter { configuration in
+                let stableID = (configuration.id ?? configuration.selector).lowercased()
+                return stableIDCounts[stableID] == 1
+                    && selectorCounts[configuration.selector.lowercased()] == 1
+                    && storedByID[stableID] != nil
+            }
+            .sorted { $0.index < $1.index }
+
+        return orderedCommands.compactMap { command in
+            let enabledStored = storedByID.values.filter {
+                DisplaySettingsSemantics.enabledCommands(for: $0).contains(command)
+            }
+            guard !enabledStored.isEmpty else { return nil }
+            if visibility == .tray,
+               !enabledStored.contains(where: {
+                   DisplaySettingsSemantics.trayCommands(for: $0).contains(command)
+               }) {
+                return nil
+            }
+
+            let enabled = resolved.compactMap { configuration -> (Target, DisplayConfigurationV4Display)? in
+                let stableID = configuration.id ?? configuration.selector
+                guard let stored = storedByID[stableID.lowercased()],
+                      DisplaySettingsSemantics.enabledCommands(for: stored).contains(command) else {
+                    return nil
+                }
+                return (
+                    Target(
+                        displayID: configuration.index,
+                        stableID: stableID,
+                        selector: configuration.selector
+                    ),
+                    stored
+                )
+            }
+
+            let targets = enabled.map(\.0)
+            let sampledTargets = targets.map { target in
+                (target, sample(target.stableID, command))
+            }
+            let samples = sampledTargets.compactMap { pair -> DDCControlValueSample? in
+                guard let value = pair.1,
+                      value.value >= 0,
+                      value.maximum > 0,
+                      value.maximum <= Int(UInt16.max),
+                      value.value <= value.maximum else { return nil }
+                return value
+            }
+            let maximum = sampledTargets.map { pair in
+                guard let value = pair.1,
+                      value.maximum > 0,
+                      value.maximum <= Int(UInt16.max) else {
+                    return safeDefaultMaximum
+                }
+                return value.maximum
+            }.min() ?? safeDefaultMaximum
+
+            let aggregate: DDCAggregateValue
+            if targets.isEmpty || samples.count != targets.count {
+                aggregate = .unknown
+            } else if let first = samples.first,
+                      samples.dropFirst().allSatisfy({ $0.value == first.value }) {
+                aggregate = .uniform(
+                    value: first.value,
+                    estimated: samples.contains(where: \.estimated)
+                )
+            } else {
+                aggregate = .mixed
+            }
+            return Entry(
+                command: command,
+                targets: targets,
+                value: aggregate,
+                maximum: max(1, maximum)
+            )
+        }
+    }
+
+    static func writeRequests(command: DDCCommand, value: Int, entry: Entry) -> [DDCWriteRequest] {
+        guard entry.command == command, value >= 0, value <= entry.maximum else { return [] }
+        return entry.targets.map { target in
+            DDCWriteRequest(
+                key: DDCWriteKey(stableID: target.stableID, command: command),
+                selector: target.selector,
+                value: value
+            )
+        }
+    }
+}
+
+struct DisplaySettingsControlProjection: Equatable {
+    let showsLinkedControls: Bool
+    let showsIndividualSliders: Bool
+    let linkedCommands: [DDCCommand]
+
+    static func make(
+        linkAllDisplays: Bool,
+        linkedEntries: [LinkedDDCControlProjection.Entry]
+    ) -> DisplaySettingsControlProjection {
+        DisplaySettingsControlProjection(
+            showsLinkedControls: linkAllDisplays && !linkedEntries.isEmpty,
+            showsIndividualSliders: !linkAllDisplays,
+            linkedCommands: linkAllDisplays ? linkedEntries.map(\.command) : []
+        )
+    }
 }
 
 enum TrayStaticMenuAction: CaseIterable, Equatable {
@@ -234,19 +446,9 @@ enum TrayStaticMenuAction: CaseIterable, Equatable {
 enum TrayMenuSeparatorProjection {
     static func showsDynamicContentSeparator(
         profileCount: Int,
-        displayGroupCount: Int
+        displayControlItemCount: Int
     ) -> Bool {
-        profileCount > 0 || displayGroupCount > 0
-    }
-}
-
-enum DisplayControlTargetProjection {
-    static func displayIDs(
-        selectedDisplayID: Int,
-        availableDisplayIDs: [Int],
-        linkAllDisplays: Bool
-    ) -> [Int] {
-        linkAllDisplays ? availableDisplayIDs.sorted() : [selectedDisplayID]
+        profileCount > 0 || displayControlItemCount > 0
     }
 }
 
@@ -280,12 +482,17 @@ enum DisplayStatusLayout {
 enum SettingsModuleContentItem: Equatable {
     case separator
     case linkAllDisplays
+    case linkedDisplayControls
     case displayReadStatus
     case displayControls
 }
 
 enum DisplayControlModuleContent {
-    static let items: [SettingsModuleContentItem] = [.linkAllDisplays]
+    static func items(showsLinkedControls: Bool) -> [SettingsModuleContentItem] {
+        showsLinkedControls
+            ? [.linkAllDisplays, .separator, .linkedDisplayControls]
+            : [.linkAllDisplays]
+    }
 }
 
 enum DisplayReadModuleContent {
