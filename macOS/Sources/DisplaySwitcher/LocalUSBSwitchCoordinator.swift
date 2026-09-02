@@ -27,7 +27,6 @@ struct LocalUSBSwitchRuntimeConfiguration: Equatable {
 
 enum LocalUSBSwitchReportReason: String, Equatable {
     case missingMapping = "missing_mapping"
-    case invalidMapping = "invalid_mapping"
     case displayUnavailable = "display_unavailable"
     case ddcFailed = "ddc_failed"
     case wakeNotSent = "wake_not_sent"
@@ -105,7 +104,7 @@ final class LocalUSBSwitchCoordinator {
                 continue
             }
             guard InputSourceValuePolicy.isSafe(targetInput) else {
-                deferredReports.append((display.displayID, .invalidMapping))
+                deferredReports.append((display.displayID, .missingMapping))
                 continue
             }
             guard display.available else {

@@ -1390,7 +1390,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let message: String
         switch reason {
         case .missingMapping: message = "部分显示器未配置 USB 目标输入源，已安全跳过"
-        case .invalidMapping: message = "部分显示器的 USB 目标输入源无效，已安全跳过"
         case .displayUnavailable: message = "部分显示器当前不可用"
         case .ddcFailed: message = "部分显示器切换失败"
         case .wakeNotSent: message = "本机切换已继续，协同唤醒未发送"

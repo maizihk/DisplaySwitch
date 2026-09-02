@@ -88,7 +88,7 @@ final class LocalUSBSwitchTests: XCTestCase {
         })
     }
 
-    func testZeroMappingProducesNoWriteAndReportsSafeValidationFailure() {
+    func testZeroMappingProducesNoWriteAndUsesExistingMissingMappingContract() {
         let clock = USBVectorClock()
         let mapping = USBVectorMapping(
             displayID: "display-a", targetInput: 0, available: true, switchSucceeds: true
@@ -110,7 +110,7 @@ final class LocalUSBSwitchTests: XCTestCase {
         _ = coordinator.observeUSB(present: false)
 
         XCTAssertFalse(sink.actions.contains { $0.kind == "switchDisplay" })
-        XCTAssertEqual(sink.actions.map(\.reason), [LocalUSBSwitchReportReason.invalidMapping.rawValue])
+        XCTAssertEqual(sink.actions.map(\.reason), [LocalUSBSwitchReportReason.missingMapping.rawValue])
     }
 
     func testStoredUSBReferenceMatchesOnlyTheExplicitlyLearnedDevice() throws {
