@@ -2,6 +2,22 @@
 
 namespace DisplaySwitcher::Native
 {
+    class UsbObservationGenerationGate final
+    {
+    public:
+        uint64_t BeginConfiguration() noexcept
+        {
+            return current_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        }
+        bool Accepts(uint64_t generation) const noexcept
+        {
+            return generation != 0 && current_.load(std::memory_order_acquire) == generation;
+        }
+
+    private:
+        std::atomic<uint64_t> current_{};
+    };
+
     struct UsbSwitchDisplayState
     {
         std::wstring displayId;

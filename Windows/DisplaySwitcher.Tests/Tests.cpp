@@ -1487,6 +1487,72 @@ namespace
             L"USB 稳定性：无关设备通知不得触发所选设备状态变化");
     }
 
+    void TestUsbColdStartRehydration()
+    {
+        UsbObservationGenerationGate generationGate;
+        auto firstGeneration = generationGate.BeginConfiguration();
+        auto secondGeneration = generationGate.BeginConfiguration();
+        Check(firstGeneration != 0 && secondGeneration != firstGeneration &&
+            !generationGate.Accepts(firstGeneration) && generationGate.Accepts(secondGeneration),
+            L"W-030: 配置重载后只接受当前 USB watcher 代次的单一回调流");
+
+        auto enabled = UsbSwitchInitialState{};
+        enabled.enabled = true;
+        enabled.bindingKey = L"synthetic-cold-start-device";
+        enabled.displayMappings = { { L"display-a", 17, true, true } };
+        for (auto initialPresence : { false, true })
+        {
+            UsbSwitchCoordinator cold(enabled);
+            auto baseline = cold.ObserveUsb(1, initialPresence);
+            Check(baseline.size() == 1 && baseline[0].kind == UsbSwitchAction::Kind::EstablishBaseline &&
+                std::none_of(baseline.begin(), baseline.end(), [](auto const& action)
+                {
+                    return action.kind == UsbSwitchAction::Kind::SwitchDisplay ||
+                        action.kind == UsbSwitchAction::Kind::WakeDisplay ||
+                        action.kind == UsbSwitchAction::Kind::SendWakeDisplay;
+                }), L"W-030: 冷启动设备初始存在或不存在都只建立基线且零副作用");
+        }
+
+        auto disabled = enabled; disabled.enabled = false;
+        Check(UsbSwitchCoordinator(disabled).ObserveUsb(1, true).empty(),
+            L"W-030: 冷启动关闭的 USB 配置不建立动作");
+        auto safe = enabled; safe.safeState = true; safe.collaborationWakeEnabled = true;
+        safe.collaborationProfileValid = true;
+        UsbSwitchCoordinator topologyAfter(safe);
+        Check(topologyAfter.ObserveUsb(1, true).empty(),
+            L"W-030: RDP、不可信拓扑和配置安全模式保持零 USB/DDC/网络/唤醒动作");
+        safe.safeState = false;
+        topologyAfter.UpdateConfiguration(safe);
+        auto trustedBaseline = topologyAfter.ObserveUsb(2, true);
+        auto laterDeparture = topologyAfter.ObserveUsb(3, false);
+        Check(trustedBaseline.size() == 1 && trustedBaseline[0].kind == UsbSwitchAction::Kind::EstablishBaseline &&
+            std::count_if(laterDeparture.begin(), laterDeparture.end(), [](auto const& action)
+                { return action.kind == UsbSwitchAction::Kind::SwitchDisplay; }) == 1,
+            L"W-030: 拓扑晚于配置就绪时先重新建立可信基线，之后真实事件正常执行");
+
+        UsbSwitchCoordinator reload(enabled);
+        static_cast<void>(reload.ObserveUsb(1, true));
+        reload.UpdateConfiguration(enabled);
+        Check(reload.ObserveUsb(2, true).empty(),
+            L"W-030: 同一绑定重复初始化或配置 reload 保留基线且不制造重复事件");
+        auto changedBinding = enabled; changedBinding.bindingKey = L"synthetic-other-device";
+        reload.UpdateConfiguration(changedBinding);
+        auto rebound = reload.ObserveUsb(3, false);
+        Check(rebound.size() == 1 && rebound[0].kind == UsbSwitchAction::Kind::EstablishBaseline,
+            L"W-030: USB 绑定变化只为新设备建立基线，不复用旧设备状态");
+
+        auto partial = enabled;
+        partial.displayMappings.push_back({ L"display-b", 18, false, true });
+        UsbSwitchCoordinator partialCoordinator(partial);
+        static_cast<void>(partialCoordinator.ObserveUsb(1, true));
+        auto partialDeparture = partialCoordinator.ObserveUsb(2, false);
+        Check(std::count_if(partialDeparture.begin(), partialDeparture.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SwitchDisplay; }) == 1 &&
+            std::count_if(partialDeparture.begin(), partialDeparture.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::Report && action.reason == L"missing_mapping"; }) == 1,
+            L"W-030: 冷启动恢复后部分映射只执行合格目标并隔离不可用显示器");
+    }
+
     void TestDdcControls()
     {
         auto config = ConfigWithDisplays(2);
@@ -2621,6 +2687,7 @@ int wmain()
         TestRemoteSessionDisplayTopology();
         TestOfflineDisplayRemovalSafety();
         TestUsbTriggerStability();
+        TestUsbColdStartRehydration();
         TestDdcControls();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();

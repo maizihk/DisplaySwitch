@@ -17,14 +17,14 @@ namespace DisplaySwitcher::Native
     class UsbWatcher
     {
     public:
-        using PresenceCallback = std::function<void(bool)>;
+        using PresenceCallback = std::function<void(uint64_t, bool)>;
 
         UsbWatcher(int vendorId, int productId, PresenceCallback callback);
         ~UsbWatcher();
         UsbWatcher(UsbWatcher const&) = delete;
         UsbWatcher& operator=(UsbWatcher const&) = delete;
 
-        void Reconfigure(int vendorId, int productId, std::wstring localReference = {});
+        void Reconfigure(int vendorId, int productId, std::wstring localReference, uint64_t generation);
         bool IsPresent() const;
         static std::vector<UsbDeviceInfo> EnumerateDevices();
 
@@ -36,6 +36,7 @@ namespace DisplaySwitcher::Native
         int vendorId_;
         int productId_;
         std::wstring localReference_;
+        uint64_t generation_{};
         std::optional<bool> pendingTargetPresence_;
         PresenceCallback callback_;
         HANDLE changeEvent_{};
