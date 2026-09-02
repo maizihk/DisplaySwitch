@@ -189,7 +189,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         int selectedUsbVendorId_{ -1 };
         int selectedUsbProductId_{ -1 };
         Microsoft::UI::Xaml::Controls::StackPanel displayEditorsPanel_{ nullptr };
+        Microsoft::UI::Xaml::Controls::StackPanel linkedDdcControlsPanel_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch linkAllDisplays_{ nullptr };
+        ::DisplaySwitcher::Native::DisplayTopologyTrust ddcTopologyTrust_{
+            ::DisplaySwitcher::Native::DisplayTopologyTrust::IncompleteOrUnavailable };
         Microsoft::UI::Xaml::Controls::ToggleSwitch autoStart_{ nullptr };
         Microsoft::UI::Xaml::Controls::ToggleSwitch detailedDiagnostics_{ nullptr };
         Microsoft::UI::Xaml::Controls::TextBox diagnosticPreview_{ nullptr };

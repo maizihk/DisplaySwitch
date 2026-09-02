@@ -1433,6 +1433,86 @@ namespace
         Check(BuildDdcTrayControls(config).empty(),
             L"U-009: 关闭托盘开关应立即移除入口且不产生 DDC 写入");
 
+        config.linkAllDisplays = true;
+        config.displays[0].brightnessShowInTray = true;
+        config.displays[0].brightnessValue = 40; config.displays[0].brightnessMax = 80;
+        config.displays[1].brightnessValue = 40; config.displays[1].brightnessMax = 60;
+        auto linkedSettings = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        auto linkedTray = BuildDdcTrayControls(config, DisplayTopologyTrust::LocalPhysicalAuthoritative);
+        Check(linkedSettings.size() == 3 && linkedSettings[0].linked
+            && linkedSettings[0].valueState == DdcProjectedValueState::Value
+            && linkedSettings[0].value == 40 && linkedSettings[0].maximum == 60
+            && linkedSettings[0].targetDisplayIds.size() == 2,
+            L"DS-027: 联动设置为每个已启用功能只投影一个公共控件，且最大值取安全交集");
+        Check(linkedTray.size() == 1 && linkedTray[0].linked && linkedTray[0].displayName.empty()
+            && linkedTray[0].displayId == config.displays[0].id,
+            L"DS-027: 联动托盘按功能扁平投影，不再按显示器分组");
+        auto featureFiltered = config;
+        featureFiltered.displays[1].brightnessEnabled = false;
+        featureFiltered.displays[1].brightnessShowInTray = true;
+        auto filteredProjection = BuildDdcControlProjection(featureFiltered,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, true);
+        Check(filteredProjection.size() == 1 && filteredProjection[0].targetDisplayIds.size() == 1
+            && filteredProjection[0].targetDisplayIds[0] == featureFiltered.displays[0].id,
+            L"DS-027: 托盘可见性与写目标分离，关闭功能的显示器即使残留托盘偏好也不得进入目标");
+        config.displays[1].brightnessValue = 41;
+        auto mixed = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(mixed[0].valueState == DdcProjectedValueState::Mixed,
+            L"DS-027: 多目标当前值不同时必须表达为混合，不得取平均或冒用单台值");
+        config.displays[1].brightnessValue.reset();
+        auto unknown = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(unknown[0].valueState == DdcProjectedValueState::Unavailable,
+            L"DS-027: 任一联动目标缺少可信当前值时公共值必须表达为不可用");
+        auto remoteProjection = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::RemoteSessionLimited, false);
+        Check(remoteProjection.size() == 3 && remoteProjection[0].targetDisplayIds.empty()
+            && remoteProjection[0].valueState == DdcProjectedValueState::Unavailable,
+            L"DS-027: RDP 中保留已配置功能的 UI 投影，但不得把持久目录当作在线写目标");
+        auto noDisplays = config; noDisplays.displays.clear();
+        Check(BuildDdcControlProjection(noDisplays,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false).empty(),
+            L"DS-027: 零显示器时不投影任何公共 DDC 控件");
+        auto oneDisplayProjectionConfig = config; oneDisplayProjectionConfig.displays.resize(1);
+        auto oneProjection = BuildDdcControlProjection(oneDisplayProjectionConfig,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(oneProjection.size() == 3 && oneProjection[0].targetDisplayIds.size() == 1,
+            L"DS-027: 单显示器联动投影仍使用同一公共模型");
+        config.displays[0].brightnessMax.reset();
+        auto defaultMaximum = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(defaultMaximum[0].maximum == 60,
+            L"DS-027: 未知最大值按安全默认 100 参与交集，不放大另一目标的 60 上限");
+        config.displays[0].brightnessMax = 80;
+        auto duplicateBinding = config;
+        duplicateBinding.displays[1].nativeMonitorId = duplicateBinding.displays[0].nativeMonitorId;
+        auto duplicateProjection = BuildDdcControlProjection(duplicateBinding,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(duplicateProjection[0].targetDisplayIds.empty(),
+            L"DS-027: 重复强绑定涉及的全部显示器都不得成为联动写目标");
+        config.displays[1].bindingStatus = DisplayBindingStatus::Offline;
+        auto partialTargets = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(partialTargets[0].targetDisplayIds.size() == 1
+            && partialTargets[0].targetDisplayIds[0] == config.displays[0].id,
+            L"DS-027: 联动实际目标只包含当前在线且唯一解析的物理显示器");
+        config.displays[1].bindingStatus = DisplayBindingStatus::Ambiguous;
+        auto ambiguousTargets = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, false);
+        Check(ambiguousTargets[0].targetDisplayIds.size() == 1,
+            L"DS-027: 歧义显示器不得进入联动目标，其他唯一解析目标仍保留");
+        config.displays[1].bindingStatus = DisplayBindingStatus::Resolved;
+        config.displays[1].brightnessValue = 40;
+        config.linkAllDisplays = false;
+        auto restored = BuildDdcControlProjection(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, true);
+        Check(restored.size() == 1 && !restored[0].linked
+            && restored[0].displayId == config.displays[0].id,
+            L"DS-027: 关闭联动后立即恢复逐显示器托盘结构和原偏好");
+        config.linkAllDisplays = true;
+
         DdcWriteQueue queue;
         int workerStarts{};
         for (int value = 0; value < 100; ++value)
@@ -1455,6 +1535,37 @@ namespace
         SetThreeValues(native, L"monitor-1", 65, 75, 85, 120);
         DdcCancellationSource cancellation;
         auto service = FakeService(native);
+
+        native.topologyTrust = DisplayTopologyTrust::RemoteSessionLimited;
+        native.writes.clear();
+        auto remoteWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 30, true, cancellation.Begin());
+        Check(remoteWrite.canceled && native.writes.empty(),
+            L"DS-027: RDP/非可信拓扑下联动写入必须在 native 服务入口保持零调用");
+        native.topologyTrust = DisplayTopologyTrust::IncompleteOrUnavailable;
+        auto incompleteWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 30, true, cancellation.Begin());
+        Check(incompleteWrite.canceled && native.writes.empty(),
+            L"DS-027: 空或部分不可信拓扑在 native 服务入口同样保持零 DDC 写入");
+        native.topologyTrust = DisplayTopologyTrust::LocalPhysicalAuthoritative;
+        config.displays[0].brightnessMax = 80; config.displays[1].brightnessMax = 60;
+        native.writes.clear();
+        auto overflow = service.Write(config, firstId, DdcVcpCode::Brightness, 61, true, cancellation.Begin());
+        Check(!overflow.success && overflow.items.size() == 1
+            && overflow.items[0].error == DdcErrorKind::InvalidValue && native.writes.empty(),
+            L"DS-027: 公共值超过任一目标最大值时必须批量预检失败并保持零 transport 写入");
+        native.writes.clear();
+        auto absolute = service.Write(config, firstId, DdcVcpCode::Brightness, 59, true, cancellation.Begin());
+        Check(absolute.success && native.writes.size() == 2
+            && std::get<2>(native.writes[0]) == 59 && std::get<2>(native.writes[1]) == 59,
+            L"DS-027: 公共滑杆必须向所有合格目标写入相同绝对值");
+        config.displays[1].bindingStatus = DisplayBindingStatus::Offline;
+        native.writes.clear();
+        auto partialWrite = service.Write(config, firstId, DdcVcpCode::Brightness, 55, true, cancellation.Begin());
+        Check(partialWrite.success && native.writes.size() == 1
+            && std::get<0>(native.writes[0]) == L"monitor-0" && std::get<2>(native.writes[0]) == 55,
+            L"DS-027: 部分显示器离线时必须继续调节其他合格目标，且不向离线项写入");
+        config.displays[1].bindingStatus = DisplayBindingStatus::Resolved;
+        native.writes.clear();
+        config.displays[0].brightnessMax.reset(); config.displays[1].brightnessMax.reset();
 
         auto normal = service.Read(config, {}, cancellation.Begin());
         Check(normal.success && normal.items.size() == 6 && config.displays[0].brightnessValue == 35
