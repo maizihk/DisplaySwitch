@@ -347,6 +347,7 @@ namespace DisplaySwitcher::Native
         window_ = CreateWindowExW(0, className_.c_str(), L"DisplaySwitcher tray host", 0,
             0, 0, 0, 0, nullptr, nullptr, instance_, this);
         if (!window_) winrt::throw_last_error();
+        sessionNotificationsRegistered_ = WTSRegisterSessionNotification(window_, NOTIFY_FOR_THIS_SESSION) != FALSE;
         auto data = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
         if (!Shell_NotifyIconW(NIM_ADD, &data)) winrt::throw_last_error();
         data.uVersion = NOTIFYICON_VERSION_4;
@@ -359,6 +360,11 @@ namespace DisplaySwitcher::Native
         disposed_ = true;
         if (window_)
         {
+            if (sessionNotificationsRegistered_)
+            {
+                WTSUnRegisterSessionNotification(window_);
+                sessionNotificationsRegistered_ = false;
+            }
             auto data = Data(0);
             Shell_NotifyIconW(NIM_DELETE, &data);
             DestroyWindow(window_);
@@ -423,7 +429,7 @@ namespace DisplaySwitcher::Native
 
     LRESULT TrayIcon::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     {
-        if (message == WM_DISPLAYCHANGE)
+        if (message == WM_DISPLAYCHANGE || message == WM_WTSSESSION_CHANGE)
         {
             if (topologyChanged_) topologyChanged_();
             return 0;

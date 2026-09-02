@@ -95,7 +95,8 @@ namespace DisplaySwitcher::Native
                 auto enumeration = EnumerateDdcMonitors(ddcBackends_.Lookup(NativeDdcBackendKey));
                 if (enumeration.IsTrustedNonEmptySnapshot())
                 {
-                    auto reconciled = ReconcileDisplayConfigurations(config.displays, enumeration.monitors, true);
+                    auto reconciled = ReconcileDisplayConfigurations(
+                        config.displays, enumeration.monitors, enumeration.topologyTrust);
                     config.displays = std::move(reconciled.displays);
                     if (reconciled.changed) config.Save();
                     std::scoped_lock lock(configMutex_);
@@ -832,6 +833,7 @@ namespace DisplaySwitcher::Native
         if (backend)
         {
             snapshot.backend.availability = backend->Status().availability;
+            snapshot.backend.topologyTrust = backend->TopologyTrust();
             snapshot.backend.enumerateSupported = true;
             snapshot.backend.readSupported = true;
             snapshot.backend.writeSupported = true;
