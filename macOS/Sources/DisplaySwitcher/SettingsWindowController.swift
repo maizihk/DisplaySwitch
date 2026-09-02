@@ -20,7 +20,7 @@ private final class DisplayInputMappingRowView: NSStackView {
         titleLabel.maximumNumberOfLines = 0
         titleLabel.lineBreakMode = .byWordWrapping
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        inputField.placeholderString = "0–65535"
+        inputField.placeholderString = "留空或 1–65535"
         inputField.widthAnchor.constraint(equalToConstant: 108).isActive = true
         inputField.setContentHuggingPriority(.required, for: .horizontal)
         inputField.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -267,14 +267,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let usbMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let profileMappingEmptyLabel = NSTextField(wrappingLabelWithString: "尚未检测到显示器。")
     private let peerTriggerDeviceStatusLabel = NSTextField(wrappingLabelWithString: "未引用本机触发设备")
-    private let peerSaveStatusIconView = NSImageView()
-    private let peerSaveStatusLabel = NSTextField(labelWithString: "")
-    private let peerSaveStatusRow = NSStackView()
+    private let saveStatusIconView = NSImageView()
+    private let saveStatusLabel = NSTextField(labelWithString: "")
+    private let saveStatusRow = NSStackView()
     private let settingsFooterStack = NSStackView()
-    private lazy var peerSaveFeedbackController = SettingsSaveFeedbackController(
+    private lazy var saveFeedbackController = SettingsSaveFeedbackController(
         scheduler: DispatchSettingsSaveFeedbackScheduler()
-    ) { [weak self] state in
-        self?.applyPeerSaveFeedback(state)
+    ) { [weak self] _, _ in
+        self?.refreshSaveFeedbackPresentation()
     }
     private lazy var learnUSBButton = NSButton(title: "学习", target: self, action: #selector(learnUSBDevice))
     private var inputFields: [String: NSTextField] = [:]
@@ -320,7 +320,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func show(tabIndex: Int = 0) {
-        peerSaveFeedbackController.reset()
+        saveFeedbackController.reset()
         reloadValues()
         selectTab(at: max(0, min(tabIndex, tabView.numberOfTabViewItems - 1)))
         showWindow(nil)
@@ -532,24 +532,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         localNetworkPermissionStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         localNetworkPermissionDetailLabel.font = .systemFont(ofSize: 11)
         localNetworkPermissionDetailLabel.textColor = .secondaryLabelColor
-        peerSaveStatusLabel.font = .systemFont(ofSize: 11)
-        peerSaveStatusLabel.setAccessibilityLabel(SettingsSaveStatusPresentation.saved.accessibilityLabel)
-        peerSaveStatusIconView.translatesAutoresizingMaskIntoConstraints = false
-        peerSaveStatusIconView.widthAnchor.constraint(equalToConstant: 14).isActive = true
-        peerSaveStatusIconView.heightAnchor.constraint(equalToConstant: 14).isActive = true
-        peerSaveStatusRow.orientation = .horizontal
-        peerSaveStatusRow.alignment = .centerY
-        peerSaveStatusRow.spacing = 5
-        peerSaveStatusRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
-        peerSaveStatusRow.setViews([peerSaveStatusIconView, peerSaveStatusLabel], in: .leading)
-        peerSaveStatusRow.setAccessibilityElement(true)
-        peerSaveStatusRow.isHidden = true
+        saveStatusLabel.font = .systemFont(ofSize: 11)
+        saveStatusIconView.translatesAutoresizingMaskIntoConstraints = false
+        saveStatusIconView.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        saveStatusIconView.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        saveStatusRow.orientation = .horizontal
+        saveStatusRow.alignment = .centerY
+        saveStatusRow.spacing = 5
+        saveStatusRow.widthAnchor.constraint(equalToConstant: 630).isActive = true
+        saveStatusRow.setViews([saveStatusIconView, saveStatusLabel], in: .leading)
+        saveStatusRow.setAccessibilityElement(true)
+        saveStatusRow.isHidden = true
 
         settingsFooterStack.orientation = .vertical
         settingsFooterStack.alignment = .leading
         settingsFooterStack.spacing = 3
         settingsFooterStack.translatesAutoresizingMaskIntoConstraints = false
-        settingsFooterStack.setViews([peerSaveStatusRow, validationLabel], in: .leading)
+        settingsFooterStack.setViews([saveStatusRow, validationLabel], in: .leading)
         contentView.addSubview(settingsFooterStack)
 
         let usbDeviceRow = labeledControlRow(
@@ -673,26 +672,25 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func selectTab(at index: Int) {
         guard tabView.numberOfTabViewItems > index else { return }
-        peerSaveFeedbackController.dismissTransientSuccess()
+        if let currentLabel = tabView.selectedTabViewItem?.label {
+            saveFeedbackController.dismissTransientSuccess(scope: saveFeedbackScope(forTabLabel: currentLabel))
+        }
         tabView.selectTabViewItem(at: index)
         tabButtons.enumerated().forEach { $0.element.state = $0.offset == index ? .on : .off }
         let label = tabView.tabViewItem(at: index).label
         window?.title = label
-        updatePeerSaveStatusVisibility(forTabLabel: label)
+        refreshSaveFeedbackPresentation()
         if label == "诊断" {
             refreshDiagnosticPreview()
         }
     }
 
-    private func updatePeerSaveStatusVisibility(forTabLabel label: String) {
-        let hasVisibleFeedback: Bool
-        switch peerSaveFeedbackController.state {
-        case .hidden: hasVisibleFeedback = false
-        case .visible: hasVisibleFeedback = true
+    private func saveFeedbackScope(forTabLabel label: String) -> SettingsSaveFeedbackScope {
+        switch label {
+        case "USB 切换": return .usb
+        case "协同": return .collaboration
+        default: return .none
         }
-        peerSaveStatusRow.isHidden = label != "协同"
-            || !editingProfiles.indices.contains(selectedProfileIndex)
-            || !hasVisibleFeedback
     }
 
     private func makePage(label: String, views: [NSView]) -> NSTabViewItem {
@@ -1262,7 +1260,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 showValidationError("请选择一个已开启、完整且已确认对端身份的协同配置。")
                 return
             }
-            persistDocument { $0.usbSwitch.collaborationWakeEnabled = sender.state == .on }
+            persistDocument(feedbackScope: .usb) { $0.usbSwitch.collaborationWakeEnabled = sender.state == .on }
             return
         }
         if sender === usbAutomationCheckbox {
@@ -1273,7 +1271,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                 showValidationError("请先学习一个 USB 设备，并至少配置一台显示器的目标输入源。")
                 return
             }
-            persistDocument { $0.usbSwitch.enabled = sender.state == .on }
+            persistDocument(feedbackScope: .usb) { $0.usbSwitch.enabled = sender.state == .on }
             return
         }
         if sender === launchAtLoginCheckbox {
@@ -1345,24 +1343,60 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func usbCollaborationProfileChanged(_ sender: NSPopUpButton) {
         let profileID = sender.selectedItem?.representedObject as? String
-        persistDocument { document in
+        persistDocument(feedbackScope: .usb) { document in
             document.usbSwitch.collaborationProfileID = profileID
             if profileID == nil { document.usbSwitch.collaborationWakeEnabled = false }
         }
     }
 
     private func persistUSBDisplayMappings() {
-        persistDocument { document in
-            document.usbSwitch.displayInputs = document.displays.compactMap { display in
-                guard let field = self.usbInputFields[display.id.lowercased()],
-                      let value = Int(field.stringValue), (0...65535).contains(value) else { return nil }
-                return USBDisplayInputMapping(displayID: display.id, targetInput: value)
-            }
+        guard let document = configurationDocument,
+              let mappings = parsedUSBMappings(displays: document.displays) else { return }
+        persistDocument(feedbackScope: .usb) { document in
+            document.usbSwitch.displayInputs = mappings
             if document.usbSwitch.enabled,
                !DisplayConfigurationStore.isCompleteUSBConfiguration(document.usbSwitch, displays: document.displays) {
                 document.usbSwitch.enabled = false
             }
         }
+    }
+
+    private func parsedUSBMappings(
+        displays: [DisplayConfigurationV4Display]
+    ) -> [USBDisplayInputMapping]? {
+        var mappings: [USBDisplayInputMapping] = []
+        for display in displays {
+            guard let field = usbInputFields[display.id.lowercased()] else { continue }
+            switch InputSourceValuePolicy.parseField(field.stringValue) {
+            case .empty:
+                continue
+            case .valid(let value):
+                mappings.append(USBDisplayInputMapping(displayID: display.id, targetInput: value))
+            case .invalid:
+                showValidationError("对端输入源可留空，填写时必须为 1–65535；0 不会保存或写入显示器。")
+                return nil
+            }
+        }
+        return mappings
+    }
+
+    private func parsedCollaborationMappings(
+        displays: [DisplayConfigurationV4Display]
+    ) -> [DisplayInputMapping]? {
+        var mappings: [DisplayInputMapping] = []
+        for display in displays {
+            guard let field = inputFields[display.id.lowercased()] else { continue }
+            switch InputSourceValuePolicy.parseField(field.stringValue) {
+            case .empty:
+                continue
+            case .valid(let value):
+                mappings.append(DisplayInputMapping(displayID: display.id, peerInput: value))
+            case .invalid:
+                showValidationError("对端输入源可留空，填写时必须为 1–65535；0 不会保存或写入显示器。")
+                return nil
+            }
+        }
+        return mappings
     }
 
     private func selectedCollaborationWakeProfileIsValid() -> Bool {
@@ -1380,10 +1414,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profile.peerPort = peerPortField.integerValue
         profile.pairingCode = pairingCodeField.stringValue.precomposedStringWithCanonicalMapping
         if let requestedEnabled { profile.coordinationEnabled = requestedEnabled }
-        let mapping = document.displays.compactMap { display -> DisplayInputMapping? in
-            guard let field = inputFields[display.id.lowercased()], let value = Int(field.stringValue),
-                  (0...65535).contains(value) else { return nil }
-            return DisplayInputMapping(displayID: display.id, peerInput: value)
+        guard let mapping = parsedCollaborationMappings(displays: document.displays) else {
+            peerCoordinationCheckbox.state = editingProfiles[selectedProfileIndex].coordinationEnabled ? .on : .off
+            return
         }
         profile.displayInputs = mapping
         let decision = DisplayConfigurationStore.profileForSafeSave(profile, displays: document.displays)
@@ -1402,7 +1435,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         _ mutation: (inout DisplayConfigurationStoreV5Document) -> Void
     ) -> Bool {
         guard var document = configurationDocument else { return false }
+        let originalDocument = document
         mutation(&document)
+        guard SettingsPersistenceFeedbackPolicy.hasActualChange(
+            from: originalDocument, to: document
+        ) else { return true }
         do {
             try AppPreferences.saveLocalConfiguration(document)
             configurationDocument = document
@@ -1410,18 +1447,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             clearValidationError()
             onSave?()
             reloadValues(rebuildDisplayForms: false)
-            peerSaveFeedbackController.recordPersistenceResult(.succeeded, scope: feedbackScope)
+            saveFeedbackController.recordPersistenceResult(.succeeded, scope: feedbackScope)
             return true
         } catch let error as DisplayConfigurationStoreError {
             onConfigurationSaveFailure?(error)
             reloadValues()
-            peerSaveFeedbackController.recordPersistenceResult(.failed, scope: feedbackScope)
+            saveFeedbackController.recordPersistenceResult(.failed, scope: feedbackScope)
             showValidationError("设置未保存，已恢复最后有效值：\n\(error.localizedDescription)")
             return false
         } catch {
             onConfigurationSaveFailure?(.writeFailed)
             reloadValues()
-            peerSaveFeedbackController.recordPersistenceResult(.failed, scope: feedbackScope)
+            saveFeedbackController.recordPersistenceResult(.failed, scope: feedbackScope)
             showValidationError("设置未保存，已恢复最后有效值。")
             return false
         }
@@ -1632,25 +1669,34 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         profileMappingEmptyLabel.isHidden = !descriptors.isEmpty
         profileMappingRows = reconciled
         inputFields = reconciled.mapValues(\.inputField)
-        updatePeerSaveStatusVisibility(forTabLabel: window?.title ?? "")
+        refreshSaveFeedbackPresentation()
     }
 
-    private func applyPeerSaveFeedback(_ state: SettingsSaveFeedbackState) {
+    private func refreshSaveFeedbackPresentation() {
+        let label = window?.title ?? ""
+        let scope = saveFeedbackScope(forTabLabel: label)
+        let state = saveFeedbackController.state(for: scope)
         guard case .visible(let presentation) = state else {
-            peerSaveStatusRow.isHidden = true
-            peerSaveStatusRow.setAccessibilityValue("")
+            saveStatusRow.isHidden = true
+            saveStatusRow.setAccessibilityValue("")
             return
         }
-        peerSaveStatusLabel.stringValue = presentation.text
-        peerSaveStatusLabel.textColor = nsColor(for: presentation.textColor)
-        peerSaveStatusIconView.image = NSImage(
+        guard scope == .usb || (scope == .collaboration
+            && editingProfiles.indices.contains(selectedProfileIndex)) else {
+            saveStatusRow.isHidden = true
+            saveStatusRow.setAccessibilityValue("")
+            return
+        }
+        saveStatusLabel.stringValue = presentation.text
+        saveStatusLabel.textColor = nsColor(for: presentation.textColor)
+        saveStatusIconView.image = NSImage(
             systemSymbolName: presentation.symbolName,
             accessibilityDescription: presentation.text
         )
-        peerSaveStatusIconView.contentTintColor = nsColor(for: presentation.iconColor)
-        peerSaveStatusRow.setAccessibilityLabel(presentation.accessibilityLabel)
-        peerSaveStatusRow.setAccessibilityValue(presentation.accessibilityValue)
-        updatePeerSaveStatusVisibility(forTabLabel: window?.title ?? "")
+        saveStatusIconView.contentTintColor = nsColor(for: presentation.iconColor)
+        saveStatusRow.setAccessibilityLabel(presentation.accessibilityLabel)
+        saveStatusRow.setAccessibilityValue(presentation.accessibilityValue)
+        saveStatusRow.isHidden = false
     }
 
     private func nsColor(for role: SettingsSaveStatusColorRole) -> NSColor {
@@ -1670,7 +1716,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func profileSelectionChanged(_ sender: NSPopUpButton) {
-        peerSaveFeedbackController.dismissTransientSuccess()
+        saveFeedbackController.dismissTransientSuccess(scope: .collaboration)
         selectedProfileIndex = max(0, sender.indexOfSelectedItem)
         reloadProfilePopup()
         loadSelectedProfileFields()
@@ -1863,7 +1909,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             if response == .alertFirstButtonReturn, popup.indexOfSelectedItem >= 0,
                self.usbLearningPending {
                 let device = devices[popup.indexOfSelectedItem]
-                self.persistDocument {
+                self.persistDocument(feedbackScope: .usb) {
                     $0.usbSwitch.triggerDevice = CollaborationTriggerDevice(
                         kind: "usb",
                         localReference: device.localReference,
@@ -1881,7 +1927,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func windowWillClose(_ notification: Notification) {
-        peerSaveFeedbackController.reset()
+        saveFeedbackController.reset()
         usbLearningPending = false
         learnUSBButton.isEnabled = true
         onCancelUSBLearning?()

@@ -226,7 +226,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
             .missingHost: "请填写对端地址。",
             .invalidPort: "通信端口必须在 1–65535 之间。",
             .invalidPairingCode: "配对码必须为 8–128 个 UTF-8 字节。",
-            .missingDisplayMapping: "请为当前每台显示器填写对端输入源。",
+            .missingDisplayMapping: "请至少为一台显示器填写 1–65535 的对端输入源。",
             .orphanedDisplayMapping: "存在不再对应当前显示器的旧输入源映射，请重新保存配置。"
         ]
 
@@ -243,7 +243,7 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertTrue(DisplayConfigurationStore.menuEligibleProfiles(in: document).isEmpty)
     }
 
-    func testIncompleteEnabledProfileIsSavedDisabledWithoutLosingPartialMappings() {
+    func testPartialEnabledProfileRemainsEnabledAndKeepsBlankDisplaysSkipped() {
         var document = populatedDocument()
         let secondDisplay = DisplayConfigurationV4Display(
             id: UUID().uuidString, name: "Display 2", selector: UUID().uuidString,
@@ -254,10 +254,63 @@ final class DisplayConfigurationStoreTests: XCTestCase {
 
         let decision = DisplayConfigurationStore.profileForSafeSave(original, displays: document.displays)
 
-        XCTAssertTrue(decision.disabledBecauseIncomplete)
-        XCTAssertFalse(decision.profile.coordinationEnabled)
+        XCTAssertFalse(decision.disabledBecauseIncomplete)
+        XCTAssertTrue(decision.profile.coordinationEnabled)
         XCTAssertEqual(decision.profile.displayInputs, original.displayInputs)
         XCTAssertEqual(decision.profile.displayInputs.count, 1)
+    }
+
+    func testProfileAndUSBRequireAtLeastOneSafeMappedDisplay() {
+        var document = populatedDocument()
+        document.collaborationProfiles[0].displayInputs = []
+        let profileDecision = DisplayConfigurationStore.profileForSafeSave(
+            document.collaborationProfiles[0], displays: document.displays
+        )
+        XCTAssertTrue(profileDecision.disabledBecauseIncomplete)
+        XCTAssertFalse(profileDecision.profile.coordinationEnabled)
+
+        document.usbSwitch = USBSwitchConfiguration(
+            enabled: false,
+            triggerDevice: CollaborationTriggerDevice(
+                kind: "usb", localReference: "local-usb-reference", displayName: "USB Device"
+            ),
+            displayInputs: []
+        )
+        XCTAssertFalse(DisplayConfigurationStore.isCompleteUSBConfiguration(
+            document.usbSwitch, displays: document.displays
+        ))
+        document.usbSwitch.displayInputs = [
+            USBDisplayInputMapping(displayID: document.displays[0].id, targetInput: 17)
+        ]
+        XCTAssertTrue(DisplayConfigurationStore.isCompleteUSBConfiguration(
+            document.usbSwitch, displays: document.displays
+        ))
+    }
+
+    func testLegacyZeroMappingsLoadAsBlankAndDisableUnsafeUSBAutomation() throws {
+        var document = populatedDocument()
+        document.displays[0].localInput = 0
+        document.collaborationProfiles[0].displayInputs = [
+            DisplayInputMapping(displayID: document.displays[0].id, peerInput: 0)
+        ]
+        document.usbSwitch = USBSwitchConfiguration(
+            enabled: true,
+            triggerDevice: CollaborationTriggerDevice(
+                kind: "usb", localReference: "local-usb-reference", displayName: "USB Device"
+            ),
+            displayInputs: [
+                USBDisplayInputMapping(displayID: document.displays[0].id, targetInput: 0)
+            ]
+        )
+        storage.values[DisplayConfigurationStore.storageKey] = try JSONEncoder().encode(document)
+
+        let result = DisplayConfigurationStore.load(storage: storage)
+
+        XCTAssertEqual(result.safetyState, .ready)
+        XCTAssertNil(result.document.displays[0].localInput)
+        XCTAssertTrue(result.document.collaborationProfiles[0].displayInputs.isEmpty)
+        XCTAssertTrue(result.document.usbSwitch.displayInputs.isEmpty)
+        XCTAssertFalse(result.document.usbSwitch.enabled)
     }
 
     func testCompleteEnabledProfileRemainsEnabledWhenSaved() {

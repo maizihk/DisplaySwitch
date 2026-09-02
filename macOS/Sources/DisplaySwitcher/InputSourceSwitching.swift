@@ -14,6 +14,24 @@ struct InputSourceSwitchTarget: Equatable {
     }
 }
 
+enum InputSourceSwitchTargetProjection {
+    static func mappedTargets(
+        from configurations: [Int: DisplayConfiguration]
+    ) -> [InputSourceSwitchTarget] {
+        configurations.keys.sorted().compactMap { displayID in
+            guard let configuration = configurations[displayID], configuration.targetInput != nil else {
+                return nil
+            }
+            return InputSourceSwitchTarget(
+                stableID: configuration.id ?? configuration.selector,
+                selector: configuration.selector,
+                targetInput: configuration.targetInput,
+                alternateInput: configuration.localInput
+            )
+        }
+    }
+}
+
 enum InputSourceSwitchOrigin: String {
     case usb = "usb"
     case manualOrCollaboration = "manual-or-collaboration"
@@ -468,7 +486,7 @@ final class InputSourceSwitchService {
                 )
                 continue
             }
-            guard let nativeValue = UInt16(exactly: targetInput) else {
+            guard let nativeValue = InputSourceValuePolicy.nativeValue(targetInput) else {
                 outcomes[index] = InputSourceSwitchOutcome(
                     stableID: target.stableID,
                     failure: .invalidInput(stableID: target.stableID, value: targetInput)
@@ -481,7 +499,7 @@ final class InputSourceSwitchService {
                 continue
             }
             firstIndexByDisplayKey[displayKey] = index
-            let alternateValue = target.alternateInput.flatMap(UInt16.init(exactly:))
+            let alternateValue = target.alternateInput.flatMap(InputSourceValuePolicy.nativeValue)
             group.enter()
             executionQueue.async { [self] in
                 let outcome = switchInput(

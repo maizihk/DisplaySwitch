@@ -438,7 +438,7 @@ struct SettingsSaveStatusPresentation: Equatable {
     let accessibilityLabel: String
     let accessibilityValue: String
 
-    static let rowID = "collaboration-save-status"
+    static let rowID = "settings-save-status"
     static let rowTitle = "即时保存状态"
     static let placement = Placement.nonScrollingWindowFooter
     static let isNonScrollingWindowFooter = true
@@ -449,23 +449,31 @@ struct SettingsSaveStatusPresentation: Equatable {
     static let successVisibilityDuration: TimeInterval = 2
 
     static var saved: SettingsSaveStatusPresentation {
+        saved(scope: .collaboration)
+    }
+
+    static func saved(scope: SettingsSaveFeedbackScope) -> SettingsSaveStatusPresentation {
         SettingsSaveStatusPresentation(
             text: "已保存",
             symbolName: "checkmark.circle.fill",
             textColor: .systemGreen,
             iconColor: .systemGreen,
-            accessibilityLabel: "协同配置保存状态",
+            accessibilityLabel: scope.accessibilityLabel,
             accessibilityValue: "已保存"
         )
     }
 
     static var failedRestored: SettingsSaveStatusPresentation {
+        failedRestored(scope: .collaboration)
+    }
+
+    static func failedRestored(scope: SettingsSaveFeedbackScope) -> SettingsSaveStatusPresentation {
         SettingsSaveStatusPresentation(
             text: "保存失败，已恢复",
             symbolName: "exclamationmark.circle.fill",
             textColor: .systemRed,
             iconColor: .systemRed,
-            accessibilityLabel: "协同配置保存状态",
+            accessibilityLabel: scope.accessibilityLabel,
             accessibilityValue: "保存失败，已恢复"
         )
     }
@@ -476,14 +484,31 @@ enum SettingsSaveFeedbackState: Equatable {
     case visible(SettingsSaveStatusPresentation)
 }
 
-enum SettingsSaveFeedbackScope: Equatable {
+enum SettingsSaveFeedbackScope: Equatable, Hashable, CaseIterable {
     case none
+    case usb
     case collaboration
+
+    static var allCases: [SettingsSaveFeedbackScope] { [.usb, .collaboration] }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .none: return "配置保存状态"
+        case .usb: return "USB 配置保存状态"
+        case .collaboration: return "协同配置保存状态"
+        }
+    }
 }
 
 enum SettingsPersistenceResult: Equatable {
     case succeeded
     case failed
+}
+
+enum SettingsPersistenceFeedbackPolicy {
+    static func hasActualChange<Value: Equatable>(from original: Value, to updated: Value) -> Bool {
+        original != updated
+    }
 }
 
 protocol SettingsSaveFeedbackScheduledTask: AnyObject {
@@ -529,71 +554,84 @@ struct DispatchSettingsSaveFeedbackScheduler: SettingsSaveFeedbackScheduling {
 
 final class SettingsSaveFeedbackController {
     private let scheduler: SettingsSaveFeedbackScheduling
-    private let onStateChange: (SettingsSaveFeedbackState) -> Void
-    private var scheduledHide: SettingsSaveFeedbackScheduledTask?
-    private var generation: UInt = 0
-
-    private(set) var state = SettingsSaveFeedbackState.hidden
+    private let onStateChange: (SettingsSaveFeedbackScope, SettingsSaveFeedbackState) -> Void
+    private var scheduledHides: [SettingsSaveFeedbackScope: SettingsSaveFeedbackScheduledTask] = [:]
+    private var generations: [SettingsSaveFeedbackScope: UInt] = [:]
+    private var states: [SettingsSaveFeedbackScope: SettingsSaveFeedbackState] = [:]
 
     init(
         scheduler: SettingsSaveFeedbackScheduling,
-        onStateChange: @escaping (SettingsSaveFeedbackState) -> Void = { _ in }
+        onStateChange: @escaping (SettingsSaveFeedbackScope, SettingsSaveFeedbackState) -> Void = { _, _ in }
     ) {
         self.scheduler = scheduler
         self.onStateChange = onStateChange
     }
 
     deinit {
-        scheduledHide?.cancel()
+        scheduledHides.values.forEach { $0.cancel() }
     }
 
     func reset() {
-        generation &+= 1
-        scheduledHide?.cancel()
-        scheduledHide = nil
-        transition(to: .hidden)
+        SettingsSaveFeedbackScope.allCases.forEach { reset(scope: $0) }
+    }
+
+    func state(for scope: SettingsSaveFeedbackScope) -> SettingsSaveFeedbackState {
+        states[scope] ?? .hidden
+    }
+
+    var state: SettingsSaveFeedbackState {
+        state(for: .collaboration)
     }
 
     func dismissTransientSuccess() {
-        guard state == .visible(.saved) else { return }
-        reset()
+        dismissTransientSuccess(scope: .collaboration)
+    }
+
+    func dismissTransientSuccess(scope: SettingsSaveFeedbackScope) {
+        guard state(for: scope) == .visible(.saved(scope: scope)) else { return }
+        reset(scope: scope)
     }
 
     func recordPersistenceResult(
         _ result: SettingsPersistenceResult,
         scope: SettingsSaveFeedbackScope
     ) {
-        guard scope == .collaboration else { return }
+        guard scope != .none else { return }
         switch result {
-        case .succeeded: recordSaveSucceeded()
-        case .failed: recordSaveFailed()
+        case .succeeded: recordSaveSucceeded(scope: scope)
+        case .failed: recordSaveFailed(scope: scope)
         }
     }
 
-    private func recordSaveSucceeded() {
-        generation &+= 1
-        let currentGeneration = generation
-        scheduledHide?.cancel()
-        transition(to: .visible(.saved))
-        scheduledHide = scheduler.schedule(
+    private func reset(scope: SettingsSaveFeedbackScope) {
+        generations[scope, default: 0] &+= 1
+        scheduledHides.removeValue(forKey: scope)?.cancel()
+        transition(scope: scope, to: .hidden)
+    }
+
+    private func recordSaveSucceeded(scope: SettingsSaveFeedbackScope) {
+        generations[scope, default: 0] &+= 1
+        let currentGeneration = generations[scope, default: 0]
+        scheduledHides.removeValue(forKey: scope)?.cancel()
+        transition(scope: scope, to: .visible(.saved(scope: scope)))
+        scheduledHides[scope] = scheduler.schedule(
             after: SettingsSaveStatusPresentation.successVisibilityDuration
         ) { [weak self] in
-            guard let self, self.generation == currentGeneration else { return }
-            self.scheduledHide = nil
-            self.transition(to: .hidden)
+            guard let self, self.generations[scope] == currentGeneration else { return }
+            self.scheduledHides.removeValue(forKey: scope)
+            self.transition(scope: scope, to: .hidden)
         }
     }
 
-    private func recordSaveFailed() {
-        generation &+= 1
-        scheduledHide?.cancel()
-        scheduledHide = nil
-        transition(to: .visible(.failedRestored))
+    private func recordSaveFailed(scope: SettingsSaveFeedbackScope) {
+        generations[scope, default: 0] &+= 1
+        scheduledHides.removeValue(forKey: scope)?.cancel()
+        transition(scope: scope, to: .visible(.failedRestored(scope: scope)))
     }
 
-    private func transition(to newState: SettingsSaveFeedbackState) {
-        state = newState
-        onStateChange(newState)
+    private func transition(scope: SettingsSaveFeedbackScope, to newState: SettingsSaveFeedbackState) {
+        states[scope] = newState
+        onStateChange(scope, newState)
     }
 }
 
@@ -687,7 +725,8 @@ struct SettingsPageLayoutProjection: Equatable {
 
     static func usb(
         displays: [DisplayConfigurationV4Display],
-        learningInProgress: Bool
+        learningInProgress: Bool,
+        saveFeedbackState: SettingsSaveFeedbackState = .hidden
     ) -> SettingsPageLayoutProjection {
         let mappings = DisplayInputMappingPresentation.rows(displays: displays, context: .usb)
         let mappingRows = mappings.map {
@@ -695,6 +734,11 @@ struct SettingsPageLayoutProjection: Equatable {
                 id: "usb-mapping-\($0.displayID)", title: $0.title,
                 action: .editValue, isVisible: true, isEnabled: true
             )
+        }
+        let isSaveFeedbackVisible: Bool
+        switch saveFeedbackState {
+        case .hidden: isSaveFeedbackVisible = false
+        case .visible: isSaveFeedbackVisible = true
         }
         return SettingsPageLayoutProjection(groups: [
             Group(id: .usbAutomation, rows: [
@@ -716,6 +760,10 @@ struct SettingsPageLayoutProjection: Equatable {
                 Row(id: "usb-collaboration-toggle", title: "联动协同",
                     action: .toggleUSBWake, isVisible: true, isEnabled: true)
             ])
+        ], windowFooterRows: [
+            Row(id: SettingsSaveStatusPresentation.rowID,
+                title: SettingsSaveStatusPresentation.rowTitle, action: nil,
+                isVisible: isSaveFeedbackVisible, isEnabled: false)
         ])
     }
 

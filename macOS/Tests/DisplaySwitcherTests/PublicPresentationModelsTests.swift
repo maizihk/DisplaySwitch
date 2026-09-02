@@ -632,7 +632,10 @@ final class PublicPresentationModelsTests: XCTestCase {
     func testSaveFeedbackIsInitiallyHiddenAndSuccessfulSaveAutoHidesAfterTwoSeconds() {
         let scheduler = ManualSettingsSaveFeedbackScheduler()
         var states: [SettingsSaveFeedbackState] = []
-        let controller = SettingsSaveFeedbackController(scheduler: scheduler) { states.append($0) }
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler) { scope, state in
+            XCTAssertEqual(scope, .collaboration)
+            states.append(state)
+        }
 
         XCTAssertEqual(controller.state, .hidden)
         XCTAssertTrue(states.isEmpty)
@@ -751,6 +754,82 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(controller.state, .visible(.saved))
         XCTAssertEqual(scheduler.tasks.count, 1)
         XCTAssertFalse(scheduler.tasks[0].isCancelled)
+    }
+
+    func testUSBAndCollaborationSaveFeedbackRemainIndependent() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        XCTAssertEqual(controller.state(for: .usb), .hidden)
+        XCTAssertEqual(controller.state(for: .collaboration), .hidden)
+
+        controller.recordPersistenceResult(.failed, scope: .usb)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.failedRestored(scope: .usb)))
+        XCTAssertEqual(controller.state(for: .collaboration), .hidden)
+        XCTAssertTrue(scheduler.tasks.isEmpty)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.failedRestored(scope: .usb)))
+        XCTAssertEqual(
+            controller.state(for: .collaboration), .visible(.saved(scope: .collaboration))
+        )
+        XCTAssertEqual(scheduler.tasks.count, 1)
+
+        controller.recordPersistenceResult(.succeeded, scope: .usb)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.saved(scope: .usb)))
+        XCTAssertEqual(scheduler.tasks.count, 2)
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state(for: .usb), .visible(.saved(scope: .usb)))
+        XCTAssertEqual(controller.state(for: .collaboration), .hidden)
+        scheduler.tasks[1].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state(for: .usb), .hidden)
+    }
+
+    func testUSBFailureCancelsTimerAndPersistsUntilNextUSBSuccess() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .usb)
+        controller.recordPersistenceResult(.failed, scope: .usb)
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state(for: .usb), .visible(.failedRestored(scope: .usb)))
+
+        controller.recordPersistenceResult(.succeeded, scope: .usb)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.saved(scope: .usb)))
+        XCTAssertEqual(scheduler.tasks.count, 2)
+    }
+
+    func testUSBSaveStatusUsesSameFixedLeadingFooterContract() {
+        let layout = SettingsPageLayoutProjection.usb(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            learningInProgress: false,
+            saveFeedbackState: .visible(.saved(scope: .usb))
+        )
+
+        XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertTrue(layout.windowFooterRows[0].isVisible)
+        XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
+        XCTAssertFalse(layout.groups.flatMap(\.rows).contains {
+            $0.id == SettingsSaveStatusPresentation.rowID
+        })
+        XCTAssertEqual(SettingsSaveStatusPresentation.saved(scope: .usb).accessibilityLabel,
+                       "USB 配置保存状态")
+    }
+
+    func testInputSourceFieldsTreatBlankAsMissingAndRejectZeroOrOverflow() {
+        XCTAssertEqual(InputSourceValuePolicy.parseField(""), .empty)
+        XCTAssertEqual(InputSourceValuePolicy.parseField("  \n"), .empty)
+        XCTAssertEqual(InputSourceValuePolicy.parseField("17"), .valid(17))
+        for value in ["0", "-1", "65536", "not-a-number", "999999999999999999999"] {
+            XCTAssertEqual(InputSourceValuePolicy.parseField(value), .invalid)
+        }
+    }
+
+    func testUnchangedPersistenceDoesNotCreateSaveFeedbackEvent() {
+        XCTAssertFalse(SettingsPersistenceFeedbackPolicy.hasActualChange(from: 17, to: 17))
+        XCTAssertTrue(SettingsPersistenceFeedbackPolicy.hasActualChange(from: 17, to: 18))
     }
 
     func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {

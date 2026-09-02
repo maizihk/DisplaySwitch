@@ -395,20 +395,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             completion?(false)
             return
         }
-        let targetDisplayIDs = targetConfigurations.keys.sorted()
-        guard !targetDisplayIDs.isEmpty else {
+        guard !targetConfigurations.isEmpty else {
             completion?(false)
             return
         }
         profileSwitchItems.forEach { $0.isEnabled = false }
-        let targets = targetDisplayIDs.compactMap { displayID -> InputSourceSwitchTarget? in
-            guard let configuration = targetConfigurations[displayID] else { return nil }
-            return InputSourceSwitchTarget(
-                stableID: configuration.id ?? configuration.selector,
-                selector: configuration.selector,
-                targetInput: configuration.targetInput,
-                alternateInput: configuration.localInput
-            )
+        let targets = InputSourceSwitchTargetProjection.mappedTargets(from: targetConfigurations)
+        guard !targets.isEmpty else {
+            profileSwitchItems.forEach { $0.isEnabled = true }
+            completion?(false)
+            return
         }
         let inputSourceSwitchService = inputSourceSwitchService
 
@@ -1393,7 +1389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         _ = displayID
         let message: String
         switch reason {
-        case .missingMapping: message = "部分显示器未配置 USB 目标输入源"
+        case .invalidMapping: message = "部分显示器的 USB 目标输入源无效，已安全跳过"
         case .displayUnavailable: message = "部分显示器当前不可用"
         case .ddcFailed: message = "部分显示器切换失败"
         case .wakeNotSent: message = "本机切换已继续，协同唤醒未发送"
