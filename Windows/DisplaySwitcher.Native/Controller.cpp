@@ -153,8 +153,9 @@ namespace DisplaySwitcher::Native
         }
         auto topologyAllowsUsb = currentTopologyAuthoritative &&
             currentTopologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative;
-        trayIcon_->SetUsbSwitchActive(config.usbSwitch.enabled && automationConfigured
-            && !config.displayConfigurationSafeMode && !usbLearningActive_.load() && topologyAllowsUsb);
+        trayIcon_->SetUsbSwitchActive(ProjectUsbTrayConfiguredEnabled(config.usbSwitch.enabled,
+            { automationConfigured, config.displayConfigurationSafeMode,
+                usbLearningActive_.load(), topologyAllowsUsb }));
         UsbSwitchInitialState usbInitial{ config.usbSwitch.enabled, usbLearningActive_.load(),
             config.displayConfigurationSafeMode || !topologyAllowsUsb, std::nullopt,
             config.usbSwitch.collaborationWakeEnabled, collaborationValid };

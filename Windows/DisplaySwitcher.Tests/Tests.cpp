@@ -265,6 +265,18 @@ namespace
         Check(UsbTrayStatusText(true) == L"USB 切换已开启" &&
             UsbTrayStatusText(false) == L"USB 切换已关闭",
             L"DS-028: 托盘 USB 状态只表达开启或关闭，不泄露设备标识");
+        for (auto runtime : {
+            UsbTrayRuntimeConditions{ false, false, false, true },
+            UsbTrayRuntimeConditions{ true, true, false, false },
+            UsbTrayRuntimeConditions{ true, false, true, true },
+            UsbTrayRuntimeConditions{ true, false, false, false } })
+        {
+            Check(ProjectUsbTrayConfiguredEnabled(true, runtime) &&
+                UsbTrayStatusText(ProjectUsbTrayConfiguredEnabled(true, runtime)) == L"USB 切换已开启",
+                L"DS-028: RDP、不可信拓扑、安全模式和学习期只限制运行，不伪装为配置已关闭");
+        }
+        Check(!ProjectUsbTrayConfiguredEnabled(false, { true, false, false, true }),
+            L"DS-028: 托盘关闭状态只来自持久化 USB 开关");
         Check(ResolveTrayActivation(WM_LBUTTONUP) == TrayActivationAction::ShowMenu &&
             ResolveTrayActivation(WM_LBUTTONDBLCLK) == TrayActivationAction::ShowMenu &&
             ResolveTrayActivation(WM_RBUTTONUP) == TrayActivationAction::ShowMenu &&

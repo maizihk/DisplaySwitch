@@ -65,4 +65,18 @@ namespace DisplaySwitcher::Native
     {
         return active ? L"USB 切换已开启" : L"USB 切换已关闭";
     }
+
+    struct UsbTrayRuntimeConditions
+    {
+        bool automationConfigured{};
+        bool safeState{};
+        bool learning{};
+        bool authoritativeTopology{};
+    };
+
+    inline bool ProjectUsbTrayConfiguredEnabled(bool persistedEnabled,
+        UsbTrayRuntimeConditions const&) noexcept
+    {
+        return persistedEnabled;
+    }
 }
