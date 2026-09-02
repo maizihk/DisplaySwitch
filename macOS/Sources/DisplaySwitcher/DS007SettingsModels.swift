@@ -259,21 +259,29 @@ struct TrayDisplayMenuProjection {
 }
 
 struct TrayUSBStatusPresentation: Equatable {
-    let isOperational: Bool
+    let isSettingEnabled: Bool
+
+    init(usbSwitch: USBSwitchConfiguration) {
+        isSettingEnabled = usbSwitch.enabled
+    }
+
+    init(isSettingEnabled: Bool) {
+        self.isSettingEnabled = isSettingEnabled
+    }
 
     var title: String {
-        isOperational ? "USB 切换已开启" : "USB 切换已关闭"
+        isSettingEnabled ? "USB 切换已开启" : "USB 切换已关闭"
     }
 
     var symbolName: String {
-        isOperational ? "cable.connector.horizontal" : "cable.connector.slash"
+        isSettingEnabled ? "cable.connector.horizontal" : "cable.connector.slash"
     }
 
     var accessibilityLabel: String { title }
 }
 
 enum TraySemanticIcon: Equatable {
-    case usbStatus(isOperational: Bool)
+    case usbStatus(isSettingEnabled: Bool)
     case collaborationSwitch
     case display
     case luminance
@@ -284,8 +292,8 @@ enum TraySemanticIcon: Equatable {
 
     var symbolName: String {
         switch self {
-        case .usbStatus(let isOperational):
-            return TrayUSBStatusPresentation(isOperational: isOperational).symbolName
+        case .usbStatus(let isSettingEnabled):
+            return TrayUSBStatusPresentation(isSettingEnabled: isSettingEnabled).symbolName
         case .collaborationSwitch: return "arrow.right.to.line"
         case .display: return "display"
         case .luminance: return "sun.max"

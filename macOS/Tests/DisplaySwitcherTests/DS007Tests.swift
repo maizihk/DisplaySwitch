@@ -388,9 +388,9 @@ final class DS007Tests: XCTestCase {
         ))
     }
 
-    func testDS028USBStatusUsesOnlyExactOperationalText() {
-        let enabled = TrayUSBStatusPresentation(isOperational: true)
-        let disabled = TrayUSBStatusPresentation(isOperational: false)
+    func testDS028USBStatusUsesOnlyExactPersistedSettingText() {
+        let enabled = TrayUSBStatusPresentation(isSettingEnabled: true)
+        let disabled = TrayUSBStatusPresentation(isSettingEnabled: false)
 
         XCTAssertEqual(enabled.title, "USB 切换已开启")
         XCTAssertEqual(disabled.title, "USB 切换已关闭")
@@ -400,10 +400,33 @@ final class DS007Tests: XCTestCase {
         XCTAssertFalse(enabled.title.contains("PID"))
     }
 
+    func testDS028EnabledSettingStaysOnAcrossSafetyAndLearningGateStates() {
+        let enabledSetting = USBSwitchConfiguration(enabled: true)
+        let gateStates = [
+            (configurationAllowsUSB: true, learningAllowsUSB: true),
+            (configurationAllowsUSB: false, learningAllowsUSB: true),
+            (configurationAllowsUSB: true, learningAllowsUSB: false),
+            (configurationAllowsUSB: false, learningAllowsUSB: false)
+        ]
+
+        for gates in gateStates {
+            let oldOperationalValue = true
+                && gates.configurationAllowsUSB
+                && gates.learningAllowsUSB
+            XCTAssertEqual(
+                TrayUSBStatusPresentation(usbSwitch: enabledSetting).title,
+                "USB 切换已开启"
+            )
+            if !gates.configurationAllowsUSB || !gates.learningAllowsUSB {
+                XCTAssertFalse(oldOperationalValue)
+            }
+        }
+    }
+
     func testDS028AllVisibleTrayRolesHaveSemanticSymbols() {
         let icons: [TraySemanticIcon] = [
-            .usbStatus(isOperational: true),
-            .usbStatus(isOperational: false),
+            .usbStatus(isSettingEnabled: true),
+            .usbStatus(isSettingEnabled: false),
             .collaborationSwitch,
             .display,
             .luminance,

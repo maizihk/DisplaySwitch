@@ -1487,10 +1487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func refreshTrayUSBStatus() {
-        let operational = configurationSafetyGate.allows(.usb)
-            && usbLearningSafetyGate.allows(.usb)
-            && AppPreferences.localConfiguration.usbSwitch.enabled
-        let presentation = TrayUSBStatusPresentation(isOperational: operational)
+        let presentation = TrayUSBStatusPresentation(
+            usbSwitch: AppPreferences.localConfiguration.usbSwitch
+        )
         usbStatusItem.title = presentation.title
         usbStatusItem.image = NSImage(
             systemSymbolName: presentation.symbolName,
