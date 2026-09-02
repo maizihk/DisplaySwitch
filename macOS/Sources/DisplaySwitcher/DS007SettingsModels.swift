@@ -108,6 +108,53 @@ enum DisplaySettingsSemantics {
     }
 }
 
+struct TrayDisplayMenuProjection {
+    struct Entry: Equatable {
+        let displayID: Int
+        let title: String
+        let commands: Set<DDCCommand>
+    }
+
+    static func entries(
+        configurations: [DisplayConfiguration],
+        displays: [DisplayConfigurationV4Display]
+    ) -> [Entry] {
+        configurations.sorted(by: { $0.index < $1.index }).compactMap { configuration in
+            let stableID = configuration.id ?? configuration.selector
+            guard let display = displays.first(where: {
+                $0.id.caseInsensitiveCompare(stableID) == .orderedSame
+            }) else { return nil }
+            let commands = DisplaySettingsSemantics.trayCommands(for: display)
+            guard !commands.isEmpty else { return nil }
+            return Entry(displayID: configuration.index, title: configuration.name, commands: commands)
+        }
+    }
+}
+
+enum TrayStaticMenuAction: CaseIterable, Equatable {
+    case settings
+    case quit
+}
+
+enum TrayMenuSeparatorProjection {
+    static func showsDynamicContentSeparator(
+        profileCount: Int,
+        displayGroupCount: Int
+    ) -> Bool {
+        profileCount > 0 || displayGroupCount > 0
+    }
+}
+
+enum DisplayControlTargetProjection {
+    static func displayIDs(
+        selectedDisplayID: Int,
+        availableDisplayIDs: [Int],
+        linkAllDisplays: Bool
+    ) -> [Int] {
+        linkAllDisplays ? availableDisplayIDs.sorted() : [selectedDisplayID]
+    }
+}
+
 struct DisplayCachedValuePresentation: Equatable {
     struct Entry: Hashable {
         let stableID: String

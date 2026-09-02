@@ -360,10 +360,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         window?.makeKeyAndOrderFront(nil)
     }
 
-    func showDiagnosticPreview() {
-        show(tabIndex: 4)
-    }
-
     func updatePeerConnectionStatus(_ text: String, connected: Bool) {
         peerStatusLabel.stringValue = text
         peerStatusLabel.textColor = connected ? .systemGreen : .secondaryLabelColor
@@ -904,7 +900,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
         if configurations.isEmpty {
             let emptyState = NSTextField(
-                wrappingLabelWithString: "尚未检测到显示器，请返回菜单栏选择“重新检测显示器”。"
+                wrappingLabelWithString: "尚未检测到显示器，请使用上方的检测按钮。"
             )
             emptyState.textColor = .secondaryLabelColor
             emptyState.font = .systemFont(ofSize: 12)
