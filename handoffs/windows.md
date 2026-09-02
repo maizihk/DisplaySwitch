@@ -8,8 +8,8 @@
 - 数据与迁移：统一输入源为 `null` 或 `1...65535`。旧 v5 USB/协同零值原子迁移为空映射；迁移后全空会关闭相关功能，迁移写入失败保留原文件、写安全标记并进入零副作用安全状态。协同配置允许部分显示器为空，但至少需要一台当前显示器具有有效映射。
 - 多层安全边界：设置解析和配置校验拒绝显式零/负数/非数字/溢出；选择器、Controller 与 USB 协调器将空或非法值报告为 `missing_mapping` 并继续其他有效显示器；输入源服务在调用 transport 前拒绝；`NativeInputSourceTransport` 在锁、显示器解析和 DXVA2 调用前再次拒绝，确保零值不能到达 `SetVCPFeature`。
 - UI：USB 与协同分别保存自己的底部反馈。只有实际修改且成功持久化才显示绿色“✓ 已保存”；切换标签、切换正在编辑的协同配置或重载只清除短暂成功，不清除失败；网络检测、USB 学习过程、DDC、输入源及其他非保存操作不触发或覆盖保存反馈。
-- 共享契约：新增 `specs/proposals/DS-022-input-source-null-safety.md`，提议公共 USB schema 后续由双端协调收紧为 `null` 或 `1...65535`。本任务未修改 `PROTOCOL.md`、contracts 或 macOS。
-- 本机验证：`Windows/build-windows.ps1` x64 Release 成功；完整原生测试通过 316 checks，v2 公共向量 1+4+20+6、USB-001 至 USB-016 全部通过。绿色版目录 1.78 MiB，入口与 runtime 完整。
+- 共享契约：`specs/proposals/DS-026-input-source-null-safety.md` 已于 2026-09-02 批准；公共 USB schema 的映射和 `switchDisplay` 动作范围已收紧为 `null` 或 `1...65535`，双端缺失映射继续使用 `missing_mapping`，不新增 `invalid_mapping`。本次未修改 `PROTOCOL.md` 或 macOS 源码。
+- 本机验证：Windows 实现提交 `bf0d8f8` 已有 `Windows/build-windows.ps1` x64 Release、316 checks、v2 公共向量 1+4+20+6 和 USB-001 至 USB-016 全部通过的既有证据，绿色版目录 1.78 MiB。本次共享合同更新在 macOS 环境执行合同检查和 `git diff --check`，未重复运行 Windows Release，不把既有结果冒充为本轮结果。
 - 自动测试边界：使用临时配置和模拟 USB/DDC/输入源，覆盖空白、1、65535、0、负数、非数字、溢出、null 回显、旧零值迁移、迁移写失败、全部为空、部分映射、USB/手动/协同共用执行路径、原生最终边界和保存反馈作用域。未访问真实网络、USB、DDC、显示器唤醒或输入源。
 - 实机待验：USB/协同输入框留空与非法值回滚；部分映射只切有效显示器；USB 与协同底部反馈的颜色、两秒隐藏和失败保持；不在本任务中执行真实输入源切换。
 - 实现提交：`bf0d8f80553019415dc7cf74c07a47349a400a7a`。
