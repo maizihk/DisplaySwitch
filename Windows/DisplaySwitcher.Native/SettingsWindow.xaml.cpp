@@ -733,7 +733,17 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
     }
 
-    void SettingsWindow::ShowWindow() { appWindow_.Show(); Activate(); }
+    void SettingsWindow::ShowWindow()
+    {
+        appWindow_.Show();
+        Activate();
+        HWND window{};
+        if (SUCCEEDED(this->get_strong().as<::IWindowNative>()->get_WindowHandle(&window)) && window)
+        {
+            if (IsIconic(window)) ::ShowWindow(window, SW_RESTORE);
+            SetForegroundWindow(window);
+        }
+    }
     void SettingsWindow::CloseForExit() { ddcCancellation_.Cancel(); Close(); }
 
     void SettingsWindow::SetConnectionStatus(std::wstring const& status, bool connected)

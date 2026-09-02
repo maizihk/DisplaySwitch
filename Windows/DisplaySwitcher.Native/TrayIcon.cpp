@@ -40,6 +40,34 @@ namespace
         return loaded ? CreateFontIndirectW(&metrics.lfMenuFont) : nullptr;
     }
 
+    HFONT CreateIconFont(UINT dpi)
+    {
+        LOGFONTW font{};
+        font.lfHeight = -ScaleForDpi(16, dpi);
+        font.lfWeight = FW_NORMAL;
+        wcscpy_s(font.lfFaceName, L"Segoe Fluent Icons");
+        auto result = CreateFontIndirectW(&font);
+        if (result) return result;
+        wcscpy_s(font.lfFaceName, L"Segoe MDL2 Assets");
+        return CreateFontIndirectW(&font);
+    }
+
+    wchar_t const* IconGlyph(DisplaySwitcher::Native::TraySemanticIcon icon) noexcept
+    {
+        using Icon = DisplaySwitcher::Native::TraySemanticIcon;
+        switch (icon)
+        {
+        case Icon::Usb: return L"\uE88E";
+        case Icon::SwitchProfile: return L"\uE8AB";
+        case Icon::Brightness: return L"\uE706";
+        case Icon::Contrast: return L"\uE793";
+        case Icon::Volume: return L"\uE767";
+        case Icon::Settings: return L"\uE713";
+        case Icon::Exit: return L"\uE8BB";
+        default: return L"\u2022";
+        }
+    }
+
     struct PopupMenuItem
     {
         UINT command{};
@@ -47,6 +75,7 @@ namespace
         bool separator{};
         bool enabled{ true };
         bool slider{};
+        DisplaySwitcher::Native::TraySemanticIcon icon{ DisplaySwitcher::Native::TraySemanticIcon::Usb };
         DisplaySwitcher::Native::TrayDdcItem ddc;
         RECT bounds{};
     };
@@ -55,7 +84,9 @@ namespace
     {
         std::vector<PopupMenuItem> items;
         HFONT font{};
+        HFONT iconFont{};
         UINT dpi{ 96 };
+        DisplaySwitcher::Native::TrayPopupLayout layout{};
         bool dark{};
         int hotIndex{ -1 };
         HWND owner{};
@@ -69,6 +100,7 @@ namespace
         ~PopupMenuState()
         {
             if (font) DeleteObject(font);
+            if (iconFont) DeleteObject(iconFont);
         }
     };
 
@@ -144,15 +176,25 @@ namespace
             }
             SetTextColor(dc, item.enabled ? text : disabled);
             RECT textBounds = item.bounds;
-            textBounds.left += ScaleForDpi(20, state.dpi);
-            textBounds.right -= ScaleForDpi(20, state.dpi);
+            RECT iconBounds = item.bounds;
+            iconBounds.left += state.layout.iconLeft;
+            iconBounds.right = iconBounds.left + state.layout.iconWidth;
+            auto previousIconFont = SelectObject(dc, state.iconFont ? state.iconFont : GetStockObject(DEFAULT_GUI_FONT));
+            auto glyph = state.iconFont ? IconGlyph(item.icon) : L"\u2022";
+            DrawTextW(dc, glyph, 1, &iconBounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, previousIconFont);
+            textBounds.left += state.layout.textLeft;
+            textBounds.right -= state.layout.rightPadding;
             if (item.slider)
             {
-                auto labelBounds = textBounds; labelBounds.right = labelBounds.left + ScaleForDpi(92, state.dpi);
+                auto labelBounds = textBounds;
+                labelBounds.right = labelBounds.left + state.layout.sliderLabelWidth;
                 DrawTextW(dc, item.text.c_str(), static_cast<int>(item.text.size()), &labelBounds,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-                RECT track{ labelBounds.right, (item.bounds.top + item.bounds.bottom) / 2 - ScaleForDpi(2, state.dpi),
-                    item.bounds.right - ScaleForDpi(52, state.dpi), (item.bounds.top + item.bounds.bottom) / 2 + ScaleForDpi(2, state.dpi) };
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                RECT track{ labelBounds.right + state.layout.sliderGap,
+                    (item.bounds.top + item.bounds.bottom) / 2 - ScaleForDpi(2, state.dpi),
+                    item.bounds.right - state.layout.rightPadding - state.layout.sliderValueWidth - state.layout.sliderGap,
+                    (item.bounds.top + item.bounds.bottom) / 2 + ScaleForDpi(2, state.dpi) };
                 auto trackBrush = CreateSolidBrush(state.dark ? RGB(105, 105, 105) : RGB(145, 145, 145));
                 FillRect(dc, &track, trackBrush); DeleteObject(trackBrush);
                 auto maximum = (std::max)(1, item.ddc.maximum);
@@ -165,13 +207,15 @@ namespace
                         x + radius, (track.top + track.bottom) / 2 + radius);
                     SelectObject(dc, oldBrush); DeleteObject(thumbBrush);
                 }
-                auto valueBounds = item.bounds; valueBounds.left = track.right + ScaleForDpi(8, state.dpi); valueBounds.right -= ScaleForDpi(12, state.dpi);
+                auto valueBounds = item.bounds;
+                valueBounds.left = track.right + state.layout.sliderGap;
+                valueBounds.right -= state.layout.rightPadding;
                 auto value = item.ddc.mixed ? L"混合" : item.ddc.known ? std::to_wstring(item.ddc.value) : L"—";
                 DrawTextW(dc, value.c_str(), static_cast<int>(value.size()), &valueBounds, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
                 continue;
             }
             DrawTextW(dc, item.text.c_str(), static_cast<int>(item.text.size()), &textBounds,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
         SelectObject(dc, previousFont);
     }
@@ -209,7 +253,9 @@ namespace
             if (state->draggingIndex >= 0)
             {
                 auto& item = state->items[static_cast<size_t>(state->draggingIndex)];
-                auto left = ScaleForDpi(112, state->dpi); auto right = static_cast<int>(item.bounds.right) - ScaleForDpi(52, state->dpi);
+                auto left = state->layout.textLeft + state->layout.sliderLabelWidth + state->layout.sliderGap;
+                auto right = static_cast<int>(item.bounds.right) - state->layout.rightPadding
+                    - state->layout.sliderValueWidth - state->layout.sliderGap;
                 item.ddc.value = MulDiv((std::clamp)(static_cast<int>(point.x), left, right) - left,
                     (std::max)(1, item.ddc.maximum), (std::max)(1, right - left));
                 item.ddc.known = true; item.ddc.mixed = false;
@@ -236,7 +282,9 @@ namespace
             {
                 state->draggingIndex = index;
                 auto& item = state->items[static_cast<size_t>(index)];
-                auto left = ScaleForDpi(112, state->dpi); auto right = static_cast<int>(item.bounds.right) - ScaleForDpi(52, state->dpi);
+                auto left = state->layout.textLeft + state->layout.sliderLabelWidth + state->layout.sliderGap;
+                auto right = static_cast<int>(item.bounds.right) - state->layout.rightPadding
+                    - state->layout.sliderValueWidth - state->layout.sliderGap;
                 item.ddc.value = MulDiv((std::clamp)(static_cast<int>(point.x), left, right) - left,
                     (std::max)(1, item.ddc.maximum), (std::max)(1, right - left));
                 item.ddc.known = true; item.ddc.mixed = false;
@@ -402,6 +450,11 @@ namespace DisplaySwitcher::Native
         Shell_NotifyIconW(NIM_MODIFY, &data);
     }
 
+    void TrayIcon::SetUsbSwitchActive(bool active)
+    {
+        usbSwitchActive_ = active;
+    }
+
     void TrayIcon::SetProfiles(std::vector<std::pair<std::wstring, std::wstring>> profiles)
     {
         profiles_ = std::move(profiles);
@@ -453,14 +506,9 @@ namespace DisplaySwitcher::Native
         if (message == CallbackMessage)
         {
             auto notification = LOWORD(lParam);
-            if (notification == WM_CONTEXTMENU || notification == WM_RBUTTONUP)
+            if (ResolveTrayActivation(notification) == TrayActivationAction::ShowMenu)
             {
                 ShowContextMenu();
-                return 0;
-            }
-            if (notification == WM_LBUTTONDBLCLK || notification == NIN_SELECT || notification == NIN_KEYSELECT)
-            {
-                if (showSettings_) showSettings_();
                 return 0;
             }
         }
@@ -475,29 +523,33 @@ namespace DisplaySwitcher::Native
         state->dpi = GetDpiForWindow(window_);
         if (!state->dpi) state->dpi = 96;
         state->font = CreateMenuFont(state->dpi);
+        state->iconFont = CreateIconFont(state->dpi);
         state->writeDdc = writeDdc_;
         state->items = {
-            { 0, Limit(status_, 70), false, false },
+            { 0, UsbTrayStatusText(usbSwitchActive_), false, false, false, TraySemanticIcon::Usb },
             { 0, L"", true, false },
         };
         for (size_t index = 0; index < profiles_.size(); ++index)
-            state->items.push_back({ FirstProfileCommand + static_cast<UINT>(index), L"切换到 " + profiles_[index].second, false, true });
+            state->items.push_back({ FirstProfileCommand + static_cast<UINT>(index), L"切换到 " + profiles_[index].second,
+                false, true, false, TraySemanticIcon::SwitchProfile });
         if (!profiles_.empty()) state->items.push_back({ 0, L"", true, false });
         for (auto const& ddc : ddcItems_)
         {
             PopupMenuItem item; item.text = ddc.linked ? ddc.label : ddc.displayName + L" · " + ddc.label;
             item.slider = true; item.enabled = ddc.enabled; item.ddc = ddc;
+            item.icon = ddc.code == DdcVcpCode::Brightness ? TraySemanticIcon::Brightness
+                : ddc.code == DdcVcpCode::Contrast ? TraySemanticIcon::Contrast : TraySemanticIcon::Volume;
             state->items.push_back(std::move(item));
         }
         if (!ddcItems_.empty()) state->items.push_back({ 0, L"", true, false });
-        state->items.push_back({ SettingsCommand, L"设置…", false, true });
+        state->items.push_back({ SettingsCommand, L"设置…", false, true, false, TraySemanticIcon::Settings });
         state->items.push_back({ 0, L"", true, false });
-        state->items.push_back({ ExitCommand, L"退出", false, true });
+        state->items.push_back({ ExitCommand, L"退出", false, true, false, TraySemanticIcon::Exit });
 
         auto rowHeight = ScaleForDpi(32, state->dpi);
         auto separatorHeight = ScaleForDpi(1, state->dpi);
-        auto menuWidth = ScaleForDpi(ddcItems_.empty() ? 120 : 340, state->dpi);
         auto menuHeight = 0;
+        auto widestTextWidth = 0;
         HDC dc = GetDC(window_);
         HGDIOBJ previousFont{};
         if (dc) previousFont = SelectObject(dc, state->font ? state->font : GetStockObject(DEFAULT_GUI_FONT));
@@ -510,7 +562,7 @@ namespace DisplaySwitcher::Native
             {
                 SIZE textSize{};
                 GetTextExtentPoint32W(dc, item.text.c_str(), static_cast<int>(item.text.size()), &textSize);
-                menuWidth = (std::max)(menuWidth, static_cast<int>(textSize.cx) + ScaleForDpi(40, state->dpi));
+                widestTextWidth = (std::max)(widestTextWidth, static_cast<int>(textSize.cx));
             }
         }
         if (dc)
@@ -518,6 +570,8 @@ namespace DisplaySwitcher::Native
             if (previousFont) SelectObject(dc, previousFont);
             ReleaseDC(window_, dc);
         }
+        state->layout = BuildTrayPopupLayout(state->dpi, widestTextWidth, !ddcItems_.empty());
+        auto menuWidth = state->layout.width;
         for (auto& item : state->items) item.bounds.right = menuWidth;
 
         POINT point{};

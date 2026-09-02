@@ -1,6 +1,16 @@
 # Windows 交接记录
 
-## 当前任务：DS-027 联动 DDC 统一控件
+## 当前任务：DS-028 / DS-029 / W-030 托盘、离线目录与 USB 冷启动
+
+### DS-028 已实现
+
+- 托盘 USB 状态只显示开关语义；设备身份不再进入可见菜单。
+- 所有非分隔菜单项都有语义图标，图标字体不可用时安全退化；菜单几何由同一 DPI/内容布局模型计算，96 DPI 目标宽度 260–272 像素。
+- 左右键、双击和键盘激活都只打开同一个托盘菜单；设置窗口只从明确的“设置…”命令打开。
+- 设置窗口复用现有实例，打开时恢复、激活并请求前台，没有 topmost 或失焦隐藏行为。
+- 新增纯模型回归覆盖 USB 文案、托盘激活路由、紧凑宽度、DPI 缩放和滑杆最小可操作宽度；Windows Release 与实机视觉结果待本分支最终 CI 统一记录。
+
+## 上一任务：DS-027 联动 DDC 统一控件
 
 - 日期：2026-09-02。分支：`codex/windows-linked-ddc-unified-controls`，基线：`origin/main@b7d2cc9`。
 - 根因：旧 `LinkAllDisplays` 只传入 `DdcControlService::Write` 扩大写目标；`SettingsWindow::RebuildDisplayEditors` 和 `BuildDdcTrayControls` 仍分别按显示器投影，最终写入入口也没有根据全部目标上限做批量预检。

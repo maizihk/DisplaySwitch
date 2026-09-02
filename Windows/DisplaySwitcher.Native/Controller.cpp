@@ -127,6 +127,8 @@ namespace DisplaySwitcher::Native
             [&](auto const& mapping) { return mapping.targetInput && IsValidInputSourceValue(*mapping.targetInput)
                 && FindDisplayById(config.displays, mapping.displayId); });
         auto automationConfigured = usbConfigured && hasUsbMapping;
+        trayIcon_->SetUsbSwitchActive(config.usbSwitch.enabled && automationConfigured
+            && !config.displayConfigurationSafeMode && !usbLearningActive_.load());
         usbWatcher_->Reconfigure(config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.vendorId : -1,
             config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.productId : -1,
             config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.deviceLocalReference : L"");
@@ -182,8 +184,7 @@ namespace DisplaySwitcher::Native
         else if (!config.usbSwitch.enabled) SetStatus(L"USB 自动切换未开启");
         else
         {
-            auto device = config.usbSwitch.deviceName.empty() ? L"已选择设备" : config.usbSwitch.deviceName;
-            SetStatus(L"USB 自动切换已开启 · " + device);
+            SetStatus(L"USB 自动切换已开启");
         }
     }
 

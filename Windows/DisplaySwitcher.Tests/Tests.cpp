@@ -15,6 +15,7 @@
 #include "../DisplaySwitcher.Native/UsbPresencePollPolicy.h"
 #include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
 #include "../DisplaySwitcher.Native/SettingsWindowContracts.h"
+#include "../DisplaySwitcher.Native/TrayContracts.h"
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -257,6 +258,27 @@ namespace
                 L"0、负数、非数字和溢出输入源必须拒绝");
         Check(FormatInputSourceText(std::nullopt).empty() && FormatInputSourceText(0).empty()
             && FormatInputSourceText(17) == L"17", L"重新加载 null 或旧零映射必须显示空白");
+    }
+
+    void TestTrayInteractionAndLayoutContracts()
+    {
+        Check(UsbTrayStatusText(true) == L"USB 切换已开启" &&
+            UsbTrayStatusText(false) == L"USB 切换已关闭",
+            L"DS-028: 托盘 USB 状态只表达开启或关闭，不泄露设备标识");
+        Check(ResolveTrayActivation(WM_LBUTTONUP) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(WM_LBUTTONDBLCLK) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(WM_RBUTTONUP) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(NIN_SELECT) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(WM_MOUSEMOVE) == TrayActivationAction::None,
+            L"DS-028: 托盘左右键与键盘激活都只打开同一菜单");
+        auto textOnly = BuildTrayPopupLayout(96, 80, false);
+        auto sliders = BuildTrayPopupLayout(96, 120, true);
+        auto scaled = BuildTrayPopupLayout(192, 240, true);
+        Check(textOnly.width == 260 && sliders.width >= 272 &&
+            sliders.width >= sliders.textLeft + sliders.sliderLabelWidth + sliders.sliderGap +
+                sliders.sliderTrackMinimumWidth + sliders.sliderGap + sliders.sliderValueWidth + sliders.rightPadding &&
+            scaled.width >= sliders.width * 2,
+            L"DS-028: 托盘按 DPI 与内容计算紧凑宽度且保留可操作滑杆");
     }
 
     struct FakeDdcBackend final : IDdcBackend
@@ -2536,6 +2558,7 @@ int wmain()
         TestV2OnlyDatagramGate();
         TestFreshInstallAndCounts(root);
         TestSettingsWindowLayoutContracts();
+        TestTrayInteractionAndLayoutContracts();
         TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);

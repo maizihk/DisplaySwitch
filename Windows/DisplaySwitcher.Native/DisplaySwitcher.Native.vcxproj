@@ -85,6 +85,7 @@
     <ClInclude Include="V2StateMachine.h" />
     <ClInclude Include="SystemActions.h" />
     <ClInclude Include="TrayIcon.h" />
+    <ClInclude Include="TrayContracts.h" />
     <ClInclude Include="UdpPeer.h" />
     <ClInclude Include="UnboundProbeRouter.h" />
     <ClInclude Include="UsbWatcher.h" />

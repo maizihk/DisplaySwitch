@@ -1,5 +1,6 @@
 #pragma once
 #include "DdcControl.h"
+#include "TrayContracts.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -28,6 +29,7 @@ namespace DisplaySwitcher::Native
         TrayIcon& operator=(TrayIcon const&) = delete;
 
         void SetStatus(std::wstring const& status);
+        void SetUsbSwitchActive(bool active);
         void SetProfiles(std::vector<std::pair<std::wstring, std::wstring>> profiles);
         void SetDdcItems(std::vector<TrayDdcItem> items);
         void ShowBalloon(std::wstring const& title, std::wstring const& message);
@@ -49,6 +51,7 @@ namespace DisplaySwitcher::Native
         HWND window_{};
         std::wstring className_;
         std::wstring status_{ L"正在初始化…" };
+        bool usbSwitchActive_{};
         std::vector<std::pair<std::wstring, std::wstring>> profiles_;
         std::vector<TrayDdcItem> ddcItems_;
         bool sessionNotificationsRegistered_{};
