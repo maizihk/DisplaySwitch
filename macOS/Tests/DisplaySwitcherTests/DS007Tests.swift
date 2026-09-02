@@ -25,6 +25,83 @@ final class DS007Tests: XCTestCase {
         XCTAssertTrue(DisplaySettingsSemantics.trayCommands(for: display).isEmpty)
     }
 
+    func testDS024NoTrayControlsProducesNoDisplayGroups() {
+        let display = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
+        let entries = TrayDisplayMenuProjection.entries(
+            configurations: [runtimeDisplay(id: display.id, index: 1, name: display.name)],
+            displays: [display]
+        )
+
+        XCTAssertTrue(entries.isEmpty)
+    }
+
+    func testDS024OnlyDisplaysWithTrayControlsProduceGroups() {
+        var hidden = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
+        hidden.brightnessEnabled = true
+        var visible = configuredDisplay(id: "display-b", name: "Second", selector: "selector-b")
+        visible.contrastEnabled = true
+        visible.contrastShowInTray = true
+        let entries = TrayDisplayMenuProjection.entries(
+            configurations: [
+                runtimeDisplay(id: hidden.id, index: 1, name: hidden.name),
+                runtimeDisplay(id: visible.id, index: 2, name: visible.name)
+            ],
+            displays: [hidden, visible]
+        )
+
+        XCTAssertEqual(entries, [
+            TrayDisplayMenuProjection.Entry(
+                displayID: 2, title: "Second", commands: [.contrast]
+            )
+        ])
+    }
+
+    func testDS024DisplayGroupContainsOnlyEnabledTrayControls() {
+        var display = configuredDisplay(id: "display-a", name: "Display", selector: "selector-a")
+        display.brightnessEnabled = true
+        display.brightnessShowInTray = true
+        display.contrastEnabled = true
+        display.volumeShowInTray = true
+        let entries = TrayDisplayMenuProjection.entries(
+            configurations: [runtimeDisplay(id: display.id, index: 1, name: display.name)],
+            displays: [display]
+        )
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].commands, [.luminance])
+    }
+
+    func testDS024StaticTrayActionsOnlyContainSettingsAndQuit() {
+        XCTAssertEqual(TrayStaticMenuAction.allCases, [.settings, .quit])
+    }
+
+    func testDS024DynamicSeparatorRequiresVisibleDynamicContent() {
+        XCTAssertFalse(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: 0, displayGroupCount: 0
+        ))
+        XCTAssertTrue(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: 1, displayGroupCount: 0
+        ))
+        XCTAssertTrue(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
+            profileCount: 0, displayGroupCount: 1
+        ))
+    }
+
+    func testDS024LinkedControlTargetsUsePersistedSetting() {
+        XCTAssertEqual(
+            DisplayControlTargetProjection.displayIDs(
+                selectedDisplayID: 2, availableDisplayIDs: [3, 1, 2], linkAllDisplays: false
+            ),
+            [2]
+        )
+        XCTAssertEqual(
+            DisplayControlTargetProjection.displayIDs(
+                selectedDisplayID: 2, availableDisplayIDs: [3, 1, 2], linkAllDisplays: true
+            ),
+            [1, 2, 3]
+        )
+    }
+
     func testV1PeerIdentityCanNeverBeConfirmedInV2OnlyConfiguration() {
         let profile = completeProfile(name: "Peer", displayID: UUID().uuidString)
         XCTAssertEqual(
@@ -173,10 +250,21 @@ final class DS007Tests: XCTestCase {
                         selector: "selector", value: value)
     }
 
-    private func configuredDisplay() -> DisplayConfigurationV4Display {
+    private func configuredDisplay(
+        id: String = UUID().uuidString,
+        name: String = "Display",
+        selector: String = "selector"
+    ) -> DisplayConfigurationV4Display {
         DisplayConfigurationV4Display(
-            id: UUID().uuidString, name: "Display", selector: "selector",
+            id: id, name: name, selector: selector,
             localInput: nil, readEnabled: false
+        )
+    }
+
+    private func runtimeDisplay(id: String, index: Int, name: String) -> DisplayConfiguration {
+        DisplayConfiguration(
+            id: id, index: index, name: name, selector: "selector-\(index)",
+            localInput: nil, targetInput: nil, readEnabled: false
         )
     }
 

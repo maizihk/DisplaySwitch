@@ -87,6 +87,32 @@ struct USBDisplayInputMapping: Codable, Equatable {
     var targetInput: Int
 }
 
+enum InputSourceValuePolicy {
+    static let safeRange = 1...65_535
+
+    enum FieldValue: Equatable {
+        case empty
+        case valid(Int)
+        case invalid
+    }
+
+    static func isSafe(_ value: Int) -> Bool {
+        safeRange.contains(value)
+    }
+
+    static func nativeValue(_ value: Int) -> UInt16? {
+        guard isSafe(value) else { return nil }
+        return UInt16(value)
+    }
+
+    static func parseField(_ text: String) -> FieldValue {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return .empty }
+        guard let value = Int(normalized), isSafe(value) else { return .invalid }
+        return .valid(value)
+    }
+}
+
 struct USBSwitchConfiguration: Codable, Equatable {
     var enabled: Bool = false
     var triggerDevice: CollaborationTriggerDevice?
@@ -197,7 +223,7 @@ enum LocalProfileIssue: String, Equatable, Hashable {
         case .invalidPairingCode:
             return "配对码必须为 8–128 个 UTF-8 字节。"
         case .missingDisplayMapping:
-            return "请为当前每台显示器填写对端输入源。"
+            return "请至少为一台显示器填写 1–65535 的对端输入源。"
         case .orphanedDisplayMapping:
             return "存在不再对应当前显示器的旧输入源映射，请重新保存配置。"
         }
@@ -416,10 +442,9 @@ enum DisplayConfigurationStore {
         let known = Set(displays.map { $0.id.lowercased() })
         let mapped = Set(profile.displayInputs.map { $0.displayID.lowercased() })
         let validMapped = Set(profile.displayInputs.compactMap { mapping in
-            (0...65535).contains(mapping.peerInput) ? mapping.displayID.lowercased() : nil
+            InputSourceValuePolicy.isSafe(mapping.peerInput) ? mapping.displayID.lowercased() : nil
         })
-        if known.isEmpty || validMapped.isEmpty || !known.isSubset(of: validMapped)
-            || validMapped.count != profile.displayInputs.count {
+        if known.isEmpty || validMapped.isEmpty || validMapped.count != profile.displayInputs.count {
             issues.insert(.missingDisplayMapping)
         }
         if !mapped.isSubset(of: known) { issues.insert(.orphanedDisplayMapping) }
@@ -466,7 +491,7 @@ enum DisplayConfigurationStore {
         guard usbSwitch.triggerDevice?.kind.caseInsensitiveCompare("usb") == .orderedSame else { return false }
         let known = Set(displays.map { $0.id.lowercased() })
         return usbSwitch.displayInputs.contains {
-            known.contains($0.displayID.lowercased()) && (0...65535).contains($0.targetInput)
+            known.contains($0.displayID.lowercased()) && InputSourceValuePolicy.isSafe($0.targetInput)
         }
     }
 
@@ -593,10 +618,13 @@ enum DisplayConfigurationStore {
         let displays = try document.displays.map { display -> DisplayConfigurationV4Display in
             guard let id = uuid(display.id), displayIDs.insert(id.lowercased()).inserted,
                   let name = clean(display.name, limit: displayNameLimit), let selector = clean(display.selector, limit: textLimit),
-                  display.localInput == nil || validInput(display.localInput) != nil else {
+                  display.localInput == nil || display.localInput == 0 || validInput(display.localInput) != nil else {
                 throw DisplayConfigurationStoreError.invalidConfiguration
             }
-            return DisplayConfigurationV4Display(id: id, name: name, selector: selector, localInput: display.localInput,
+            // Older documents could persist 0 even though it is not a valid DDC input source.
+            // Preserve the document, but load that sentinel as an absent mapping so it can never be written.
+            let localInput = display.localInput == 0 ? nil : display.localInput
+            return DisplayConfigurationV4Display(id: id, name: name, selector: selector, localInput: localInput,
                 readEnabled: display.readEnabled, brightnessEnabled: display.brightnessEnabled,
                 contrastEnabled: display.contrastEnabled, volumeEnabled: display.volumeEnabled,
                 brightnessShowInTray: display.brightnessShowInTray,
@@ -622,9 +650,16 @@ enum DisplayConfigurationStore {
                 throw DisplayConfigurationStoreError.invalidConfiguration
             }
             var mappingIDs = Set<String>()
-            let mappings = try profile.displayInputs.map { item -> DisplayInputMapping in
-                guard let displayID = uuid(item.displayID), mappingIDs.insert(displayID.lowercased()).inserted,
-                      let input = validInput(item.peerInput) else { throw DisplayConfigurationStoreError.invalidConfiguration }
+            let mappings = try profile.displayInputs.compactMap { item -> DisplayInputMapping? in
+                guard let displayID = uuid(item.displayID) else {
+                    throw DisplayConfigurationStoreError.invalidConfiguration
+                }
+                guard item.peerInput != 0 else { return nil }
+                guard mappingIDs.insert(displayID.lowercased()).inserted,
+                      InputSourceValuePolicy.isSafe(item.peerInput) else {
+                    throw DisplayConfigurationStoreError.invalidConfiguration
+                }
+                let input = item.peerInput
                 return DisplayInputMapping(displayID: displayID, peerInput: input)
             }
             let triggers = try profile.triggerDevices.map { item -> CollaborationTriggerDevice in
@@ -663,25 +698,27 @@ enum DisplayConfigurationStore {
             trigger = nil
         }
         var mappingIDs = Set<String>()
-        let mappings = try value.displayInputs.map { item -> USBDisplayInputMapping in
-            guard let displayID = uuid(item.displayID),
-                  mappingIDs.insert(displayID.lowercased()).inserted,
-                  let input = validInput(item.targetInput) else {
+        let mappings = try value.displayInputs.compactMap { item -> USBDisplayInputMapping? in
+            guard let displayID = uuid(item.displayID) else {
                 throw DisplayConfigurationStoreError.invalidConfiguration
             }
+            guard item.targetInput != 0 else { return nil }
+            guard mappingIDs.insert(displayID.lowercased()).inserted,
+                  InputSourceValuePolicy.isSafe(item.targetInput) else {
+                throw DisplayConfigurationStoreError.invalidConfiguration
+            }
+            let input = item.targetInput
             return USBDisplayInputMapping(displayID: displayID, targetInput: input)
         }
         let profileID = value.collaborationProfileID.flatMap(uuid)
         if value.collaborationProfileID != nil, profileID == nil {
             throw DisplayConfigurationStoreError.invalidConfiguration
         }
-        if value.enabled, (trigger == nil || mappings.isEmpty) {
-            throw DisplayConfigurationStoreError.invalidConfiguration
-        }
         if value.collaborationWakeEnabled, profileID == nil {
             throw DisplayConfigurationStoreError.invalidConfiguration
         }
-        return USBSwitchConfiguration(enabled: value.enabled, triggerDevice: trigger,
+        let enabled = value.enabled && trigger != nil && !mappings.isEmpty
+        return USBSwitchConfiguration(enabled: enabled, triggerDevice: trigger,
             collaborationWakeEnabled: value.collaborationWakeEnabled,
             collaborationProfileID: profileID, displayInputs: mappings)
     }
@@ -730,7 +767,7 @@ enum DisplayConfigurationStore {
     }
 
     private static func validInput(_ value: Int?) -> Int? {
-        guard let value, (0...65535).contains(value) else { return nil }
+        guard let value, InputSourceValuePolicy.isSafe(value) else { return nil }
         return value
     }
 

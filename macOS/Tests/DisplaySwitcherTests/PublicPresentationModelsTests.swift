@@ -1,4 +1,34 @@
+import AppKit
 import XCTest
+
+private final class ManualSettingsSaveFeedbackScheduler: SettingsSaveFeedbackScheduling {
+    final class Task: SettingsSaveFeedbackScheduledTask {
+        let delay: TimeInterval
+        let action: () -> Void
+        private(set) var isCancelled = false
+
+        init(delay: TimeInterval, action: @escaping () -> Void) {
+            self.delay = delay
+            self.action = action
+        }
+
+        func cancel() {
+            isCancelled = true
+        }
+
+        func fireEvenIfCancelled() {
+            action()
+        }
+    }
+
+    private(set) var tasks: [Task] = []
+
+    func schedule(after delay: TimeInterval, _ action: @escaping () -> Void) -> SettingsSaveFeedbackScheduledTask {
+        let task = Task(delay: delay, action: action)
+        tasks.append(task)
+        return task
+    }
+}
 
 private final class RecordingAboutMetadata: AboutBundleMetadataSource {
     private(set) var requestedKeys: [String] = []
@@ -15,6 +45,87 @@ private final class RecordingAboutMetadata: AboutBundleMetadataSource {
 }
 
 final class PublicPresentationModelsTests: XCTestCase {
+    func testSettingsCardUsesDynamicSemanticSurfaceAndRoundedClipping() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let card = SettingsCardView(frame: NSRect(x: 0, y: 0, width: 300, height: 120))
+
+        card.appearance = light
+        card.updateLayer()
+        let lightCard = card.layer?.backgroundColor?.components ?? []
+        let lightCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: light).components ?? []
+
+        XCTAssertEqual(card.layer?.cornerRadius, SettingsSurfaceStyle.cardCornerRadius)
+        XCTAssertEqual(card.layer?.borderWidth, SettingsSurfaceStyle.cardBorderWidth)
+        XCTAssertTrue(card.layer?.masksToBounds ?? false)
+        XCTAssertNotNil(card.layer?.borderColor)
+        XCTAssertNotEqual(lightCard, lightCanvas)
+
+        card.appearance = dark
+        card.updateLayer()
+        let darkCard = card.layer?.backgroundColor?.components ?? []
+        let darkCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: dark).components ?? []
+
+        XCTAssertNotEqual(darkCard, darkCanvas)
+        XCTAssertNotEqual(lightCard, darkCard)
+        XCTAssertNotEqual(lightCanvas, darkCanvas)
+    }
+
+    func testPageContainersAreTransparentAndDoNotCreateSecondCanvas() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let page = SettingsPageBackgroundView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let document = SettingsPageBackgroundView(frame: page.frame)
+        let scroll = SettingsPageScrollView(frame: page.frame)
+
+        XCTAssertFalse(SettingsSurfaceStyle.pagePaintsBackground)
+        XCTAssertFalse(SettingsSurfaceStyle.scrollPaintsBackground)
+        XCTAssertFalse(page.isOpaque)
+        XCTAssertFalse(document.isOpaque)
+        XCTAssertFalse(scroll.drawsBackground)
+        XCTAssertFalse(scroll.contentView.drawsBackground)
+        XCTAssertEqual(scroll.backgroundColor, .clear)
+
+        page.appearance = light
+        document.appearance = light
+        scroll.appearance = light
+        scroll.viewDidChangeEffectiveAppearance()
+        XCTAssertNil(page.layer?.backgroundColor)
+        XCTAssertNil(document.layer?.backgroundColor)
+        XCTAssertFalse(scroll.contentView.drawsBackground)
+
+        let lightCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: light).components ?? []
+        let darkCanvas = SettingsSurfaceStyle.pageBackgroundColor(using: dark).components ?? []
+        XCTAssertNotEqual(lightCanvas, darkCanvas)
+    }
+
+    func testAllSettingsPagesShareTheSingleCanvasConstructionContract() {
+        XCTAssertEqual(SettingsPageLayoutProjection.tabLabels, [
+            "常规", "USB 切换", "协同", "显示器", "诊断", "关于"
+        ])
+        XCTAssertTrue(SettingsPageLayoutProjection.tabLabels.allSatisfy { _ in
+            !SettingsSurfaceStyle.pagePaintsBackground && !SettingsSurfaceStyle.scrollPaintsBackground
+        })
+    }
+
+    func testSettingsActionButtonStyleAppliesOneNativeRegularContract() {
+        let button = NSButton(title: "测试动作", target: nil, action: nil)
+        SettingsActionButtonStyle.apply(to: button)
+        SettingsActionButtonStyle.apply(to: button)
+
+        XCTAssertEqual(button.controlSize, SettingsActionButtonStyle.controlSize)
+        XCTAssertEqual(button.bezelStyle, SettingsActionButtonStyle.bezelStyle)
+        XCTAssertEqual(
+            button.constraints.filter { $0.identifier == "SettingsActionButton.minimumHeight" }.count,
+            1
+        )
+        XCTAssertTrue(button.constraints.contains {
+            $0.identifier == "SettingsActionButton.minimumHeight"
+                && $0.relation == .greaterThanOrEqual
+                && $0.constant == SettingsActionButtonStyle.minimumHeight
+        })
+    }
+
     func testLocalNetworkPermissionPresentationUsesFourConservativeStates() {
         let notChecked = LocalNetworkPermissionPresentation.make(for: .notChecked)
         let connected = LocalNetworkPermissionPresentation.make(for: .collaborationConnected)
@@ -77,9 +188,20 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(DDCValuePresentationPolicy.source(for: .settingsReadButton), .hardware)
     }
 
-    func testDisplayDiagnosticLayoutWrapsInsteadOfTruncatingTransportDetails() {
-        XCTAssertTrue(DisplayDiagnosticLayout.wraps)
-        XCTAssertEqual(DisplayDiagnosticLayout.maximumNumberOfLines, 0)
+    func testDisplayStatusLayoutUsesOneConciseLine() {
+        XCTAssertFalse(DisplayStatusLayout.wraps)
+        XCTAssertEqual(DisplayStatusLayout.maximumNumberOfLines, 1)
+    }
+
+    func testDisplayControlModuleDoesNotStartWithLeadingSeparator() {
+        XCTAssertEqual(DisplayControlModuleContent.items.first, .linkAllDisplays)
+        XCTAssertFalse(DisplayControlModuleContent.items.contains(.separator))
+    }
+
+    func testDisplayReadModuleKeepsItsMeaningfulSeparator() {
+        XCTAssertEqual(DisplayReadModuleContent.items, [
+            .displayReadStatus, .separator, .displayControls
+        ])
     }
 
     func testC023AboutPageUsesOnlyPublicMetadataAndHasNoRuntimeSideEffectDependencies() {
@@ -163,12 +285,12 @@ final class PublicPresentationModelsTests: XCTestCase {
         let names = ["模拟显示器（1）", "模拟显示器（2）"]
 
         XCTAssertEqual(names.map(DisplayInputMappingPresentation.usbTitle(displayName:)), [
-            "模拟显示器（1） 离开后输入源",
-            "模拟显示器（2） 离开后输入源"
+            "模拟显示器（1）",
+            "模拟显示器（2）"
         ])
         XCTAssertEqual(names.map(DisplayInputMappingPresentation.collaborationTitle(displayName:)), [
-            "模拟显示器（1） 输入源",
-            "模拟显示器（2） 输入源"
+            "模拟显示器（1）",
+            "模拟显示器（2）"
         ])
     }
 
@@ -195,10 +317,547 @@ final class PublicPresentationModelsTests: XCTestCase {
             XCTAssertEqual(collaborationRows.count, displays.count)
         }
 
-        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（1） 离开后输入源" })
-        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（2） 离开后输入源" })
-        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（1） 输入源" })
-        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2） 输入源" })
+        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（1）" })
+        XCTAssertTrue(usbRows.contains { $0.title == "模拟显示器 B（2）" })
+        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（1）" })
+        XCTAssertTrue(collaborationRows.contains { $0.title == "模拟显示器 B（2）" })
+    }
+
+    func testUSBSettingsLayoutUsesTwoGroupsAndMergesDynamicDisplayRows() {
+        for count in [0, 1, 2, 3, 5] {
+            let displays = (0..<count).map {
+                mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")
+            }
+            let layout = SettingsPageLayoutProjection.usb(
+                displays: displays, learningInProgress: false
+            )
+
+            XCTAssertEqual(layout.groups.map(\.id), [
+                .usbAutomation, .usbCollaboration
+            ])
+            XCTAssertEqual(Array(layout.groups[0].rows.prefix(5)).map(\.id), [
+                "usb-automatic-switch", "usb-automation-controls-separator",
+                "usb-trigger-device", "usb-connection-status", "usb-peer-inputs-separator"
+            ])
+            XCTAssertEqual(
+                layout.groups[0].rows.filter { $0.kind == .separator }.map(\.id),
+                ["usb-automation-controls-separator", "usb-peer-inputs-separator"]
+            )
+            let mappingRows = Array(layout.groups[0].rows.dropFirst(5))
+            XCTAssertEqual(mappingRows.count, max(1, count))
+            if count == 0 {
+                XCTAssertEqual(mappingRows.first?.id, "usb-mapping-empty")
+            } else {
+                XCTAssertEqual(mappingRows.map(\.title), displays.map(\.name))
+                XCTAssertTrue(mappingRows.allSatisfy { $0.action == .editValue })
+            }
+            XCTAssertEqual(layout.groups[1].rows.map(\.action), [
+                .selectUSBWakeProfile, .toggleUSBWake
+            ])
+        }
+    }
+
+    func testUSBSettingsLearningDisablesOnlyLearningAction() {
+        let layout = SettingsPageLayoutProjection.usb(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            learningInProgress: true
+        )
+        let rows = layout.groups[0].rows
+
+        XCTAssertEqual(rows.first { $0.id == "usb-trigger-device" }?.action, .learnUSBDevice)
+        XCTAssertFalse(rows.first { $0.id == "usb-trigger-device" }?.isEnabled ?? true)
+        XCTAssertTrue(rows.first { $0.id == "usb-automatic-switch" }?.isEnabled ?? false)
+        XCTAssertTrue(rows.allSatisfy(\.isVisible))
+    }
+
+    func testHorizontalRowsPinTrailingControlsWithoutUnboundedLeadingGrowth() {
+        let split = SettingsHorizontalRowAlignment.splitByFlexibleGap
+        XCTAssertTrue(split.pinsTrailingControlToCardEdge)
+        XCTAssertTrue(split.usesFlexibleGap)
+        XCTAssertFalse(split.expandsLeadingControl)
+
+        let expanding = SettingsHorizontalRowAlignment.expandingLeadingControl
+        XCTAssertTrue(expanding.pinsTrailingControlToCardEdge)
+        XCTAssertFalse(expanding.usesFlexibleGap)
+        XCTAssertTrue(expanding.expandsLeadingControl)
+    }
+
+    func testFormRowsAlignLabelsWithCardContentWhileKeepingControlColumnStable() {
+        let layout = SettingsFormRowLayout.leadingLabelFixedControlColumn
+        XCTAssertTrue(layout.alignsLabelWithCardContentLeading)
+        XCTAssertTrue(layout.keepsControlColumnStable)
+        XCTAssertEqual(SettingsFormRowLayout.contentWidth, 590)
+        XCTAssertEqual(SettingsFormRowLayout.labelColumnWidth, 90)
+        XCTAssertEqual(SettingsFormRowLayout.controlColumnSpacing, 10)
+        XCTAssertEqual(SettingsFormRowLayout.controlColumnWidth, 490)
+    }
+
+    func testProfileNameRowUsesOneStableControlColumnWithFlexibleFieldAndTrailingSwitch() throws {
+        let layout = SettingsTrailingAccessoryRowLayout()
+        XCTAssertTrue(layout.usesSingleControlColumn)
+        XCTAssertTrue(layout.leadingControlExpandsInsideColumn)
+        XCTAssertTrue(layout.trailingAccessoryIsPinnedInsideColumn)
+        XCTAssertFalse(layout.fixesLeadingControlWidth)
+        XCTAssertEqual(
+            SettingsTrailingAccessoryRowLayout.labelColumnWidth
+                + SettingsTrailingAccessoryRowLayout.columnSpacing
+                + SettingsTrailingAccessoryRowLayout.controlColumnWidth,
+            SettingsTrailingAccessoryRowLayout.contentWidth
+        )
+
+        let field = NSTextField()
+        let toggle = NSSwitch()
+        let row = labeledTrailingAccessoryControlRow(
+            title: "配置名称",
+            control: field,
+            accessory: toggle
+        )
+        let label = try XCTUnwrap(row.arrangedSubviews.first as? NSTextField)
+        let controlColumn = try XCTUnwrap(row.arrangedSubviews.last as? NSStackView)
+
+        XCTAssertEqual(row.arrangedSubviews.count, 2)
+        XCTAssertEqual(label.stringValue, "配置名称")
+        XCTAssertEqual(row.orientation, .horizontal)
+        XCTAssertEqual(row.alignment, .centerY)
+        XCTAssertEqual(row.spacing, CGFloat(SettingsTrailingAccessoryRowLayout.columnSpacing))
+        XCTAssertEqual(controlColumn.arrangedSubviews.count, 2)
+        XCTAssertTrue(controlColumn.arrangedSubviews[0] === field)
+        XCTAssertTrue(controlColumn.arrangedSubviews[1] === toggle)
+        XCTAssertEqual(controlColumn.orientation, .horizontal)
+        XCTAssertEqual(controlColumn.alignment, .centerY)
+        XCTAssertEqual(
+            controlColumn.spacing,
+            CGFloat(SettingsTrailingAccessoryRowLayout.controlAccessorySpacing)
+        )
+        XCTAssertLessThan(
+            field.contentHuggingPriority(for: .horizontal).rawValue,
+            toggle.contentHuggingPriority(for: .horizontal).rawValue
+        )
+        XCTAssertLessThan(
+            field.contentCompressionResistancePriority(for: .horizontal).rawValue,
+            toggle.contentCompressionResistancePriority(for: .horizontal).rawValue
+        )
+        XCTAssertFalse(field.constraints.contains {
+            $0.firstAttribute == .width && $0.relation == .equal && $0.constant > 0
+        })
+        XCTAssertTrue(controlColumn.constraints.contains {
+            $0.firstAttribute == .width
+                && $0.constant == CGFloat(SettingsTrailingAccessoryRowLayout.controlColumnWidth)
+        })
+        XCTAssertTrue(row.constraints.contains {
+            $0.firstAttribute == .width
+                && $0.constant == CGFloat(SettingsTrailingAccessoryRowLayout.contentWidth)
+        })
+
+        row.frame = NSRect(
+            x: 0,
+            y: 0,
+            width: SettingsTrailingAccessoryRowLayout.contentWidth,
+            height: max(field.intrinsicContentSize.height, toggle.intrinsicContentSize.height)
+        )
+        row.layoutSubtreeIfNeeded()
+        controlColumn.layoutSubtreeIfNeeded()
+        let expectedFieldWidth = CGFloat(SettingsTrailingAccessoryRowLayout.controlColumnWidth)
+            - CGFloat(SettingsTrailingAccessoryRowLayout.controlAccessorySpacing)
+            - toggle.intrinsicContentSize.width
+        XCTAssertEqual(field.frame.width, expectedFieldWidth, accuracy: 1)
+        XCTAssertEqual(toggle.frame.maxX, controlColumn.bounds.maxX, accuracy: 1)
+        XCTAssertGreaterThan(field.frame.width, toggle.frame.width)
+    }
+
+    func testUSBAndCollaborationMappingListsShareCenteredTwoColumnContract() {
+        for count in [0, 1, 3] {
+            let layouts = [
+                SettingsMappingListLayout.usb(displayCount: count),
+                SettingsMappingListLayout.collaboration(displayCount: count)
+            ]
+            XCTAssertEqual(layouts[0], layouts[1])
+            for layout in layouts {
+                XCTAssertEqual(layout.displayCount, count)
+                XCTAssertEqual(SettingsMappingListLayout.title, "对端输入源")
+                XCTAssertEqual(
+                    SettingsMappingListLayout.labelColumnWidth,
+                    SettingsFormRowLayout.labelColumnWidth
+                )
+                XCTAssertEqual(
+                    SettingsMappingListLayout.listColumnWidth,
+                    SettingsFormRowLayout.controlColumnWidth
+                )
+                XCTAssertTrue(layout.usesTwoColumnRow)
+                XCTAssertTrue(layout.centersTitleAgainstListContainer)
+                XCTAssertFalse(layout.usesManualVerticalOffset)
+                XCTAssertEqual(layout.showsEmptyState, count == 0)
+            }
+        }
+    }
+
+    func testUSBAndCollaborationUseSameCenteredAppKitMappingRowForZeroOneAndManyDisplays() throws {
+        for count in [0, 1, 3] {
+            let layouts = [
+                SettingsMappingListLayout.usb(displayCount: count),
+                SettingsMappingListLayout.collaboration(displayCount: count)
+            ]
+            for layout in layouts {
+                let list = NSStackView()
+                if layout.showsEmptyState {
+                    list.addArrangedSubview(NSTextField(labelWithString: "尚未检测到显示器。"))
+                } else {
+                    (0..<layout.displayCount).forEach { _ in list.addArrangedSubview(NSView()) }
+                }
+
+                let row = labeledVerticalControlRow(
+                    title: SettingsMappingListLayout.title,
+                    control: list
+                )
+                let title = try XCTUnwrap(row.arrangedSubviews.first as? NSTextField)
+
+                XCTAssertEqual(row.orientation, .horizontal)
+                XCTAssertEqual(row.alignment, .centerY)
+                XCTAssertEqual(row.spacing, CGFloat(SettingsFormRowLayout.controlColumnSpacing))
+                XCTAssertEqual(row.arrangedSubviews.count, 2)
+                XCTAssertEqual(title.stringValue, "对端输入源")
+                XCTAssertTrue(row.arrangedSubviews[1] === list)
+                XCTAssertTrue(row.constraints.contains {
+                    $0.firstAttribute == .width
+                        && $0.constant == CGFloat(SettingsFormRowLayout.contentWidth)
+                })
+                XCTAssertTrue(list.constraints.contains {
+                    $0.firstAttribute == .width
+                        && $0.constant == CGFloat(SettingsFormRowLayout.controlColumnWidth)
+                })
+            }
+        }
+    }
+
+    func testMergedUSBModuleShowsOnlyOneInlinePeerInputTitle() {
+        let layout = SettingsPageLayoutProjection.usb(displays: [], learningInProgress: false)
+        XCTAssertEqual(layout.groups.map(\.id), [.usbAutomation, .usbCollaboration])
+        XCTAssertEqual(layout.groups.map { $0.id.title }, ["自动切换", "联动协同"])
+        XCTAssertFalse(layout.groups.map { $0.id.title }.contains(SettingsMappingListLayout.title))
+        XCTAssertEqual(SettingsMappingListLayout.title, "对端输入源")
+    }
+
+    func testCollaborationSettingsLayoutOrdersGroupsAndPreservesActions() {
+        let displays = (0..<4).map {
+            mappingDisplay(id: "display-\($0)", name: "模拟显示器 \($0 + 1)")
+        }
+        let layout = SettingsPageLayoutProjection.collaboration(
+            displays: displays,
+            hasSelectedProfile: true,
+            profileCount: 2,
+            selectedProfileIndex: 0,
+            inspectionInProgress: false
+        )
+
+        XCTAssertEqual(layout.groups.map(\.id), [
+            .collaborationStatus, .collaborationConfiguration
+        ])
+        XCTAssertEqual(layout.groups.map { $0.id.title }, ["协同状态", "配置"])
+        XCTAssertEqual(layout.groups[0].rows.map(\.action), [
+            nil, .requestLocalNetworkPermission, .inspectCollaboration
+        ])
+        XCTAssertEqual(Array(layout.groups[1].rows.prefix(3)).map(\.id), [
+            "collaboration-selector", "collaboration-add",
+            "collaboration-selection-details-separator"
+        ])
+        XCTAssertEqual(layout.groups[1].rows[2].kind, .separator)
+        XCTAssertEqual(
+            layout.groups[1].rows.filter { $0.kind == .separator }.map(\.id),
+            [
+                "collaboration-selection-details-separator",
+                "collaboration-peer-inputs-separator",
+                "collaboration-actions-separator"
+            ]
+        )
+        XCTAssertEqual(
+            layout.groups[1].rows.filter { $0.id.hasPrefix("collaboration-mapping-") }.map(\.title),
+            displays.map(\.name)
+        )
+        XCTAssertTrue(layout.groups[1].rows.contains {
+            $0.id == "collaboration-delete" && $0.action == .deleteCollaborationProfile && $0.isEnabled
+        })
+        XCTAssertFalse(layout.groups[1].rows.contains {
+            $0.id == SettingsSaveStatusPresentation.rowID
+        })
+        XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertFalse(layout.windowFooterRows[0].isVisible)
+        XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.id == "collaboration-move-up" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.id == "collaboration-move-down" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.title == "上移配置" })
+        XCTAssertFalse(layout.groups[1].rows.contains { $0.title == "下移配置" })
+    }
+
+    func testCollaborationSaveStatusIsSingleBottomFooterWithSemanticPresentation() {
+        XCTAssertEqual(SettingsSaveStatusPresentation.placement, .nonScrollingWindowFooter)
+        XCTAssertTrue(SettingsSaveStatusPresentation.isNonScrollingWindowFooter)
+        XCTAssertFalse(SettingsSaveStatusPresentation.isInsideScrollDocument)
+        XCTAssertTrue(SettingsSaveStatusPresentation.isAnchoredToWindowBottom)
+        XCTAssertFalse(SettingsSaveStatusPresentation.isInDetailsCard)
+        XCTAssertEqual(SettingsSaveStatusPresentation.horizontalAlignment, .leading)
+        XCTAssertEqual(SettingsSaveStatusPresentation.successVisibilityDuration, 2)
+
+        let saved = SettingsSaveStatusPresentation.saved
+        XCTAssertEqual(saved.text, "已保存")
+        XCTAssertEqual(saved.symbolName, "checkmark.circle.fill")
+        XCTAssertEqual(saved.textColor, .systemGreen)
+        XCTAssertEqual(saved.iconColor, .systemGreen)
+        XCTAssertEqual(saved.accessibilityLabel, "协同配置保存状态")
+        XCTAssertEqual(saved.accessibilityValue, "已保存")
+
+        let failed = SettingsSaveStatusPresentation.failedRestored
+        XCTAssertEqual(failed.text, "保存失败，已恢复")
+        XCTAssertEqual(failed.symbolName, "exclamationmark.circle.fill")
+        XCTAssertEqual(failed.textColor, .systemRed)
+        XCTAssertEqual(failed.iconColor, .systemRed)
+        XCTAssertEqual(failed.accessibilityLabel, "协同配置保存状态")
+        XCTAssertEqual(failed.accessibilityValue, "保存失败，已恢复")
+
+        let layout = SettingsPageLayoutProjection.collaboration(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            hasSelectedProfile: true,
+            profileCount: 1,
+            selectedProfileIndex: 0,
+            inspectionInProgress: false,
+            saveFeedbackState: .visible(.saved)
+        )
+        XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
+        XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertTrue(layout.windowFooterRows[0].isVisible)
+        XCTAssertFalse(layout.groups.flatMap(\.rows).contains {
+            $0.id == SettingsSaveStatusPresentation.rowID
+        })
+    }
+
+    func testSaveFeedbackIsInitiallyHiddenAndSuccessfulSaveAutoHidesAfterTwoSeconds() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        var states: [SettingsSaveFeedbackState] = []
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler) { scope, state in
+            XCTAssertEqual(scope, .collaboration)
+            states.append(state)
+        }
+
+        XCTAssertEqual(controller.state, .hidden)
+        XCTAssertTrue(states.isEmpty)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+
+        XCTAssertEqual(controller.state, .visible(.saved))
+        XCTAssertEqual(states, [.visible(.saved)])
+        XCTAssertEqual(scheduler.tasks.map(\.delay), [2])
+        XCTAssertFalse(scheduler.tasks[0].isCancelled)
+
+        scheduler.tasks[0].fireEvenIfCancelled()
+
+        XCTAssertEqual(controller.state, .hidden)
+        XCTAssertEqual(states, [.visible(.saved), .hidden])
+    }
+
+    func testConsecutiveSuccessfulSavesCancelAndSupersedePreviousHide() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+
+        XCTAssertEqual(scheduler.tasks.count, 2)
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertFalse(scheduler.tasks[1].isCancelled)
+
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .visible(.saved))
+
+        scheduler.tasks[1].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .hidden)
+    }
+
+    func testSaveFailurePersistsUntilNextSuccessThenUsesFreshAutoHide() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.recordPersistenceResult(.failed, scope: .collaboration)
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+
+        XCTAssertEqual(controller.state, .visible(.saved))
+        XCTAssertEqual(scheduler.tasks.count, 2)
+        scheduler.tasks[1].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .hidden)
+    }
+
+    func testSaveFeedbackResetCancelsPendingHideAndReturnsToInitialHiddenState() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.reset()
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertEqual(controller.state, .hidden)
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state, .hidden)
+    }
+
+    func testNavigationDismissesOnlyTransientSuccessAndPreservesFailure() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.dismissTransientSuccess()
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        XCTAssertEqual(controller.state, .hidden)
+
+        controller.recordPersistenceResult(.failed, scope: .collaboration)
+        controller.dismissTransientSuccess()
+
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+    }
+
+    func testSaveFeedbackControllerReleaseCancelsPendingHideSafely() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        var controller: SettingsSaveFeedbackController? = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller?.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller = nil
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        scheduler.tasks[0].fireEvenIfCancelled()
+    }
+
+    func testNonCollaborationPersistenceResultsNeverPolluteCollaborationFeedback() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .none)
+        controller.recordPersistenceResult(.failed, scope: .none)
+
+        XCTAssertEqual(controller.state, .hidden)
+        XCTAssertTrue(scheduler.tasks.isEmpty)
+
+        controller.recordPersistenceResult(.failed, scope: .collaboration)
+        controller.recordPersistenceResult(.succeeded, scope: .none)
+        controller.recordPersistenceResult(.failed, scope: .none)
+
+        XCTAssertEqual(controller.state, .visible(.failedRestored))
+        XCTAssertTrue(scheduler.tasks.isEmpty)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        controller.recordPersistenceResult(.failed, scope: .none)
+
+        XCTAssertEqual(controller.state, .visible(.saved))
+        XCTAssertEqual(scheduler.tasks.count, 1)
+        XCTAssertFalse(scheduler.tasks[0].isCancelled)
+    }
+
+    func testUSBAndCollaborationSaveFeedbackRemainIndependent() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        XCTAssertEqual(controller.state(for: .usb), .hidden)
+        XCTAssertEqual(controller.state(for: .collaboration), .hidden)
+
+        controller.recordPersistenceResult(.failed, scope: .usb)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.failedRestored(scope: .usb)))
+        XCTAssertEqual(controller.state(for: .collaboration), .hidden)
+        XCTAssertTrue(scheduler.tasks.isEmpty)
+
+        controller.recordPersistenceResult(.succeeded, scope: .collaboration)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.failedRestored(scope: .usb)))
+        XCTAssertEqual(
+            controller.state(for: .collaboration), .visible(.saved(scope: .collaboration))
+        )
+        XCTAssertEqual(scheduler.tasks.count, 1)
+
+        controller.recordPersistenceResult(.succeeded, scope: .usb)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.saved(scope: .usb)))
+        XCTAssertEqual(scheduler.tasks.count, 2)
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state(for: .usb), .visible(.saved(scope: .usb)))
+        XCTAssertEqual(controller.state(for: .collaboration), .hidden)
+        scheduler.tasks[1].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state(for: .usb), .hidden)
+    }
+
+    func testUSBFailureCancelsTimerAndPersistsUntilNextUSBSuccess() {
+        let scheduler = ManualSettingsSaveFeedbackScheduler()
+        let controller = SettingsSaveFeedbackController(scheduler: scheduler)
+
+        controller.recordPersistenceResult(.succeeded, scope: .usb)
+        controller.recordPersistenceResult(.failed, scope: .usb)
+
+        XCTAssertTrue(scheduler.tasks[0].isCancelled)
+        scheduler.tasks[0].fireEvenIfCancelled()
+        XCTAssertEqual(controller.state(for: .usb), .visible(.failedRestored(scope: .usb)))
+
+        controller.recordPersistenceResult(.succeeded, scope: .usb)
+        XCTAssertEqual(controller.state(for: .usb), .visible(.saved(scope: .usb)))
+        XCTAssertEqual(scheduler.tasks.count, 2)
+    }
+
+    func testUSBSaveStatusUsesSameFixedLeadingFooterContract() {
+        let layout = SettingsPageLayoutProjection.usb(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            learningInProgress: false,
+            saveFeedbackState: .visible(.saved(scope: .usb))
+        )
+
+        XCTAssertEqual(layout.windowFooterRows.map(\.id), [SettingsSaveStatusPresentation.rowID])
+        XCTAssertTrue(layout.windowFooterRows[0].isVisible)
+        XCTAssertTrue(layout.scrollContentFooterRows.isEmpty)
+        XCTAssertFalse(layout.groups.flatMap(\.rows).contains {
+            $0.id == SettingsSaveStatusPresentation.rowID
+        })
+        XCTAssertEqual(SettingsSaveStatusPresentation.saved(scope: .usb).accessibilityLabel,
+                       "USB 配置保存状态")
+    }
+
+    func testInputSourceFieldsTreatBlankAsMissingAndRejectZeroOrOverflow() {
+        XCTAssertEqual(InputSourceValuePolicy.parseField(""), .empty)
+        XCTAssertEqual(InputSourceValuePolicy.parseField("  \n"), .empty)
+        XCTAssertEqual(InputSourceValuePolicy.parseField("17"), .valid(17))
+        for value in ["0", "-1", "65536", "not-a-number", "999999999999999999999"] {
+            XCTAssertEqual(InputSourceValuePolicy.parseField(value), .invalid)
+        }
+    }
+
+    func testUnchangedPersistenceDoesNotCreateSaveFeedbackEvent() {
+        XCTAssertFalse(SettingsPersistenceFeedbackPolicy.hasActualChange(from: 17, to: 17))
+        XCTAssertTrue(SettingsPersistenceFeedbackPolicy.hasActualChange(from: 17, to: 18))
+    }
+
+    func testCollaborationSettingsVisibilityAndInspectionEnablementAreConservative() {
+        let empty = SettingsPageLayoutProjection.collaboration(
+            displays: [], hasSelectedProfile: false, profileCount: 0,
+            selectedProfileIndex: 0,
+            inspectionInProgress: false
+        )
+        XCTAssertTrue(empty.groups[1].rows.dropFirst(2).allSatisfy { !$0.isVisible })
+        XCTAssertFalse(empty.groups[0].rows.first {
+            $0.action == .inspectCollaboration
+        }?.isEnabled ?? true)
+
+        let checking = SettingsPageLayoutProjection.collaboration(
+            displays: [mappingDisplay(id: "display-a", name: "模拟显示器")],
+            hasSelectedProfile: true, profileCount: 1,
+            selectedProfileIndex: 0,
+            inspectionInProgress: true
+        )
+        XCTAssertFalse(checking.groups[0].rows.first {
+            $0.action == .requestLocalNetworkPermission
+        }?.isEnabled ?? true)
+        XCTAssertFalse(checking.groups[0].rows.first {
+            $0.action == .inspectCollaboration
+        }?.isEnabled ?? true)
+        XCTAssertFalse(checking.groups[1].rows.first {
+            $0.action == .deleteCollaborationProfile
+        }?.isEnabled ?? true)
     }
 
     func testCachedValuesRestoreByStableIDAcrossRebuildAndCacheInstances() {
@@ -313,6 +972,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             ddcCapabilities: DDCBackendCapabilities(
                 canEnumerate: true, canReadVCP: true, canWriteVCP: true
             ),
+            detailedRecordingEnabled: true,
             ddcDiagnostics: [diagnostic],
             peerInspectionText: "inspection=I1 stage=completed result=v2-available",
             inputSourceText: "op=O1 display=D1 stage=write-transport-result"
@@ -331,6 +991,58 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertFalse(report.contains(document.localEndpointID))
         XCTAssertFalse(report.contains("Private Mac"))
         XCTAssertFalse(report.contains("Private USB"))
+
+        let disabledReport = DiagnosticReport.make(
+            metadata: RecordingAboutMetadata(values: [
+                "CFBundleName": "DisplaySwitcher",
+                "CFBundleShortVersionString": "2.1.0",
+                "CFBundleVersion": "19"
+            ]),
+            architecture: "simulated-arch",
+            document: document,
+            safetyState: .ready,
+            collaborationStates: [.connected],
+            ddcBackendSummary: "Apple Silicon 原生 DDC",
+            ddcAvailability: .available,
+            ddcCapabilities: DDCBackendCapabilities(
+                canEnumerate: true, canReadVCP: true, canWriteVCP: true
+            ),
+            detailedRecordingEnabled: false,
+            ddcDiagnostics: [diagnostic],
+            peerInspectionText: "private-collaboration-trace",
+            inputSourceText: "private-input-source-trace"
+        ).text
+        XCTAssertTrue(disabledReport.contains("detailed-recording=false"))
+        XCTAssertTrue(disabledReport.contains("recording-disabled"))
+        XCTAssertFalse(disabledReport.contains("checksum legacy"))
+        XCTAssertFalse(disabledReport.contains("private-collaboration-trace"))
+        XCTAssertFalse(disabledReport.contains("private-input-source-trace"))
+    }
+
+    func testDisplayDDCStatusNeverIncludesTransportDiagnostics() {
+        let reading = DDCResolvedReading(
+            reading: DDCReading(current: 52, maximum: 100), estimated: false
+        )
+
+        let text = DisplayDDCStatusPresentation.read(
+            values: [.luminance: reading], skipReason: nil
+        )
+        XCTAssertEqual(text, "读取成功")
+        for internalDetail in ["builtin-hdmi-converter", "chip", "offset", "attempts", "checksum", "rebuild"] {
+            XCTAssertFalse(text.contains(internalDetail))
+        }
+        XCTAssertEqual(
+            DisplayDDCStatusPresentation.read(values: [:], skipReason: nil),
+            "读取失败"
+        )
+        XCTAssertEqual(
+            DisplayDDCStatusPresentation.read(
+                values: [.luminance: DDCResolvedReading(reading: reading.reading, estimated: true)],
+                skipReason: nil
+            ),
+            "读取失败"
+        )
+        XCTAssertEqual(DisplayDDCStatusPresentation.write(value: 52, error: nil), "写入成功")
     }
 
     private func mappingDisplay(id: String, name: String) -> DisplayConfigurationV4Display {

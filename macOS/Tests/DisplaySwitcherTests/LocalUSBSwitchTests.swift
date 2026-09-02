@@ -46,9 +46,71 @@ final class LocalUSBSwitchTests: XCTestCase {
                 }
             }
 
-            XCTAssertEqual(sink.actions, vector.expectedActions.map(USBTimedAction.init(expected:)),
+            let expectedActions = vector.expectedActions.map(USBTimedAction.init(expected:))
+            XCTAssertEqual(sink.actions, expectedActions,
                            "\(vector.id): \(vector.description)")
         }
+    }
+
+    func testBlankDisplayIsSkippedWhileOtherDisplaysStillSwitch() {
+        let clock = USBVectorClock()
+        let mappings = [
+            USBVectorMapping(displayID: "display-a", targetInput: 17, available: true, switchSucceeds: true),
+            USBVectorMapping(displayID: "display-b", targetInput: nil, available: true, switchSucceeds: true),
+            USBVectorMapping(displayID: "display-c", targetInput: 18, available: true, switchSucceeds: true)
+        ]
+        let sink = USBVectorSink(clock: clock, mappings: mappings)
+        let coordinator = LocalUSBSwitchCoordinator(
+            configuration: LocalUSBSwitchRuntimeConfiguration(
+                enabled: true, learning: false, safeState: false,
+                collaborationWakeEnabled: false, collaborationProfileValid: false,
+                displays: mappings.map {
+                    LocalUSBSwitchDisplay(
+                        displayID: $0.displayID, targetInput: $0.targetInput, available: $0.available
+                    )
+                }
+            ),
+            baselinePresence: true,
+            sink: sink,
+            nowMs: { 10 }
+        )
+
+        _ = coordinator.observeUSB(present: false)
+
+        XCTAssertEqual(sink.actions.filter { $0.kind == "switchDisplay" }.map(\.displayID), [
+            "display-a", "display-c"
+        ])
+        XCTAssertFalse(sink.actions.contains { $0.kind == "switchDisplay" && $0.displayID == "display-b" })
+        XCTAssertTrue(sink.actions.contains {
+            $0.kind == "report"
+                && $0.displayID == "display-b"
+                && $0.reason == LocalUSBSwitchReportReason.missingMapping.rawValue
+        })
+    }
+
+    func testZeroMappingProducesNoWriteAndUsesExistingMissingMappingContract() {
+        let clock = USBVectorClock()
+        let mapping = USBVectorMapping(
+            displayID: "display-a", targetInput: 0, available: true, switchSucceeds: true
+        )
+        let sink = USBVectorSink(clock: clock, mappings: [mapping])
+        let coordinator = LocalUSBSwitchCoordinator(
+            configuration: LocalUSBSwitchRuntimeConfiguration(
+                enabled: true, learning: false, safeState: false,
+                collaborationWakeEnabled: false, collaborationProfileValid: false,
+                displays: [LocalUSBSwitchDisplay(
+                    displayID: mapping.displayID, targetInput: mapping.targetInput, available: true
+                )]
+            ),
+            baselinePresence: true,
+            sink: sink,
+            nowMs: { 10 }
+        )
+
+        _ = coordinator.observeUSB(present: false)
+
+        XCTAssertFalse(sink.actions.contains { $0.kind == "switchDisplay" })
+        XCTAssertEqual(sink.actions.map(\.reason), [LocalUSBSwitchReportReason.missingMapping.rawValue])
     }
 
     func testStoredUSBReferenceMatchesOnlyTheExplicitlyLearnedDevice() throws {

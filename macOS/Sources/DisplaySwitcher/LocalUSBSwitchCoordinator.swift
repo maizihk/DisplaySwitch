@@ -99,12 +99,16 @@ final class LocalUSBSwitchCoordinator {
         var requests: [LocalUSBDisplaySwitchRequest] = []
         var deferredReports: [(String, LocalUSBSwitchReportReason)] = []
         for display in configuration.displays {
-            guard display.available else {
-                deferredReports.append((display.displayID, .displayUnavailable))
-                continue
-            }
             guard let targetInput = display.targetInput else {
                 deferredReports.append((display.displayID, .missingMapping))
+                continue
+            }
+            guard InputSourceValuePolicy.isSafe(targetInput) else {
+                deferredReports.append((display.displayID, .missingMapping))
+                continue
+            }
+            guard display.available else {
+                deferredReports.append((display.displayID, .displayUnavailable))
                 continue
             }
             requests.append(LocalUSBDisplaySwitchRequest(

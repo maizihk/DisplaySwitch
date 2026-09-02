@@ -125,6 +125,23 @@ struct AboutPageContent: Equatable {
     }
 }
 
+enum DisplayDDCStatusPresentation {
+    static func read(
+        values: [DDCCommand: DDCResolvedReading],
+        skipReason: DDCReadSkipReason?
+    ) -> String {
+        if let skipReason { return skipReason.userFacingDescription }
+        if values.isEmpty { return "读取失败" }
+        if values.values.contains(where: \.estimated) { return "读取失败" }
+        return "读取成功"
+    }
+
+    static func write(value: Int?, error: Error?) -> String {
+        if value != nil { return "写入成功" }
+        return error == nil ? "已取消" : "写入失败"
+    }
+}
+
 struct DiagnosticReport: Equatable {
     let text: String
 
@@ -137,6 +154,7 @@ struct DiagnosticReport: Equatable {
         ddcBackendSummary: String,
         ddcAvailability: DDCBackendAvailability,
         ddcCapabilities: DDCBackendCapabilities,
+        detailedRecordingEnabled: Bool,
         ddcDiagnostics: [NativeDDCDiagnosticSnapshot?],
         peerInspectionText: String,
         inputSourceText: String
@@ -153,6 +171,7 @@ struct DiagnosticReport: Equatable {
             "platform=macOS architecture=\(architecture)",
             "protocol=v2 schema=\(document.schemaVersion)",
             "configuration-safety=\(safetyState == .ready ? "ready" : "user-review-required")",
+            "detailed-recording=\(detailedRecordingEnabled)",
             "",
             "[Collaboration]"
         ]
@@ -194,7 +213,9 @@ struct DiagnosticReport: Equatable {
                     ? ddcDiagnostics[index] : nil
                 let enabled = DisplaySettingsSemantics.enabledCommands(for: display)
                     .map(\.cacheKeyComponent).sorted().joined(separator: ",")
-                let state = diagnostic.map(\.userFacingDescription) ?? "not-checked"
+                let state = detailedRecordingEnabled
+                    ? diagnostic.map(\.userFacingDescription) ?? "not-checked"
+                    : "detail-recording-disabled"
                 lines.append(
                     "display=D\(index + 1) controls=\(enabled.isEmpty ? "none" : enabled)"
                         + " state=\(state)"
@@ -202,14 +223,22 @@ struct DiagnosticReport: Equatable {
             }
         }
 
-        lines += [
-            "",
-            "[Collaboration session]",
-            normalizedSessionText(peerInspectionText),
-            "",
-            "[Input-source session]",
-            normalizedSessionText(inputSourceText)
-        ]
+        if detailedRecordingEnabled {
+            lines += [
+                "",
+                "[Collaboration session]",
+                normalizedSessionText(peerInspectionText),
+                "",
+                "[Input-source session]",
+                normalizedSessionText(inputSourceText)
+            ]
+        } else {
+            lines += [
+                "",
+                "[Detailed diagnostics]",
+                "recording-disabled; enable it in General settings, reproduce the issue, then refresh this preview"
+            ]
+        }
         return DiagnosticReport(text: lines.joined(separator: "\n"))
     }
 

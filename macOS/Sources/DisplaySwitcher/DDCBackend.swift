@@ -333,6 +333,7 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
     case displayUnavailable(stableID: String)
     case readFailed(stableID: String, command: DDCCommand)
     case writeFailed(stableID: String, command: DDCCommand)
+    case invalidValue(command: DDCCommand, value: Int)
     case invalidReply(command: DDCCommand, issue: NativeDDCReplyIssue)
     case reliableReadUnsupported(command: DDCCommand)
     case cancelled
@@ -347,6 +348,8 @@ enum DDCBackendError: Error, Equatable, LocalizedError {
             return "读取\(command.userFacingName)失败。"
         case let .writeFailed(_, command):
             return "写入\(command.userFacingName)失败。"
+        case let .invalidValue(command, value):
+            return "\(command.userFacingName)数值超出安全范围：\(value)。"
         case let .invalidReply(command, issue):
             return "读取\(command.userFacingName)失败：\(issue.userFacingDescription)。"
         case .reliableReadUnsupported:
@@ -1358,12 +1361,14 @@ protocol DDCBackend: AnyObject {
                token: DDCCancellationToken) throws
     func cancelAll()
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot?
+    func clearDiagnostics()
 }
 
 extension DDCBackend {
     func updateKnownDisplays(_ displays: [DDCKnownDisplay]) {}
     func cancelAll() {}
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? { nil }
+    func clearDiagnostics() {}
 }
 
 final class DDCBackendRouter {
@@ -1414,6 +1419,9 @@ final class DDCBackendRouter {
             throw DDCBackendError.unavailable(backend: backend.identifier)
         }
         try token.throwIfCancelled()
+        guard command != .input || InputSourceValuePolicy.isSafe(value) else {
+            throw DDCBackendError.invalidValue(command: command, value: value)
+        }
         try backend.write(stableID: stableID, selector: selector, command: command,
                           value: value, token: token)
     }
@@ -1424,6 +1432,10 @@ final class DDCBackendRouter {
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
         backend.diagnostic(selector: selector)
+    }
+
+    func clearDiagnostics() {
+        backend.clearDiagnostics()
     }
 }
 
@@ -1650,6 +1662,10 @@ final class DDCControlService {
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
         router.diagnostic(selector: selector)
+    }
+
+    func clearDiagnostics() {
+        router.clearDiagnostics()
     }
 
     private func beginOperation() throws -> (id: UUID, token: DDCCancellationToken) {

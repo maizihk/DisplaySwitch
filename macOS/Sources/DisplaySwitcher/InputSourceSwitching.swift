@@ -14,6 +14,24 @@ struct InputSourceSwitchTarget: Equatable {
     }
 }
 
+enum InputSourceSwitchTargetProjection {
+    static func mappedTargets(
+        from configurations: [Int: DisplayConfiguration]
+    ) -> [InputSourceSwitchTarget] {
+        configurations.keys.sorted().compactMap { displayID in
+            guard let configuration = configurations[displayID], configuration.targetInput != nil else {
+                return nil
+            }
+            return InputSourceSwitchTarget(
+                stableID: configuration.id ?? configuration.selector,
+                selector: configuration.selector,
+                targetInput: configuration.targetInput,
+                alternateInput: configuration.localInput
+            )
+        }
+    }
+}
+
 enum InputSourceSwitchOrigin: String {
     case usb = "usb"
     case manualOrCollaboration = "manual-or-collaboration"
@@ -79,6 +97,7 @@ enum InputSourceDiagnosticEvent: Equatable {
 }
 
 protocol InputSourceDiagnosticRecording: AnyObject {
+    var isRecordingEnabled: Bool { get }
     func beginTarget(
         origin: InputSourceSwitchOrigin,
         stableID: String,
@@ -88,10 +107,13 @@ protocol InputSourceDiagnosticRecording: AnyObject {
     func anonymousServiceID(for serviceLocation: Int) -> String
     func record(_ event: InputSourceDiagnosticEvent, context: InputSourceDiagnosticContext)
     func exportText() -> String
+    func clear()
 }
 
 final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
-    static let shared = InputSourceDiagnosticStore()
+    static let shared = InputSourceDiagnosticStore(
+        recordingEnabled: { DetailedDiagnosticRecordingPreference.shared.isEnabled }
+    )
 
     private let lock = NSLock()
     private let maximumLineCount: Int
@@ -100,13 +122,20 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
     private var nextOperationIndex = 1
     private var lines: [String] = []
     private let timestampFormatter: ISO8601DateFormatter
+    private let recordingEnabled: () -> Bool
 
-    init(maximumLineCount: Int = 2_000) {
+    init(
+        maximumLineCount: Int = 2_000,
+        recordingEnabled: @escaping () -> Bool = { true }
+    ) {
         self.maximumLineCount = max(100, maximumLineCount)
+        self.recordingEnabled = recordingEnabled
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         timestampFormatter = formatter
     }
+
+    var isRecordingEnabled: Bool { recordingEnabled() }
 
     func beginTarget(
         origin: InputSourceSwitchOrigin,
@@ -114,6 +143,12 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
         targetValue: UInt16,
         alternateValue: UInt16?
     ) -> InputSourceDiagnosticContext {
+        guard isRecordingEnabled else {
+            return InputSourceDiagnosticContext(
+                operationID: "disabled", displaySessionIndex: 0,
+                targetValue: targetValue, alternateValue: alternateValue
+            )
+        }
         lock.lock()
         let normalized = stableID.uppercased()
         let displayIndex: Int
@@ -137,6 +172,7 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
     }
 
     func anonymousServiceID(for serviceLocation: Int) -> String {
+        guard isRecordingEnabled else { return "disabled" }
         lock.lock()
         defer { lock.unlock() }
         let index: Int
@@ -150,6 +186,7 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
     }
 
     func record(_ event: InputSourceDiagnosticEvent, context: InputSourceDiagnosticContext) {
+        guard isRecordingEnabled else { return }
         let prefix = "op=\(context.operationID) display=D\(context.displaySessionIndex)"
         let detail: String
         switch event {
@@ -189,6 +226,12 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
     }
 
     func exportText() -> String {
+        guard isRecordingEnabled else {
+            return [
+                "DisplaySwitcher input-source diagnostic",
+                "Detailed diagnostic recording is disabled."
+            ].joined(separator: "\n")
+        }
         lock.lock()
         let snapshot = lines
         lock.unlock()
@@ -196,6 +239,15 @@ final class InputSourceDiagnosticStore: InputSourceDiagnosticRecording {
             "DisplaySwitcher input-source diagnostic",
             "Session-only anonymized data; KERN_SUCCESS is transport acceptance, not device execution."
         ] + snapshot).joined(separator: "\n")
+    }
+
+    func clear() {
+        lock.lock()
+        displayIndexByStableID.removeAll()
+        serviceIndexByLocation.removeAll()
+        nextOperationIndex = 1
+        lines.removeAll()
+        lock.unlock()
     }
 }
 
@@ -434,7 +486,7 @@ final class InputSourceSwitchService {
                 )
                 continue
             }
-            guard let nativeValue = UInt16(exactly: targetInput) else {
+            guard let nativeValue = InputSourceValuePolicy.nativeValue(targetInput) else {
                 outcomes[index] = InputSourceSwitchOutcome(
                     stableID: target.stableID,
                     failure: .invalidInput(stableID: target.stableID, value: targetInput)
@@ -447,7 +499,7 @@ final class InputSourceSwitchService {
                 continue
             }
             firstIndexByDisplayKey[displayKey] = index
-            let alternateValue = target.alternateInput.flatMap(UInt16.init(exactly:))
+            let alternateValue = target.alternateInput.flatMap(InputSourceValuePolicy.nativeValue)
             group.enter()
             executionQueue.async { [self] in
                 let outcome = switchInput(

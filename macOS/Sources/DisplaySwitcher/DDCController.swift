@@ -4,7 +4,12 @@ final class DDCController {
     private let service: DDCControlService
 
     init() {
-        let native = NativeDDCBackend(knownDisplays: [])
+        let native = NativeDDCBackend(
+            knownDisplays: [],
+            detailedDiagnosticRecordingEnabled: {
+                DetailedDiagnosticRecordingPreference.shared.isEnabled
+            }
+        )
         service = DDCControlService(
             router: DDCBackendRouter(backend: native),
             cache: UserDefaultsDDCValueCache()
@@ -89,6 +94,10 @@ final class DDCController {
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {
         service.diagnostic(selector: selector)
+    }
+
+    func clearDiagnostics() {
+        service.clearDiagnostics()
     }
 
     private static func knownDisplays(from configurations: [DisplayConfiguration]) -> [DDCKnownDisplay] {
