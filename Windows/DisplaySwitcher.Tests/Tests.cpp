@@ -1348,6 +1348,53 @@ namespace
             L"RDP: 远程受限会话必须保持 DDC 读写和输入源传输零调用");
     }
 
+    void TestOfflineDisplayRemovalSafety()
+    {
+        auto config = ConfigWithDisplays(2);
+        for (auto& display : config.displays)
+        {
+            display.bindingStatus = DisplayBindingStatus::Offline;
+            display.brightnessValue = 44;
+            display.brightnessShowInTray = true;
+        }
+        config.collaborationProfiles[0].coordinationEnabled = true;
+        config.usbSwitch.enabled = true;
+        config.usbSwitch.collaborationWakeEnabled = true;
+        config.usbSwitch.collaborationProfileId = config.collaborationProfiles[0].id;
+        for (auto const& display : config.displays)
+            config.usbSwitch.displayInputs.push_back({ display.id, 30 });
+
+        Check(CanDeleteOfflineDisplay(config.displays[0], DisplayTopologyTrust::LocalPhysicalAuthoritative) &&
+            !CanDeleteOfflineDisplay(config.displays[0], DisplayTopologyTrust::RemoteSessionLimited) &&
+            !CanDeleteOfflineDisplay(config.displays[0], DisplayTopologyTrust::IncompleteOrUnavailable),
+            L"DS-029: 只有最近本地权威拓扑明确离线的显示器可删除");
+        auto online = config.displays[0]; online.bindingStatus = DisplayBindingStatus::Resolved;
+        Check(!CanDeleteOfflineDisplay(online, DisplayTopologyTrust::LocalPhysicalAuthoritative),
+            L"DS-029: 在线显示器即使本地拓扑可信也不可删除");
+
+        auto removedId = config.displays[0].id;
+        Check(RemoveDisplayAndDependencies(config.displays, config.collaborationProfiles,
+            config.usbSwitch, removedId) && config.displays.size() == 1 &&
+            config.collaborationProfiles[0].displayInputs.size() == 1 &&
+            config.usbSwitch.displayInputs.size() == 1 && config.usbSwitch.enabled &&
+            config.collaborationProfiles[0].coordinationEnabled && config.usbSwitch.collaborationWakeEnabled,
+            L"DS-029: 删除离线目录级联清理对应映射，部分有效映射继续启用");
+
+        auto lastId = config.displays[0].id;
+        Check(RemoveDisplayAndDependencies(config.displays, config.collaborationProfiles,
+            config.usbSwitch, lastId) && config.displays.empty() &&
+            config.usbSwitch.displayInputs.empty() && !config.usbSwitch.enabled &&
+            config.collaborationProfiles[0].displayInputs.empty() &&
+            !config.collaborationProfiles[0].coordinationEnabled && !config.usbSwitch.collaborationWakeEnabled,
+            L"DS-029: 删除最后有效映射会安全停用 USB 和协同");
+
+        auto beforeFailure = ConfigWithDisplays(1);
+        auto candidate = beforeFailure;
+        Check(RemoveDisplayAndDependencies(candidate.displays, candidate.collaborationProfiles,
+            candidate.usbSwitch, candidate.displays[0].id) && beforeFailure.displays.size() == 1,
+            L"DS-029: 删除先在候选配置完成，持久化失败可完整保留原配置");
+    }
+
     void TestUsbTriggerStability()
     {
         UsbSwitchInitialState zeroMappingState;
@@ -2572,6 +2619,7 @@ int wmain()
         TestRenameAndFailureIsolation(root);
         TestDisplayTopologyBinding();
         TestRemoteSessionDisplayTopology();
+        TestOfflineDisplayRemovalSafety();
         TestUsbTriggerStability();
         TestDdcControls();
         TestUsbLearningAndAbout();

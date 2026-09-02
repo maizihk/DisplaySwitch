@@ -360,6 +360,46 @@ namespace DisplaySwitcher::Native
         return changed || oldUsbSize != usbSwitch.displayInputs.size();
     }
 
+    bool CanDeleteOfflineDisplay(DisplayConfig const& display, DisplayTopologyTrust topologyTrust) noexcept
+    {
+        return topologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative
+            && display.bindingStatus == DisplayBindingStatus::Offline;
+    }
+
+    bool RemoveDisplayAndDependencies(std::vector<DisplayConfig>& displays,
+        std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch,
+        std::wstring const& displayId)
+    {
+        auto found = FindDisplayById(displays, displayId);
+        if (!found) return false;
+        displays.erase(displays.begin() + static_cast<std::ptrdiff_t>(*found));
+        RemoveOrphanedDisplayMappings(displays, profiles, usbSwitch);
+
+        auto exists = [&](std::wstring const& id) { return FindDisplayById(displays, id).has_value(); };
+        auto hasUsbMapping = std::any_of(usbSwitch.displayInputs.begin(), usbSwitch.displayInputs.end(),
+            [&](auto const& mapping)
+            {
+                return exists(mapping.displayId) && mapping.targetInput
+                    && IsValidInputSourceValue(*mapping.targetInput);
+            });
+        if (!hasUsbMapping) usbSwitch.enabled = false;
+
+        for (auto& profile : profiles)
+        {
+            auto hasProfileMapping = std::any_of(profile.displayInputs.begin(), profile.displayInputs.end(),
+                [&](auto const& mapping)
+                {
+                    return exists(mapping.displayId) && IsValidInputSourceValue(mapping.peerInput);
+                });
+            if (!hasProfileMapping) profile.coordinationEnabled = false;
+        }
+        auto wakeProfile = std::find_if(profiles.begin(), profiles.end(), [&](auto const& profile)
+            { return _wcsicmp(profile.id.c_str(), usbSwitch.collaborationProfileId.c_str()) == 0; });
+        if (wakeProfile == profiles.end() || !wakeProfile->coordinationEnabled)
+            usbSwitch.collaborationWakeEnabled = false;
+        return true;
+    }
+
     bool IsValidDisplayId(std::wstring const& id) noexcept
     {
         if (id.size() != 36) return false;

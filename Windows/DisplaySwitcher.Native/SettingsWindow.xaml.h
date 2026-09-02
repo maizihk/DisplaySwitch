@@ -63,6 +63,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         void LoadDdcMonitors();
         void CaptureDisplayEditors();
         void RebuildDisplayEditors();
+        void RemoveOfflineDisplay(std::wstring const& id);
         void RebuildUsbMappingEditors();
         Microsoft::UI::Xaml::Controls::Grid CreatePeerInputMappingGrid(
             std::function<Microsoft::UI::Xaml::Controls::Control(

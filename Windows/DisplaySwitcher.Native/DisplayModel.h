@@ -187,6 +187,10 @@ namespace DisplaySwitcher::Native
         std::vector<VisibleDisplayInputEdit> const& visibleEdits);
     bool RemoveOrphanedDisplayMappings(std::vector<DisplayConfig> const& displays,
         std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch);
+    bool CanDeleteOfflineDisplay(DisplayConfig const& display, DisplayTopologyTrust topologyTrust) noexcept;
+    bool RemoveDisplayAndDependencies(std::vector<DisplayConfig>& displays,
+        std::vector<CollaborationProfile>& profiles, UsbSwitchConfig& usbSwitch,
+        std::wstring const& displayId);
     bool IsValidDisplayId(std::wstring const& id) noexcept;
     std::optional<size_t> FindDisplayById(
         std::vector<DisplayConfig> const& displays,
