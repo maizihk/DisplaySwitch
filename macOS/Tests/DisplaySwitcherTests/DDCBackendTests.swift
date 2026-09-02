@@ -211,6 +211,20 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(backend.writeCalls.count, 0)
     }
 
+    func testInputZeroIsRejectedBeforeBackendWhileControlZeroRemainsValid() {
+        let backend = MockDDCBackend()
+        let service = makeService(backend: backend, cache: MockDDCCache())
+        let inputTarget = target(id: "display-a", commands: [.input, .luminance])
+
+        let inputFailures = service.write(command: .input, value: 0, targets: [inputTarget])
+        let controlFailures = service.write(command: .luminance, value: 0, targets: [inputTarget])
+
+        XCTAssertNotNil(inputFailures["display-a"])
+        XCTAssertTrue(controlFailures.isEmpty)
+        XCTAssertEqual(backend.writeCalls.map { $0.1 }, [.luminance])
+        XCTAssertEqual(backend.writeCalls.map { $0.2 }, [0])
+    }
+
     func testLegacyReadDisabledDoesNotBlockEnabledLuminance() {
         let stored = DisplayConfigurationV4Display(
             id: "display-a", name: "模拟显示器", selector: "selector-a",

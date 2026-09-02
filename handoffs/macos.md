@@ -1,6 +1,63 @@
 # macOS 交接记录
 
-## 当前状态：DS-023 + DS-024 组合验收
+## 当前状态：DS-025 USB 与协同设置布局对齐
+
+- 日期：2026-09-02
+- 分支：`codex/macos-safe-input-mapping-feedback`（普通快进更新 PR head `codex/macos-usb-collaboration-layout`）
+- 基线：`origin/codex/macos-tray-empty-group@f4b1cdf222c82822c23785ae41812838b1230b0d`，并以普通 merge 同步 `origin/main@0e377256d177cd40ce45fb47b9da300789100dce`；因此保留 DS-023/DS-024 堆叠实现，同时包含已合并 Windows PR #65 的最新主线事实。
+- 实现提交：`6181b2a8010b6fb9cdb1b8d9ef959a62024c978d`。
+- 横向对齐修复提交：`10a3aa94d07b773575e29f127371b50236f85424`。
+- 视觉样式修复提交：`c08bcbb29aa4685abf3e14e31b04e7cfa9d7100b`。
+- 双背景画布修复提交：`3d42c4d01b0c08adae447cae2806061d1cadd759`。
+- 显示器控制顶部横线修复提交：本任务提交。
+- 输入源并发顺序测试稳定性修复提交：本任务提交。
+- 配置详情基线与无用按钮清理提交：本任务提交。
+- 对端输入源两列映射布局提交：本任务提交。
+- 底部唯一保存状态提交：本任务提交。
+- 固定窗口底栏保存状态提交：本任务提交。
+- 短暂真实保存事件反馈提交：本任务提交。
+- USB 对端输入源两列布局提交：本任务提交。
+- USB/协同卡片合并与配置名称列约束提交：本任务提交。
+- 可选输入源映射与非零硬安全门提交：本任务提交。
+- USB/协同隔离保存反馈提交：本任务提交。
+- PR：[#67](https://github.com/maizihk/DisplaySwitch/pull/67)，目标为 `codex/macos-tray-empty-group`，保持开放等待 GUI 验收；前置依赖仍为 PR #62 → #63 → #64。
+- 根因：USB 与协同页面最初沿用单个粗粒度卡片，拆分后又形成过多独立卡片；相关控制在视觉上被割裂。配置名称行把字段、弹性空白和开关放在同一 590 点行，空白吸收剩余宽度，字段只保留接近内容的固有宽度。
+- 实现：USB 固定为“自动切换 / 联动协同”两组，映射并入自动切换卡片；协同固定为“协同状态 / 配置”两组，当前配置与详情合并。配置名称改为 90 点标签列 + 490 点右控制列，字段只在右列内弹性扩展，开关固定尾部；当前配置下拉框与添加按钮复用相同合同。
+- 实机反馈与根因：功能流程正常，但“添加配置”“学习”和联动开关仍贴左；原因是横向 helper 使用 `NSStackView` 默认 `.gravityAreas`，空 spacer 只有低 hugging 而不会扩展，带 accessory 的行还未插 spacer。现统一使用 `.fill`，分栏行插入最低 hugging 的弹性间隔，需填充的配置下拉框单独扩展，尾部控件保持 required hugging/compression 并贴齐卡片右缘。
+- 第二轮视觉根因：原卡片用 `controlBackgroundColor`、页面用 `windowBackgroundColor`，两者在浅色下近似且卡片没有语义边框/裁切，深色下圆角轮廓同样不可辨；配置按钮又单独设为 small/texturedRounded，与其他默认按钮分裂。
+- 第二轮实现：共享 `SettingsCardView`、`SettingsPageBackgroundView` 和 `SettingsPageScrollView` 统一使用动态系统语义色、separator 边框、连续圆角及裁切，appearance 变化时实时更新；共享 `SettingsActionButtonStyle` 统一普通动作按钮的 regular/rounded 样式和最小高度，module 标题附件也复用 trailing 对齐。
+- 第三轮视觉根因：窗口内容区和标签页内 page/scroll/document 同时绘制不同语义背景，tabView 四边留白处暴露外层颜色，页面内部又出现直角大矩形；卡片层本身是预期模块层，不应删除。
+- 第三轮实现：窗口背景统一为 `underPageBackgroundColor`；普通页、USB、协同、显示器、诊断和关于页的 page/scroll/document 只作为透明承载层，不再绘制第二块画布；卡片继续使用 `controlBackgroundColor`、separator 边框、连续圆角和裁切。
+- 第四轮视觉根因：`makeDisplayPage()` 和显示器重建路径把“显示器控制”的标题与刷新按钮放在 module header，而内容首项仍是 `separator()`，所以卡片正文最上方出现一条没有分隔语义的孤立横线。
+- 第四轮实现：仅删除“显示器控制”卡片开头的分隔线，改为生产展示模型声明该卡片内容从联动开关开始；每台显示器卡片仍保留读取状态与具体控制项之间的有效分隔线，未全局改动 `separator()`。
+- 第五轮视觉根因：协同“配置详情”中表单行使用固定 label 列且右对齐，导致“配置名称 / 对端地址 / 配对密码”文字视觉上比下方“对端输入源”、显示器列表和触发设备状态右缩；底部还保留了当前自动保存流程不需要的上移/下移按钮。
+- 第五轮实现：新增共享表单行布局契约，表单 label 改为与卡片内容左边对齐，输入控件起始列和宽度仍由统一固定列维护；删除“上移/下移”按钮、样式、accessibility、布局占位、展示 action 和私有 action 方法，保留删除配置与自动保存状态。
+- 第六轮视觉根因：“对端输入源”仍作为独立 section title 放在映射列表上方，虽然左基线已统一，但信息结构仍与上方表单行割裂。
+- 第六轮实现：把“对端输入源”改为与配置名称等一致的左标题列，右侧使用完整映射列表容器；标题按容器 centerY 垂直居中，右侧列表从输入控件起始列展开，0 台显示器时仍显示安全空态且不出现独立标题。
+- 第七轮视觉根因：即时保存状态仍嵌在配置详情卡片操作行里，成功态又以红字呈现，既占用卡片内部横向空间，也容易被理解为错误。
+- 第七轮实现：复用原 `peerSaveStatusLabel` 与 `persistDocument` 保存结果，把唯一保存状态迁移到协同页内容底部；成功态为系统 checkmark 图标 + 次级文字“已保存”，失败态为红色错误图标 + “保存失败，已恢复”，并补充 VoiceOver label/value。配置详情卡片内不再保留重复保存状态。
+- 第八轮视觉根因：上一轮把保存状态放到协同页滚动内容末尾，仍属于 `NSScrollView` 的 documentView，长内容或滚动时不会固定在窗口底部。
+- 第八轮实现：新增窗口级固定 footer stack，`tabView` 在 footer 上方结束；`peerSaveStatusRow` 只在协同标签显示，并与全局错误提示共同锚定到窗口底部。展示模型改为 `windowFooterRows`，并明确 `scrollContentFooterRows` 为空，避免再次把保存状态放回滚动内容。
+- 第九轮视觉根因：`loadSelectedProfileFields()` 在磁盘加载和配置切换时无条件投影 `.saved`，而 footer 可见性只判断“协同标签 + 有当前配置”，导致没有任何保存事件也常驻“已保存”，状态反馈失去可信度。
+- 第九轮实现：增加可注入、可取消的纯 `SettingsSaveFeedbackController`。初始和磁盘加载保持隐藏，切换标签/配置只清除短暂成功态；仅 `persistDocument` 写盘成功后显示绿色 `checkmark.circle.fill` 与“已保存”约 2 秒。连续成功取消旧任务并以 generation 防止旧回调提前隐藏新提示；失败取消隐藏计划并持续显示红色“保存失败，已恢复”，跨标签/配置切换保留，直至下一次真实成功；窗口关闭和控制器释放均安全取消。footer 继续与 `tabView` 同级、位于所有滚动 documentView 外，并改为左对齐。
+- 第十轮审核根因：`persistDocument` 是 USB、显示器与协同共用的全局入口，第九轮在入口内无条件记录保存结果，使非协同写盘也污染协同 footer；之后进入协同页时可能显示与协同无关的成功或失败。
+- 第十轮实现：为持久化入口增加显式 `SettingsSaveFeedbackScope`，默认 `.none`；只有协同 profile 编辑/启用、添加、删除和确认 endpoint 的调用点传 `.collaboration`。路由由纯状态模型处理，不读取当前标签猜测来源；USB、显示器、全显示器联动等成功或失败继续只走既有全局 validation 反馈，绝不改变协同保存状态。
+- 第十一轮视觉根因：USB“对端输入源”仍把同一文案作为卡片外部模块标题，并让映射行占满整卡 590 点；协同配置详情已使用左标签列 + 右列表容器的 90/490 两列表单合同，两个入口视觉结构不一致。
+- 第十一轮实现：USB 映射卡片取消外部标题，只在卡片内保留一次“对端输入源”；USB 与协同共同调用生产 `labeledVerticalControlRow`，左标签按右侧完整列表容器 `centerY`，不计算行数偏移。USB 右列新增与协同一致的列表/空态容器，映射行宽收敛到共享 490 点控制列；独立卡片、圆角、背景、间距、稳定 ID、显示器名称和输入框宽度均保持。
+- 第十二轮结构根因：USB 的自动切换与对端输入源、协同的当前配置与配置详情属于同一配置流程，继续各占一张卡会制造无必要的模块边界；生产投影仍保留三组时也会让测试与新 UI 结构不一致。配置名称行并不存在固定 490 点字段与开关的硬约束冲突，真实问题是字段和弹性 spacer 并列，spacer 占据剩余空间。
+- 第十二轮实现：USB 的映射列表通过语义 separator 并入自动切换卡，协同的选择行通过 separator 并入“配置”卡；两页生产投影均从三组收敛为两组，删除旧映射/选择/详情组 ID，并以显式 separator row 固定内部顺序。新增通用尾部附件表单行：顶层只包含 90 点标签与 490 点右列，右列内字段低 hugging、尾部开关或按钮 required，从结构上消除窄字段与列外附件竞争。
+- 第十三轮安全根因：输入源完整性把“每台都有映射”误当为启用条件，底层整数校验又把 `0` 当成可写值，导致用户无法表达“跳过这台显示器”，旧 `0` 还可能抵达 VCP `0x60`。现 USB/协同都把空值建模为映射缺失，只执行 `1...65535` 的显式映射；至少一台有效映射即可启用，其余显示器跳过。USB 运行时按现行 `contracts/usb-switch-v1` 把 nil、0、负数和越界值统一投影为无副作用 `missing_mapping` 报告，没有新增平台私有 reason，也没有修改共享合同。旧 `0` 在加载时归一为缺失；输入源服务、DDC 路由及原生后端各自再次拒绝 0、负数与越界值，避免绕过上层验证。
+- 第十四轮反馈根因：既有状态机只保存单个协同状态，USB 即时保存没有可信反馈；直接复用单状态又会让两页互相污染。现同一可注入调度器按 `.usb` / `.collaboration` 分别维护状态、generation 与隐藏任务；只有显式 scope 且文档真实变化的持久化结果触发对应页 footer，其他设置使用 `.none`。失败取消定时器并持续，下一次同 scope 成功恢复绿色并约 2 秒隐藏。
+- 协调端复查发现：完整 XCTest 首次出现 1 项间歇失败，`InputSourceSwitchingTests.testResolverFailureIsAttributedToStableIDAndDoesNotSkipNextTarget` 固定断言不同显示器并发 resolver 调用顺序为 A→B；生产并发设计没有也不应有该顺序合同，结果归因才是稳定合同。
+- 稳定性修复：只调整测试 recorder 快照和断言，验证 `selector-a`/`selector-b` 各解析一次且集合完整、`outcomes` 继续按输入顺序和 stable ID 归因、只有 `selector-b` 发生 write；未修改生产输入源并发、USB、协同或 DDC 逻辑。
+- 适配：两页改为 AppKit 滚动内容区；长显示器名称保留同型号序号，输入源字段固定紧凑宽度；补充输入控件、操作按钮和动态映射的 VoiceOver 标签，继续使用系统语义颜色。
+- 行为边界：即时原子保存、失败回退、USB 学习、v2 协同、网络与并发失败隔离保持；只把输入源值合同收紧到显式非零安全范围，并允许未配置显示器安全跳过。DS-023 详细诊断默认关闭、DS-024 托盘静态入口清理均未回退。
+- 自动验证：USB-001～016 公共向量按原始 expectedActions 逐条比较且不做筛选；完整 XCTest 194/194 通过。新增 fake 覆盖 USB 三台中一台留空只写两台并报告 `missing_mapping`、旧/输入 0 零写入且同样使用既有 `missing_mapping`、协同空映射跳过、最终 DDC 路由拒绝 0，以及 USB/协同保存反馈初始隐藏、成功定时隐藏、连续重置、失败持续、失败后成功和跨 scope 隔离；调度测试不使用真实 sleep。既有布局、失败隔离和诊断回归继续通过。
+- 构建验证：合入 `origin/main@e23417738bab1c1abf8df115584b081fdc60efd8` 后，Release `./macOS/scripts/build-app.sh` 通过，使用本机有效 Apple Development 身份签名；App、打包暂存副本与 ZIP 解压副本均通过脚本内 `codesign --verify --deep --strict`，额外 App/解压副本严格验签与 ZIP 完整性通过。测试包 SHA-256 `7ba6068a886d86c090a5acbb4866f3ea74c199169d755c79b52d543e039c1fbb`。
+- 待验证：窄窗口、0/1/2/3+ 台真实显示器下 USB/协同映射留空与部分填写、浅色/深色、键盘导航、VoiceOver，以及两页真实编辑后的隔离保存反馈，仍需 GUI 验收；不通过实机写入 0 验证安全门。
+- 安全边界：未执行真实 DDC、USB、网络、唤醒或输入源动作；未修改协议、schema、版本、系统权限或签名配置。
+
+## 上一状态：DS-023 + DS-024 组合验收
 
 - 日期：2026-08-31
 - 分支：`codex/macos-tray-empty-group`

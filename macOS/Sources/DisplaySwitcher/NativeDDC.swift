@@ -247,7 +247,10 @@ final class NativeDDCBackend: DDCBackend {
         transportLock.lock()
         defer { transportLock.unlock() }
         try token.throwIfCancelled()
-        guard let nativeValue = UInt16(exactly: value) else { throw DDCError.invalidValue(value) }
+        guard command != .input || InputSourceValuePolicy.isSafe(value),
+              let nativeValue = UInt16(exactly: value) else {
+            throw DDCError.invalidValue(value)
+        }
         try DDCSingleRetry.perform(operation: {
             try token.throwIfCancelled()
             let candidate = display(for: selector)

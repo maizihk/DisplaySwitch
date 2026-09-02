@@ -12,6 +12,18 @@ private final class InputSourceSwitchRecorder {
     var onWriteStarted: ((String) -> Void)?
     var waitBeforeWriteReturns: ((String) -> Void)?
 
+    var resolvedSelectorsSnapshot: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return resolvedSelectors
+    }
+
+    var writesSnapshot: [(selector: String, value: UInt16)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return writes
+    }
+
     func recordResolve(_ selector: String) {
         lock.lock()
         resolvedSelectors.append(selector)
@@ -288,8 +300,11 @@ final class InputSourceSwitchingTests: XCTestCase {
             ),
             InputSourceSwitchOutcome(stableID: "display-b", failure: nil)
         ])
-        XCTAssertEqual(recorder.resolvedSelectors, ["selector-a", "selector-b"])
-        XCTAssertEqual(recorder.writes.map(\.selector), ["selector-b"])
+        // Different displays resolve concurrently; resolver call order is intentionally not a contract.
+        let resolvedSelectors = recorder.resolvedSelectorsSnapshot
+        XCTAssertEqual(resolvedSelectors.count, 2)
+        XCTAssertEqual(Set(resolvedSelectors), Set(["selector-a", "selector-b"]))
+        XCTAssertEqual(recorder.writesSnapshot.map(\.selector), ["selector-b"])
     }
 
     func testOrdinaryFailureAndValueCacheRemainIndependentFromInputSwitch() throws {
@@ -395,6 +410,7 @@ final class InputSourceSwitchingTests: XCTestCase {
         )
         let invalidResult = service.switchInputs([
             InputSourceSwitchTarget(stableID: "missing", selector: "selector-b", targetInput: nil),
+            InputSourceSwitchTarget(stableID: "zero", selector: "selector-zero", targetInput: 0),
             InputSourceSwitchTarget(stableID: "invalid", selector: "selector-c", targetInput: -1)
         ])
         let blockedResult = service.switchInputs([
@@ -403,11 +419,32 @@ final class InputSourceSwitchingTests: XCTestCase {
 
         XCTAssertEqual(invalidResult.outcomes.map(\.failure), [
             .missingInput(stableID: "missing"),
+            .invalidInput(stableID: "zero", value: 0),
             .invalidInput(stableID: "invalid", value: -1)
         ])
         XCTAssertEqual(blockedResult.firstFailure, .blocked(stableID: "blocked"))
         XCTAssertTrue(recorder.resolvedSelectors.isEmpty)
         XCTAssertTrue(recorder.writes.isEmpty)
+    }
+
+    func testCollaborationProjectionSkipsBlankDisplayAndKeepsMappedDisplays() {
+        let targets = InputSourceSwitchTargetProjection.mappedTargets(from: [
+            1: DisplayConfiguration(
+                id: "display-a", index: 1, name: "A", selector: "selector-a",
+                localInput: 15, targetInput: 17, readEnabled: false
+            ),
+            2: DisplayConfiguration(
+                id: "display-b", index: 2, name: "B", selector: "selector-b",
+                localInput: 15, targetInput: nil, readEnabled: false
+            ),
+            3: DisplayConfiguration(
+                id: "display-c", index: 3, name: "C", selector: "selector-c",
+                localInput: 15, targetInput: 18, readEnabled: false
+            )
+        ])
+
+        XCTAssertEqual(targets.map(\.stableID), ["display-a", "display-c"])
+        XCTAssertEqual(targets.compactMap(\.targetInput), [17, 18])
     }
 
     func testDiagnosticChainReachesWriteAdapterAndSeparatesTransportFromDeviceFeedback() {
