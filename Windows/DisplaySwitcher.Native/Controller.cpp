@@ -804,9 +804,13 @@ namespace DisplaySwitcher::Native
     {
         if (!trayIcon_) return;
         std::vector<TrayDdcItem> items;
-        for (auto const& control : BuildDdcTrayControls(Config()))
+        auto config = Config();
+        auto backend = ddcBackends_.Lookup(NativeDdcBackendKey);
+        auto trust = backend ? backend->TopologyTrust() : DisplayTopologyTrust::IncompleteOrUnavailable;
+        for (auto const& control : BuildDdcTrayControls(config, trust))
             items.push_back({ control.displayId, control.displayName, control.code, control.label,
-                control.value, control.maximum, control.hasValue });
+                control.value, control.maximum, control.hasValue, control.mixed, control.linked,
+                !control.displayId.empty() });
         trayIcon_->SetDdcItems(std::move(items));
     }
 

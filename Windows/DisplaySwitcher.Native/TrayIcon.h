@@ -12,6 +12,9 @@ namespace DisplaySwitcher::Native
         int value{};
         int maximum{ 100 };
         bool known{};
+        bool mixed{};
+        bool linked{};
+        bool enabled{ true };
     };
 
     class TrayIcon

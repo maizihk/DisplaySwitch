@@ -349,7 +349,9 @@ namespace winrt::DisplaySwitcher::Native::implementation
     {
         if (windowClosed_) return;
         ddcCancellation_.Cancel();
+        original_ = config;
         LoadValues(config);
+        LoadDdcMonitors();
     }
 
     UIElement SettingsWindow::BuildContent()
@@ -380,7 +382,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
         detailedDiagnostics_ = ToggleSwitch();
         usbAutomation_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb); });
         usbSwitchDisplaysOnArrival_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::Usb); });
-        linkAllDisplays_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+        linkAllDisplays_.Toggled([this](auto const&, auto const&)
+        {
+            if (SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None))
+            {
+                auto strong = get_strong();
+                DispatcherQueue().TryEnqueue([strong] { strong->RebuildDisplayEditors(); });
+            }
+        });
         autoStart_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
         detailedDiagnostics_.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
         usbDevices_.SelectionChanged([this](auto const&, auto const&)
@@ -553,9 +562,10 @@ namespace winrt::DisplaySwitcher::Native::implementation
         AutomationProperties::SetName(refreshDdc, L"重新检测显示器");
         refreshDdc.Click([this](auto const&, auto const&) { LoadDdcMonitors(); });
         displayEditorsPanel_ = StackPanel(); displayEditorsPanel_.Spacing(14);
+        linkedDdcControlsPanel_ = StackPanel(); linkedDdcControlsPanel_.Spacing(14);
         displayTab.Content(CreatePage({ CreateSection({}, { displayHint,
             LabeledToggleRow(L"联动调节所有显示器", linkAllDisplays_),
-            refreshDdc, displayEditorsPanel_ }) }));
+            refreshDdc, linkedDdcControlsPanel_, displayEditorsPanel_ }) }));
 
         auto diagnosticTab = TabViewItem(); diagnosticTab.IsClosable(false);
         diagnosticTab.HorizontalContentAlignment(HorizontalAlignment::Center);
@@ -749,6 +759,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
         usbSelectedProfileId_ = config.usbSwitch.collaborationProfileId;
         workingDisplays_ = config.displays;
         workingProfiles_ = config.collaborationProfiles;
+        linkAllDisplays_.IsOn(config.linkAllDisplays);
         mappingProjection_.Refresh(workingDisplays_,
             ::DisplaySwitcher::Native::DisplayTopologyTrust::LocalPhysicalAuthoritative);
         RebuildUsbMappingEditors();
@@ -761,7 +772,6 @@ namespace winrt::DisplaySwitcher::Native::implementation
         RebuildProfileEditors();
         autoStart_.IsOn(config.startWithWindows);
         detailedDiagnostics_.IsOn(config.detailedDiagnosticRecording);
-        linkAllDisplays_.IsOn(config.linkAllDisplays);
         loading_ = false;
     }
 
@@ -939,11 +949,15 @@ namespace winrt::DisplaySwitcher::Native::implementation
                     L"Windows 原生 DDC 后端不可用", {}, false };
             if (!enumeration.success)
             {
+                ddcTopologyTrust_ = ::DisplaySwitcher::Native::DisplayTopologyTrust::IncompleteOrUnavailable;
+                RebuildDisplayEditors();
                 SetOperationFeedback(enumeration.message.empty() ? L"读取 Windows 原生 DDC/CI 显示器失败。" : enumeration.message, true);
                 return;
             }
             if (!enumeration.IsTrustedNonEmptySnapshot())
             {
+                ddcTopologyTrust_ = enumeration.topologyTrust;
+                RebuildDisplayEditors();
                 SetOperationFeedback(enumeration.topologyTrust == ::DisplaySwitcher::Native::DisplayTopologyTrust::RemoteSessionLimited
                     ? L"远程桌面会话中，已保留本地物理显示器配置，返回本地后重新检测。"
                     : enumeration.monitors.empty()
@@ -952,6 +966,7 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 return;
             }
             ddcMonitors_ = std::move(enumeration.monitors);
+            ddcTopologyTrust_ = enumeration.topologyTrust;
             auto reconciled = ::DisplaySwitcher::Native::ReconcileDisplayConfigurations(
                 workingDisplays_, ddcMonitors_, enumeration.topologyTrust);
             workingDisplays_ = std::move(reconciled.displays);
@@ -1056,6 +1071,79 @@ namespace winrt::DisplaySwitcher::Native::implementation
         if (!displayEditorsPanel_) return;
         displayEditorsPanel_.Children().Clear();
         displayEditors_.clear();
+        if (linkedDdcControlsPanel_) linkedDdcControlsPanel_.Children().Clear();
+
+        auto linked = linkAllDisplays_ && linkAllDisplays_.IsOn();
+        if (linked && linkedDdcControlsPanel_)
+        {
+            auto projectionConfig = original_;
+            projectionConfig.linkAllDisplays = true;
+            projectionConfig.displays = workingDisplays_;
+            auto projections = ::DisplaySwitcher::Native::BuildDdcControlProjection(
+                projectionConfig, ddcTopologyTrust_, false);
+            if (!projections.empty())
+            {
+                auto shared = StackPanel(); shared.Spacing(10);
+                auto heading = TextBlock(); heading.Text(L"联动调节");
+                heading.FontSize(18); heading.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+                shared.Children().Append(heading);
+                for (auto const& projection : projections)
+                {
+                    auto row = Grid(); row.ColumnSpacing(12);
+                    auto labelColumn = ColumnDefinition(); labelColumn.Width(GridLength{ 96 });
+                    auto sliderColumn = ColumnDefinition(); sliderColumn.Width(GridLength{ 1, GridUnitType::Star });
+                    auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 56 });
+                    row.ColumnDefinitions().Append(labelColumn); row.ColumnDefinitions().Append(sliderColumn);
+                    row.ColumnDefinitions().Append(valueColumn);
+                    auto label = TextBlock(); label.Text(projection.label); label.VerticalAlignment(VerticalAlignment::Center);
+                    auto slider = Slider(); slider.Minimum(0); slider.Maximum(projection.maximum);
+                    slider.Value(projection.value); slider.StepFrequency(1); slider.SmallChange(1); slider.LargeChange(10);
+                    slider.HorizontalAlignment(HorizontalAlignment::Stretch);
+                    slider.IsEnabled(!projection.targetDisplayIds.empty());
+                    auto sliderHost = Grid();
+                    auto neutralTrack = Border(); neutralTrack.Height(4); neutralTrack.CornerRadius(CornerRadius{ 2, 2, 2, 2 });
+                    neutralTrack.VerticalAlignment(VerticalAlignment::Center);
+                    neutralTrack.Background(ThemeBrush(L"ControlStrongStrokeColorDefaultBrush", Colors::Gray()));
+                    neutralTrack.Visibility(projection.valueState == ::DisplaySwitcher::Native::DdcProjectedValueState::Value
+                        ? Visibility::Collapsed : Visibility::Visible);
+                    slider.Opacity(projection.valueState == ::DisplaySwitcher::Native::DdcProjectedValueState::Value ? 1.0 : 0.0);
+                    sliderHost.Children().Append(neutralTrack); sliderHost.Children().Append(slider);
+                    auto value = TextBlock(); value.VerticalAlignment(VerticalAlignment::Center);
+                    value.HorizontalAlignment(HorizontalAlignment::Right);
+                    value.Text(projection.valueState == ::DisplaySwitcher::Native::DdcProjectedValueState::Mixed
+                        ? L"混合" : projection.valueState == ::DisplaySwitcher::Native::DdcProjectedValueState::Unavailable
+                        ? L"—" : std::to_wstring(projection.value));
+                    auto accessibleValue = value.Text();
+                    AutomationProperties::SetName(slider, L"联动" + projection.label + L"，当前" + std::wstring(accessibleValue.c_str()));
+                    slider.ValueChanged([value, neutralTrack, labelText = projection.label](auto const& sender, auto const&)
+                    {
+                        auto currentSlider = sender.template as<Slider>();
+                        auto current = static_cast<int>(std::lround(currentSlider.Value()));
+                        currentSlider.Opacity(1); neutralTrack.Visibility(Visibility::Collapsed);
+                        value.Text(std::to_wstring(current));
+                        AutomationProperties::SetName(currentSlider,
+                            L"联动" + labelText + L"，当前" + std::to_wstring(current));
+                    });
+                    slider.PointerCaptureLost(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                        [this, id = projection.displayId, code = projection.code, slider](IInspectable const&,
+                            Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)
+                        {
+                            if (!id.empty()) WriteDdc(id, code, static_cast<int>(std::lround(slider.Value())));
+                        }));
+                    slider.KeyUp(Microsoft::UI::Xaml::Input::KeyEventHandler(
+                        [this, id = projection.displayId, code = projection.code, slider](IInspectable const&,
+                            Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args)
+                        {
+                            if (!id.empty() && args.Key() == Windows::System::VirtualKey::Enter)
+                                WriteDdc(id, code, static_cast<int>(std::lround(slider.Value())));
+                        }));
+                    Grid::SetColumn(sliderHost, 1); Grid::SetColumn(value, 2);
+                    row.Children().Append(label); row.Children().Append(sliderHost); row.Children().Append(value);
+                    shared.Children().Append(row);
+                }
+                linkedDdcControlsPanel_.Children().Append(CreateCard(shared));
+            }
+        }
 
         auto diagnosticStates = displayDiagnostics_ ? displayDiagnostics_->Snapshot(workingDisplays_)
             : std::vector<::DisplaySwitcher::Native::DiagnosticDisplaySummary>{};
@@ -1103,11 +1191,14 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 auto column = ColumnDefinition(); column.Width(GridLength{ width });
                 controlsGrid.ColumnDefinitions().Append(column);
             }
-            auto sliderColumn = ColumnDefinition();
-            sliderColumn.Width(GridLength{ 1, GridUnitType::Star });
-            controlsGrid.ColumnDefinitions().Append(sliderColumn);
-            auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 44 });
-            controlsGrid.ColumnDefinitions().Append(valueColumn);
+            if (!linked)
+            {
+                auto sliderColumn = ColumnDefinition();
+                sliderColumn.Width(GridLength{ 1, GridUnitType::Star });
+                controlsGrid.ColumnDefinitions().Append(sliderColumn);
+                auto valueColumn = ColumnDefinition(); valueColumn.Width(GridLength{ 44 });
+                controlsGrid.ColumnDefinitions().Append(valueColumn);
+            }
             for (int rowIndex = 0; rowIndex < 4; ++rowIndex)
             {
                 auto row = RowDefinition(); row.Height(GridLengthHelper::Auto());
@@ -1133,19 +1224,32 @@ namespace winrt::DisplaySwitcher::Native::implementation
                 AutomationProperties::SetName(enabled, std::wstring(name) + L"功能开关");
                 AutomationProperties::SetName(showInTray, std::wstring(name) + L"在托盘显示");
                 AutomationProperties::SetName(slider, std::wstring(name) + L"调节");
-                Grid::SetColumn(enabled, 1); Grid::SetColumn(showInTray, 2); Grid::SetColumn(slider, 3); Grid::SetColumn(value, 4);
+                Grid::SetColumn(enabled, 1); Grid::SetColumn(showInTray, 2);
                 for (auto const& element : { label.as<FrameworkElement>(), enabled.as<FrameworkElement>(),
-                    showInTray.as<FrameworkElement>(), slider.as<FrameworkElement>(), value.as<FrameworkElement>() })
+                    showInTray.as<FrameworkElement>() })
                     Grid::SetRow(element, rowIndex);
                 controlsGrid.Children().Append(label); controlsGrid.Children().Append(enabled);
-                controlsGrid.Children().Append(showInTray); controlsGrid.Children().Append(slider);
-                controlsGrid.Children().Append(value);
+                controlsGrid.Children().Append(showInTray);
+                if (!linked)
+                {
+                    Grid::SetColumn(slider, 3); Grid::SetColumn(value, 4);
+                    Grid::SetRow(slider, rowIndex); Grid::SetRow(value, rowIndex);
+                    controlsGrid.Children().Append(slider); controlsGrid.Children().Append(value);
+                }
                 enabled.Toggled([this, slider, showInTray](auto const& sender, auto const&)
                 {
                     auto on = sender.template as<ToggleSwitch>().IsOn(); slider.IsEnabled(on);
-                    showInTray.IsEnabled(on); if (!on) showInTray.IsOn(false); SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
+                    showInTray.IsEnabled(on); if (!on) showInTray.IsOn(false);
+                    if (SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None))
+                    {
+                        auto strong = get_strong();
+                        DispatcherQueue().TryEnqueue([strong] { strong->RebuildDisplayEditors(); });
+                    }
                 });
-                showInTray.Toggled([this](auto const&, auto const&) { SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None); });
+                showInTray.Toggled([this](auto const&, auto const&)
+                {
+                    SaveImmediately(::DisplaySwitcher::Native::SettingsSaveFeedbackScope::None);
+                });
                 slider.ValueChanged([value](auto const& sender, auto const&) { value.Text(std::to_wstring(static_cast<int>(std::lround(sender.template as<Slider>().Value())))); });
                 slider.PointerCaptureLost(Microsoft::UI::Xaml::Input::PointerEventHandler(
                     [this, id = display.id, code, slider](IInspectable const&, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)

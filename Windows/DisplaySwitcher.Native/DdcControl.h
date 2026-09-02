@@ -173,9 +173,34 @@ namespace DisplaySwitcher::Native
         int value{};
         int maximum{ 100 };
         bool hasValue{};
+        bool mixed{};
+        bool linked{};
     };
 
-    std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config);
+    enum class DdcProjectedValueState
+    {
+        Unavailable,
+        Value,
+        Mixed,
+    };
+
+    struct DdcProjectedControl
+    {
+        std::wstring displayId;
+        std::wstring displayName;
+        DdcVcpCode code{ DdcVcpCode::Brightness };
+        std::wstring label;
+        int value{};
+        int maximum{ 100 };
+        DdcProjectedValueState valueState{ DdcProjectedValueState::Unavailable };
+        bool linked{};
+        std::vector<std::wstring> targetDisplayIds;
+    };
+
+    std::vector<DdcProjectedControl> BuildDdcControlProjection(AppConfig const& config,
+        DisplayTopologyTrust topologyTrust, bool trayOnly);
+    std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config,
+        DisplayTopologyTrust topologyTrust = DisplayTopologyTrust::LocalPhysicalAuthoritative);
 
     struct DdcWriteRequest
     {

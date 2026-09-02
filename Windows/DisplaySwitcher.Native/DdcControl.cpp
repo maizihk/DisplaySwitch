@@ -47,6 +47,73 @@ namespace
         return { DdcVcpCode::Brightness, DdcVcpCode::Contrast, DdcVcpCode::Volume };
     }
 
+    std::optional<int> CachedValue(DisplayConfig const& display, DdcVcpCode code)
+    {
+        if (code == DdcVcpCode::Brightness) return display.brightnessValue;
+        if (code == DdcVcpCode::Contrast) return display.contrastValue;
+        return display.volumeValue;
+    }
+
+    std::optional<int> CachedMaximum(DisplayConfig const& display, DdcVcpCode code)
+    {
+        if (code == DdcVcpCode::Brightness) return display.brightnessMax;
+        if (code == DdcVcpCode::Contrast) return display.contrastMax;
+        return display.volumeMax;
+    }
+
+    bool ShowInTray(DisplayConfig const& display, DdcVcpCode code) noexcept
+    {
+        if (code == DdcVcpCode::Brightness) return display.brightnessShowInTray;
+        if (code == DdcVcpCode::Contrast) return display.contrastShowInTray;
+        return display.volumeShowInTray;
+    }
+
+    wchar_t const* ControlLabel(DdcVcpCode code) noexcept
+    {
+        if (code == DdcVcpCode::Brightness) return L"亮度";
+        if (code == DdcVcpCode::Contrast) return L"对比度";
+        return L"音量";
+    }
+
+    std::wstring CanonicalIdentity(std::wstring const& value)
+    {
+        auto result = value;
+        std::transform(result.begin(), result.end(), result.begin(), towlower);
+        return result;
+    }
+
+    std::vector<size_t> EligibleTargetIndices(AppConfig const& config, DdcVcpCode code,
+        DisplayTopologyTrust topologyTrust)
+    {
+        if (topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative) return {};
+        std::map<std::wstring, size_t> monitorCounts;
+        std::map<std::wstring, size_t> displayIdCounts;
+        for (auto const& display : config.displays)
+        {
+            if (!IsDisplayDdcResolved(display)) continue;
+            ++monitorCounts[CanonicalIdentity(display.nativeMonitorId)];
+            auto id = display.id; std::transform(id.begin(), id.end(), id.begin(), towlower);
+            ++displayIdCounts[id];
+        }
+        std::vector<size_t> result;
+        for (size_t index = 0; index < config.displays.size(); ++index)
+        {
+            auto const& display = config.displays[index];
+            auto identity = CanonicalIdentity(display.nativeMonitorId);
+            auto id = display.id; std::transform(id.begin(), id.end(), id.begin(), towlower);
+            if (DdcControlService::FeatureEnabled(display, code) && IsDisplayDdcResolved(display)
+                && !identity.empty() && !id.empty() && monitorCounts[identity] == 1 && displayIdCounts[id] == 1)
+                result.push_back(index);
+        }
+        return result;
+    }
+
+    int SafeMaximum(DisplayConfig const& display, DdcVcpCode code) noexcept
+    {
+        auto maximum = CachedMaximum(display, code);
+        return maximum && *maximum >= 10 ? *maximum : 100;
+    }
+
 }
 
 namespace DisplaySwitcher::Native
@@ -57,26 +124,78 @@ namespace DisplaySwitcher::Native
             || code == DdcVcpCode::Volume;
     }
 
-    std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config)
+    std::vector<DdcProjectedControl> BuildDdcControlProjection(AppConfig const& config,
+        DisplayTopologyTrust topologyTrust, bool trayOnly)
+    {
+        std::vector<DdcProjectedControl> result;
+        if (!config.linkAllDisplays)
+        {
+            if (topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative) return result;
+            for (size_t index = 0; index < config.displays.size(); ++index)
+            {
+                auto const& display = config.displays[index];
+                for (auto code : ControlCodes())
+                {
+                    auto eligible = EligibleTargetIndices(config, code, topologyTrust);
+                    if (std::find(eligible.begin(), eligible.end(), index) == eligible.end()) continue;
+                    if (trayOnly && !ShowInTray(display, code)) continue;
+                    auto value = CachedValue(display, code);
+                    result.push_back({ display.id, display.name, code, ControlLabel(code), value.value_or(0),
+                        DdcControlService::EffectiveMaximum(value.value_or(0), CachedMaximum(display, code).value_or(100)),
+                        value ? DdcProjectedValueState::Value
+                            : DdcProjectedValueState::Unavailable, false, { display.id } });
+                }
+            }
+            return result;
+        }
+
+        for (auto code : ControlCodes())
+        {
+            auto visible = std::any_of(config.displays.begin(), config.displays.end(), [&](auto const& display)
+            {
+                return DdcControlService::FeatureEnabled(display, code)
+                    && (!trayOnly || ShowInTray(display, code));
+            });
+            if (!visible) continue;
+            DdcProjectedControl control;
+            control.code = code; control.label = ControlLabel(code); control.displayName = L"";
+            control.linked = true;
+            auto targets = EligibleTargetIndices(config, code, topologyTrust);
+            control.maximum = 100;
+            bool first = true;
+            std::optional<int> commonValue;
+            bool anyUnknown{}; bool mixed{};
+            for (auto index : targets)
+            {
+                auto const& display = config.displays[index];
+                if (first) control.maximum = SafeMaximum(display, code);
+                else control.maximum = (std::min)(control.maximum, SafeMaximum(display, code));
+                first = false;
+                control.targetDisplayIds.push_back(display.id);
+                auto value = CachedValue(display, code);
+                if (!value) anyUnknown = true;
+                else if (!commonValue) commonValue = value;
+                else if (*commonValue != *value) mixed = true;
+            }
+            control.displayId = control.targetDisplayIds.empty() ? L"" : control.targetDisplayIds.front();
+            if (!targets.empty() && !anyUnknown && commonValue)
+            {
+                control.valueState = mixed ? DdcProjectedValueState::Mixed : DdcProjectedValueState::Value;
+                if (!mixed) control.value = (std::min)(*commonValue, control.maximum);
+            }
+            result.push_back(std::move(control));
+        }
+        return result;
+    }
+
+    std::vector<DdcTrayControl> BuildDdcTrayControls(AppConfig const& config,
+        DisplayTopologyTrust topologyTrust)
     {
         std::vector<DdcTrayControl> result;
-        auto append = [&](DisplayConfig const& display, DdcVcpCode code, wchar_t const* label,
-            bool enabled, bool show, std::optional<int> value, std::optional<int> maximum)
-        {
-            if (!enabled || !show) return;
-            result.push_back({ display.id, display.name, code, label, value.value_or(0),
-                DdcControlService::EffectiveMaximum(value.value_or(0), maximum.value_or(100)), value.has_value() });
-        };
-        for (auto const& display : config.displays)
-        {
-            if (!IsDisplayDdcResolved(display)) continue;
-            append(display, DdcVcpCode::Brightness, L"亮度", display.brightnessEnabled,
-                display.brightnessShowInTray, display.brightnessValue, display.brightnessMax);
-            append(display, DdcVcpCode::Contrast, L"对比度", display.contrastEnabled,
-                display.contrastShowInTray, display.contrastValue, display.contrastMax);
-            append(display, DdcVcpCode::Volume, L"音量", display.volumeEnabled,
-                display.volumeShowInTray, display.volumeValue, display.volumeMax);
-        }
+        for (auto const& item : BuildDdcControlProjection(config, topologyTrust, true))
+            result.push_back({ item.displayId, item.displayName, item.code, item.label, item.value,
+                item.maximum, item.valueState == DdcProjectedValueState::Value,
+                item.valueState == DdcProjectedValueState::Mixed, item.linked });
         return result;
     }
 
@@ -314,39 +433,47 @@ namespace DisplaySwitcher::Native
                 DdcErrorKind::InvalidValue, L"调节值超出有效范围" });
             return batch;
         }
+        auto backend = Backend();
+        if (!backend)
+        {
+            batch.items.push_back({ displayId, code, false, false, false, false, {}, {}, DdcAvailability::Unsupported,
+                DdcErrorKind::BackendUnavailable, L"未选择可用的硬件 DDC 后端" });
+            return batch;
+        }
+        if (backend->TopologyTrust() != DisplayTopologyTrust::LocalPhysicalAuthoritative)
+        {
+            batch.canceled = true;
+            return batch;
+        }
         auto source = FindDisplayById(config.displays, displayId);
-        if (!source) return batch;
+        if (!source && !linkAllDisplays) return batch;
         std::vector<size_t> targets;
         if (linkAllDisplays)
+            targets = EligibleTargetIndices(config, code, backend->TopologyTrust());
+        else if (FeatureEnabled(config.displays[*source], code)
+            && !EligibleTargetIndices(config, code, backend->TopologyTrust()).empty())
         {
-            for (size_t index = 0; index < config.displays.size(); ++index)
-                if (FeatureEnabled(config.displays[index], code)) targets.push_back(index);
+            auto eligible = EligibleTargetIndices(config, code, backend->TopologyTrust());
+            if (std::find(eligible.begin(), eligible.end(), *source) != eligible.end()) targets.push_back(*source);
         }
-        else if (FeatureEnabled(config.displays[*source], code)) targets.push_back(*source);
+
+        auto outOfRange = linkAllDisplays ? std::find_if(targets.begin(), targets.end(), [&](auto index)
+        { return value > SafeMaximum(config.displays[index], code); }) : targets.end();
+        if (linkAllDisplays && outOfRange != targets.end())
+        {
+            auto const& display = config.displays[*outOfRange];
+            batch.items.push_back({ display.id, code, false, false, false, false, {},
+                SafeMaximum(display, code), DdcAvailability::Available, DdcErrorKind::InvalidValue,
+                L"调节值超出联动目标的共同安全范围" });
+            return batch;
+        }
 
         for (auto index : targets)
         {
             auto& display = config.displays[index];
             if (!Allowed(config, cancellation)) { batch.canceled = true; break; }
-            if (!IsDisplayDdcResolved(display))
-            {
-                auto ambiguous = display.bindingStatus == DisplayBindingStatus::Ambiguous
-                    || display.bindingStatus == DisplayBindingStatus::NeedsConfirmation;
-                auto error = ambiguous ? DdcErrorKind::AmbiguousMonitor : DdcErrorKind::MonitorUnavailable;
-                auto message = display.bindingMessage.empty()
-                    ? (ambiguous ? L"显示器绑定不明确，需要重新确认" : L"显示器当前离线")
-                    : display.bindingMessage;
-                batch.items.push_back(Failure(display, code,
-                    { DdcAvailability::TemporarilyUnavailable, message }, error, message));
-                continue;
-            }
-            auto backend = Backend();
-            if (!backend)
-            {
-                batch.items.push_back(Failure(display, code, { DdcAvailability::Unsupported, L"未选择可用的硬件 DDC 后端" },
-                    DdcErrorKind::BackendUnavailable, L"未选择可用的硬件 DDC 后端"));
-                continue;
-            }
+            if (backend->TopologyTrust() != DisplayTopologyTrust::LocalPhysicalAuthoritative)
+            { batch.canceled = true; break; }
             auto status = backend->Status();
             if (status.availability != DdcAvailability::Available)
             {
@@ -360,6 +487,12 @@ namespace DisplaySwitcher::Native
             {
                 batch.items.push_back(Failure(display, code, capabilities.status, DdcErrorKind::Unsupported,
                     capabilities.status.message.empty() ? L"显示器未报告该硬件 DDC 功能" : capabilities.status.message));
+                continue;
+            }
+            if (linkAllDisplays && value > SafeMaximum(display, code))
+            {
+                batch.items.push_back(Failure(display, code, status, DdcErrorKind::InvalidValue,
+                    L"调节值超出显示器安全范围"));
                 continue;
             }
             auto result = Allowed(config, cancellation)

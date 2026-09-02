@@ -157,12 +157,16 @@ namespace
                 FillRect(dc, &track, trackBrush); DeleteObject(trackBrush);
                 auto maximum = (std::max)(1, item.ddc.maximum);
                 auto x = track.left + MulDiv((std::clamp)(item.ddc.value, 0, maximum), track.right - track.left, maximum);
-                auto thumbBrush = CreateSolidBrush(state.dark ? RGB(96, 205, 255) : RGB(0, 95, 184));
-                auto radius = ScaleForDpi(6, state.dpi); auto oldBrush = SelectObject(dc, thumbBrush);
-                Ellipse(dc, x - radius, (track.top + track.bottom) / 2 - radius, x + radius, (track.top + track.bottom) / 2 + radius);
-                SelectObject(dc, oldBrush); DeleteObject(thumbBrush);
+                if (item.ddc.known)
+                {
+                    auto thumbBrush = CreateSolidBrush(state.dark ? RGB(96, 205, 255) : RGB(0, 95, 184));
+                    auto radius = ScaleForDpi(6, state.dpi); auto oldBrush = SelectObject(dc, thumbBrush);
+                    Ellipse(dc, x - radius, (track.top + track.bottom) / 2 - radius,
+                        x + radius, (track.top + track.bottom) / 2 + radius);
+                    SelectObject(dc, oldBrush); DeleteObject(thumbBrush);
+                }
                 auto valueBounds = item.bounds; valueBounds.left = track.right + ScaleForDpi(8, state.dpi); valueBounds.right -= ScaleForDpi(12, state.dpi);
-                auto value = item.ddc.known ? std::to_wstring(item.ddc.value) : L"--";
+                auto value = item.ddc.mixed ? L"混合" : item.ddc.known ? std::to_wstring(item.ddc.value) : L"—";
                 DrawTextW(dc, value.c_str(), static_cast<int>(value.size()), &valueBounds, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
                 continue;
             }
@@ -208,6 +212,7 @@ namespace
                 auto left = ScaleForDpi(112, state->dpi); auto right = static_cast<int>(item.bounds.right) - ScaleForDpi(52, state->dpi);
                 item.ddc.value = MulDiv((std::clamp)(static_cast<int>(point.x), left, right) - left,
                     (std::max)(1, item.ddc.maximum), (std::max)(1, right - left));
+                item.ddc.known = true; item.ddc.mixed = false;
                 InvalidateRect(window, &item.bounds, FALSE); return 0;
             }
             auto hotIndex = HitTestMenuItem(*state, point.x, point.y);
@@ -234,6 +239,7 @@ namespace
                 auto left = ScaleForDpi(112, state->dpi); auto right = static_cast<int>(item.bounds.right) - ScaleForDpi(52, state->dpi);
                 item.ddc.value = MulDiv((std::clamp)(static_cast<int>(point.x), left, right) - left,
                     (std::max)(1, item.ddc.maximum), (std::max)(1, right - left));
+                item.ddc.known = true; item.ddc.mixed = false;
                 InvalidateRect(window, &item.bounds, FALSE);
                 SetCapture(window); return 0;
             }
@@ -271,6 +277,7 @@ namespace
                 && state->items[static_cast<size_t>(state->hotIndex)].slider)
             {
                 auto& item = state->items[static_cast<size_t>(state->hotIndex)];
+                item.ddc.known = true; item.ddc.mixed = false;
                 item.ddc.value = (std::clamp)(item.ddc.value + (wParam == VK_RIGHT ? 1 : -1), 0,
                     (std::max)(1, item.ddc.maximum));
                 InvalidateRect(window, &item.bounds, FALSE);
@@ -478,7 +485,8 @@ namespace DisplaySwitcher::Native
         if (!profiles_.empty()) state->items.push_back({ 0, L"", true, false });
         for (auto const& ddc : ddcItems_)
         {
-            PopupMenuItem item; item.text = ddc.displayName + L" · " + ddc.label; item.slider = true; item.ddc = ddc;
+            PopupMenuItem item; item.text = ddc.linked ? ddc.label : ddc.displayName + L" · " + ddc.label;
+            item.slider = true; item.enabled = ddc.enabled; item.ddc = ddc;
             state->items.push_back(std::move(item));
         }
         if (!ddcItems_.empty()) state->items.push_back({ 0, L"", true, false });
