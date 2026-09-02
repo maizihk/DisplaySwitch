@@ -14,7 +14,7 @@
 - 实机待验：USB/协同输入框留空与非法值回滚；部分映射只切有效显示器；USB 与协同底部反馈的颜色、两秒隐藏和失败保持；不在本任务中执行真实输入源切换。
 - 实现提交：`bf0d8f80553019415dc7cf74c07a47349a400a7a`。
 - PR：[#69](https://github.com/maizihk/DisplaySwitch/pull/69)，保持 open，不自行合并。
-- CI：PR #69 为 OPEN、MERGEABLE/clean，head 为上述实现提交，base 仍是堆叠分支 `codex/windows-rdp-display-topology`。Windows workflow 只对 `main` base 运行，因此该 head 当前没有 GitHub check 或 workflow run；本节 316 checks 与 Release 是 Windows 本机验证，不冒充 GitHub 托管 CI。
+- CI：最终推送后只读 API 确认 PR #69 为 OPEN、MERGEABLE/clean，包含上述实现提交，base 仍是堆叠分支 `codex/windows-rdp-display-topology`。Windows workflow 只对 `main` base 运行，因此当前没有 GitHub check 或 workflow run；本节 316 checks 与 Release 是 Windows 本机验证，不冒充 GitHub 托管 CI。
 
 ## 当前任务：Windows RDP 会话显示拓扑安全
 
