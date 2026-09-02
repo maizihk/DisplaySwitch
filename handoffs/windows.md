@@ -12,9 +12,9 @@
 - 本机验证：`Windows/build-windows.ps1` x64 Release 成功；完整原生测试通过 316 checks，v2 公共向量 1+4+20+6、USB-001 至 USB-016 全部通过。绿色版目录 1.78 MiB，入口与 runtime 完整。
 - 自动测试边界：使用临时配置和模拟 USB/DDC/输入源，覆盖空白、1、65535、0、负数、非数字、溢出、null 回显、旧零值迁移、迁移写失败、全部为空、部分映射、USB/手动/协同共用执行路径、原生最终边界和保存反馈作用域。未访问真实网络、USB、DDC、显示器唤醒或输入源。
 - 实机待验：USB/协同输入框留空与非法值回滚；部分映射只切有效显示器；USB 与协同底部反馈的颜色、两秒隐藏和失败保持；不在本任务中执行真实输入源切换。
-- 实现提交：提交后回填。
+- 实现提交：`bf0d8f80553019415dc7cf74c07a47349a400a7a`。
 - PR：[#69](https://github.com/maizihk/DisplaySwitch/pull/69)，保持 open，不自行合并。
-- CI：提交推送后等待 PR #69 当前 base 对应的 GitHub 状态；本节 316 checks 与 Release 是 Windows 本机验证，不冒充 GitHub 托管 CI。
+- CI：PR #69 为 OPEN、MERGEABLE/clean，head 为上述实现提交，base 仍是堆叠分支 `codex/windows-rdp-display-topology`。Windows workflow 只对 `main` base 运行，因此该 head 当前没有 GitHub check 或 workflow run；本节 316 checks 与 Release 是 Windows 本机验证，不冒充 GitHub 托管 CI。
 
 ## 当前任务：Windows RDP 会话显示拓扑安全
 
