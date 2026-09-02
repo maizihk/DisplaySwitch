@@ -194,8 +194,14 @@ final class PublicPresentationModelsTests: XCTestCase {
     }
 
     func testDisplayControlModuleDoesNotStartWithLeadingSeparator() {
-        XCTAssertEqual(DisplayControlModuleContent.items.first, .linkAllDisplays)
-        XCTAssertFalse(DisplayControlModuleContent.items.contains(.separator))
+        XCTAssertEqual(
+            DisplayControlModuleContent.items(showsLinkedControls: false),
+            [.linkAllDisplays]
+        )
+        XCTAssertEqual(
+            DisplayControlModuleContent.items(showsLinkedControls: true),
+            [.linkAllDisplays, .separator, .linkedDisplayControls]
+        )
     }
 
     func testDisplayReadModuleKeepsItsMeaningfulSeparator() {

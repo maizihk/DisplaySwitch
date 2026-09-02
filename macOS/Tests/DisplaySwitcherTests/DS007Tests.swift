@@ -71,35 +71,321 @@ final class DS007Tests: XCTestCase {
         XCTAssertEqual(entries[0].commands, [.luminance])
     }
 
+    func testLinkedSettingsProjectionHandlesZeroOneAndRestoresIndividualLayout() {
+        XCTAssertTrue(LinkedDDCControlProjection.entries(
+            configurations: [], displays: [], visibility: .settings,
+            sample: { _, _ in nil }
+        ).isEmpty)
+
+        var display = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
+        display.brightnessEnabled = true
+        let entries = LinkedDDCControlProjection.entries(
+            configurations: [runtimeDisplay(id: display.id, index: 1, name: display.name)],
+            displays: [display],
+            visibility: .settings,
+            sample: { _, _ in nil }
+        )
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].command, .luminance)
+        XCTAssertEqual(entries[0].targets.map(\.stableID), ["display-a"])
+        XCTAssertEqual(entries[0].value, .unknown)
+        XCTAssertEqual(entries[0].maximum, 100)
+
+        XCTAssertEqual(
+            DisplaySettingsControlProjection.make(
+                linkAllDisplays: true, linkedEntries: entries
+            ),
+            DisplaySettingsControlProjection(
+                showsLinkedControls: true,
+                showsIndividualSliders: false,
+                linkedCommands: [.luminance]
+            )
+        )
+        XCTAssertEqual(
+            DisplaySettingsControlProjection.make(
+                linkAllDisplays: false, linkedEntries: entries
+            ),
+            DisplaySettingsControlProjection(
+                showsLinkedControls: false,
+                showsIndividualSliders: true,
+                linkedCommands: []
+            )
+        )
+    }
+
+    func testLinkedValuesAreUniformMixedOrUnknownAndUseSafeMaximumIntersection() {
+        var first = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
+        var second = configuredDisplay(id: "display-b", name: "Second", selector: "selector-b")
+        var third = configuredDisplay(id: "display-c", name: "Third", selector: "selector-c")
+        first.brightnessEnabled = true
+        second.brightnessEnabled = true
+        third.brightnessEnabled = true
+        let configurations = [
+            runtimeDisplay(id: first.id, index: 1, name: first.name),
+            runtimeDisplay(id: second.id, index: 2, name: second.name),
+            runtimeDisplay(id: third.id, index: 3, name: third.name)
+        ]
+        let displays = [first, second, third]
+
+        func entry(_ samples: [String: DDCControlValueSample]) -> LinkedDDCControlProjection.Entry {
+            LinkedDDCControlProjection.entries(
+                configurations: configurations,
+                displays: displays,
+                visibility: .settings,
+                sample: { stableID, _ in samples[stableID.lowercased()] }
+            )[0]
+        }
+
+        var samples = [
+            "display-a": DDCControlValueSample(value: 40, maximum: 100, estimated: false),
+            "display-b": DDCControlValueSample(value: 40, maximum: 80, estimated: true),
+            "display-c": DDCControlValueSample(value: 40, maximum: 60, estimated: false)
+        ]
+        XCTAssertEqual(entry(samples).value, .uniform(value: 40, estimated: true))
+        XCTAssertEqual(entry(samples).value.displayText, "≈40")
+        XCTAssertEqual(entry(samples).value.accessibilityValue, "约 40")
+        XCTAssertEqual(entry(samples).maximum, 60)
+        samples["display-b"] = DDCControlValueSample(value: 50, maximum: 80, estimated: false)
+        XCTAssertEqual(entry(samples).value, .mixed)
+        XCTAssertEqual(entry(samples).value.displayText, "混合")
+        XCTAssertEqual(entry(samples).value.accessibilityValue, "混合")
+        samples.removeValue(forKey: "display-c")
+        XCTAssertEqual(entry(samples).value, .unknown)
+        XCTAssertEqual(entry(samples).value.displayText, "—")
+        XCTAssertEqual(entry(samples).value.accessibilityValue, "未知")
+        XCTAssertEqual(entry(samples).maximum, 80)
+    }
+
+    func testLinkedSliderVisualStateHidesSpecificValueUntilUserInteraction() {
+        XCTAssertEqual(
+            LinkedDDCSliderVisualState(.uniform(value: 42, estimated: true)),
+            .uniform(value: 42, estimated: true)
+        )
+        XCTAssertTrue(
+            LinkedDDCSliderVisualState(.uniform(value: 42, estimated: false)).showsSpecificValue
+        )
+        XCTAssertFalse(LinkedDDCSliderVisualState(.mixed).showsSpecificValue)
+        XCTAssertFalse(LinkedDDCSliderVisualState(.unknown).showsSpecificValue)
+        XCTAssertEqual(
+            LinkedDDCSliderVisualState(.mixed).acceptingUserValue(37),
+            .uniform(value: 37, estimated: false)
+        )
+        XCTAssertEqual(
+            LinkedDDCSliderVisualState(.unknown).acceptingUserValue(61),
+            .uniform(value: 61, estimated: false)
+        )
+    }
+
+    func testLinkedSliderViewTransitionsFromNeutralToSpecificKnobOnFirstInteraction() {
+        let slider = LinkedDDCSlider(frame: .zero)
+        slider.apply(aggregate: .uniform(value: 25, estimated: false), maximum: 80, isEnabled: true)
+        XCTAssertTrue(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.integerValue, 25)
+
+        slider.apply(aggregate: .mixed, maximum: 80, isEnabled: true)
+        XCTAssertFalse(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "混合")
+        slider.integerValue = 36
+        XCTAssertEqual(slider.acceptCurrentUserValue(), .uniform(value: 36, estimated: false))
+        XCTAssertTrue(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "36")
+
+        slider.apply(aggregate: .unknown, maximum: 80, isEnabled: true)
+        XCTAssertFalse(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "未知")
+        slider.integerValue = 49
+        XCTAssertEqual(slider.acceptCurrentUserValue(), .uniform(value: 49, estimated: false))
+        XCTAssertTrue(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "49")
+    }
+
+    func testLinkedTrayIsFlatAndTrayEligibilityDoesNotRestrictWriteTargets() {
+        var first = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
+        var second = configuredDisplay(id: "display-b", name: "Second", selector: "selector-b")
+        first.brightnessEnabled = true
+        second.brightnessEnabled = true
+        second.brightnessShowInTray = true
+        let configurations = [
+            runtimeDisplay(id: first.id, index: 1, name: first.name),
+            runtimeDisplay(id: second.id, index: 2, name: second.name)
+        ]
+        let projection = TrayDisplayMenuProjection.projection(
+            configurations: configurations,
+            displays: [first, second],
+            linkAllDisplays: true
+        )
+
+        XCTAssertTrue(projection.displayEntries.isEmpty)
+        XCTAssertEqual(projection.linkedCommands, [.luminance])
+        XCTAssertEqual(projection.dynamicItemCount, 1)
+
+        let unlinked = TrayDisplayMenuProjection.projection(
+            configurations: configurations,
+            displays: [first, second],
+            linkAllDisplays: false
+        )
+        XCTAssertTrue(unlinked.linkedCommands.isEmpty)
+        XCTAssertEqual(unlinked.displayEntries.map(\.displayID), [2])
+
+        let entry = LinkedDDCControlProjection.entries(
+            configurations: configurations,
+            displays: [first, second],
+            visibility: .tray,
+            sample: { _, _ in nil }
+        )[0]
+        XCTAssertEqual(entry.targets.map(\.stableID), ["display-a", "display-b"])
+        XCTAssertEqual(
+            LinkedDDCControlProjection.writeRequests(
+                command: .luminance, value: 55, entry: entry
+            ).map { $0.key.stableID },
+            ["display-a", "display-b"]
+        )
+    }
+
+    func testLinkedTrayVisibilityUsesStoredPreferenceButWritesOnlyOnlineTargets() {
+        var online = configuredDisplay(id: "display-a", name: "Online", selector: "selector-a")
+        var offline = configuredDisplay(id: "display-b", name: "Offline", selector: "selector-b")
+        online.brightnessEnabled = true
+        offline.brightnessEnabled = true
+        offline.brightnessShowInTray = true
+
+        let entry = LinkedDDCControlProjection.entries(
+            configurations: [runtimeDisplay(id: online.id, index: 1, name: online.name)],
+            displays: [online, offline],
+            visibility: .tray,
+            sample: { _, _ in nil }
+        )[0]
+
+        XCTAssertEqual(entry.command, .luminance)
+        XCTAssertEqual(entry.targets.map(\.stableID), ["display-a"])
+        XCTAssertEqual(entry.value, .unknown)
+    }
+
+    func testLinkedSettingsKeepsConfiguredControlVisibleButDisabledWithoutRuntimeTargets() {
+        var stored = configuredDisplay(id: "display-a", name: "Offline", selector: "selector-a")
+        stored.contrastEnabled = true
+
+        let entry = LinkedDDCControlProjection.entries(
+            configurations: [],
+            displays: [stored],
+            visibility: .settings,
+            sample: { _, _ in nil }
+        )[0]
+
+        XCTAssertEqual(entry.command, .contrast)
+        XCTAssertTrue(entry.targets.isEmpty)
+        XCTAssertEqual(entry.value, .unknown)
+        XCTAssertTrue(LinkedDDCControlProjection.writeRequests(
+            command: .contrast, value: 20, entry: entry
+        ).isEmpty)
+    }
+
+    func testLinkedProjectionFiltersOfflineAndAmbiguousRuntimeTargets() {
+        var online = configuredDisplay(id: "display-a", name: "Online", selector: "selector-a")
+        var offline = configuredDisplay(id: "display-b", name: "Offline", selector: "selector-b")
+        var ambiguous = configuredDisplay(id: "display-c", name: "Ambiguous", selector: "selector-c")
+        online.volumeEnabled = true
+        offline.volumeEnabled = true
+        ambiguous.volumeEnabled = true
+        let configurations = [
+            runtimeDisplay(id: online.id, index: 1, name: online.name),
+            DisplayConfiguration(
+                id: ambiguous.id, index: 2, name: ambiguous.name,
+                selector: "duplicate-selector", localInput: nil, targetInput: nil, readEnabled: false
+            ),
+            DisplayConfiguration(
+                id: "display-d", index: 3, name: "Duplicate",
+                selector: "duplicate-selector", localInput: nil, targetInput: nil, readEnabled: false
+            )
+        ]
+        let entries = LinkedDDCControlProjection.entries(
+            configurations: configurations,
+            displays: [online, offline, ambiguous],
+            visibility: .settings,
+            sample: { _, _ in nil }
+        )
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].targets.map(\.stableID), ["display-a"])
+    }
+
+    func testLinkedWriteRejectsValuesAboveSafeIntersection() {
+        var first = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
+        var second = configuredDisplay(id: "display-b", name: "Second", selector: "selector-b")
+        first.contrastEnabled = true
+        second.contrastEnabled = true
+        let samples = [
+            "display-a": DDCControlValueSample(value: 20, maximum: 100, estimated: false),
+            "display-b": DDCControlValueSample(value: 20, maximum: 45, estimated: false)
+        ]
+        let entry = LinkedDDCControlProjection.entries(
+            configurations: [
+                runtimeDisplay(id: first.id, index: 1, name: first.name),
+                runtimeDisplay(id: second.id, index: 2, name: second.name)
+            ],
+            displays: [first, second],
+            visibility: .settings,
+            sample: { stableID, _ in samples[stableID.lowercased()] }
+        )[0]
+
+        XCTAssertEqual(entry.maximum, 45)
+        XCTAssertEqual(
+            LinkedDDCControlProjection.writeRequests(
+                command: .contrast, value: 45, entry: entry
+            ).count,
+            2
+        )
+        XCTAssertTrue(LinkedDDCControlProjection.writeRequests(
+            command: .contrast, value: 46, entry: entry
+        ).isEmpty)
+    }
+
+    func testLinkedBatchWritesSameAbsoluteValueAndKeepsFailuresIsolated() {
+        let entry = LinkedDDCControlProjection.Entry(
+            command: .volume,
+            targets: [
+                .init(displayID: 1, stableID: "display-a", selector: "selector-a"),
+                .init(displayID: 2, stableID: "display-b", selector: "selector-b")
+            ],
+            value: .mixed,
+            maximum: 100
+        )
+        let requests = LinkedDDCControlProjection.writeRequests(
+            command: .volume,
+            value: 33,
+            entry: entry
+        )
+        let executor = ControlledWriteExecutor()
+        let coordinator = DDCLatestWinsCoordinator(executor: executor)
+        var completions: [String: Bool] = [:]
+        coordinator.onCompletion = { request, result in
+            completions[request.key.stableID] = (try? result.get()) != nil
+        }
+
+        requests.forEach(coordinator.submit)
+        XCTAssertEqual(Set(executor.started.map(\.value)), [33])
+        XCTAssertEqual(executor.maximumConcurrent, 2)
+        executor.completeNext(success: false)
+        executor.completeNext(success: true)
+
+        XCTAssertEqual(completions["display-a"], false)
+        XCTAssertEqual(completions["display-b"], true)
+    }
+
     func testDS024StaticTrayActionsOnlyContainSettingsAndQuit() {
         XCTAssertEqual(TrayStaticMenuAction.allCases, [.settings, .quit])
     }
 
     func testDS024DynamicSeparatorRequiresVisibleDynamicContent() {
         XCTAssertFalse(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
-            profileCount: 0, displayGroupCount: 0
+            profileCount: 0, displayControlItemCount: 0
         ))
         XCTAssertTrue(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
-            profileCount: 1, displayGroupCount: 0
+            profileCount: 1, displayControlItemCount: 0
         ))
         XCTAssertTrue(TrayMenuSeparatorProjection.showsDynamicContentSeparator(
-            profileCount: 0, displayGroupCount: 1
+            profileCount: 0, displayControlItemCount: 1
         ))
-    }
-
-    func testDS024LinkedControlTargetsUsePersistedSetting() {
-        XCTAssertEqual(
-            DisplayControlTargetProjection.displayIDs(
-                selectedDisplayID: 2, availableDisplayIDs: [3, 1, 2], linkAllDisplays: false
-            ),
-            [2]
-        )
-        XCTAssertEqual(
-            DisplayControlTargetProjection.displayIDs(
-                selectedDisplayID: 2, availableDisplayIDs: [3, 1, 2], linkAllDisplays: true
-            ),
-            [1, 2, 3]
-        )
     }
 
     func testV1PeerIdentityCanNeverBeConfirmedInV2OnlyConfiguration() {
