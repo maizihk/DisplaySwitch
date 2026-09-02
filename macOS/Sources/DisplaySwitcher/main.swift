@@ -36,14 +36,27 @@ private enum DisplayControl: String, CaseIterable {
 private final class SliderRowView: NSView {
     var onChange: ((Int) -> Void)?
 
+    private let usesLinkedPresentation: Bool
     private let valueLabel = NSTextField(labelWithString: "—")
     private lazy var slider: NSSlider = {
-        let slider = NSSlider(value: 50, minValue: 0, maxValue: 100, target: self, action: #selector(valueChanged))
+        let slider: NSSlider = usesLinkedPresentation
+            ? LinkedDDCSlider(frame: .zero)
+            : NSSlider(frame: .zero)
+        slider.minValue = 0
+        slider.maxValue = 100
+        slider.integerValue = 50
+        slider.target = self
+        slider.action = #selector(valueChanged)
         slider.isContinuous = false
         return slider
     }()
 
-    init(control: DisplayControl, accessibilityPrefix: String = "") {
+    init(
+        control: DisplayControl,
+        accessibilityPrefix: String = "",
+        usesLinkedPresentation: Bool = false
+    ) {
+        self.usesLinkedPresentation = usesLinkedPresentation
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 48))
         slider.setAccessibilityLabel("\(accessibilityPrefix)\(control.title)")
 
@@ -97,17 +110,17 @@ private final class SliderRowView: NSView {
     }
 
     func update(aggregate: DDCAggregateValue, maximum: Int, isEnabled: Bool) {
-        slider.maxValue = Double(max(maximum, 1))
-        slider.isEnabled = isEnabled
-        if case let .uniform(value, _) = aggregate {
-            slider.integerValue = min(max(value, 0), Int(slider.maxValue))
-        }
-        valueLabel.stringValue = aggregate.displayText
-        slider.setAccessibilityValue(aggregate.accessibilityValue)
+        guard let linkedSlider = slider as? LinkedDDCSlider else { return }
+        linkedSlider.apply(aggregate: aggregate, maximum: maximum, isEnabled: isEnabled)
+        valueLabel.stringValue = linkedSlider.visualState.displayText
     }
 
     @objc private func valueChanged() {
-        valueLabel.stringValue = "\(slider.integerValue)"
+        if let linkedSlider = slider as? LinkedDDCSlider {
+            valueLabel.stringValue = linkedSlider.acceptCurrentUserValue().displayText
+        } else {
+            valueLabel.stringValue = "\(slider.integerValue)"
+        }
         onChange?(slider.integerValue)
     }
 }
@@ -1304,7 +1317,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             guard let control = DisplayControl.allCases.first(where: {
                 $0.ddcCommand == command
             }) else { continue }
-            let row = SliderRowView(control: control, accessibilityPrefix: "统一")
+            let row = SliderRowView(
+                control: control,
+                accessibilityPrefix: "统一",
+                usesLinkedPresentation: true
+            )
             row.onChange = { [weak self] value in
                 self?.setLinkedControl(control, value: value)
             }

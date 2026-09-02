@@ -156,6 +156,49 @@ final class DS007Tests: XCTestCase {
         XCTAssertEqual(entry(samples).maximum, 80)
     }
 
+    func testLinkedSliderVisualStateHidesSpecificValueUntilUserInteraction() {
+        XCTAssertEqual(
+            LinkedDDCSliderVisualState(.uniform(value: 42, estimated: true)),
+            .uniform(value: 42, estimated: true)
+        )
+        XCTAssertTrue(
+            LinkedDDCSliderVisualState(.uniform(value: 42, estimated: false)).showsSpecificValue
+        )
+        XCTAssertFalse(LinkedDDCSliderVisualState(.mixed).showsSpecificValue)
+        XCTAssertFalse(LinkedDDCSliderVisualState(.unknown).showsSpecificValue)
+        XCTAssertEqual(
+            LinkedDDCSliderVisualState(.mixed).acceptingUserValue(37),
+            .uniform(value: 37, estimated: false)
+        )
+        XCTAssertEqual(
+            LinkedDDCSliderVisualState(.unknown).acceptingUserValue(61),
+            .uniform(value: 61, estimated: false)
+        )
+    }
+
+    func testLinkedSliderViewTransitionsFromNeutralToSpecificKnobOnFirstInteraction() {
+        let slider = LinkedDDCSlider(frame: .zero)
+        slider.apply(aggregate: .uniform(value: 25, estimated: false), maximum: 80, isEnabled: true)
+        XCTAssertTrue(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.integerValue, 25)
+
+        slider.apply(aggregate: .mixed, maximum: 80, isEnabled: true)
+        XCTAssertFalse(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "混合")
+        slider.integerValue = 36
+        XCTAssertEqual(slider.acceptCurrentUserValue(), .uniform(value: 36, estimated: false))
+        XCTAssertTrue(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "36")
+
+        slider.apply(aggregate: .unknown, maximum: 80, isEnabled: true)
+        XCTAssertFalse(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "未知")
+        slider.integerValue = 49
+        XCTAssertEqual(slider.acceptCurrentUserValue(), .uniform(value: 49, estimated: false))
+        XCTAssertTrue(slider.drawsSpecificValue)
+        XCTAssertEqual(slider.accessibilityValue() as? String, "49")
+    }
+
     func testLinkedTrayIsFlatAndTrayEligibilityDoesNotRestrictWriteTargets() {
         var first = configuredDisplay(id: "display-a", name: "First", selector: "selector-a")
         var second = configuredDisplay(id: "display-b", name: "Second", selector: "selector-b")

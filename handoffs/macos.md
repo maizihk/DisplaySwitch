@@ -10,8 +10,9 @@
 - 根因：持久配置 `linkAllDisplays` 只在 `setControl` 中扩大写入目标；设置页仍为每台显示器创建完整滑杆，托盘仍为每台显示器创建子菜单，因此“联动”没有对应的展示投影。另一个隐患是任意设置保存都会从磁盘重载 `configurations`，不能把该数组继续当作可信在线拓扑。
 - 实现：新增纯 `LinkedDDCControlProjection`，分别投影已配置可见性和最后一次成功检测后在线、稳定 ID/selector 均唯一的写入目标。联动开启时，设置页统一投影亮度/对比度/音量公共滑杆；逐显示器卡片只保留功能、托盘开关、读取按钮和状态。托盘改为最多三个顶层公共滑杆，不再创建显示器分组；联动关闭时原逐显示器结构原样恢复。
 - 值与安全：所有目标可信值相同才显示该值；不同显示“混合”，缺任一可信值显示“—”，不求平均。最大值取所有在线目标有效最大值的最小值，未知最大值以 100 参与安全交集；越界值生成零请求。一次拖动向所有启用该功能的在线唯一目标提交相同绝对值，仍由原 `DDCLatestWinsCoordinator` 提供按目标 latest-wins、取消、代次与部分失败隔离。
+- 审核修复：首版虽然把文本投影为“混合”或“—”，AppKit 原生滑杆仍按默认/历史 `integerValue` 绘制具体拇指。现设置页与托盘共同使用 `LinkedDDCSliderVisualState`/`LinkedDDCSlider`：不确定状态绘制无拇指的系统语义中性轨道且保持可交互，首次真实动作才切到确定值、显示拇指并提交该绝对值；确定值和逐显示器滑杆外观/行为不变，辅助功能值同步为“混合”“未知”或具体值。
 - 运行时拓扑：最后一次成功检测的目标另存于运行时集合；磁盘保存/重载只更新功能与托盘偏好，不会把离线持久条目重新加入写入目标。检测开始或失败期间公共滑杆保留配置可见性但无运行目标并禁用；成功后设置页与托盘立即重建。
-- 自动验证：DS-007/DS-024 定向投影及 fake 写入 66/66 通过；完整 XCTest 201/201 通过，仅保留既有 `InputSourceSwitching.swift` QoS runtime warning。Release `build-app.sh` 使用有效 Apple Development 身份完成，输出 App 与 ZIP 解压副本均通过 `codesign --verify --deep --strict --verbose=4`，ZIP 完整性通过；测试包 SHA-256 `05dc5114aef441d400ffdd27a3c9816012a513ef6e587989ce93fa95025f8eb0`。未运行真实 DDC、USB、网络、唤醒或输入源动作。
+- 自动验证：DS-007/DS-024 定向投影、fake 写入和中性轨道状态/视图 68/68 通过；完整 XCTest 203/203 通过，仅保留既有 `InputSourceSwitching.swift` QoS runtime warning。Release `build-app.sh` 使用有效 Apple Development 身份完成，输出 App 与 ZIP 解压副本均通过 `codesign --verify --deep --strict --verbose=4`，ZIP 完整性通过；最新测试包 SHA-256 `a39bc6f67607fd4d61acfe972db290dc7ee4ba143c6ee564394043346924afa8`。未运行真实 DDC、USB、网络、唤醒或输入源动作。
 - CI：GitHub Actions macOS run `33596233906` 全绿；完成 Debug、201 项 XCTest、Release 构建/打包/验签、artifact 校验与上传。
 - 待验证：真实 0/1/多显示器、值相同/不同、不同最大值、离线/重新检测、联动开关即时重建、托盘扁平布局、浅/深色与 VoiceOver，以及单台写入失败不影响其他目标。
 - 安全边界：未修改 Windows、`PROTOCOL.md`、共享合同、schema、版本、系统权限或签名配置；未执行真实硬件或网络动作。

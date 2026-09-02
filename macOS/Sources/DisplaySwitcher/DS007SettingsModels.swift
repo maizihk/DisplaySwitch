@@ -292,6 +292,127 @@ enum DDCAggregateValue: Equatable {
     }
 }
 
+enum LinkedDDCSliderVisualState: Equatable {
+    case uniform(value: Int, estimated: Bool)
+    case mixed
+    case unknown
+
+    init(_ aggregate: DDCAggregateValue) {
+        switch aggregate {
+        case let .uniform(value, estimated):
+            self = .uniform(value: value, estimated: estimated)
+        case .mixed:
+            self = .mixed
+        case .unknown:
+            self = .unknown
+        }
+    }
+
+    var showsSpecificValue: Bool {
+        if case .uniform = self { return true }
+        return false
+    }
+
+    var displayText: String {
+        switch self {
+        case let .uniform(value, estimated):
+            return estimated ? "≈\(value)" : "\(value)"
+        case .mixed:
+            return "混合"
+        case .unknown:
+            return "—"
+        }
+    }
+
+    var accessibilityValue: String {
+        switch self {
+        case let .uniform(value, estimated):
+            return estimated ? "约 \(value)" : "\(value)"
+        case .mixed:
+            return "混合"
+        case .unknown:
+            return "未知"
+        }
+    }
+
+    func acceptingUserValue(_ value: Int) -> LinkedDDCSliderVisualState {
+        .uniform(value: value, estimated: false)
+    }
+}
+
+private final class LinkedDDCSliderCell: NSSliderCell {
+    var drawsSpecificValue = false
+
+    override func drawBar(inside rect: NSRect, flipped: Bool) {
+        guard !drawsSpecificValue else {
+            super.drawBar(inside: rect, flipped: flipped)
+            return
+        }
+        let trackHeight: CGFloat = 4
+        let track = NSRect(
+            x: rect.minX,
+            y: rect.midY - trackHeight / 2,
+            width: rect.width,
+            height: trackHeight
+        )
+        NSColor.separatorColor.setFill()
+        NSBezierPath(roundedRect: track, xRadius: 2, yRadius: 2).fill()
+    }
+
+    override func drawKnob(_ knobRect: NSRect) {
+        guard drawsSpecificValue else { return }
+        super.drawKnob(knobRect)
+    }
+}
+
+final class LinkedDDCSlider: NSSlider {
+    private(set) var visualState: LinkedDDCSliderVisualState = .unknown
+
+    var drawsSpecificValue: Bool {
+        (cell as? LinkedDDCSliderCell)?.drawsSpecificValue ?? true
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        installLinkedCell()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installLinkedCell()
+    }
+
+    func apply(aggregate: DDCAggregateValue, maximum: Int, isEnabled: Bool) {
+        maxValue = Double(max(maximum, 1))
+        self.isEnabled = isEnabled
+        visualState = LinkedDDCSliderVisualState(aggregate)
+        if case let .uniform(value, _) = visualState {
+            integerValue = min(max(value, 0), Int(maxValue))
+        }
+        refreshVisualState()
+    }
+
+    @discardableResult
+    func acceptCurrentUserValue() -> LinkedDDCSliderVisualState {
+        visualState = visualState.acceptingUserValue(integerValue)
+        refreshVisualState()
+        return visualState
+    }
+
+    private func installLinkedCell() {
+        let replacement = LinkedDDCSliderCell()
+        replacement.sliderType = .linear
+        cell = replacement
+        refreshVisualState()
+    }
+
+    private func refreshVisualState() {
+        (cell as? LinkedDDCSliderCell)?.drawsSpecificValue = visualState.showsSpecificValue
+        setAccessibilityValue(visualState.accessibilityValue)
+        needsDisplay = true
+    }
+}
+
 struct LinkedDDCControlProjection {
     enum Visibility: Equatable {
         case settings

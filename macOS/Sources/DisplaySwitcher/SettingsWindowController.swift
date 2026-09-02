@@ -286,7 +286,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var displaySliders: [Int: [DDCCommand: NSSlider]] = [:]
     private var displayValueLabels: [Int: [DDCCommand: NSTextField]] = [:]
     private var displayStatusLabels: [Int: NSTextField] = [:]
-    private var linkedDisplaySliders: [DDCCommand: NSSlider] = [:]
+    private var linkedDisplaySliders: [DDCCommand: LinkedDDCSlider] = [:]
     private var linkedDisplayValueLabels: [DDCCommand: NSTextField] = [:]
     private var displayValueSamples: [String: [DDCCommand: DDCControlValueSample]] = [:]
     private var runtimeDisplayConfigurations: [DisplayConfiguration] = []
@@ -1189,13 +1189,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         headings.spacing = 8
 
         let rows = linkedDisplayControlEntries().map { entry -> NSView in
-            let slider = NSSlider(
-                value: 0,
-                minValue: 0,
-                maxValue: Double(entry.maximum),
-                target: self,
-                action: #selector(linkedDisplaySliderChanged(_:))
-            )
+            let slider = LinkedDDCSlider(frame: .zero)
+            slider.minValue = 0
+            slider.maxValue = Double(entry.maximum)
+            slider.target = self
+            slider.action = #selector(linkedDisplaySliderChanged(_:))
             slider.tag = Int(entry.command.rawValue)
             slider.isContinuous = true
             slider.widthAnchor.constraint(equalToConstant: 424).isActive = true
@@ -1404,13 +1402,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         onWriteDDC?(display.id, command, value)
     }
 
-    @objc private func linkedDisplaySliderChanged(_ sender: NSSlider) {
+    @objc private func linkedDisplaySliderChanged(_ sender: LinkedDDCSlider) {
         guard let command = DDCCommand(rawValue: UInt8(sender.tag)),
               let entry = linkedDisplayControlEntries().first(where: { $0.command == command }),
               sender.integerValue <= entry.maximum else { return }
         let value = sender.integerValue
-        linkedDisplayValueLabels[command]?.stringValue = "\(value)"
-        sender.setAccessibilityValue("\(value)")
+        let userState = sender.acceptCurrentUserValue()
+        linkedDisplayValueLabels[command]?.stringValue = userState.displayText
         let targetIDs = Set(entry.targets.map { $0.stableID.lowercased() })
         for (offset, display) in (configurationDocument?.displays ?? []).enumerated()
             where targetIDs.contains(display.id.lowercased()) {
@@ -1728,19 +1726,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func applyLinkedDisplayEntry(
         _ entry: LinkedDDCControlProjection.Entry,
-        to slider: NSSlider,
+        to slider: LinkedDDCSlider,
         valueLabel: NSTextField
     ) {
-        slider.maxValue = Double(entry.maximum)
-        slider.isEnabled = !entry.targets.isEmpty
-        switch entry.value {
-        case let .uniform(value, _):
-            slider.integerValue = min(max(value, 0), entry.maximum)
-        case .mixed, .unknown:
-            break
-        }
-        valueLabel.stringValue = entry.value.displayText
-        slider.setAccessibilityValue(entry.value.accessibilityValue)
+        slider.apply(
+            aggregate: entry.value,
+            maximum: entry.maximum,
+            isEnabled: !entry.targets.isEmpty
+        )
+        valueLabel.stringValue = LinkedDDCSliderVisualState(entry.value).displayText
     }
 
     private func reloadProfilePopup() {
