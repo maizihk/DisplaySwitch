@@ -263,6 +263,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onReadDDC: ((String) -> Void)?
     var onWriteDDC: ((String, DDCCommand, Int) -> Void)?
     var onRefreshDisplays: (() -> Void)?
+    var onDetailedDiagnosticRecordingChanged: ((Bool) -> Void)?
     var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
     var cachedDDCValue: ((String, DDCCommand) -> Int?)?
@@ -272,6 +273,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private let linkedCheckbox = NSSwitch()
     private let launchAtLoginCheckbox = NSSwitch()
+    private let detailedDiagnosticRecordingCheckbox = NSSwitch()
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
     private let usbCollaborationProfilePopup = NSPopUpButton()
@@ -375,7 +377,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func updateDDCValues(stableID: String, values: [DDCCommand: DDCResolvedReading],
-                         diagnostic: NativeDDCDiagnosticSnapshot? = nil,
                          skipReason: DDCReadSkipReason? = nil) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
@@ -387,41 +388,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             displayValueLabels[index]?[command]?.stringValue = resolved.estimated
                 ? "≈\(resolved.reading.current)" : "\(resolved.reading.current)"
         }
-        let estimatedCount = values.values.filter(\.estimated).count
-        let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
-        if let skipReason {
-            displayStatusLabels[index]?.stringValue = skipReason.userFacingDescription
-        } else if diagnostic?.operationCategory == .reliableReadUnsupported {
-            displayStatusLabels[index]?.stringValue = values.isEmpty
-                ? "当前连接不支持可靠读取"
-                : "当前连接不支持可靠读取，显示上次可信值"
-        } else if diagnostic?.operationCategory == .readChecksumEstimated {
-            displayStatusLabels[index]?.stringValue = "已读取（弱校验）\(diagnosticSuffix)"
-        } else if values.isEmpty {
-            displayStatusLabels[index]?.stringValue = "原生读取失败\(diagnosticSuffix)"
-        } else if estimatedCount == values.count {
-            displayStatusLabels[index]?.stringValue = "原生读取失败，显示上次可信值\(diagnosticSuffix)"
-        } else if estimatedCount > 0 {
-            displayStatusLabels[index]?.stringValue = "部分读取失败\(diagnosticSuffix)"
-        } else {
-            displayStatusLabels[index]?.stringValue = "已读取\(diagnosticSuffix)"
-        }
+        displayStatusLabels[index]?.stringValue = DisplayDDCStatusPresentation.read(
+            values: values, skipReason: skipReason
+        )
     }
 
-    func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?,
-                              diagnostic: NativeDDCDiagnosticSnapshot? = nil) {
+    func updateDDCWriteStatus(stableID: String, command: DDCCommand, value: Int?, error: Error?) {
         guard let offset = configurationDocument?.displays.firstIndex(where: {
             $0.id.caseInsensitiveCompare(stableID) == .orderedSame
         }) else { return }
         let index = offset + 1
-        let diagnosticSuffix = diagnostic.map { " · \($0.userFacingDescription)" } ?? ""
         if let value {
             displayValueLabels[index]?[command]?.stringValue = "\(value)"
-            displayStatusLabels[index]?.stringValue = "已应用\(diagnosticSuffix)"
-        } else {
-            displayStatusLabels[index]?.stringValue = (error == nil ? "已取消" : "写入失败")
-                + diagnosticSuffix
         }
+        displayStatusLabels[index]?.stringValue = DisplayDDCStatusPresentation.write(
+            value: value, error: error
+        )
     }
 
     func updateUSBSwitchStatus(_ text: String, isError: Bool) {
@@ -445,6 +427,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         linkedCheckbox.action = #selector(displaySettingChanged(_:))
         launchAtLoginCheckbox.target = self
         launchAtLoginCheckbox.action = #selector(immediateSwitchChanged(_:))
+        detailedDiagnosticRecordingCheckbox.target = self
+        detailedDiagnosticRecordingCheckbox.action = #selector(detailedDiagnosticRecordingChanged(_:))
         usbArrivalSwitchCheckbox.target = self
         usbArrivalSwitchCheckbox.action = #selector(immediateSwitchChanged(_:))
         usbCollaborationProfilePopup.target = self
@@ -502,6 +486,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                     title: "登录时启动",
                     description: "登录 macOS 后自动在菜单栏启动显示器控制。",
                     symbolName: "power"
+                ),
+                separator(),
+                switchRow(
+                    button: detailedDiagnosticRecordingCheckbox,
+                    title: "详细诊断记录",
+                    description: "默认关闭。仅在排查问题时开启；关闭会清空本次会话的详细记录。",
+                    symbolName: "stethoscope"
                 )
             ])
         ]))
@@ -748,7 +739,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         diagnosticTextView.textContainer?.widthTracksTextView = true
         diagnosticTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         diagnosticTextView.textContainerInset = NSSize(width: 8, height: 8)
-        diagnosticTextView.string = "打开此页面后生成会话内脱敏预览。"
+        diagnosticTextView.string = "打开此页面后生成脱敏预览。详细记录默认关闭。"
         diagnosticTextView.setAccessibilityLabel("诊断预览")
 
         let scrollView = NSScrollView()
@@ -769,7 +760,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         actions.spacing = 10
 
         let explanation = NSTextField(wrappingLabelWithString:
-            "预览只读取当前内存与配置状态，不执行网络检测、USB、唤醒、DDC 或输入源切换。复制内容与下方预览完全一致。")
+            "预览只读取当前内存与配置状态，不执行网络检测、USB、唤醒、DDC 或输入源切换。需要详细轨迹时，请先在“常规”中开启记录并复现问题。")
         explanation.font = .systemFont(ofSize: 11)
         explanation.textColor = .secondaryLabelColor
         explanation.maximumNumberOfLines = 2
@@ -1020,8 +1011,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         let status = NSTextField(wrappingLabelWithString: "尚未读取")
         status.textColor = .secondaryLabelColor
         status.font = .systemFont(ofSize: 11)
-        status.maximumNumberOfLines = DisplayDiagnosticLayout.maximumNumberOfLines
-        status.lineBreakMode = DisplayDiagnosticLayout.wraps ? .byWordWrapping : .byTruncatingTail
+        status.maximumNumberOfLines = DisplayStatusLayout.maximumNumberOfLines
+        status.lineBreakMode = DisplayStatusLayout.wraps ? .byWordWrapping : .byTruncatingTail
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         status.widthAnchor.constraint(equalToConstant: 590).isActive = true
         displayStatusLabels[index] = status
@@ -1290,6 +1281,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         diagnosticCopyStatusLabel.stringValue = ""
     }
 
+    @objc private func detailedDiagnosticRecordingChanged(_ sender: NSSwitch) {
+        let enabled = sender.state == .on
+        AppPreferences.setDetailedDiagnosticRecordingEnabled(enabled)
+        onDetailedDiagnosticRecordingChanged?(enabled)
+        refreshDiagnosticPreview()
+    }
+
     @objc private func copyDiagnosticPreview() {
         let preview = diagnosticTextView.string
         guard !preview.isEmpty else { return }
@@ -1349,6 +1347,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         restoreCachedDDCValues(in: loaded.document)
         loadSelectedProfileFields()
         refreshSelectedCollaborationStatus()
+        detailedDiagnosticRecordingCheckbox.state = AppPreferences.detailedDiagnosticRecordingEnabled
+            ? .on : .off
 
         if #available(macOS 13.0, *) {
             reloadLaunchAtLoginState()

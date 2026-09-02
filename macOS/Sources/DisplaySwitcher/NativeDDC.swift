@@ -68,13 +68,16 @@ final class NativeDDCBackend: DDCBackend {
     private var diagnosticDiscoveryState = NativeDDCDiagnosticDiscoveryState()
     private let transportParameters: NativeDDCTransportParameters
     private let hardwareArbiter: NativeI2CHardwareArbiter
+    private let detailedDiagnosticRecordingEnabled: () -> Bool
 
     init(knownDisplays: [DDCKnownDisplay] = [],
          transportParameters: NativeDDCTransportParameters = .appleSiliconDDCCompatible,
-         hardwareArbiter: NativeI2CHardwareArbiter = .shared) {
+         hardwareArbiter: NativeI2CHardwareArbiter = .shared,
+         detailedDiagnosticRecordingEnabled: @escaping () -> Bool = { true }) {
         self.knownDisplays = knownDisplays
         self.transportParameters = transportParameters
         self.hardwareArbiter = hardwareArbiter
+        self.detailedDiagnosticRecordingEnabled = detailedDiagnosticRecordingEnabled
     }
 
     var availability: DDCBackendAvailability {
@@ -159,6 +162,7 @@ final class NativeDDCBackend: DDCBackend {
             }
             var hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
             var requestChecksumMode: NativeDDCRequestChecksumMode?
+            let recordsDetailedDiagnostics = detailedDiagnosticRecordingEnabled()
             let readPreference = preferredReadPreference(display: display)
             let readOutcome = hardwareArbiter.withControlOperation(displayKey: selector) {
                 Self.read(
@@ -170,7 +174,8 @@ final class NativeDDCBackend: DDCBackend {
                     preferredChecksumMode: readPreference.checksumMode,
                     parameters: transportParameters,
                     edidReferences: display.edidReferences,
-                    diagnosticRecorder: { hdmiReadDiagnostics = $0 },
+                    diagnosticRecorder: recordsDetailedDiagnostics
+                        ? { hdmiReadDiagnostics = $0 } : nil,
                     checksumModeRecorder: { requestChecksumMode = $0 }
                 )
             }
@@ -289,6 +294,13 @@ final class NativeDDCBackend: DDCBackend {
         return diagnosticsBySelector[selector.uppercased()]
     }
 
+    func clearDiagnostics() {
+        diagnosticsLock.lock()
+        diagnosticsBySelector.removeAll()
+        diagnosticDiscoveryState = NativeDDCDiagnosticDiscoveryState()
+        diagnosticsLock.unlock()
+    }
+
     private func recordDiagnostic(selector: String, path: NativeDDCTransportPath,
                                   serviceMatched: Bool, category: NativeDDCOperationCategory,
                                   replyIssue: NativeDDCReplyIssue? = nil,
@@ -299,6 +311,7 @@ final class NativeDDCBackend: DDCBackend {
                                   checksumCompatibilityRejection: NativeDDCChecksumCompatibilityRejection? = nil,
                                   checksumCompatibilityEvidence: NativeDDCChecksumCompatibilityEvidence? = nil,
                                   hdmiReadDiagnostics: [NativeDDCReadAttemptDiagnostic] = []) {
+        guard detailedDiagnosticRecordingEnabled() else { return }
         let key = selector.uppercased()
         diagnosticsLock.lock()
         let rebuildCount = diagnosticsBySelector[key]?.rebuildCount ?? 0
@@ -322,6 +335,7 @@ final class NativeDDCBackend: DDCBackend {
         serviceMatched: Bool,
         serviceIdentity: UInt64
     ) {
+        guard detailedDiagnosticRecordingEnabled() else { return }
         let key = selector.uppercased()
         let binding = NativeDDCDiagnosticBinding(
             transportPath: path,
@@ -340,6 +354,7 @@ final class NativeDDCBackend: DDCBackend {
     }
 
     private func incrementRebuild(selector: String) {
+        guard detailedDiagnosticRecordingEnabled() else { return }
         let key = selector.uppercased()
         diagnosticsLock.lock()
         let current = diagnosticsBySelector[key] ?? NativeDDCDiagnosticSnapshot(
@@ -453,7 +468,8 @@ final class NativeDDCBackend: DDCBackend {
         let knownBySelector = Dictionary(uniqueKeysWithValues: knownDisplays.map {
             ($0.selector.uppercased(), $0)
         })
-        if let diagnosticSelector, let diagnosticContext, let diagnostics {
+        if let diagnosticSelector, let diagnosticContext, let diagnostics,
+           diagnostics.isRecordingEnabled {
             let identity = identities.first {
                 $0.systemUUID.caseInsensitiveCompare(diagnosticSelector) == .orderedSame
             }.map {
@@ -750,6 +766,7 @@ final class NativeDDCBackend: DDCBackend {
         if transportPath == .builtinHDMIConverter,
            chipAddress == 0x37 {
             checksumModeRecorder?(.standard)
+            let recordsDetailedDiagnostics = diagnosticRecorder != nil
             var attemptDiagnostics: [NativeDDCReadAttemptDiagnostic] = []
             var strategyAttempt = 0
             let outcome = NativeDDCBuiltinHDMIReadPolicy.run(
@@ -773,7 +790,7 @@ final class NativeDDCBackend: DDCBackend {
                     requestWriteCycles: parameters.builtinHDMIReadRequestWriteCycles,
                     requestChecksumIncludesDataAddress: true,
                     parameters: parameters,
-                    trace: { communicationTrace = $0 }
+                    trace: recordsDetailedDiagnostics ? { communicationTrace = $0 } : nil
                 )
                 let result: Result<DDCReading, NativeDDCReplyIssue>
                 if case .failure(let issue) = exchange {
@@ -786,16 +803,18 @@ final class NativeDDCBackend: DDCBackend {
                 case .success(let reading): validation = .valid(reading)
                 case .failure(let issue): validation = .rejected(issue)
                 }
-                attemptDiagnostics.append(NativeDDCReadAttemptDiagnostic(
-                    dataAddress: readDataAddress,
-                    strategyAttempt: strategyAttempt,
-                    delayMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
-                    writeIOReturns: communicationTrace?.writeIOReturns ?? [],
-                    readIOReturn: communicationTrace?.readIOReturn,
-                    reply: communicationTrace?.response ?? response,
-                    validation: validation,
-                    edidReferences: edidReferences
-                ))
+                if recordsDetailedDiagnostics {
+                    attemptDiagnostics.append(NativeDDCReadAttemptDiagnostic(
+                        dataAddress: readDataAddress,
+                        strategyAttempt: strategyAttempt,
+                        delayMicroseconds: parameters.readSleepMicroseconds(for: transportPath),
+                        writeIOReturns: communicationTrace?.writeIOReturns ?? [],
+                        readIOReturn: communicationTrace?.readIOReturn,
+                        reply: communicationTrace?.response ?? response,
+                        validation: validation,
+                        edidReferences: edidReferences
+                    ))
+                }
                 return result
             }
             diagnosticRecorder?(attemptDiagnostics)

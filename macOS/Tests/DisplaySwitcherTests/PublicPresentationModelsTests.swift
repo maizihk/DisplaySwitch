@@ -77,9 +77,9 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertEqual(DDCValuePresentationPolicy.source(for: .settingsReadButton), .hardware)
     }
 
-    func testDisplayDiagnosticLayoutWrapsInsteadOfTruncatingTransportDetails() {
-        XCTAssertTrue(DisplayDiagnosticLayout.wraps)
-        XCTAssertEqual(DisplayDiagnosticLayout.maximumNumberOfLines, 0)
+    func testDisplayStatusLayoutUsesOneConciseLine() {
+        XCTAssertFalse(DisplayStatusLayout.wraps)
+        XCTAssertEqual(DisplayStatusLayout.maximumNumberOfLines, 1)
     }
 
     func testC023AboutPageUsesOnlyPublicMetadataAndHasNoRuntimeSideEffectDependencies() {
@@ -313,6 +313,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             ddcCapabilities: DDCBackendCapabilities(
                 canEnumerate: true, canReadVCP: true, canWriteVCP: true
             ),
+            detailedRecordingEnabled: true,
             ddcDiagnostics: [diagnostic],
             peerInspectionText: "inspection=I1 stage=completed result=v2-available",
             inputSourceText: "op=O1 display=D1 stage=write-transport-result"
@@ -331,6 +332,58 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertFalse(report.contains(document.localEndpointID))
         XCTAssertFalse(report.contains("Private Mac"))
         XCTAssertFalse(report.contains("Private USB"))
+
+        let disabledReport = DiagnosticReport.make(
+            metadata: RecordingAboutMetadata(values: [
+                "CFBundleName": "DisplaySwitcher",
+                "CFBundleShortVersionString": "2.1.0",
+                "CFBundleVersion": "19"
+            ]),
+            architecture: "simulated-arch",
+            document: document,
+            safetyState: .ready,
+            collaborationStates: [.connected],
+            ddcBackendSummary: "Apple Silicon 原生 DDC",
+            ddcAvailability: .available,
+            ddcCapabilities: DDCBackendCapabilities(
+                canEnumerate: true, canReadVCP: true, canWriteVCP: true
+            ),
+            detailedRecordingEnabled: false,
+            ddcDiagnostics: [diagnostic],
+            peerInspectionText: "private-collaboration-trace",
+            inputSourceText: "private-input-source-trace"
+        ).text
+        XCTAssertTrue(disabledReport.contains("detailed-recording=false"))
+        XCTAssertTrue(disabledReport.contains("recording-disabled"))
+        XCTAssertFalse(disabledReport.contains("checksum legacy"))
+        XCTAssertFalse(disabledReport.contains("private-collaboration-trace"))
+        XCTAssertFalse(disabledReport.contains("private-input-source-trace"))
+    }
+
+    func testDisplayDDCStatusNeverIncludesTransportDiagnostics() {
+        let reading = DDCResolvedReading(
+            reading: DDCReading(current: 52, maximum: 100), estimated: false
+        )
+
+        let text = DisplayDDCStatusPresentation.read(
+            values: [.luminance: reading], skipReason: nil
+        )
+        XCTAssertEqual(text, "读取成功")
+        for internalDetail in ["builtin-hdmi-converter", "chip", "offset", "attempts", "checksum", "rebuild"] {
+            XCTAssertFalse(text.contains(internalDetail))
+        }
+        XCTAssertEqual(
+            DisplayDDCStatusPresentation.read(values: [:], skipReason: nil),
+            "读取失败"
+        )
+        XCTAssertEqual(
+            DisplayDDCStatusPresentation.read(
+                values: [.luminance: DDCResolvedReading(reading: reading.reading, estimated: true)],
+                skipReason: nil
+            ),
+            "读取失败"
+        )
+        XCTAssertEqual(DisplayDDCStatusPresentation.write(value: 52, error: nil), "写入成功")
     }
 
     private func mappingDisplay(id: String, name: String) -> DisplayConfigurationV4Display {

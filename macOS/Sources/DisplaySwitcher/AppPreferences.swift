@@ -24,4 +24,12 @@ enum AppPreferences {
     static var linkedDisplays: Bool { localConfiguration.linkAllDisplays }
 
     static var usbSwitch: USBSwitchConfiguration { localConfiguration.usbSwitch }
+
+    static var detailedDiagnosticRecordingEnabled: Bool {
+        DetailedDiagnosticRecordingPreference.shared.isEnabled
+    }
+
+    static func setDetailedDiagnosticRecordingEnabled(_ enabled: Bool) {
+        DetailedDiagnosticRecordingPreference.shared.setEnabled(enabled)
+    }
 }
