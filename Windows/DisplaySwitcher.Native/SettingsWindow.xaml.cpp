@@ -733,7 +733,17 @@ namespace winrt::DisplaySwitcher::Native::implementation
         }
     }
 
-    void SettingsWindow::ShowWindow() { appWindow_.Show(); Activate(); }
+    void SettingsWindow::ShowWindow()
+    {
+        appWindow_.Show();
+        Activate();
+        HWND window{};
+        if (SUCCEEDED(this->get_strong().as<::IWindowNative>()->get_WindowHandle(&window)) && window)
+        {
+            if (IsIconic(window)) ::ShowWindow(window, SW_RESTORE);
+            SetForegroundWindow(window);
+        }
+    }
     void SettingsWindow::CloseForExit() { ddcCancellation_.Cancel(); Close(); }
 
     void SettingsWindow::SetConnectionStatus(std::wstring const& status, bool connected)
@@ -1183,6 +1193,11 @@ namespace winrt::DisplaySwitcher::Native::implementation
             read.IsEnabled(::DisplaySwitcher::Native::IsDisplayDdcResolved(display));
             AutomationProperties::SetName(read, L"读取 " + display.name + L" 的 DDC 参数");
             read.Click([this, id = display.id](auto const&, auto const&) { ReadDdc(id); });
+            auto remove = Button(); remove.Content(box_value(L"删除"));
+            remove.Visibility(::DisplaySwitcher::Native::CanDeleteOfflineDisplay(display, ddcTopologyTrust_)
+                ? Visibility::Visible : Visibility::Collapsed);
+            AutomationProperties::SetName(remove, L"删除离线显示器 " + display.name);
+            remove.Click([this, id = display.id](auto const&, auto const&) { RemoveOfflineDisplay(id); });
             auto controlsGrid = Grid();
             controlsGrid.ColumnSpacing(12); controlsGrid.RowSpacing(10);
             controlsGrid.HorizontalAlignment(HorizontalAlignment::Stretch);
@@ -1278,14 +1293,58 @@ namespace winrt::DisplaySwitcher::Native::implementation
             displayTitle.FontSize(18); displayTitle.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
             displayTitle.VerticalAlignment(VerticalAlignment::Center);
             read.VerticalAlignment(VerticalAlignment::Center);
-            Grid::SetColumn(read, 1);
+            auto actions = StackPanel(); actions.Orientation(Orientation::Horizontal); actions.Spacing(8);
+            actions.Children().Append(read); actions.Children().Append(remove);
+            actions.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(actions, 1);
             header.Children().Append(displayTitle);
-            header.Children().Append(read);
+            header.Children().Append(actions);
             fields.Children().Append(header); fields.Children().Append(controlsGrid);
             fields.Children().Append(controls.status);
             displayEditorsPanel_.Children().Append(CreateCard(fields));
             displayEditors_.push_back(std::move(controls));
         }
+    }
+
+    void SettingsWindow::RemoveOfflineDisplay(std::wstring const& id)
+    {
+        auto found = std::find_if(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
+            { return _wcsicmp(display.id.c_str(), id.c_str()) == 0; });
+        if (found == workingDisplays_.end() ||
+            !::DisplaySwitcher::Native::CanDeleteOfflineDisplay(*found, ddcTopologyTrust_))
+        {
+            SetOperationFeedback(L"当前检测结果不允许删除该显示器；请返回本地会话并重新检测。", true);
+            return;
+        }
+        auto dialog = ContentDialog(); dialog.Title(box_value(L"删除离线显示器？"));
+        dialog.Content(box_value(L"将同时删除该显示器的 USB、协同和托盘/DDC 设置。保存失败时会完整保留旧配置。"));
+        dialog.PrimaryButtonText(L"删除"); dialog.CloseButtonText(L"取消");
+        dialog.DefaultButton(ContentDialogButton::Close); dialog.XamlRoot(Content().XamlRoot());
+        dialog.ShowAsync().Completed([this, id, dialog](auto const& operation, auto const& status)
+        {
+            if (status != Windows::Foundation::AsyncStatus::Completed ||
+                operation.GetResults() != ContentDialogResult::Primary) return;
+            auto current = std::find_if(workingDisplays_.begin(), workingDisplays_.end(), [&](auto const& display)
+                { return _wcsicmp(display.id.c_str(), id.c_str()) == 0; });
+            if (current == workingDisplays_.end() ||
+                !::DisplaySwitcher::Native::CanDeleteOfflineDisplay(*current, ddcTopologyTrust_))
+            {
+                SetOperationFeedback(L"检测状态已经变化，未删除显示器。", true);
+                return;
+            }
+            auto candidate = original_;
+            if (!::DisplaySwitcher::Native::RemoveDisplayAndDependencies(candidate.displays,
+                candidate.collaborationProfiles, candidate.usbSwitch, id)) return;
+            if (!saved_ || !saved_(candidate))
+            {
+                LoadValues(original_);
+                SetOperationFeedback(L"显示器删除未保存；目录和全部映射已完整保留。", true);
+                return;
+            }
+            original_ = std::move(candidate);
+            LoadValues(original_);
+            SetOperationFeedback(L"离线显示器及其关联设置已删除。");
+        });
     }
 
     void SettingsWindow::CaptureProfileEditors()

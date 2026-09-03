@@ -33,7 +33,7 @@ namespace DisplaySwitcher::Native
         void BeginUsbLearning();
         void EndUsbLearning();
         bool AllowsSideEffects(uint64_t generation) const noexcept;
-        void OnUsbPresenceChanged(bool present);
+        void OnUsbPresenceChanged(uint64_t watcherGeneration, bool present);
         void ApplyUsbActions(std::vector<UsbSwitchAction> actions);
         void WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions);
         void SendUsbWakeDisplay();
@@ -79,6 +79,7 @@ namespace DisplaySwitcher::Native
         std::unique_ptr<UdpPeer> peer_;
         std::unique_ptr<UsbWatcher> usbWatcher_;
         std::unique_ptr<UsbSwitchCoordinator> usbSwitchCoordinator_;
+        UsbObservationGenerationGate usbObservationGeneration_;
         std::unique_ptr<V2StateMachine> v2StateMachine_;
         V2ReplayCache v2ReplayCache_;
         V2AuthenticationKeyCache v2KeyCache_;

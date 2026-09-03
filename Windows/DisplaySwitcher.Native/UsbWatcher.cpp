@@ -69,13 +69,14 @@ namespace DisplaySwitcher::Native
         }
     }
 
-    void UsbWatcher::Reconfigure(int vendorId, int productId, std::wstring localReference)
+    void UsbWatcher::Reconfigure(int vendorId, int productId, std::wstring localReference, uint64_t generation)
     {
         {
             std::scoped_lock lock(configurationMutex_);
             vendorId_ = vendorId;
             productId_ = productId;
             localReference_ = std::move(localReference);
+            generation_ = generation;
             pendingTargetPresence_.reset();
         }
         if (changeEvent_) SetEvent(changeEvent_);
@@ -122,7 +123,8 @@ namespace DisplaySwitcher::Native
         std::optional<bool> last;
         UsbPresencePollPolicy pollPolicy;
         int lastVendor{}, lastProduct{};
-        { std::scoped_lock lock(configurationMutex_); lastVendor = vendorId_; lastProduct = productId_; }
+        uint64_t lastGeneration{};
+        { std::scoped_lock lock(configurationMutex_); lastVendor = vendorId_; lastProduct = productId_; lastGeneration = generation_; }
         std::wstring lastReference;
         std::optional<bool> authoritativePresence;
         ULONGLONG authoritativeUntil{};
@@ -131,21 +133,25 @@ namespace DisplaySwitcher::Native
             try
             {
                 int vendor{}, product{};
+                uint64_t generation{};
                 std::wstring reference;
                 std::optional<bool> targetPresence;
                 {
                     std::scoped_lock lock(configurationMutex_);
                     vendor = vendorId_; product = productId_; reference = localReference_;
+                    generation = generation_;
                     targetPresence = pendingTargetPresence_;
                     pendingTargetPresence_.reset();
                 }
-                if (vendor != lastVendor || product != lastProduct || _wcsicmp(reference.c_str(), lastReference.c_str()) != 0)
+                if (generation != lastGeneration || vendor != lastVendor || product != lastProduct ||
+                    _wcsicmp(reference.c_str(), lastReference.c_str()) != 0)
                 {
                     last.reset();
                     authoritativePresence.reset();
                     lastVendor = vendor;
                     lastProduct = product;
-                    lastReference = std::move(reference);
+                    lastGeneration = generation;
+                    lastReference = reference;
                 }
                 bool present{};
                 auto now = GetTickCount64();
@@ -157,7 +163,16 @@ namespace DisplaySwitcher::Native
                 }
                 else
                 {
-                    auto observed = IsPresent();
+                    bool observed{};
+                    if (vendor >= 0 && vendor <= 0xFFFF && product >= 0 && product <= 0xFFFF)
+                    {
+                        auto devices = EnumerateDevices();
+                        observed = std::any_of(devices.begin(), devices.end(), [&](auto const& device)
+                        {
+                            return device.vendorId == vendor && device.productId == product &&
+                                (reference.empty() || _wcsicmp(device.LearningDevice().localReference.c_str(), reference.c_str()) == 0);
+                        });
+                    }
                     if (authoritativePresence && now < authoritativeUntil && observed != *authoritativePresence)
                         present = *authoritativePresence;
                     else
@@ -166,9 +181,13 @@ namespace DisplaySwitcher::Native
                         if (now >= authoritativeUntil) authoritativePresence.reset();
                     }
                 }
+                {
+                    std::scoped_lock lock(configurationMutex_);
+                    if (generation != generation_) continue;
+                }
                 if ((!last.has_value() || *last != present) && callback_)
                 {
-                    callback_(present);
+                    callback_(generation, present);
                     WriteDiagnostic(targetPresence
                         ? (*targetPresence ? "usb.target_notification present=1" : "usb.target_notification present=0")
                         : (present ? "usb.poll_change present=1" : "usb.poll_change present=0"));

@@ -15,6 +15,7 @@
 #include "../DisplaySwitcher.Native/UsbPresencePollPolicy.h"
 #include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
 #include "../DisplaySwitcher.Native/SettingsWindowContracts.h"
+#include "../DisplaySwitcher.Native/TrayContracts.h"
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -257,6 +258,39 @@ namespace
                 L"0、负数、非数字和溢出输入源必须拒绝");
         Check(FormatInputSourceText(std::nullopt).empty() && FormatInputSourceText(0).empty()
             && FormatInputSourceText(17) == L"17", L"重新加载 null 或旧零映射必须显示空白");
+    }
+
+    void TestTrayInteractionAndLayoutContracts()
+    {
+        Check(UsbTrayStatusText(true) == L"USB 切换已开启" &&
+            UsbTrayStatusText(false) == L"USB 切换已关闭",
+            L"DS-028: 托盘 USB 状态只表达开启或关闭，不泄露设备标识");
+        for (auto runtime : {
+            UsbTrayRuntimeConditions{ false, false, false, true },
+            UsbTrayRuntimeConditions{ true, true, false, false },
+            UsbTrayRuntimeConditions{ true, false, true, true },
+            UsbTrayRuntimeConditions{ true, false, false, false } })
+        {
+            Check(ProjectUsbTrayConfiguredEnabled(true, runtime) &&
+                UsbTrayStatusText(ProjectUsbTrayConfiguredEnabled(true, runtime)) == L"USB 切换已开启",
+                L"DS-028: RDP、不可信拓扑、安全模式和学习期只限制运行，不伪装为配置已关闭");
+        }
+        Check(!ProjectUsbTrayConfiguredEnabled(false, { true, false, false, true }),
+            L"DS-028: 托盘关闭状态只来自持久化 USB 开关");
+        Check(ResolveTrayActivation(WM_LBUTTONUP) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(WM_LBUTTONDBLCLK) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(WM_RBUTTONUP) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(NIN_SELECT) == TrayActivationAction::ShowMenu &&
+            ResolveTrayActivation(WM_MOUSEMOVE) == TrayActivationAction::None,
+            L"DS-028: 托盘左右键与键盘激活都只打开同一菜单");
+        auto textOnly = BuildTrayPopupLayout(96, 80, false);
+        auto sliders = BuildTrayPopupLayout(96, 120, true);
+        auto scaled = BuildTrayPopupLayout(192, 240, true);
+        Check(textOnly.width == 260 && sliders.width >= 272 &&
+            sliders.width >= sliders.textLeft + sliders.sliderLabelWidth + sliders.sliderGap +
+                sliders.sliderTrackMinimumWidth + sliders.sliderGap + sliders.sliderValueWidth + sliders.rightPadding &&
+            scaled.width >= sliders.width * 2,
+            L"DS-028: 托盘按 DPI 与内容计算紧凑宽度且保留可操作滑杆");
     }
 
     struct FakeDdcBackend final : IDdcBackend
@@ -1326,6 +1360,53 @@ namespace
             L"RDP: 远程受限会话必须保持 DDC 读写和输入源传输零调用");
     }
 
+    void TestOfflineDisplayRemovalSafety()
+    {
+        auto config = ConfigWithDisplays(2);
+        for (auto& display : config.displays)
+        {
+            display.bindingStatus = DisplayBindingStatus::Offline;
+            display.brightnessValue = 44;
+            display.brightnessShowInTray = true;
+        }
+        config.collaborationProfiles[0].coordinationEnabled = true;
+        config.usbSwitch.enabled = true;
+        config.usbSwitch.collaborationWakeEnabled = true;
+        config.usbSwitch.collaborationProfileId = config.collaborationProfiles[0].id;
+        for (auto const& display : config.displays)
+            config.usbSwitch.displayInputs.push_back({ display.id, 30 });
+
+        Check(CanDeleteOfflineDisplay(config.displays[0], DisplayTopologyTrust::LocalPhysicalAuthoritative) &&
+            !CanDeleteOfflineDisplay(config.displays[0], DisplayTopologyTrust::RemoteSessionLimited) &&
+            !CanDeleteOfflineDisplay(config.displays[0], DisplayTopologyTrust::IncompleteOrUnavailable),
+            L"DS-029: 只有最近本地权威拓扑明确离线的显示器可删除");
+        auto online = config.displays[0]; online.bindingStatus = DisplayBindingStatus::Resolved;
+        Check(!CanDeleteOfflineDisplay(online, DisplayTopologyTrust::LocalPhysicalAuthoritative),
+            L"DS-029: 在线显示器即使本地拓扑可信也不可删除");
+
+        auto removedId = config.displays[0].id;
+        Check(RemoveDisplayAndDependencies(config.displays, config.collaborationProfiles,
+            config.usbSwitch, removedId) && config.displays.size() == 1 &&
+            config.collaborationProfiles[0].displayInputs.size() == 1 &&
+            config.usbSwitch.displayInputs.size() == 1 && config.usbSwitch.enabled &&
+            config.collaborationProfiles[0].coordinationEnabled && config.usbSwitch.collaborationWakeEnabled,
+            L"DS-029: 删除离线目录级联清理对应映射，部分有效映射继续启用");
+
+        auto lastId = config.displays[0].id;
+        Check(RemoveDisplayAndDependencies(config.displays, config.collaborationProfiles,
+            config.usbSwitch, lastId) && config.displays.empty() &&
+            config.usbSwitch.displayInputs.empty() && !config.usbSwitch.enabled &&
+            config.collaborationProfiles[0].displayInputs.empty() &&
+            !config.collaborationProfiles[0].coordinationEnabled && !config.usbSwitch.collaborationWakeEnabled,
+            L"DS-029: 删除最后有效映射会安全停用 USB 和协同");
+
+        auto beforeFailure = ConfigWithDisplays(1);
+        auto candidate = beforeFailure;
+        Check(RemoveDisplayAndDependencies(candidate.displays, candidate.collaborationProfiles,
+            candidate.usbSwitch, candidate.displays[0].id) && beforeFailure.displays.size() == 1,
+            L"DS-029: 删除先在候选配置完成，持久化失败可完整保留原配置");
+    }
+
     void TestUsbTriggerStability()
     {
         UsbSwitchInitialState zeroMappingState;
@@ -1416,6 +1497,72 @@ namespace
         Check(!TargetUsbPresenceFromNotification(UsbDeviceNotificationKind::Removed,
             L"usb:pnp:USB\\VID_1234&PID_5678\\SELECTED", L"USB\\VID_1234&PID_5678\\OTHER"),
             L"USB 稳定性：无关设备通知不得触发所选设备状态变化");
+    }
+
+    void TestUsbColdStartRehydration()
+    {
+        UsbObservationGenerationGate generationGate;
+        auto firstGeneration = generationGate.BeginConfiguration();
+        auto secondGeneration = generationGate.BeginConfiguration();
+        Check(firstGeneration != 0 && secondGeneration != firstGeneration &&
+            !generationGate.Accepts(firstGeneration) && generationGate.Accepts(secondGeneration),
+            L"W-030: 配置重载后只接受当前 USB watcher 代次的单一回调流");
+
+        auto enabled = UsbSwitchInitialState{};
+        enabled.enabled = true;
+        enabled.bindingKey = L"synthetic-cold-start-device";
+        enabled.displayMappings = { { L"display-a", 17, true, true } };
+        for (auto initialPresence : { false, true })
+        {
+            UsbSwitchCoordinator cold(enabled);
+            auto baseline = cold.ObserveUsb(1, initialPresence);
+            Check(baseline.size() == 1 && baseline[0].kind == UsbSwitchAction::Kind::EstablishBaseline &&
+                std::none_of(baseline.begin(), baseline.end(), [](auto const& action)
+                {
+                    return action.kind == UsbSwitchAction::Kind::SwitchDisplay ||
+                        action.kind == UsbSwitchAction::Kind::WakeDisplay ||
+                        action.kind == UsbSwitchAction::Kind::SendWakeDisplay;
+                }), L"W-030: 冷启动设备初始存在或不存在都只建立基线且零副作用");
+        }
+
+        auto disabled = enabled; disabled.enabled = false;
+        Check(UsbSwitchCoordinator(disabled).ObserveUsb(1, true).empty(),
+            L"W-030: 冷启动关闭的 USB 配置不建立动作");
+        auto safe = enabled; safe.safeState = true; safe.collaborationWakeEnabled = true;
+        safe.collaborationProfileValid = true;
+        UsbSwitchCoordinator topologyAfter(safe);
+        Check(topologyAfter.ObserveUsb(1, true).empty(),
+            L"W-030: RDP、不可信拓扑和配置安全模式保持零 USB/DDC/网络/唤醒动作");
+        safe.safeState = false;
+        topologyAfter.UpdateConfiguration(safe);
+        auto trustedBaseline = topologyAfter.ObserveUsb(2, true);
+        auto laterDeparture = topologyAfter.ObserveUsb(3, false);
+        Check(trustedBaseline.size() == 1 && trustedBaseline[0].kind == UsbSwitchAction::Kind::EstablishBaseline &&
+            std::count_if(laterDeparture.begin(), laterDeparture.end(), [](auto const& action)
+                { return action.kind == UsbSwitchAction::Kind::SwitchDisplay; }) == 1,
+            L"W-030: 拓扑晚于配置就绪时先重新建立可信基线，之后真实事件正常执行");
+
+        UsbSwitchCoordinator reload(enabled);
+        static_cast<void>(reload.ObserveUsb(1, true));
+        reload.UpdateConfiguration(enabled);
+        Check(reload.ObserveUsb(2, true).empty(),
+            L"W-030: 同一绑定重复初始化或配置 reload 保留基线且不制造重复事件");
+        auto changedBinding = enabled; changedBinding.bindingKey = L"synthetic-other-device";
+        reload.UpdateConfiguration(changedBinding);
+        auto rebound = reload.ObserveUsb(3, false);
+        Check(rebound.size() == 1 && rebound[0].kind == UsbSwitchAction::Kind::EstablishBaseline,
+            L"W-030: USB 绑定变化只为新设备建立基线，不复用旧设备状态");
+
+        auto partial = enabled;
+        partial.displayMappings.push_back({ L"display-b", 18, false, true });
+        UsbSwitchCoordinator partialCoordinator(partial);
+        static_cast<void>(partialCoordinator.ObserveUsb(1, true));
+        auto partialDeparture = partialCoordinator.ObserveUsb(2, false);
+        Check(std::count_if(partialDeparture.begin(), partialDeparture.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::SwitchDisplay; }) == 1 &&
+            std::count_if(partialDeparture.begin(), partialDeparture.end(), [](auto const& action)
+            { return action.kind == UsbSwitchAction::Kind::Report && action.reason == L"missing_mapping"; }) == 1,
+            L"W-030: 冷启动恢复后部分映射只执行合格目标并隔离不可用显示器");
     }
 
     void TestDdcControls()
@@ -2536,6 +2683,7 @@ int wmain()
         TestV2OnlyDatagramGate();
         TestFreshInstallAndCounts(root);
         TestSettingsWindowLayoutContracts();
+        TestTrayInteractionAndLayoutContracts();
         TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);
@@ -2549,7 +2697,9 @@ int wmain()
         TestRenameAndFailureIsolation(root);
         TestDisplayTopologyBinding();
         TestRemoteSessionDisplayTopology();
+        TestOfflineDisplayRemovalSafety();
         TestUsbTriggerStability();
+        TestUsbColdStartRehydration();
         TestDdcControls();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();

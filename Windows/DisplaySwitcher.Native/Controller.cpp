@@ -45,9 +45,10 @@ namespace DisplaySwitcher::Native
         SetDetailedDiagnosticRecordingEnabled(Config().detailedDiagnosticRecording);
         ResetDiagnosticLog();
         std::weak_ptr<Controller> weak = shared_from_this();
-        usbWatcher_ = std::make_unique<UsbWatcher>(-1, -1, [weak](bool present)
+        usbWatcher_ = std::make_unique<UsbWatcher>(-1, -1, [weak](uint64_t generation, bool present)
         {
-            if (auto self = weak.lock()) self->Enqueue([weak, present] { if (auto value = weak.lock()) value->OnUsbPresenceChanged(present); });
+            if (auto self = weak.lock()) self->Enqueue([weak, generation, present]
+                { if (auto value = weak.lock()) value->OnUsbPresenceChanged(generation, present); });
         });
         peer_ = std::make_unique<UdpPeer>([weak](UdpPeer::Datagram const& datagram)
         {
@@ -87,12 +88,16 @@ namespace DisplaySwitcher::Native
         sideEffectGate_.Block();
         trayDdcWrites_.CancelPending();
         auto config = Config();
+        auto currentTopologyTrust = DisplayTopologyTrust::IncompleteOrUnavailable;
+        bool currentTopologyAuthoritative{};
         SetDetailedDiagnosticRecordingEnabled(config.detailedDiagnosticRecording);
         if (!config.displayConfigurationSafeMode)
         {
             try
             {
                 auto enumeration = EnumerateDdcMonitors(ddcBackends_.Lookup(NativeDdcBackendKey));
+                currentTopologyTrust = enumeration.topologyTrust;
+                currentTopologyAuthoritative = enumeration.IsTrustedNonEmptySnapshot();
                 if (enumeration.IsTrustedNonEmptySnapshot())
                 {
                     auto reconciled = ReconcileDisplayConfigurations(
@@ -127,9 +132,6 @@ namespace DisplaySwitcher::Native
             [&](auto const& mapping) { return mapping.targetInput && IsValidInputSourceValue(*mapping.targetInput)
                 && FindDisplayById(config.displays, mapping.displayId); });
         auto automationConfigured = usbConfigured && hasUsbMapping;
-        usbWatcher_->Reconfigure(config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.vendorId : -1,
-            config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.productId : -1,
-            config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.deviceLocalReference : L"");
         auto completeProfiles = config.EnabledCompleteProfiles();
         auto bootstrapProfiles = config.UnboundBootstrapProfiles();
         std::vector<V2Target> v2Targets;
@@ -149,15 +151,26 @@ namespace DisplaySwitcher::Native
             collaborationValid = profile && profile->coordinationEnabled &&
                 std::any_of(completeProfiles.begin(), completeProfiles.end(), [&](auto const& item) { return EqualId(item.id, profile->id); });
         }
+        auto topologyAllowsUsb = currentTopologyAuthoritative &&
+            currentTopologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative;
+        trayIcon_->SetUsbSwitchActive(ProjectUsbTrayConfiguredEnabled(config.usbSwitch.enabled,
+            { automationConfigured, config.displayConfigurationSafeMode,
+                usbLearningActive_.load(), topologyAllowsUsb }));
         UsbSwitchInitialState usbInitial{ config.usbSwitch.enabled, usbLearningActive_.load(),
-            config.displayConfigurationSafeMode, std::nullopt, config.usbSwitch.collaborationWakeEnabled, collaborationValid };
+            config.displayConfigurationSafeMode || !topologyAllowsUsb, std::nullopt,
+            config.usbSwitch.collaborationWakeEnabled, collaborationValid };
         for (auto const& display : config.displays)
             usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
-                IsDisplayDdcResolved(display), true });
+                topologyAllowsUsb && IsDisplayDdcResolved(display), true });
         usbInitial.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
             std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
         if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
         else usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
+        auto watcherGeneration = usbObservationGeneration_.BeginConfiguration();
+        usbWatcher_->Reconfigure(config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.vendorId : -1,
+            config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.productId : -1,
+            config.usbSwitch.enabled && automationConfigured ? config.usbSwitch.deviceLocalReference : L"",
+            watcherGeneration);
         v2ReplayCache_.Clear();
         { std::scoped_lock lock(v2OutgoingMutex_); v2OutgoingMessages_.clear(); }
         v2PeerLastSeenMs_.clear();
@@ -182,8 +195,7 @@ namespace DisplaySwitcher::Native
         else if (!config.usbSwitch.enabled) SetStatus(L"USB 自动切换未开启");
         else
         {
-            auto device = config.usbSwitch.deviceName.empty() ? L"已选择设备" : config.usbSwitch.deviceName;
-            SetStatus(L"USB 自动切换已开启 · " + device);
+            SetStatus(L"USB 自动切换已开启");
         }
     }
 
@@ -212,7 +224,7 @@ namespace DisplaySwitcher::Native
             std::scoped_lock lock(peerLifecycleMutex_);
             peer_->Stop();
         }
-        usbWatcher_->Reconfigure(-1, -1);
+        usbWatcher_->Reconfigure(-1, -1, L"", usbObservationGeneration_.BeginConfiguration());
         SetPeerConnectionStatus(L"USB 学习中，协同已暂停", false);
         SetStatus(L"正在学习 USB 设备；自动协同和硬件操作已暂停");
     }
@@ -229,8 +241,9 @@ namespace DisplaySwitcher::Native
         return sideEffectGate_.AllowsSideEffects() && sideEffectGeneration_.load() == generation;
     }
 
-    void Controller::OnUsbPresenceChanged(bool present)
+    void Controller::OnUsbPresenceChanged(uint64_t watcherGeneration, bool present)
     {
+        if (!usbObservationGeneration_.Accepts(watcherGeneration)) return;
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
         if (usbSwitchCoordinator_) ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present));
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
