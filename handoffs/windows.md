@@ -9,7 +9,9 @@
 - 批处理现注入 side-effect generation 门控；配置重载发生在枚举或多显示器写入中途时，当前运行在下一个硬件目标前停止。
 - 纯 fake 测试覆盖过期冷启动绑定恢复且零持久化、USB 开关无关性、两屏单屏离线隔离、RDP/不可信零写入、配置并发停止及句柄租约刷新决策。
 - 本分支不修改 macOS、共享协议、contracts、schemaVersion 或版本号。
-- 用户已实机确认该冷启动刷新修复通过；综合分支仍需重新完成 Windows x64 Release、全量测试与 CI。
+- 自动验证：GitHub Actions Windows run `33722780439` 成功；x64 Release 构建/打包、363 checks、framework-dependent 分发校验和构件上传全部通过。
+- 分支 `codex/windows-cold-start-display-switch`，提交 `b1eee32ce87572ffea242298c8ef780a25a3f9c4`，PR #75；构件 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent`（artifact `9881133096`，SHA-256 `35d48edf18c1729836e0e11deb7c2abe5e5bc05d3a5722910873ee89e3ca2a3b`）。
+- 用户已实机确认冷启动刷新修复通过；综合分支仍需重新完成 Windows x64 Release、全量测试与 CI。两屏部分失败和 RDP 返回本地仍待专项实机；自动测试未执行真实 DDC、USB、网络或唤醒。
 
 ## 上一任务：W-031 Windows 通知区域自适应单色图标
 
