@@ -16,6 +16,8 @@
 #include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
 #include "../DisplaySwitcher.Native/SettingsWindowContracts.h"
 #include "../DisplaySwitcher.Native/TrayContracts.h"
+#include "../DisplaySwitcher.Native/TrayMonochromeIcon.h"
+#include <array>
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -291,6 +293,71 @@ namespace
                 sliders.sliderTrackMinimumWidth + sliders.sliderGap + sliders.sliderValueWidth + sliders.rightPadding &&
             scaled.width >= sliders.width * 2,
             L"DS-028: 托盘按 DPI 与内容计算紧凑宽度且保留可操作滑杆");
+    }
+
+    void TestMonochromeTrayIconContracts()
+    {
+        Check(ClassifyTaskbarTheme(DWORD{ 1 }) == TaskbarTheme::Light &&
+            SelectTrayIconTone(TaskbarTheme::Light, 0) == TrayIconTone::Black,
+            L"W-031: 浅色系统任务栏选择黑色通知区域图标");
+        Check(ClassifyTaskbarTheme(DWORD{ 0 }) == TaskbarTheme::Dark &&
+            SelectTrayIconTone(TaskbarTheme::Dark, 255) == TrayIconTone::White,
+            L"W-031: 深色系统任务栏选择白色通知区域图标");
+        Check(ClassifyTaskbarTheme(std::nullopt) == TaskbarTheme::Unknown &&
+            SelectTrayIconTone(TaskbarTheme::Unknown, 220) == TrayIconTone::Black &&
+            SelectTrayIconTone(TaskbarTheme::Unknown, 20) == TrayIconTone::White,
+            L"W-031: 主题读取失败时按系统背景亮度确定高对比黑白 fallback");
+
+        std::array<std::pair<UINT, int>, 4> dpiSizes{
+            std::pair<UINT, int>{ 96, 16 }, { 120, 20 }, { 144, 24 }, { 192, 32 } };
+        for (auto const& [dpi, expectedSize] : dpiSizes)
+        {
+            auto geometry = BuildTrayIconGeometry(dpi);
+            auto black = RenderMonochromeTrayIconPixels(geometry, TrayIconTone::Black);
+            auto white = RenderMonochromeTrayIconPixels(geometry, TrayIconTone::White);
+            auto visibleBounds = [&](auto const& pixels)
+            {
+                RECT bounds{ geometry.pixelSize, geometry.pixelSize, -1, -1 };
+                for (int y = 0; y < geometry.pixelSize; ++y)
+                    for (int x = 0; x < geometry.pixelSize; ++x)
+                        if ((pixels[static_cast<size_t>(y) * geometry.pixelSize + x] >> 24) != 0)
+                        {
+                            bounds.left = (std::min)(bounds.left, x); bounds.top = (std::min)(bounds.top, y);
+                            bounds.right = (std::max)(bounds.right, x); bounds.bottom = (std::max)(bounds.bottom, y);
+                        }
+                return bounds;
+            };
+            auto bounds = visibleBounds(black);
+            auto visibleWidth = bounds.right - bounds.left + 1;
+            auto visibleHeight = bounds.bottom - bounds.top + 1;
+            Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 82, 100) &&
+                black.size() == static_cast<size_t>(expectedSize * expectedSize) && black.size() == white.size() &&
+                bounds.left >= geometry.bodyLeft && bounds.top >= geometry.bodyTop &&
+                bounds.right < geometry.bodyLeft + geometry.bodySize &&
+                bounds.bottom < geometry.bodyTop + geometry.bodySize &&
+                visibleWidth >= geometry.bodySize - 1 && visibleHeight >= geometry.bodySize - 1,
+                L"W-031: 16/20/24/32 像素图标主体光学缩小约 18% 且不裁边");
+            Check(std::any_of(black.begin(), black.end(), [](uint32_t pixel)
+                { return (pixel >> 24) != 0 && (pixel & 0x00FFFFFF) == 0; }) &&
+                std::any_of(white.begin(), white.end(), [](uint32_t pixel)
+                {
+                    auto alpha = pixel >> 24; auto rgb = pixel & 0x00FFFFFF;
+                    return alpha != 0 && rgb == ((alpha << 16) | (alpha << 8) | alpha);
+                }), L"W-031: 渲染结果为透明背景的纯黑或预乘白色线稿");
+        }
+
+        std::optional<TrayIconRenderState> current;
+        auto light = TrayIconRenderState{ TrayIconTone::Black, 16 };
+        auto dark = TrayIconRenderState{ TrayIconTone::White, 16 };
+        int updates{};
+        if (TrayIconRefreshRequired(current, light)) { current = light; ++updates; }
+        if (TrayIconRefreshRequired(current, light)) { current = light; ++updates; }
+        if (TrayIconRefreshRequired(current, dark)) { current = dark; ++updates; }
+        if (TrayIconRefreshRequired(current, dark)) { current = dark; ++updates; }
+        Check(updates == 2 && IsTrayAppearanceMessage(WM_SETTINGCHANGE) &&
+            IsTrayAppearanceMessage(WM_THEMECHANGED) && IsTrayAppearanceMessage(WM_DPICHANGED) &&
+            !IsTrayAppearanceMessage(WM_DISPLAYCHANGE),
+            L"W-031: 相同主题不刷新，单次主题切换只产生一次有效原位更新");
     }
 
     struct FakeDdcBackend final : IDdcBackend
@@ -2684,6 +2751,7 @@ int wmain()
         TestFreshInstallAndCounts(root);
         TestSettingsWindowLayoutContracts();
         TestTrayInteractionAndLayoutContracts();
+        TestMonochromeTrayIconContracts();
         TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);

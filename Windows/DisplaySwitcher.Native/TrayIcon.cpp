@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "TrayIcon.h"
-#include "resource.h"
+#include "TrayMonochromeIcon.h"
 
 namespace
 {
@@ -391,8 +391,6 @@ namespace DisplaySwitcher::Native
         writeDdc_(std::move(writeDdc)), topologyChanged_(std::move(topologyChanged)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
-        icon_ = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON));
-        if (!icon_) icon_ = LoadIconW(nullptr, IDI_APPLICATION);
         className_ = L"DisplaySwitcher.Tray." + std::to_wstring(GetCurrentProcessId());
         WNDCLASSEXW windowClass{ sizeof(windowClass) };
         windowClass.lpfnWndProc = WindowProcedure;
@@ -401,10 +399,35 @@ namespace DisplaySwitcher::Native
         if (!RegisterClassExW(&windowClass)) winrt::throw_last_error();
         window_ = CreateWindowExW(0, className_.c_str(), L"DisplaySwitcher tray host", 0,
             0, 0, 0, 0, nullptr, nullptr, instance_, this);
-        if (!window_) winrt::throw_last_error();
+        if (!window_)
+        {
+            auto error = GetLastError();
+            UnregisterClassW(className_.c_str(), instance_);
+            SetLastError(error);
+            winrt::throw_last_error();
+        }
+        if (!RefreshShellIcon(true))
+        {
+            icon_ = LoadIconW(nullptr, IDI_APPLICATION);
+            ownsIcon_ = false;
+        }
         sessionNotificationsRegistered_ = WTSRegisterSessionNotification(window_, NOTIFY_FOR_THIS_SESSION) != FALSE;
         auto data = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
-        if (!Shell_NotifyIconW(NIM_ADD, &data)) winrt::throw_last_error();
+        if (!Shell_NotifyIconW(NIM_ADD, &data))
+        {
+            auto error = GetLastError();
+            if (sessionNotificationsRegistered_) WTSUnRegisterSessionNotification(window_);
+            sessionNotificationsRegistered_ = false;
+            DestroyWindow(window_);
+            window_ = nullptr;
+            if (ownsIcon_ && icon_) DestroyIcon(icon_);
+            icon_ = nullptr;
+            ownsIcon_ = false;
+            UnregisterClassW(className_.c_str(), instance_);
+            SetLastError(error);
+            winrt::throw_last_error();
+        }
+        trayAdded_ = true;
         data.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &data);
     }
@@ -422,9 +445,13 @@ namespace DisplaySwitcher::Native
             }
             auto data = Data(0);
             Shell_NotifyIconW(NIM_DELETE, &data);
+            trayAdded_ = false;
             DestroyWindow(window_);
             window_ = nullptr;
         }
+        if (ownsIcon_ && icon_) DestroyIcon(icon_);
+        icon_ = nullptr;
+        ownsIcon_ = false;
         if (!className_.empty()) UnregisterClassW(className_.c_str(), instance_);
     }
 
@@ -446,7 +473,7 @@ namespace DisplaySwitcher::Native
     {
         if (disposed_) return;
         status_ = status;
-        auto data = Data(NIF_ICON | NIF_TIP);
+        auto data = Data(NIF_TIP);
         Shell_NotifyIconW(NIM_MODIFY, &data);
     }
 
@@ -468,7 +495,7 @@ namespace DisplaySwitcher::Native
     void TrayIcon::ShowBalloon(std::wstring const& title, std::wstring const& message)
     {
         if (disposed_) return;
-        auto data = Data(NIF_ICON | NIF_TIP | NIF_INFO);
+        auto data = Data(NIF_TIP | NIF_INFO);
         wcscpy_s(data.szInfoTitle, Limit(title, 63).c_str());
         wcscpy_s(data.szInfo, Limit(message, 255).c_str());
         data.dwInfoFlags = NIIF_WARNING;
@@ -489,6 +516,11 @@ namespace DisplaySwitcher::Native
 
     LRESULT TrayIcon::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     {
+        if (IsTrayAppearanceMessage(message))
+        {
+            RefreshShellIcon();
+            return 0;
+        }
         if (message == WM_DISPLAYCHANGE || message == WM_WTSSESSION_CHANGE)
         {
             if (topologyChanged_) topologyChanged_();
@@ -513,6 +545,35 @@ namespace DisplaySwitcher::Native
             }
         }
         return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    bool TrayIcon::RefreshShellIcon(bool force)
+    {
+        auto dpi = window_ ? GetDpiForWindow(window_) : 0;
+        if (!dpi) dpi = GetDpiForSystem();
+        auto desired = TrayIconRenderState{ ReadSystemTrayIconTone(), TrayIconPixelSizeForDpi(dpi) };
+        if (!force && !TrayIconRefreshRequired(iconRenderState_, desired)) return false;
+        auto replacement = CreateMonochromeTrayIcon(BuildTrayIconGeometry(dpi), desired.tone);
+        if (!replacement) return false;
+
+        auto previous = icon_;
+        auto previousOwned = ownsIcon_;
+        icon_ = replacement;
+        ownsIcon_ = true;
+        if (trayAdded_)
+        {
+            auto data = Data(NIF_ICON);
+            if (!Shell_NotifyIconW(NIM_MODIFY, &data))
+            {
+                icon_ = previous;
+                ownsIcon_ = previousOwned;
+                DestroyIcon(replacement);
+                return false;
+            }
+        }
+        iconRenderState_ = desired;
+        if (previousOwned && previous) DestroyIcon(previous);
+        return true;
     }
 
     void TrayIcon::ShowContextMenu()
