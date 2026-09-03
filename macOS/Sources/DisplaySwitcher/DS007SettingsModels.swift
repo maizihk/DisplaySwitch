@@ -273,10 +273,6 @@ struct TrayUSBStatusPresentation: Equatable {
         isSettingEnabled ? "USB 切换已开启" : "USB 切换已关闭"
     }
 
-    var symbolName: String {
-        isSettingEnabled ? "cable.connector.horizontal" : "cable.connector.slash"
-    }
-
     var accessibilityLabel: String { title }
 }
 
@@ -291,18 +287,36 @@ enum TraySemanticIcon: Equatable {
     case quit
 
     var symbolName: String {
+        symbolCandidates[0]
+    }
+
+    var symbolCandidates: [String] {
         switch self {
         case .usbStatus(let isSettingEnabled):
-            return TrayUSBStatusPresentation(isSettingEnabled: isSettingEnabled).symbolName
-        case .collaborationSwitch: return "arrow.right.to.line"
-        case .display: return "display"
-        case .luminance: return "sun.max"
-        case .contrast: return "circle.lefthalf.filled"
-        case .volume: return "speaker.wave.2"
-        case .settings: return "gearshape"
-        case .quit: return "power"
+            return isSettingEnabled
+                ? ["cable.connector.horizontal", "cable.connector", "bolt.horizontal"]
+                : ["cable.connector.slash", "bolt.slash", "cable.connector"]
+        case .collaborationSwitch: return ["arrow.left.arrow.right", "arrow.right.to.line"]
+        case .display: return ["display", "rectangle"]
+        case .luminance: return ["sun.max", "sun.min"]
+        case .contrast: return ["circle.lefthalf.filled", "circle"]
+        case .volume: return ["speaker.wave.2", "speaker"]
+        case .settings: return ["gearshape", "gear"]
+        case .quit: return ["power", "rectangle.portrait.and.arrow.right"]
         }
     }
+}
+
+enum TrayStatusIconDesign {
+    static let canvasSize: CGFloat = 18
+    static let contentOccupancy: CGFloat = 0.90
+    static let strokeFraction: CGFloat = 0.06
+
+    static var contentSize: CGFloat { canvasSize * contentOccupancy }
+    static var outerMargin: CGFloat { (canvasSize - contentSize) / 2 }
+    static var strokeWidth: CGFloat { canvasSize * strokeFraction }
+    static var paintedMinimum: CGFloat { outerMargin }
+    static var paintedMaximum: CGFloat { canvasSize - outerMargin }
 }
 
 enum TrayControlRowLayout {

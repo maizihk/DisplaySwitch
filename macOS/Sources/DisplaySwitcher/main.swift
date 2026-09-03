@@ -3,6 +3,101 @@ import Darwin
 import Foundation
 import IOKit.pwr_mgt
 
+private enum TrayImageFactory {
+    private static let menuSymbolConfiguration = NSImage.SymbolConfiguration(
+        pointSize: 14,
+        weight: .regular
+    )
+
+    static func menuImage(
+        for icon: TraySemanticIcon,
+        accessibilityDescription: String
+    ) -> NSImage? {
+        for symbolName in icon.symbolCandidates {
+            guard let symbol = NSImage(
+                systemSymbolName: symbolName,
+                accessibilityDescription: accessibilityDescription
+            ), let configured = symbol.withSymbolConfiguration(menuSymbolConfiguration) else {
+                continue
+            }
+            configured.isTemplate = true
+            configured.size = NSSize(width: 16, height: 16)
+            return configured
+        }
+        return nil
+    }
+
+    static func statusImage(accessibilityDescription: String) -> NSImage {
+        let canvas = TrayStatusIconDesign.canvasSize
+        let image = NSImage(
+            size: NSSize(width: canvas, height: canvas),
+            flipped: false
+        ) { destination in
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+
+            let scale = min(destination.width, destination.height) / canvas
+            let transform = NSAffineTransform()
+            transform.translateX(
+                by: destination.minX + (destination.width - canvas * scale) / 2,
+                yBy: destination.minY + (destination.height - canvas * scale) / 2
+            )
+            transform.scale(by: scale)
+            transform.concat()
+
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            let strokeWidth = TrayStatusIconDesign.strokeWidth
+            let centerMinimum = TrayStatusIconDesign.paintedMinimum + strokeWidth / 2
+            let centerMaximum = TrayStatusIconDesign.paintedMaximum - strokeWidth / 2
+
+            let screen = NSBezierPath(
+                roundedRect: NSRect(
+                    x: centerMinimum,
+                    y: 4.45,
+                    width: centerMaximum - centerMinimum,
+                    height: centerMaximum - 4.45
+                ),
+                xRadius: 1.8,
+                yRadius: 1.8
+            )
+            screen.lineWidth = strokeWidth
+            screen.stroke()
+
+            let stand = NSBezierPath()
+            stand.lineWidth = strokeWidth
+            stand.lineCapStyle = .round
+            stand.move(to: NSPoint(x: canvas / 2, y: 4.45))
+            stand.line(to: NSPoint(x: canvas / 2, y: centerMinimum))
+            stand.move(to: NSPoint(x: 5.8, y: centerMinimum))
+            stand.line(to: NSPoint(x: 12.2, y: centerMinimum))
+            stand.stroke()
+
+            let percent = NSBezierPath()
+            percent.lineWidth = strokeWidth
+            percent.lineCapStyle = .round
+            percent.move(to: NSPoint(x: 5.55, y: 7.75))
+            percent.line(to: NSPoint(x: 12.45, y: 13.25))
+            percent.stroke()
+
+            for center in [NSPoint(x: 5.9, y: 12.7), NSPoint(x: 12.1, y: 8.3)] {
+                NSBezierPath(
+                    ovalIn: NSRect(
+                        x: center.x - 1.05,
+                        y: center.y - 1.05,
+                        width: 2.1,
+                        height: 2.1
+                    )
+                ).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = accessibilityDescription
+        return image
+    }
+}
+
 private enum DisplayControl: String, CaseIterable {
     case luminance
     case contrast
@@ -16,15 +111,15 @@ private enum DisplayControl: String, CaseIterable {
         }
     }
 
-    var symbolName: String {
+    var ddcCommand: DDCCommand {
         switch self {
-        case .luminance: return "sun.max"
-        case .contrast: return "circle.lefthalf.filled"
-        case .volume: return "speaker.wave.2"
+        case .luminance: return .luminance
+        case .contrast: return .contrast
+        case .volume: return .volume
         }
     }
 
-    var ddcCommand: DDCCommand {
+    var semanticIcon: TraySemanticIcon {
         switch self {
         case .luminance: return .luminance
         case .contrast: return .contrast
@@ -66,7 +161,10 @@ private final class SliderRowView: NSView {
         slider.setAccessibilityLabel("\(accessibilityPrefix)\(control.title)")
 
         let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: control.symbolName, accessibilityDescription: control.title)
+        icon.image = TrayImageFactory.menuImage(
+            for: control.semanticIcon,
+            accessibilityDescription: control.title
+        )
         icon.translatesAutoresizingMaskIntoConstraints = false
 
         let titleLabel = NSTextField(labelWithString: control.title)
@@ -349,20 +447,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private lazy var settingsItem: NSMenuItem = {
         let item = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         item.target = self
-        item.image = NSImage(
-            systemSymbolName: TraySemanticIcon.settings.symbolName,
-            accessibilityDescription: "设置"
-        )
+        item.image = TrayImageFactory.menuImage(for: .settings, accessibilityDescription: "设置")
         return item
     }()
 
     private lazy var quitItem: NSMenuItem = {
         let item = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         item.target = self
-        item.image = NSImage(
-            systemSymbolName: TraySemanticIcon.quit.symbolName,
-            accessibilityDescription: "退出"
-        )
+        item.image = TrayImageFactory.menuImage(for: .quit, accessibilityDescription: "退出")
         return item
     }()
 
@@ -417,7 +509,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
 
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "display.2", accessibilityDescription: "显示器控制")
+            button.image = TrayImageFactory.statusImage(accessibilityDescription: "显示器控制")
+            button.imagePosition = .imageOnly
         }
 
         let menu = NSMenu()
@@ -1446,8 +1539,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 self?.setControl(control, value: value, fromDisplay: id)
             }
             let displayItem = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-            displayItem.image = NSImage(
-                systemSymbolName: TraySemanticIcon.display.symbolName,
+            displayItem.image = TrayImageFactory.menuImage(
+                for: .display,
                 accessibilityDescription: entry.title
             )
             displayItem.submenu = controls.menu
@@ -1468,8 +1561,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             let item = NSMenuItem(title: entry.title, action: #selector(switchToProfile(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = entry.profileID
-            item.image = NSImage(
-                systemSymbolName: TraySemanticIcon.collaborationSwitch.symbolName,
+            item.image = TrayImageFactory.menuImage(
+                for: .collaborationSwitch,
                 accessibilityDescription: entry.title
             )
             item.isEnabled = configurationSafetyGate.state == .ready
@@ -1491,8 +1584,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             usbSwitch: AppPreferences.localConfiguration.usbSwitch
         )
         usbStatusItem.title = presentation.title
-        usbStatusItem.image = NSImage(
-            systemSymbolName: presentation.symbolName,
+        usbStatusItem.image = TrayImageFactory.menuImage(
+            for: .usbStatus(isSettingEnabled: presentation.isSettingEnabled),
             accessibilityDescription: presentation.accessibilityLabel
         )
         usbStatusItem.setAccessibilityLabel(presentation.accessibilityLabel)
