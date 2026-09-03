@@ -2,6 +2,8 @@
 
 namespace DisplaySwitcher::Native
 {
+    inline constexpr double TrayIconStrokeRatio = 0.06;
+
     enum class TaskbarTheme
     {
         Light,

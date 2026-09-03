@@ -96,7 +96,7 @@ namespace DisplaySwitcher::Native
             geometry.bodyTop + geometry.bodySize > geometry.pixelSize) return {};
         constexpr int samplesPerAxis = 4;
         constexpr int sampleCount = samplesPerAxis * samplesPerAxis;
-        auto stroke = (std::max)(1.0 / geometry.bodySize, 0.075);
+        constexpr auto stroke = TrayIconStrokeRatio;
         std::vector<uint32_t> pixels(static_cast<size_t>(geometry.pixelSize) * geometry.pixelSize);
         for (int y = 0; y < geometry.pixelSize; ++y)
         {

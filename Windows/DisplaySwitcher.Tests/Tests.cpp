@@ -332,6 +332,27 @@ namespace
             auto bounds = visibleBounds(black);
             auto visibleWidth = bounds.right - bounds.left + 1;
             auto visibleHeight = bounds.bottom - bounds.top + 1;
+            uint64_t alphaSum{};
+            size_t visiblePixelCount{};
+            bool matchingAlpha = true;
+            bool blackPremultiplied = true;
+            bool whitePremultiplied = true;
+            for (size_t index = 0; index < black.size(); ++index)
+            {
+                auto blackAlpha = black[index] >> 24;
+                auto whiteAlpha = white[index] >> 24;
+                auto expectedWhite = (whiteAlpha << 16) | (whiteAlpha << 8) | whiteAlpha;
+                alphaSum += blackAlpha;
+                if (blackAlpha) ++visiblePixelCount;
+                matchingAlpha = matchingAlpha && blackAlpha == whiteAlpha;
+                blackPremultiplied = blackPremultiplied && (black[index] & 0x00FFFFFF) == 0;
+                whitePremultiplied = whitePremultiplied &&
+                    (white[index] & 0x00FFFFFF) == expectedWhite;
+            }
+            auto alphaCoverage = static_cast<double>(alphaSum) /
+                (255.0 * geometry.bodySize * geometry.bodySize);
+            auto visiblePixelCoverage = static_cast<double>(visiblePixelCount) /
+                (geometry.bodySize * geometry.bodySize);
             Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 88, 100) &&
                 black.size() == static_cast<size_t>(expectedSize * expectedSize) && black.size() == white.size() &&
                 bounds.left >= geometry.bodyLeft && bounds.top >= geometry.bodyTop &&
@@ -339,13 +360,13 @@ namespace
                 bounds.bottom < geometry.bodyTop + geometry.bodySize &&
                 visibleWidth >= geometry.bodySize - 1 && visibleHeight >= geometry.bodySize - 1,
                 L"W-031: 16/20/24/32 像素图标主体光学缩小约 12% 且不裁边");
-            Check(std::any_of(black.begin(), black.end(), [](uint32_t pixel)
-                { return (pixel >> 24) != 0 && (pixel & 0x00FFFFFF) == 0; }) &&
-                std::any_of(white.begin(), white.end(), [](uint32_t pixel)
-                {
-                    auto alpha = pixel >> 24; auto rgb = pixel & 0x00FFFFFF;
-                    return alpha != 0 && rgb == ((alpha << 16) | (alpha << 8) | alpha);
-                }), L"W-031: 渲染结果为透明背景的纯黑或预乘白色线稿");
+            Check(alphaSum > 0 && matchingAlpha && blackPremultiplied && whitePremultiplied,
+                L"W-031: 每个 DPI 渲染均为非空透明背景及匹配 alpha 的预乘黑白线稿");
+            Check(visiblePixelCoverage >= 0.47 && visiblePixelCoverage <= 0.58 &&
+                alphaCoverage >= 0.27 && alphaCoverage <= 0.34 &&
+                (dpi != 96 || (geometry.bodySize * TrayIconStrokeRatio >= 0.8 &&
+                    geometry.bodySize * TrayIconStrokeRatio <= 0.9)),
+                L"W-031: 6% 笔画在各 DPI 的可见/alpha 覆盖率受限且 100% DPI 视觉线宽约 0.8-0.9 像素");
         }
 
         std::optional<TrayIconRenderState> current;
