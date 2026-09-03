@@ -86,6 +86,7 @@
     <ClInclude Include="SystemActions.h" />
     <ClInclude Include="TrayIcon.h" />
     <ClInclude Include="TrayContracts.h" />
+    <ClInclude Include="TrayMonochromeIcon.h" />
     <ClInclude Include="UdpPeer.h" />
     <ClInclude Include="UnboundProbeRouter.h" />
     <ClInclude Include="UsbWatcher.h" />
@@ -113,6 +114,7 @@
     <ClCompile Include="V2StateMachine.cpp" />
     <ClCompile Include="SystemActions.cpp" />
     <ClCompile Include="TrayIcon.cpp" />
+    <ClCompile Include="TrayMonochromeIcon.cpp" />
     <ClCompile Include="UdpPeer.cpp" />
     <ClCompile Include="UnboundProbeRouter.cpp" />
     <ClCompile Include="UsbWatcher.cpp" />

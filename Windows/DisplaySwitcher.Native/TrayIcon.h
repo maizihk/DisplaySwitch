@@ -1,6 +1,7 @@
 #pragma once
 #include "DdcControl.h"
 #include "TrayContracts.h"
+#include "TrayMonochromeIcon.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -38,6 +39,7 @@ namespace DisplaySwitcher::Native
         static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
         LRESULT HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
         void ShowContextMenu();
+        bool RefreshShellIcon(bool force = false);
         NOTIFYICONDATAW Data(UINT flags) const;
         static std::wstring Limit(std::wstring const& value, size_t length);
 
@@ -48,6 +50,9 @@ namespace DisplaySwitcher::Native
         std::function<void()> exit_;
         HINSTANCE instance_{};
         HICON icon_{};
+        bool ownsIcon_{};
+        bool trayAdded_{};
+        std::optional<TrayIconRenderState> iconRenderState_;
         HWND window_{};
         std::wstring className_;
         std::wstring status_{ L"正在初始化…" };
