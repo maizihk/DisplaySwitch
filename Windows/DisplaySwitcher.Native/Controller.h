@@ -35,8 +35,9 @@ namespace DisplaySwitcher::Native
         bool AllowsSideEffects(uint64_t generation) const noexcept;
         InputSourceActionPlan PrepareInputSourceAction(AppConfig const& config);
         void OnUsbPresenceChanged(uint64_t watcherGeneration, bool present);
-        void ApplyUsbActions(std::vector<UsbSwitchAction> actions, AppConfig const& actionConfig);
-        void WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions);
+        void ApplyUsbActions(std::vector<UsbSwitchAction> actions, AppConfig const& actionConfig,
+            uint64_t sideEffectGeneration);
+        void WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions, uint64_t sideEffectGeneration);
         void SendUsbWakeDisplay();
         void ApplyV2Actions(std::vector<V2Action> actions);
         void AdvanceStateMachine();

@@ -261,25 +261,26 @@ namespace DisplaySwitcher::Native
     {
         if (!usbObservationGeneration_.Accepts(watcherGeneration)) return;
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
+        auto generation = sideEffectGeneration_.load();
         auto config = Config();
+        if (!AllowsSideEffects(generation)) return;
         auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
             [&](auto const& mapping) { return mapping.targetInput && IsValidInputSourceValue(*mapping.targetInput)
                 && FindDisplayById(config.displays, mapping.displayId); });
         if (!config.usbSwitch.enabled || !config.HasUsbDeviceConfiguration() || !hasUsbMapping) return;
         auto plan = PrepareInputSourceAction(config);
-        if (usbSwitchCoordinator_)
+        if (usbSwitchCoordinator_ && AllowsSideEffects(generation))
         {
             usbSwitchCoordinator_->UpdateConfiguration(BuildUsbRuntimeState(
                 plan.config, usbLearningActive_.load(), plan.topologyTrusted));
-            ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present), plan.config);
+            ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present), plan.config, generation);
         }
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
     }
 
-    void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions)
+    void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions, uint64_t generation)
     {
         if (std::none_of(actions.begin(), actions.end(), [](auto const& action) { return action.kind == UsbSwitchAction::Kind::WakeDisplay; })) return;
-        auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, generation]
         {
@@ -289,10 +290,11 @@ namespace DisplaySwitcher::Native
         }).detach();
     }
 
-    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions, AppConfig const& actionConfigBase)
+    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions, AppConfig const& actionConfigBase,
+        uint64_t generation)
     {
-        if (!sideEffectGate_.AllowsSideEffects()) return;
-        WakeDisplayCoalesced(actions);
+        if (!AllowsSideEffects(generation)) return;
+        WakeDisplayCoalesced(actions, generation);
         auto config = actionConfigBase;
         std::vector<DisplayConfig> selected;
         for (auto const& action : actions)
@@ -305,7 +307,6 @@ namespace DisplaySwitcher::Native
         }
         if (!selected.empty())
         {
-            auto generation = sideEffectGeneration_.load();
             auto actionConfig = config; actionConfig.displays = std::move(selected);
             std::weak_ptr<Controller> weak = shared_from_this();
             std::thread([weak, generation, actionConfig]
@@ -621,7 +622,10 @@ namespace DisplaySwitcher::Native
         if (message.type == L"wake_display")
         {
             if (!validated.duplicate && usbSwitchCoordinator_)
-                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now), Config());
+            {
+                auto generation = sideEffectGeneration_.load();
+                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now), Config(), generation);
+            }
             return;
         }
         if (message.type != L"status_probe")
