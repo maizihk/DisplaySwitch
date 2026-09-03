@@ -1655,6 +1655,83 @@ namespace
             L"W-030: 冷启动恢复后部分映射只执行合格目标并隔离不可用显示器");
     }
 
+    void TestInputSourceColdStartTopologyRefresh()
+    {
+        auto config = ConfigWithDisplays(2);
+        config.displays[0].nativeMonitorId = L"ds13:synthetic-a";
+        config.displays[1].nativeMonitorId = L"ds13:synthetic-b";
+        for (auto& display : config.displays)
+        {
+            display.bindingStatus = DisplayBindingStatus::Offline;
+            display.topologyGeneration = 0;
+        }
+        std::vector<DdcMonitorInfo> current{
+            { L"ds13:synthetic-a", L"显示器 A", L"DISPLAY1", L"target-a", {}, 1, false, 41 },
+            { L"ds13:synthetic-b", L"显示器 B", L"DISPLAY2", L"target-b", {}, 1, false, 41 },
+        };
+        DdcEnumerationResult trusted{ true, DdcErrorKind::None, {}, current, true,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative };
+        auto plan = PrepareInputSourceActionPlan(config, trusted);
+        auto selection = plan.config.SelectProfileDisplays(config.collaborationProfiles[0].id);
+        Check(plan.topologyTrusted && selection.mappedDisplays.size() == 2
+            && std::all_of(plan.config.displays.begin(), plan.config.displays.end(), [](auto const& display)
+                { return IsDisplayDdcResolved(display) && display.topologyGeneration == 41; })
+            && std::all_of(config.displays.begin(), config.displays.end(), [](auto const& display)
+                { return display.bindingStatus == DisplayBindingStatus::Offline && display.topologyGeneration == 0; }),
+            L"W-032: 升级后冷启动的过期运行态绑定必须在首次输入源动作前从可信拓扑恢复，且不写回原配置");
+
+        auto disabled = config;
+        disabled.usbSwitch.enabled = false;
+        auto enabled = config;
+        enabled.usbSwitch.enabled = true;
+        auto disabledPlan = PrepareInputSourceActionPlan(disabled, trusted);
+        auto enabledPlan = PrepareInputSourceActionPlan(enabled, trusted);
+        Check(disabledPlan.topologyTrusted && enabledPlan.topologyTrusted
+            && disabledPlan.config.SelectProfileDisplays(config.collaborationProfiles[0].id).mappedDisplays.size() == 2
+            && enabledPlan.config.SelectProfileDisplays(config.collaborationProfiles[0].id).mappedDisplays.size() == 2,
+            L"W-032: USB 开关值不得改变同一物理拓扑下的手动输入源动作计划");
+
+        auto oneMonitor = trusted;
+        oneMonitor.monitors.resize(1);
+        auto partialPlan = PrepareInputSourceActionPlan(config, oneMonitor);
+        FakeInputSourceTransport partialTransport;
+        DdcCancellationSource cancellation;
+        auto partialResult = InputSourceSwitchService(&partialTransport).SwitchDisplaysToMac(
+            partialPlan.config, cancellation.Begin());
+        Check(partialPlan.topologyTrusted && !partialResult.success && partialTransport.writes.size() == 1
+            && partialTransport.writes[0].first == L"ds13:synthetic-a",
+            L"W-032: 本地可信拓扑中单屏离线只隔离该屏，其他有效显示器仍须切换");
+
+        for (auto const trust : { DisplayTopologyTrust::RemoteSessionLimited,
+            DisplayTopologyTrust::IncompleteOrUnavailable })
+        {
+            auto unavailable = trusted;
+            unavailable.complete = false;
+            unavailable.topologyTrust = trust;
+            auto unavailablePlan = PrepareInputSourceActionPlan(config, unavailable);
+            FakeInputSourceTransport transport;
+            auto result = unavailablePlan.topologyTrusted
+                ? InputSourceSwitchService(&transport).SwitchDisplaysToMac(
+                    unavailablePlan.config, cancellation.Begin())
+                : ActionResult{ false, unavailablePlan.error };
+            Check(!unavailablePlan.topologyTrusted && !result.success && transport.writes.empty(),
+                L"W-032: RDP、虚拟、部分或不完整拓扑在动作前刷新后仍必须零输入源写入");
+        }
+
+        bool allowed = true;
+        FakeInputSourceTransport concurrentTransport;
+        concurrentTransport.onWrite = [&] { allowed = false; };
+        auto concurrent = InputSourceSwitchService(&concurrentTransport, [&] { return allowed; })
+            .SwitchDisplaysToMac(plan.config, cancellation.Begin());
+        Check(!concurrent.success && concurrentTransport.writes.size() == 1,
+            L"W-032: 配置重载与输入源批处理并发时必须在下一台显示器前停止");
+
+        Check(DecideNativeMonitorCacheUpdate(false, true) == NativeMonitorCacheUpdate::Reuse
+            && DecideNativeMonitorCacheUpdate(true, true) == NativeMonitorCacheUpdate::ReplaceLeases
+            && DecideNativeMonitorCacheUpdate(true, false) == NativeMonitorCacheUpdate::ReplaceTopology,
+            L"W-032: 用户动作强刷新相同拓扑时替换 DXVA2 句柄租约但不伪造拓扑 generation");
+    }
+
     void TestDdcControls()
     {
         auto config = ConfigWithDisplays(2);
@@ -2791,6 +2868,7 @@ int wmain()
         TestOfflineDisplayRemovalSafety();
         TestUsbTriggerStability();
         TestUsbColdStartRehydration();
+        TestInputSourceColdStartTopologyRefresh();
         TestDdcControls();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();

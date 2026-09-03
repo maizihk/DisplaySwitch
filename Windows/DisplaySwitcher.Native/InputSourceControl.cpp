@@ -4,6 +4,30 @@
 
 namespace DisplaySwitcher::Native
 {
+    InputSourceActionPlan PrepareInputSourceActionPlan(AppConfig const& config,
+        DdcEnumerationResult const& enumeration)
+    {
+        InputSourceActionPlan plan{ config };
+        if (config.displayConfigurationSafeMode)
+        {
+            plan.error = L"显示器配置处于安全状态";
+            return plan;
+        }
+        if (!enumeration.IsTrustedNonEmptySnapshot())
+        {
+            plan.error = enumeration.topologyTrust == DisplayTopologyTrust::RemoteSessionLimited
+                ? L"远程桌面会话中不执行物理显示器输入源切换"
+                : L"当前物理显示拓扑不完整，未执行输入源切换";
+            return plan;
+        }
+
+        auto reconciled = ReconcileDisplayConfigurations(
+            config.displays, enumeration.monitors, enumeration.topologyTrust);
+        plan.config.displays = std::move(reconciled.displays);
+        plan.topologyTrusted = true;
+        return plan;
+    }
+
     InputSourceWriteResult WriteInputSourceWithOneRefresh(IInputSourceTransport& transport,
         std::wstring const& monitorId, int value, DdcCancellationToken const& cancellation)
     {
