@@ -332,13 +332,13 @@ namespace
             auto bounds = visibleBounds(black);
             auto visibleWidth = bounds.right - bounds.left + 1;
             auto visibleHeight = bounds.bottom - bounds.top + 1;
-            Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 82, 100) &&
+            Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 88, 100) &&
                 black.size() == static_cast<size_t>(expectedSize * expectedSize) && black.size() == white.size() &&
                 bounds.left >= geometry.bodyLeft && bounds.top >= geometry.bodyTop &&
                 bounds.right < geometry.bodyLeft + geometry.bodySize &&
                 bounds.bottom < geometry.bodyTop + geometry.bodySize &&
                 visibleWidth >= geometry.bodySize - 1 && visibleHeight >= geometry.bodySize - 1,
-                L"W-031: 16/20/24/32 像素图标主体光学缩小约 18% 且不裁边");
+                L"W-031: 16/20/24/32 像素图标主体光学缩小约 12% 且不裁边");
             Check(std::any_of(black.begin(), black.end(), [](uint32_t pixel)
                 { return (pixel >> 24) != 0 && (pixel & 0x00FFFFFF) == 0; }) &&
                 std::any_of(white.begin(), white.end(), [](uint32_t pixel)
