@@ -6,10 +6,10 @@
 - 根因不在 USB 开关本身：输入源动作直接消费启动时的单次物理拓扑运行态和同一组 DXVA2 句柄租约。若进程交接期一台屏暂时未解析，它会被本次动作跳过；USB 开关仅因触发 `ApplyConfiguration` 重新枚举而表现成“修复”。
 - 修复为动作前重规划：手动协同与 USB 离开都在实际写入前获取一次 fresh 物理拓扑；同指纹强制枚举替换 DXVA2 句柄租约但不改变 topology generation。
 - fresh 结果只修正本次 action config 的运行态绑定，不替换 `config_`、不写 `settings.json`。本地权威快照内单台离线/歧义/缺映射只隔离该屏；RDP/虚拟、部分、空或失败快照整体零写入。
-- 批处理现注入 side-effect generation 门控；配置重载发生在枚举或多显示器写入中途时，当前运行在下一个硬件目标前停止。
+- USB 观察从读取配置、枚举、协调器决策到批处理共用同一 side-effect generation；配置重载发生在枚举中时，过期计划在首屏前零写入，发生在多显示器写入中途时则在下一目标前停止。
 - 纯 fake 测试覆盖过期冷启动绑定恢复且零持久化、USB 开关无关性、两屏单屏离线隔离、RDP/不可信零写入、配置并发停止及句柄租约刷新决策。
 - 本分支不修改 macOS、共享协议、contracts、schemaVersion 或版本号。
-- 自动验证：GitHub Actions Windows run `33722780439` 成功；x64 Release 构建/打包、363 checks、framework-dependent 分发校验和构件上传全部通过。
+- 首轮自动验证：GitHub Actions Windows run `33722780439` 成功；x64 Release 构建/打包、363 checks、framework-dependent 分发校验和构件上传全部通过；枚举代次门控由综合分支最终 CI 继续验证。
 - 分支 `codex/windows-cold-start-display-switch`，提交 `b1eee32ce87572ffea242298c8ef780a25a3f9c4`，PR #75；构件 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent`（artifact `9881133096`，SHA-256 `35d48edf18c1729836e0e11deb7c2abe5e5bc05d3a5722910873ee89e3ca2a3b`）。
 - 用户已实机确认冷启动刷新修复通过；综合分支仍需重新完成 Windows x64 Release、全量测试与 CI。两屏部分失败和 RDP 返回本地仍待专项实机；自动测试未执行真实 DDC、USB、网络或唤醒。
 

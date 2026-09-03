@@ -1726,6 +1726,13 @@ namespace
         Check(!concurrent.success && concurrentTransport.writes.size() == 1,
             L"W-032: 配置重载与输入源批处理并发时必须在下一台显示器前停止");
 
+        allowed = false;
+        FakeInputSourceTransport stalePlanTransport;
+        auto stalePlan = InputSourceSwitchService(&stalePlanTransport, [&] { return allowed; })
+            .SwitchDisplaysToMac(plan.config, cancellation.Begin());
+        Check(!stalePlan.success && stalePlanTransport.writes.empty(),
+            L"W-032: 配置在枚举后发生重载时，过期动作计划必须在首个显示器前零写入");
+
         Check(DecideNativeMonitorCacheUpdate(false, true) == NativeMonitorCacheUpdate::Reuse
             && DecideNativeMonitorCacheUpdate(true, true) == NativeMonitorCacheUpdate::ReplaceLeases
             && DecideNativeMonitorCacheUpdate(true, false) == NativeMonitorCacheUpdate::ReplaceTopology,
