@@ -54,7 +54,7 @@ namespace DisplaySwitcher::Native
     {
         TrayIconGeometry result;
         result.pixelSize = TrayIconPixelSizeForDpi(dpi);
-        result.bodySize = (std::max)(1, MulDiv(result.pixelSize, 82, 100));
+        result.bodySize = (std::max)(1, MulDiv(result.pixelSize, 88, 100));
         result.bodyLeft = (result.pixelSize - result.bodySize) / 2;
         result.bodyTop = (result.pixelSize - result.bodySize) / 2;
         return result;
