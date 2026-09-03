@@ -52,22 +52,6 @@ namespace
         return CreateFontIndirectW(&font);
     }
 
-    wchar_t const* IconGlyph(DisplaySwitcher::Native::TraySemanticIcon icon) noexcept
-    {
-        using Icon = DisplaySwitcher::Native::TraySemanticIcon;
-        switch (icon)
-        {
-        case Icon::Usb: return L"\uE88E";
-        case Icon::SwitchProfile: return L"\uE8AB";
-        case Icon::Brightness: return L"\uE706";
-        case Icon::Contrast: return L"\uE793";
-        case Icon::Volume: return L"\uE767";
-        case Icon::Settings: return L"\uE713";
-        case Icon::Exit: return L"\uE8BB";
-        default: return L"\u2022";
-        }
-    }
-
     struct PopupMenuItem
     {
         UINT command{};
@@ -180,7 +164,7 @@ namespace
             iconBounds.left += state.layout.iconLeft;
             iconBounds.right = iconBounds.left + state.layout.iconWidth;
             auto previousIconFont = SelectObject(dc, state.iconFont ? state.iconFont : GetStockObject(DEFAULT_GUI_FONT));
-            auto glyph = state.iconFont ? IconGlyph(item.icon) : L"\u2022";
+            auto glyph = state.iconFont ? TraySemanticIconGlyph(item.icon) : L"\u2022";
             DrawTextW(dc, glyph, 1, &iconBounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             SelectObject(dc, previousIconFont);
             textBounds.left += state.layout.textLeft;
@@ -611,6 +595,7 @@ namespace DisplaySwitcher::Native
         auto separatorHeight = ScaleForDpi(1, state->dpi);
         auto menuHeight = 0;
         auto widestTextWidth = 0;
+        auto widestSliderLabelWidth = 0;
         HDC dc = GetDC(window_);
         HGDIOBJ previousFont{};
         if (dc) previousFont = SelectObject(dc, state->font ? state->font : GetStockObject(DEFAULT_GUI_FONT));
@@ -623,7 +608,10 @@ namespace DisplaySwitcher::Native
             {
                 SIZE textSize{};
                 GetTextExtentPoint32W(dc, item.text.c_str(), static_cast<int>(item.text.size()), &textSize);
-                widestTextWidth = (std::max)(widestTextWidth, static_cast<int>(textSize.cx));
+                if (item.slider)
+                    widestSliderLabelWidth = (std::max)(widestSliderLabelWidth, static_cast<int>(textSize.cx));
+                else
+                    widestTextWidth = (std::max)(widestTextWidth, static_cast<int>(textSize.cx));
             }
         }
         if (dc)
@@ -631,7 +619,8 @@ namespace DisplaySwitcher::Native
             if (previousFont) SelectObject(dc, previousFont);
             ReleaseDC(window_, dc);
         }
-        state->layout = BuildTrayPopupLayout(state->dpi, widestTextWidth, !ddcItems_.empty());
+        state->layout = BuildTrayPopupLayout(state->dpi, widestTextWidth,
+            widestSliderLabelWidth, !ddcItems_.empty());
         auto menuWidth = state->layout.width;
         for (auto& item : state->items) item.bounds.right = menuWidth;
 
