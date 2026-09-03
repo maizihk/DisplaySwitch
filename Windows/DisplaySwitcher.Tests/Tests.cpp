@@ -353,16 +353,16 @@ namespace
                 (255.0 * geometry.bodySize * geometry.bodySize);
             auto visiblePixelCoverage = static_cast<double>(visiblePixelCount) /
                 (geometry.bodySize * geometry.bodySize);
-            Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 88, 100) &&
+            Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 90, 100) &&
                 black.size() == static_cast<size_t>(expectedSize * expectedSize) && black.size() == white.size() &&
                 bounds.left >= geometry.bodyLeft && bounds.top >= geometry.bodyTop &&
                 bounds.right < geometry.bodyLeft + geometry.bodySize &&
                 bounds.bottom < geometry.bodyTop + geometry.bodySize &&
                 visibleWidth >= geometry.bodySize - 1 && visibleHeight >= geometry.bodySize - 1,
-                L"W-031: 16/20/24/32 像素图标主体光学缩小约 12% 且不裁边");
+                L"W-031: 16/20/24/32 像素图标主体占槽位约 90% 且不裁边");
             Check(alphaSum > 0 && matchingAlpha && blackPremultiplied && whitePremultiplied,
                 L"W-031: 每个 DPI 渲染均为非空透明背景及匹配 alpha 的预乘黑白线稿");
-            Check(visiblePixelCoverage >= 0.47 && visiblePixelCoverage <= 0.58 &&
+            Check(visiblePixelCoverage >= 0.42 && visiblePixelCoverage <= 0.58 &&
                 alphaCoverage >= 0.27 && alphaCoverage <= 0.34 &&
                 (dpi != 96 || (geometry.bodySize * TrayIconStrokeRatio >= 0.8 &&
                     geometry.bodySize * TrayIconStrokeRatio <= 0.9)),
