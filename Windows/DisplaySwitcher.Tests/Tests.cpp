@@ -322,8 +322,10 @@ namespace
                     for (int x = 0; x < geometry.pixelSize; ++x)
                         if ((pixels[static_cast<size_t>(y) * geometry.pixelSize + x] >> 24) != 0)
                         {
-                            bounds.left = (std::min)(bounds.left, x); bounds.top = (std::min)(bounds.top, y);
-                            bounds.right = (std::max)(bounds.right, x); bounds.bottom = (std::max)(bounds.bottom, y);
+                            bounds.left = (std::min)(bounds.left, static_cast<LONG>(x));
+                            bounds.top = (std::min)(bounds.top, static_cast<LONG>(y));
+                            bounds.right = (std::max)(bounds.right, static_cast<LONG>(x));
+                            bounds.bottom = (std::max)(bounds.bottom, static_cast<LONG>(y));
                         }
                 return bounds;
             };
