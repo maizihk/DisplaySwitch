@@ -219,11 +219,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onWriteDDC: ((String, DDCCommand, Int) -> Void)?
     var onWriteLinkedDDC: ((DDCCommand, Int) -> Void)?
     var onRefreshDisplays: (() -> Void)?
+    var onDisplayDeleted: ((String, String) -> Void)?
     var onDetailedDiagnosticRecordingChanged: ((Bool) -> Void)?
     var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
     var cachedDDCValue: ((String, DDCCommand) -> Int?)?
     var resolvedDisplayConfigurations: (() -> [DisplayConfiguration])?
+    var displayDeletionAvailability: (() -> DisplayDeletionAvailability)?
     var diagnosticReportProvider: (() -> DiagnosticReport)?
 
     var isSettingsVisible: Bool { window?.isVisible == true }
@@ -286,6 +288,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var displaySliders: [Int: [DDCCommand: NSSlider]] = [:]
     private var displayValueLabels: [Int: [DDCCommand: NSTextField]] = [:]
     private var displayStatusLabels: [Int: NSTextField] = [:]
+    private var deleteDisplayIDsByTag: [Int: String] = [:]
     private var linkedDisplaySliders: [DDCCommand: LinkedDDCSlider] = [:]
     private var linkedDisplayValueLabels: [DDCCommand: NSTextField] = [:]
     private var displayValueSamples: [String: [DDCCommand: DDCControlValueSample]] = [:]
@@ -313,7 +316,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         window.backgroundColor = .underPageBackgroundColor
         window.titlebarAppearsTransparent = false
         window.titleVisibility = .visible
-        window.isReleasedWhenClosed = false
+        window.level = SettingsWindowLifecycleState.open.windowLevel
+        window.hidesOnDeactivate = SettingsWindowLifecycleState.open.hidesOnDeactivate
+        window.isReleasedWhenClosed = SettingsWindowLifecycleState.open.isReleasedWhenClosed
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -950,6 +955,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         displaySliders.removeAll()
         displayValueLabels.removeAll()
         displayStatusLabels.removeAll()
+        deleteDisplayIDsByTag.removeAll()
         linkedDisplaySliders.removeAll()
         linkedDisplayValueLabels.removeAll()
 
@@ -961,9 +967,35 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
         for configuration in configurations.sorted(by: { $0.index < $1.index }) {
             let readControls = displayReadControls(index: configuration.index, name: configuration.name)
+            let stableID = configuration.id ?? configuration.selector
+            let canDelete = displayDeletionAvailability?().allowsDeletion(stableID: stableID) == true
+            if canDelete {
+                readControls.button.isEnabled = false
+                readControls.status.stringValue = "离线（已由连续两次可信检测确认）"
+            }
+            let accessory: NSView
+            if canDelete {
+                let deleteButton = NSButton(
+                    title: "删除",
+                    target: self,
+                    action: #selector(confirmDeleteDisplay(_:))
+                )
+                SettingsActionButtonStyle.apply(to: deleteButton)
+                deleteButton.hasDestructiveAction = true
+                deleteButton.tag = configuration.index
+                deleteButton.setAccessibilityLabel("删除离线显示器\(configuration.name)")
+                deleteDisplayIDsByTag[configuration.index] = stableID
+                let actions = NSStackView(views: [readControls.button, deleteButton])
+                actions.orientation = .horizontal
+                actions.alignment = .centerY
+                actions.spacing = 8
+                accessory = actions
+            } else {
+                accessory = readControls.button
+            }
             displayStack.addArrangedSubview(module(
                 title: configuration.name,
-                headerAccessory: readControls.button,
+                headerAccessory: accessory,
                 views: displayReadModuleViews(index: configuration.index, status: readControls.status)
             ))
         }
@@ -1427,6 +1459,46 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         onRefreshDisplays?()
     }
 
+    @objc private func confirmDeleteDisplay(_ sender: NSButton) {
+        guard let stableID = deleteDisplayIDsByTag[sender.tag],
+              displayDeletionAvailability?().allowsDeletion(stableID: stableID) == true,
+              let display = configurationDocument?.displays.first(where: {
+                  $0.id.caseInsensitiveCompare(stableID) == .orderedSame
+              }),
+              let window else { return }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "删除离线显示器“\(display.name)”？"
+        alert.informativeText = "将移除此显示器配置、USB 映射、所有协同映射，以及仅属于该显示器的 DDC 缓存和托盘偏好。此操作不会执行 DDC、USB、网络、唤醒或输入源切换。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard DisplayDeletionConfirmationPolicy.shouldProceed(
+                userConfirmed: response == .alertFirstButtonReturn
+            ) else { return }
+            self?.deleteOfflineDisplay(stableID: stableID)
+        }
+    }
+
+    private func deleteOfflineDisplay(stableID: String) {
+        guard displayDeletionAvailability?().allowsDeletion(stableID: stableID) == true,
+              let document = configurationDocument,
+              let mutation = DisplayDeletionPlanner.removing(stableID: stableID, from: document) else {
+            return
+        }
+        let didSave = persistDocument(
+            notifyRuntime: false,
+            rebuildDisplayFormsAfterSave: true
+        ) {
+            $0 = mutation.document
+        }
+        if didSave {
+            onDisplayDeleted?(mutation.removedStableID, mutation.removedSelector)
+        }
+    }
+
     @objc private func profileEnabledChanged(_ sender: NSSwitch) {
         persistSelectedProfileFields(requestedEnabled: sender.state == .on)
     }
@@ -1530,6 +1602,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     @discardableResult
     private func persistDocument(
         feedbackScope: SettingsSaveFeedbackScope = .none,
+        notifyRuntime: Bool = true,
         rebuildDisplayFormsAfterSave: Bool = false,
         _ mutation: (inout DisplayConfigurationStoreV5Document) -> Void
     ) -> Bool {
@@ -1544,7 +1617,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             configurationDocument = document
             editingProfiles = document.collaborationProfiles
             clearValidationError()
-            onSave?()
+            if notifyRuntime {
+                onSave?()
+            }
             reloadValues(rebuildDisplayForms: rebuildDisplayFormsAfterSave)
             saveFeedbackController.recordPersistenceResult(.succeeded, scope: feedbackScope)
             return true

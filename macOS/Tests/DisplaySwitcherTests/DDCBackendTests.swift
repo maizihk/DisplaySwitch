@@ -315,6 +315,42 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: "LastValue.stable.display-a.contrast"), 44)
     }
 
+    func testDS029DisplayCacheRemovalIsScopedToStableIDAndSelector() {
+        let suite = "DisplaySwitcher.DDC.Delete.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let cache = UserDefaultsDDCValueCache(defaults: defaults)
+        cache.setValue(31, stableID: "display-a", command: .luminance)
+        cache.setValue(47, stableID: "display-b", command: .luminance)
+
+        let selectorA = DDCLocalCacheKeys.selectorLegacyValue(
+            selector: "selector-a", command: .contrast
+        )
+        let selectorB = DDCLocalCacheKeys.selectorLegacyValue(
+            selector: "selector-b", command: .contrast
+        )
+        let indexLegacy = "LastValue.display1.contrast"
+        defaults.set(52, forKey: selectorA)
+        defaults.set(63, forKey: selectorB)
+        defaults.set(74, forKey: indexLegacy)
+
+        cache.removeValues(stableID: "display-a")
+        for key in DDCLocalCacheKeys.removableKeys(
+            stableID: "display-a", selector: "selector-a"
+        ).filter({ $0.hasPrefix("LastValue.device.") }) {
+            defaults.removeObject(forKey: key)
+        }
+
+        XCTAssertNil(cache.value(stableID: "display-a", command: .luminance))
+        XCTAssertEqual(cache.value(stableID: "display-b", command: .luminance), 47)
+        XCTAssertNil(defaults.object(forKey: selectorA))
+        XCTAssertEqual(defaults.integer(forKey: selectorB), 63)
+        XCTAssertEqual(defaults.integer(forKey: indexLegacy), 74)
+        XCTAssertFalse(DDCLocalCacheKeys.removableKeys(
+            stableID: "display-a", selector: "selector-a"
+        ).contains(indexLegacy))
+    }
+
     func testProductNamesAndSameModelStableLocalOrdinalsSurviveEnumerationReorder() {
         let known = [
             DDCKnownDisplay(stableID: "stable-b", name: "显示器 1", selector: "selector-b"),
@@ -371,6 +407,54 @@ final class DDCBackendTests: XCTestCase {
         XCTAssertEqual(matches["display-b"], 2)
         XCTAssertNil(matches["display-unbound"])
         XCTAssertEqual(Set(matches.values).count, matches.count)
+    }
+
+    func testDS029PhysicalEnumerationTrustRequiresOneToOneCompleteTopology() {
+        let trusted = DDCPhysicalEnumerationEvidence(
+            cgEnumerationSucceeded: true,
+            externalCGDisplayCount: 3,
+            extractedIdentityCount: 3,
+            registryEnumerationSucceeded: true,
+            externalRegistryServiceCount: 3,
+            matchedPhysicalTransportCount: 3
+        )
+        XCTAssertTrue(trusted.isCompletePhysicalSnapshot)
+
+        let variants = [
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 3,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 2,
+                matchedPhysicalTransportCount: 2
+            ),
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 3,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 4,
+                matchedPhysicalTransportCount: 3
+            ),
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 2,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 3,
+                matchedPhysicalTransportCount: 2
+            ),
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 3,
+                extractedIdentityCount: 3,
+                registryEnumerationSucceeded: false,
+                externalRegistryServiceCount: 3,
+                matchedPhysicalTransportCount: 3
+            )
+        ]
+        XCTAssertTrue(variants.allSatisfy { !$0.isCompletePhysicalSnapshot })
     }
 
     func testNativeServiceMatchingRejectsTiedSameModelCandidates() {
@@ -1496,7 +1580,10 @@ final class DDCBackendTests: XCTestCase {
         ]
         let service = makeService(backend: backend, cache: MockDDCCache())
 
-        XCTAssertEqual(try service.enumerateDisplays().map(\.stableID), ["display-b", "display-a"])
+        XCTAssertEqual(
+            try service.enumerateDisplays().displays.map(\.stableID),
+            ["display-b", "display-a"]
+        )
         let result = service.read([
             target(id: "display-b", selector: "selector-b", commands: [.luminance]),
             target(id: "display-a", selector: "selector-a", commands: [.luminance])
@@ -1579,6 +1666,10 @@ private final class MockDDCCache: DDCValueCache {
         values[stableID, default: [:]][command] = value
         writeCount += 1
     }
+
+    func removeValues(stableID: String) {
+        values.removeValue(forKey: stableID)
+    }
 }
 
 private final class MockDDCBackend: DDCBackend {
@@ -1587,6 +1678,7 @@ private final class MockDDCBackend: DDCBackend {
     var availability: DDCBackendAvailability { availabilityValue }
     let capabilities = DDCBackendCapabilities(canEnumerate: true, canReadVCP: true, canWriteVCP: true)
     var displays: [DDCBackendDisplay] = []
+    var physicalEvidence: DDCPhysicalEnumerationEvidence = .untrusted
     var readings: [String: [DDCCommand: DDCReading]] = [:]
     var readFailures: [String: Set<DDCCommand>] = [:]
     var writeFailures: [String: Set<DDCCommand>] = [:]
@@ -1601,10 +1693,10 @@ private final class MockDDCBackend: DDCBackend {
         self.identifier = identifier
     }
 
-    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
+    func enumerateDisplays(token: DDCCancellationToken) throws -> DDCBackendEnumeration {
         try token.throwIfCancelled()
         enumerateCount += 1
-        return displays
+        return DDCBackendEnumeration(displays: displays, physicalEvidence: physicalEvidence)
     }
 
     func read(stableID: String, selector: String, command: DDCCommand,

@@ -56,6 +56,41 @@ struct DDCBackendDisplay: Equatable {
     let selector: String
 }
 
+/// Count-only evidence that the display list came from one complete local physical topology.
+/// A CG identity without a unique IOAV transport is virtual/unresolved; an extra IOAV service
+/// means CG omitted a physical route. Either condition makes offline deletion unsafe.
+struct DDCPhysicalEnumerationEvidence: Equatable {
+    let cgEnumerationSucceeded: Bool
+    let externalCGDisplayCount: Int
+    let extractedIdentityCount: Int
+    let registryEnumerationSucceeded: Bool
+    let externalRegistryServiceCount: Int
+    let matchedPhysicalTransportCount: Int
+
+    var isCompletePhysicalSnapshot: Bool {
+        cgEnumerationSucceeded
+            && registryEnumerationSucceeded
+            && externalCGDisplayCount > 0
+            && extractedIdentityCount == externalCGDisplayCount
+            && externalRegistryServiceCount == externalCGDisplayCount
+            && matchedPhysicalTransportCount == externalCGDisplayCount
+    }
+
+    static let untrusted = DDCPhysicalEnumerationEvidence(
+        cgEnumerationSucceeded: false,
+        externalCGDisplayCount: 0,
+        extractedIdentityCount: 0,
+        registryEnumerationSucceeded: false,
+        externalRegistryServiceCount: 0,
+        matchedPhysicalTransportCount: 0
+    )
+}
+
+struct DDCBackendEnumeration: Equatable {
+    let displays: [DDCBackendDisplay]
+    let physicalEvidence: DDCPhysicalEnumerationEvidence
+}
+
 struct DDCKnownDisplay: Equatable {
     let stableID: String
     let name: String
@@ -1354,7 +1389,7 @@ protocol DDCBackend: AnyObject {
     var availability: DDCBackendAvailability { get }
     var capabilities: DDCBackendCapabilities { get }
     func updateKnownDisplays(_ displays: [DDCKnownDisplay])
-    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay]
+    func enumerateDisplays(token: DDCCancellationToken) throws -> DDCBackendEnumeration
     func read(stableID: String, selector: String, command: DDCCommand,
               token: DDCCancellationToken) throws -> DDCReading
     func write(stableID: String, selector: String, command: DDCCommand, value: Int,
@@ -1392,16 +1427,16 @@ final class DDCBackendRouter {
         backend.updateKnownDisplays(displays)
     }
 
-    func enumerateDisplays(token: DDCCancellationToken) throws -> [DDCBackendDisplay] {
+    func enumerateDisplays(token: DDCCancellationToken) throws -> DDCBackendEnumeration {
         guard backend.availability == .available, backend.capabilities.canEnumerate else {
             throw DDCBackendError.unavailable(backend: backend.identifier)
         }
         try token.throwIfCancelled()
-        let displays = try backend.enumerateDisplays(token: token)
-        guard !displays.isEmpty else {
+        let enumeration = try backend.enumerateDisplays(token: token)
+        guard !enumeration.displays.isEmpty else {
             throw DDCBackendError.unavailable(backend: backend.identifier)
         }
-        return displays
+        return enumeration
     }
 
     func read(stableID: String, selector: String, command: DDCCommand,
@@ -1518,6 +1553,26 @@ struct DDCReadBatchResult: Equatable {
 protocol DDCValueCache: AnyObject {
     func value(stableID: String, command: DDCCommand) -> Int?
     func setValue(_ value: Int, stableID: String, command: DDCCommand)
+    func removeValues(stableID: String)
+}
+
+enum DDCLocalCacheKeys {
+    static func stableValue(stableID: String, command: DDCCommand) -> String {
+        "LastValue.stable.\(stableID.lowercased()).\(command.cacheKeyComponent)"
+    }
+
+    static func selectorLegacyValue(selector: String, command: DDCCommand) -> String {
+        "LastValue.device.\(selector).\(command.cacheKeyComponent)"
+    }
+
+    static func removableKeys(stableID: String, selector: String) -> Set<String> {
+        Set(DDCCommand.userControls.flatMap { command in
+            [
+                stableValue(stableID: stableID, command: command),
+                selectorLegacyValue(selector: selector, command: command)
+            ]
+        })
+    }
 }
 
 final class UserDefaultsDDCValueCache: DDCValueCache {
@@ -1537,8 +1592,14 @@ final class UserDefaultsDDCValueCache: DDCValueCache {
         defaults.set(value, forKey: cacheKey(stableID: stableID, command: command))
     }
 
+    func removeValues(stableID: String) {
+        for command in DDCCommand.userControls {
+            defaults.removeObject(forKey: cacheKey(stableID: stableID, command: command))
+        }
+    }
+
     private func cacheKey(stableID: String, command: DDCCommand) -> String {
-        "LastValue.stable.\(stableID.lowercased()).\(command.cacheKeyComponent)"
+        DDCLocalCacheKeys.stableValue(stableID: stableID, command: command)
     }
 }
 
@@ -1580,12 +1641,12 @@ final class DDCControlService {
         router.updateKnownDisplays(displays)
     }
 
-    func enumerateDisplays() throws -> [DDCBackendDisplay] {
+    func enumerateDisplays() throws -> DDCBackendEnumeration {
         let operation = try beginOperation()
         defer { endOperation(operation.id) }
-        let displays = try router.enumerateDisplays(token: operation.token)
+        let enumeration = try router.enumerateDisplays(token: operation.token)
         try ensureCanCommit(operation.token)
-        return displays
+        return enumeration
     }
 
     func read(_ targets: [DDCDisplayTarget]) -> DDCReadBatchResult {
@@ -1658,6 +1719,10 @@ final class DDCControlService {
 
     func cachedValue(stableID: String, command: DDCCommand) -> Int? {
         cache.value(stableID: stableID, command: command)
+    }
+
+    func removeCachedValues(stableID: String) {
+        cache.removeValues(stableID: stableID)
     }
 
     func diagnostic(selector: String) -> NativeDDCDiagnosticSnapshot? {

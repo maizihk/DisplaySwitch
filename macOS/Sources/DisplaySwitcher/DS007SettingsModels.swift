@@ -258,6 +258,102 @@ struct TrayDisplayMenuProjection {
     }
 }
 
+struct TrayUSBStatusPresentation: Equatable {
+    let isSettingEnabled: Bool
+
+    init(usbSwitch: USBSwitchConfiguration) {
+        isSettingEnabled = usbSwitch.enabled
+    }
+
+    init(isSettingEnabled: Bool) {
+        self.isSettingEnabled = isSettingEnabled
+    }
+
+    var title: String {
+        isSettingEnabled ? "USB 切换已开启" : "USB 切换已关闭"
+    }
+
+    var symbolName: String {
+        isSettingEnabled ? "cable.connector.horizontal" : "cable.connector.slash"
+    }
+
+    var accessibilityLabel: String { title }
+}
+
+enum TraySemanticIcon: Equatable {
+    case usbStatus(isSettingEnabled: Bool)
+    case collaborationSwitch
+    case display
+    case luminance
+    case contrast
+    case volume
+    case settings
+    case quit
+
+    var symbolName: String {
+        switch self {
+        case .usbStatus(let isSettingEnabled):
+            return TrayUSBStatusPresentation(isSettingEnabled: isSettingEnabled).symbolName
+        case .collaborationSwitch: return "arrow.right.to.line"
+        case .display: return "display"
+        case .luminance: return "sun.max"
+        case .contrast: return "circle.lefthalf.filled"
+        case .volume: return "speaker.wave.2"
+        case .settings: return "gearshape"
+        case .quit: return "power"
+        }
+    }
+}
+
+enum TrayControlRowLayout {
+    static let width: CGFloat = 252
+    static let height: CGFloat = 30
+    static let horizontalInset: CGFloat = 10
+    static let iconWidth: CGFloat = 16
+    static let iconTitleSpacing: CGFloat = 6
+    static let titleWidth: CGFloat = 40
+    static let titleSliderSpacing: CGFloat = 7
+    static let valueWidth: CGFloat = 42
+    static let sliderValueSpacing: CGFloat = 6
+
+    static var sliderWidth: CGFloat {
+        width - horizontalInset * 2 - iconWidth - iconTitleSpacing
+            - titleWidth - titleSliderSpacing - valueWidth - sliderValueSpacing
+    }
+
+    static var isInsideCompactTarget: Bool { (CGFloat(240)...CGFloat(260)).contains(width) }
+}
+
+enum StatusItemClickRouting: Equatable {
+    enum Event: Equatable { case leftMouseUp, rightMouseUp, other }
+    enum Destination: Equatable { case trayMenu, none }
+
+    static let supportedEventMask: NSEvent.EventTypeMask = [.leftMouseUp, .rightMouseUp]
+
+    static func destination(for event: Event) -> Destination {
+        switch event {
+        case .leftMouseUp, .rightMouseUp: return .trayMenu
+        case .other: return .none
+        }
+    }
+}
+
+enum SettingsWindowLifecycleState: Equatable {
+    case closed
+    case open
+
+    var activationPolicy: NSApplication.ActivationPolicy {
+        switch self {
+        case .closed: return .accessory
+        case .open: return .regular
+        }
+    }
+
+    var windowLevel: NSWindow.Level { .normal }
+    var hidesOnDeactivate: Bool { false }
+    var isReleasedWhenClosed: Bool { false }
+}
+
 struct DDCControlValueSample: Equatable {
     let value: Int
     let maximum: Int

@@ -57,7 +57,12 @@ private final class SliderRowView: NSView {
         usesLinkedPresentation: Bool = false
     ) {
         self.usesLinkedPresentation = usesLinkedPresentation
-        super.init(frame: NSRect(x: 0, y: 0, width: 280, height: 48))
+        super.init(frame: NSRect(
+            x: 0,
+            y: 0,
+            width: TrayControlRowLayout.width,
+            height: TrayControlRowLayout.height
+        ))
         slider.setAccessibilityLabel("\(accessibilityPrefix)\(control.title)")
 
         let icon = NSImageView()
@@ -81,18 +86,20 @@ private final class SliderRowView: NSView {
         addSubview(slider)
 
         NSLayoutConstraint.activate([
-            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            icon.topAnchor.constraint(equalTo: topAnchor, constant: 7),
-            icon.widthAnchor.constraint(equalToConstant: 16),
-            icon.heightAnchor.constraint(equalToConstant: 16),
-            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 7),
-            titleLabel.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            valueLabel.centerYAnchor.constraint(equalTo: icon.centerYAnchor),
-            valueLabel.widthAnchor.constraint(equalToConstant: 34),
-            slider.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            slider.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            slider.topAnchor.constraint(equalTo: icon.bottomAnchor, constant: 2)
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: TrayControlRowLayout.horizontalInset),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.iconWidth),
+            icon.heightAnchor.constraint(equalToConstant: TrayControlRowLayout.iconWidth),
+            titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: TrayControlRowLayout.iconTitleSpacing),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.titleWidth),
+            slider.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: TrayControlRowLayout.titleSliderSpacing),
+            slider.centerYAnchor.constraint(equalTo: centerYAnchor),
+            slider.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.sliderWidth),
+            valueLabel.leadingAnchor.constraint(equalTo: slider.trailingAnchor, constant: TrayControlRowLayout.sliderValueSpacing),
+            valueLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -TrayControlRowLayout.horizontalInset),
+            valueLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            valueLabel.widthAnchor.constraint(equalToConstant: TrayControlRowLayout.valueWidth)
         ])
     }
 
@@ -235,7 +242,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var configurations: [Int: DisplayConfiguration] = [:]
     private var linkedDDCRuntimeConfigurations: [Int: DisplayConfiguration] = [:]
     private var linkedDDCTopologyResolved = false
+    private let displayDeletionAvailabilityTracker = DisplayDeletionAvailabilityTracker()
     private var settingsWindowHasBeenShown = false
+
+    private lazy var usbStatusItem: NSMenuItem = {
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }()
 
     private lazy var settingsWindowController: SettingsWindowController = {
         let controller = SettingsWindowController()
@@ -275,6 +289,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             guard let self, self.linkedDDCTopologyResolved else { return [] }
             return self.linkedDDCRuntimeConfigurations.values.sorted { $0.index < $1.index }
         }
+        controller.displayDeletionAvailability = { [weak self] in
+            guard let self, self.configurationSafetyGate.state == .ready else {
+                return DisplayDeletionAvailability(
+                    detectionState: .untrusted,
+                    offlineStableIDs: []
+                )
+            }
+            return self.displayDeletionAvailabilityTracker.availability
+        }
+        controller.onDisplayDeleted = { [weak self] stableID, selector in
+            guard let self else { return }
+            self.ddcWriteCoordinator.cancelAll()
+            self.ddcController.removeLocalState(stableID: stableID, selector: selector)
+            self.ddcValueSamples.removeValue(forKey: stableID.lowercased())
+            self.displayDeletionAvailabilityTracker.remove(stableID: stableID)
+            self.reloadRuntimeAfterDisplayDeletion()
+        }
         controller.diagnosticReportProvider = { [weak self] in
             self?.makeDiagnosticReport()
                 ?? DiagnosticReport(text: "诊断状态暂不可用。")
@@ -301,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             self?.detectDisplays(showFailure: true)
         }
         controller.onWindowClosed = { [weak self] in
+            _ = NSApp.setActivationPolicy(SettingsWindowLifecycleState.closed.activationPolicy)
             self?.ddcWriteCoordinator.cancelAll()
             self?.ddcController.cancelAll()
             self?.refreshDDCOperationAccess()
@@ -317,12 +349,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private lazy var settingsItem: NSMenuItem = {
         let item = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         item.target = self
+        item.image = NSImage(
+            systemSymbolName: TraySemanticIcon.settings.symbolName,
+            accessibilityDescription: "设置"
+        )
         return item
     }()
 
     private lazy var quitItem: NSMenuItem = {
         let item = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         item.target = self
+        item.image = NSImage(
+            systemSymbolName: TraySemanticIcon.quit.symbolName,
+            accessibilityDescription: "退出"
+        )
         return item
     }()
 
@@ -382,6 +422,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
         let menu = NSMenu()
         menu.delegate = self
+        menu.minimumWidth = TrayControlRowLayout.width
+        menu.addItem(usbStatusItem)
         menu.addItem(dynamicContentSeparator)
         for action in TrayStaticMenuAction.allCases {
             switch action {
@@ -390,6 +432,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             }
         }
         statusItem.menu = menu
+        statusItem.button?.sendAction(on: StatusItemClickRouting.supportedEventMask)
+        refreshTrayUSBStatus()
         rebuildProfileSwitchItems(in: menu)
         rebuildDisplayMenuItems()
         updateConfigurationSafetyUI()
@@ -484,20 +528,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         ddcWriteCoordinator.cancelAll()
+        let existing = AppPreferences.loadDisplayConfigurations().configurations
+        displayDeletionAvailabilityTracker.beginDetection()
+        configurations.removeAll()
         linkedDDCTopologyResolved = false
+        linkedDDCRuntimeConfigurations.removeAll()
         rebuildDisplayMenuItems()
         if settingsWindowHasBeenShown {
             settingsWindowController.refreshDisplayConfigurationProjection()
         }
         refreshDDCOperationAccess()
         let ddcController = ddcController
-        let existing = configurations.values.sorted { $0.index < $1.index }
 
         workerQueue.async { [weak self] in
             do {
-                let detectedDisplays = try ddcController.detectDisplays(
+                let detectedScan = try ddcController.detectDisplays(
                     existingConfigurations: existing
                 )
+                let detectedDisplays = detectedScan.displays
 
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -505,16 +553,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         return
                     }
                     do {
-                        let merged = try DisplayConfigurationStore.merge(
+                        let reconciliation = DisplayConfigurationStore.reconcileDetectedDisplays(
                             detected: detectedDisplays,
                             existing: existing
                         )
-                        self.configurations = Dictionary(uniqueKeysWithValues: merged.map {
+                        try DisplayConfigurationStore.saveAll(
+                            reconciliation.persistedConfigurations,
+                            clearSafetyMarker: false
+                        )
+                        self.configurations = Dictionary(uniqueKeysWithValues: reconciliation.onlineConfigurations.map {
                             ($0.index, $0)
                         })
                         self.linkedDDCRuntimeConfigurations = self.configurations
                         self.linkedDDCTopologyResolved = true
-                        ddcController.updateConfigurations(merged)
+                        let savedDocument = AppPreferences.localConfiguration
+                        self.displayDeletionAvailabilityTracker.recordSuccessfulDetection(
+                            detected: detectedDisplays,
+                            physicalEvidence: detectedScan.physicalEvidence,
+                            savedDisplays: savedDocument.displays
+                        )
+                        ddcController.updateConfigurations(reconciliation.onlineConfigurations)
                         self.rebuildDisplayMenuItems()
                         if self.settingsWindowHasBeenShown {
                             self.settingsWindowController.refreshDisplayConfigurationProjection()
@@ -535,6 +593,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             } catch {
                 DispatchQueue.main.async {
                     self?.linkedDDCTopologyResolved = false
+                    self?.linkedDDCRuntimeConfigurations.removeAll()
+                    self?.displayDeletionAvailabilityTracker.recordFailureOrUntrustedResult()
                     self?.rebuildDisplayMenuItems()
                     if self?.settingsWindowHasBeenShown == true {
                         self?.settingsWindowController.refreshDisplayConfigurationProjection()
@@ -739,6 +799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func configureUSBMonitor() {
         usbMonitor.stop()
+        refreshTrayUSBStatus()
         guard configurationSafetyGate.allows(.usb), usbLearningSafetyGate.allows(.usb) else { return }
         let document = AppPreferences.localConfiguration
         localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration(document: document))
@@ -751,6 +812,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func configurePeerTransport() {
         peerTransport.stop()
+        let document = AppPreferences.localConfiguration
+        let peerRuntime = applyPeerRuntimeConfiguration(document)
+        if peerRuntime.v2Enabled || peerRuntime.unboundProbeEnabled {
+            peerTransport.start(port: document.listenPort)
+        }
+        if peerRuntime.v2Enabled { scheduleV2StatusProbes() }
+    }
+
+    private func applyPeerRuntimeConfiguration(
+        _ document: DisplayConfigurationStoreV5Document
+    ) -> (v2Enabled: Bool, unboundProbeEnabled: Bool) {
         for (_, item) in pendingSchedulerItems {
             item.cancel()
         }
@@ -760,9 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         for inspectionID in interruptedInspections {
             completePeerCapabilityInspection(inspectionID, result: .noResponse)
         }
-
         let networkAllowed = configurationSafetyGate.allows(.network)
-        let document = AppPreferences.localConfiguration
         v2RoutingTable = V2EndpointRoutingTable.build(from: document)
         collaborationStatusStore.removeMissingProfiles(Set(document.collaborationProfiles.map(\.id)))
         let configuredEndpointIDs = Set(v2RoutingTable.routesByEndpointID.keys)
@@ -788,15 +858,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             }
         )
         refreshPeerConnectionStatus()
-        if v2Enabled || unboundProbeEnabled {
-            peerTransport.start(port: document.listenPort)
-        }
-        if v2Enabled { scheduleV2StatusProbes() }
+        return (v2Enabled, unboundProbeEnabled)
     }
 
     private func startUSBLearning() {
         guard configurationSafetyGate.allows(.usb) else { return }
         usbLearningSafetyGate.begin()
+        refreshTrayUSBStatus()
         refreshDDCOperationAccess()
         localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration(learning: true))
         configurePeerTransport()
@@ -1223,6 +1291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     @objc private func showSettings() {
         settingsWindowHasBeenShown = true
+        _ = NSApp.setActivationPolicy(SettingsWindowLifecycleState.open.activationPolicy)
         settingsWindowController.show()
         if case .requiresUserReview(let error) = configurationSafetyGate.state {
             settingsWindowController.presentConfigurationSafetyWarning(error)
@@ -1268,19 +1337,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         inputSourceDiagnostics.clear()
     }
 
-    private func reloadSettings() {
+    @discardableResult
+    private func applyPersistedDisplayRuntimeState() -> DisplayConfigurationStoreV5Document {
         ddcWriteCoordinator.cancelAll()
         let result = AppPreferences.loadDisplayConfigurations()
         configurationSafetyGate.apply(result)
         refreshDDCOperationAccess()
         let values = result.configurations
-        configurations = Dictionary(uniqueKeysWithValues: values.map { ($0.index, $0) })
-        ddcController.updateConfigurations(values)
+        if linkedDDCTopologyResolved {
+            let onlineSelectors = Set(linkedDDCRuntimeConfigurations.values.map {
+                $0.selector.lowercased()
+            })
+            let onlineValues = values.filter { onlineSelectors.contains($0.selector.lowercased()) }
+            configurations = Dictionary(uniqueKeysWithValues: onlineValues.map { ($0.index, $0) })
+            linkedDDCRuntimeConfigurations = configurations
+            ddcController.updateConfigurations(onlineValues)
+        } else {
+            configurations.removeAll()
+            linkedDDCRuntimeConfigurations.removeAll()
+            ddcController.updateConfigurations([])
+        }
+        return result.document
+    }
+
+    private func reloadSettings() {
+        _ = applyPersistedDisplayRuntimeState()
         rebuildDisplayMenuItems()
         if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
         configureUSBMonitor()
         configurePeerTransport()
         updateConfigurationSafetyUI()
+        refreshTrayUSBStatus()
+        presentDDCValues(for: .configurationReload)
+    }
+
+    private func reloadRuntimeAfterDisplayDeletion() {
+        let document = applyPersistedDisplayRuntimeState()
+        rebuildDisplayMenuItems()
+        if let menu = statusItem.menu { rebuildProfileSwitchItems(in: menu) }
+
+        // A deletion is configuration-only: refresh the safety projections in memory, but do not
+        // restart USB monitoring, stop/start the peer listener, or schedule network probes.
+        localUSBSwitchCoordinator.updateConfiguration(
+            localUSBRuntimeConfiguration(document: document)
+        )
+        _ = applyPeerRuntimeConfiguration(document)
+        updateConfigurationSafetyUI()
+        refreshTrayUSBStatus()
+        settingsWindowController.refreshDisplayConfigurationProjection()
         presentDDCValues(for: .configurationReload)
     }
 
@@ -1342,7 +1446,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 self?.setControl(control, value: value, fromDisplay: id)
             }
             let displayItem = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-            displayItem.image = NSImage(systemSymbolName: "display", accessibilityDescription: nil)
+            displayItem.image = NSImage(
+                systemSymbolName: TraySemanticIcon.display.symbolName,
+                accessibilityDescription: entry.title
+            )
             displayItem.submenu = controls.menu
             displayControls[displayID] = controls
             displayMenuItems[displayID] = displayItem
@@ -1361,9 +1468,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             let item = NSMenuItem(title: entry.title, action: #selector(switchToProfile(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = entry.profileID
-            item.image = NSImage(systemSymbolName: "arrow.right.to.line", accessibilityDescription: nil)
+            item.image = NSImage(
+                systemSymbolName: TraySemanticIcon.collaborationSwitch.symbolName,
+                accessibilityDescription: entry.title
+            )
             item.isEnabled = configurationSafetyGate.state == .ready
-            menu.insertItem(item, at: offset)
+            menu.insertItem(item, at: offset + 1)
             profileSwitchItems.append(item)
         }
         refreshDynamicContentSeparator()
@@ -1374,6 +1484,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             profileCount: profileSwitchItems.count,
             displayControlItemCount: displayMenuItems.count + linkedDisplayMenuItems.count
         )
+    }
+
+    private func refreshTrayUSBStatus() {
+        let presentation = TrayUSBStatusPresentation(
+            usbSwitch: AppPreferences.localConfiguration.usbSwitch
+        )
+        usbStatusItem.title = presentation.title
+        usbStatusItem.image = NSImage(
+            systemSymbolName: presentation.symbolName,
+            accessibilityDescription: presentation.accessibilityLabel
+        )
+        usbStatusItem.setAccessibilityLabel(presentation.accessibilityLabel)
     }
 
     @objc private func quit() {
@@ -1642,6 +1764,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         v2OutgoingMessages.removeAll(keepingCapacity: true)
         v2DatagramReplies.removeAll(keepingCapacity: true)
         updateConfigurationSafetyUI()
+        refreshTrayUSBStatus()
         refreshPeerConnectionStatus()
     }
 

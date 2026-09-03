@@ -59,6 +59,132 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         XCTAssertTrue(DisplaySettingsSemantics.trayCommands(for: display).isEmpty)
     }
 
+    func testDS029DetectionReconciliationPreservesOfflineSavedDisplays() {
+        let firstID = UUID().uuidString
+        let secondID = UUID().uuidString
+        let firstSelector = UUID().uuidString
+        let secondSelector = UUID().uuidString
+        let existing = [
+            DisplayConfiguration(
+                id: firstID, index: 1, name: "First", selector: firstSelector,
+                localInput: 17, targetInput: nil, readEnabled: true
+            ),
+            DisplayConfiguration(
+                id: secondID, index: 2, name: "Second", selector: secondSelector,
+                localInput: 18, targetInput: nil, readEnabled: false
+            )
+        ]
+
+        let result = DisplayConfigurationStore.reconcileDetectedDisplays(
+            detected: [DetectedDisplay(index: 1, name: "First", systemUUID: firstSelector)],
+            existing: existing
+        )
+
+        XCTAssertEqual(result.onlineConfigurations.map(\.id), [firstID])
+        XCTAssertEqual(result.persistedConfigurations.map(\.id), [firstID, secondID])
+        XCTAssertEqual(result.persistedConfigurations[1].selector, secondSelector)
+        XCTAssertEqual(result.persistedConfigurations[1].localInput, 18)
+    }
+
+    func testDS029NewDetectionDoesNotGuessOfflineDisplayIdentity() {
+        let existing = DisplayConfiguration(
+            id: UUID().uuidString, index: 1, name: "Same Name", selector: UUID().uuidString,
+            localInput: 17, targetInput: nil, readEnabled: true
+        )
+        let newSelector = UUID().uuidString
+        let result = DisplayConfigurationStore.reconcileDetectedDisplays(
+            detected: [DetectedDisplay(index: 1, name: "Same Name", systemUUID: newSelector)],
+            existing: [existing]
+        )
+
+        XCTAssertEqual(result.onlineConfigurations.count, 1)
+        XCTAssertNotEqual(result.onlineConfigurations[0].id, existing.id)
+        XCTAssertEqual(result.onlineConfigurations[0].selector, newSelector.uppercased())
+        XCTAssertTrue(result.persistedConfigurations.contains { $0.id == existing.id })
+    }
+
+    func testDS029DeleteCascadesMappingsButKeepsValidPartialAutomationAndCollaboration() {
+        var document = populatedDocument()
+        let removed = document.displays[0]
+        let remaining = DisplayConfigurationV4Display(
+            id: UUID().uuidString, name: "Display 2", selector: UUID().uuidString,
+            localInput: 19, readEnabled: false
+        )
+        document.displays.append(remaining)
+        document.usbSwitch = USBSwitchConfiguration(
+            enabled: true,
+            triggerDevice: CollaborationTriggerDevice(
+                kind: "usb", localReference: "local-usb-reference", displayName: "USB Device"
+            ),
+            displayInputs: [
+                USBDisplayInputMapping(displayID: removed.id, targetInput: 17),
+                USBDisplayInputMapping(displayID: remaining.id, targetInput: 18)
+            ]
+        )
+        document.collaborationProfiles[0].displayInputs = [
+            DisplayInputMapping(displayID: removed.id, peerInput: 17),
+            DisplayInputMapping(displayID: remaining.id, peerInput: 18)
+        ]
+
+        let mutation = DisplayDeletionPlanner.removing(stableID: removed.id, from: document)
+
+        XCTAssertEqual(mutation?.document.displays.map(\.id), [remaining.id])
+        XCTAssertEqual(mutation?.document.usbSwitch.displayInputs.map(\.displayID), [remaining.id])
+        XCTAssertTrue(mutation?.document.usbSwitch.enabled == true)
+        XCTAssertEqual(
+            mutation?.document.collaborationProfiles[0].displayInputs.map(\.displayID),
+            [remaining.id]
+        )
+        XCTAssertTrue(mutation?.document.collaborationProfiles[0].coordinationEnabled == true)
+    }
+
+    func testDS029DeleteLastMappingSafelyDisablesAutomationAndCollaboration() {
+        var document = populatedDocument()
+        let removed = document.displays[0]
+        document.usbSwitch = USBSwitchConfiguration(
+            enabled: true,
+            triggerDevice: CollaborationTriggerDevice(
+                kind: "usb", localReference: "local-usb-reference", displayName: "USB Device"
+            ),
+            collaborationWakeEnabled: true,
+            collaborationProfileID: document.collaborationProfiles[0].id,
+            displayInputs: [USBDisplayInputMapping(displayID: removed.id, targetInput: 17)]
+        )
+
+        let mutation = DisplayDeletionPlanner.removing(stableID: removed.id, from: document)
+
+        XCTAssertTrue(mutation?.document.displays.isEmpty == true)
+        XCTAssertTrue(mutation?.document.usbSwitch.displayInputs.isEmpty == true)
+        XCTAssertFalse(mutation?.document.usbSwitch.enabled == true)
+        XCTAssertFalse(mutation?.document.usbSwitch.collaborationWakeEnabled == true)
+        XCTAssertTrue(mutation?.document.collaborationProfiles[0].displayInputs.isEmpty == true)
+        XCTAssertFalse(mutation?.document.collaborationProfiles[0].coordinationEnabled == true)
+    }
+
+    func testDS029CancellationDoesNotCreateDeletionMutation() {
+        XCTAssertFalse(DisplayDeletionConfirmationPolicy.shouldProceed(userConfirmed: false))
+        XCTAssertTrue(DisplayDeletionConfirmationPolicy.shouldProceed(userConfirmed: true))
+    }
+
+    func testDS029FailedAtomicSavePreservesOriginalDisplayAndMappings() throws {
+        let original = populatedDocument()
+        try DisplayConfigurationStore.saveDocument(original, storage: storage)
+        let mutation = try XCTUnwrap(
+            DisplayDeletionPlanner.removing(stableID: original.displays[0].id, from: original)
+        )
+        storage.failWrites = true
+
+        XCTAssertThrowsError(
+            try DisplayConfigurationStore.saveDocument(mutation.document, storage: storage)
+        )
+        let reloaded = DisplayConfigurationStore.load(storage: storage)
+        XCTAssertEqual(reloaded.document.displays, original.displays)
+        XCTAssertEqual(
+            reloaded.document.collaborationProfiles[0].displayInputs,
+            original.collaborationProfiles[0].displayInputs
+        )
+    }
+
     func testU016V3IsBackedUpButNeverMigrated() {
         let legacy = Data(#"{"schemaVersion":3,"private":"must-remain-local"}"#.utf8)
         storage.values[DisplayConfigurationStore.legacyV3StorageKey] = legacy
@@ -331,6 +457,154 @@ final class DisplayConfigurationStoreTests: XCTestCase {
         duplicate.name += " "
         document.collaborationProfiles.append(duplicate)
         XCTAssertThrowsError(try DisplayConfigurationStore.saveDocument(document, storage: storage))
+    }
+
+    func testDS029DeleteEligibilityRequiresTwoTrustedNonEmptyDetections() {
+        let stableID = UUID().uuidString
+        let selector = UUID().uuidString
+        let saved = [deletionDisplay(id: stableID, selector: selector)]
+        let online = DetectedDisplay(index: 1, name: "Online", systemUUID: UUID().uuidString)
+        let tracker = DisplayDeletionAvailabilityTracker()
+
+        tracker.beginDetection()
+        XCTAssertEqual(tracker.availability.detectionState, .detecting)
+        XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+
+        tracker.recordSuccessfulDetection(
+            detected: [online], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+        tracker.recordSuccessfulDetection(
+            detected: [online], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        XCTAssertTrue(tracker.availability.allowsDeletion(stableID: stableID))
+    }
+
+    func testDS029DetectingFailureEmptyAndDuplicateResultsNeverAllowDelete() {
+        let stableID = UUID().uuidString
+        let selector = UUID().uuidString
+        let saved = [deletionDisplay(id: stableID, selector: selector)]
+        let other = DetectedDisplay(index: 1, name: "Online", systemUUID: UUID().uuidString)
+        let tracker = DisplayDeletionAvailabilityTracker()
+
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        XCTAssertTrue(tracker.availability.allowsDeletion(stableID: stableID))
+
+        tracker.beginDetection()
+        XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+        tracker.recordFailureOrUntrustedResult()
+        XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+        tracker.recordSuccessfulDetection(
+            detected: [], physicalEvidence: .untrusted, savedDisplays: saved
+        )
+        XCTAssertEqual(tracker.availability.detectionState, .untrusted)
+        tracker.recordSuccessfulDetection(
+            detected: [other, other],
+            physicalEvidence: trustedPhysicalEvidence(count: 2),
+            savedDisplays: saved
+        )
+        XCTAssertEqual(tracker.availability.detectionState, .untrusted)
+    }
+
+    func testDS029OnlineDisplayNeverShowsDeleteAndRemovalClearsEligibility() {
+        let stableID = UUID().uuidString
+        let selector = UUID().uuidString
+        let saved = [deletionDisplay(id: stableID, selector: selector)]
+        let same = DetectedDisplay(index: 1, name: "Online", systemUUID: selector)
+        let tracker = DisplayDeletionAvailabilityTracker()
+
+        tracker.recordSuccessfulDetection(
+            detected: [same], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        tracker.recordSuccessfulDetection(
+            detected: [same], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+
+        let other = DetectedDisplay(index: 1, name: "Other", systemUUID: UUID().uuidString)
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        tracker.recordSuccessfulDetection(
+            detected: [other], physicalEvidence: trustedPhysicalEvidence(), savedDisplays: saved
+        )
+        XCTAssertTrue(tracker.availability.allowsDeletion(stableID: stableID))
+        tracker.remove(stableID: stableID)
+        XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+    }
+
+    func testDS029VirtualOrIncompleteEnumerationsCannotAccumulateOfflineMisses() {
+        let stableID = UUID().uuidString
+        let selector = UUID().uuidString
+        let saved = [deletionDisplay(id: stableID, selector: selector)]
+        let other = DetectedDisplay(index: 1, name: "Other", systemUUID: UUID().uuidString)
+        let untrustedEvidence = [
+            // A CG identity without an IOAV transport is virtual or unresolved.
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 1,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 0,
+                matchedPhysicalTransportCount: 0
+            ),
+            // An extra physical service means CG omitted part of the local topology.
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 1,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 2,
+                matchedPhysicalTransportCount: 1
+            ),
+            // CoreDisplay failed to produce an identity for every online external display.
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 2,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 1,
+                matchedPhysicalTransportCount: 1
+            )
+        ]
+
+        for evidence in untrustedEvidence {
+            let tracker = DisplayDeletionAvailabilityTracker()
+            tracker.recordSuccessfulDetection(
+                detected: [other], physicalEvidence: evidence, savedDisplays: saved
+            )
+            tracker.recordSuccessfulDetection(
+                detected: [other], physicalEvidence: evidence, savedDisplays: saved
+            )
+            XCTAssertEqual(tracker.availability.detectionState, .untrusted)
+            XCTAssertFalse(tracker.availability.allowsDeletion(stableID: stableID))
+        }
+    }
+
+    private func deletionDisplay(id: String, selector: String) -> DisplayConfigurationV4Display {
+        DisplayConfigurationV4Display(
+            id: id,
+            name: "Saved",
+            selector: selector,
+            localInput: nil,
+            readEnabled: false
+        )
+    }
+
+    private func trustedPhysicalEvidence(count: Int = 1) -> DDCPhysicalEnumerationEvidence {
+        DDCPhysicalEnumerationEvidence(
+            cgEnumerationSucceeded: true,
+            externalCGDisplayCount: count,
+            extractedIdentityCount: count,
+            registryEnumerationSucceeded: true,
+            externalRegistryServiceCount: count,
+            matchedPhysicalTransportCount: count
+        )
     }
 
     private func populatedDocument() -> DisplayConfigurationStoreV5Document {

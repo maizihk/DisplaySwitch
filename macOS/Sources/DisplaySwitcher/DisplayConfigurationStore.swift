@@ -27,6 +27,153 @@ struct DetectedDisplay: Equatable {
 
 }
 
+struct DisplayDetectionReconciliation: Equatable {
+    let persistedConfigurations: [DisplayConfiguration]
+    let onlineConfigurations: [DisplayConfiguration]
+}
+
+struct DisplayDeletionMutation: Equatable {
+    let document: DisplayConfigurationStoreV5Document
+    let removedStableID: String
+    let removedSelector: String
+}
+
+enum DisplayDeletionConfirmationPolicy {
+    static func shouldProceed(userConfirmed: Bool) -> Bool { userConfirmed }
+}
+
+enum DisplayDeletionPlanner {
+    static func removing(
+        stableID: String,
+        from document: DisplayConfigurationStoreV5Document
+    ) -> DisplayDeletionMutation? {
+        guard let removed = document.displays.first(where: {
+            $0.id.caseInsensitiveCompare(stableID) == .orderedSame
+        }) else { return nil }
+
+        var updated = document
+        updated.displays.removeAll {
+            $0.id.caseInsensitiveCompare(removed.id) == .orderedSame
+        }
+        updated.usbSwitch.displayInputs.removeAll {
+            $0.displayID.caseInsensitiveCompare(removed.id) == .orderedSame
+        }
+        if !DisplayConfigurationStore.isCompleteUSBConfiguration(
+            updated.usbSwitch,
+            displays: updated.displays
+        ) {
+            updated.usbSwitch.enabled = false
+        }
+
+        updated.collaborationProfiles = updated.collaborationProfiles.map { profile in
+            var value = profile
+            value.displayInputs.removeAll {
+                $0.displayID.caseInsensitiveCompare(removed.id) == .orderedSame
+            }
+            return DisplayConfigurationStore.profileForSafeSave(
+                value,
+                displays: updated.displays
+            ).profile
+        }
+        if updated.usbSwitch.collaborationWakeEnabled,
+           !DisplayConfigurationStore.isValidCollaborationWakeSelection(
+               updated.usbSwitch,
+               document: updated
+           ) {
+            updated.usbSwitch.collaborationWakeEnabled = false
+        }
+
+        return DisplayDeletionMutation(
+            document: updated,
+            removedStableID: removed.id,
+            removedSelector: removed.selector
+        )
+    }
+}
+
+struct DisplayDeletionAvailability: Equatable {
+    enum DetectionState: Equatable {
+        case notChecked
+        case detecting
+        case untrusted
+        case trusted
+    }
+
+    let detectionState: DetectionState
+    let offlineStableIDs: Set<String>
+
+    static let notChecked = DisplayDeletionAvailability(
+        detectionState: .notChecked,
+        offlineStableIDs: []
+    )
+
+    func allowsDeletion(stableID: String) -> Bool {
+        detectionState == .trusted && offlineStableIDs.contains(stableID.lowercased())
+    }
+}
+
+final class DisplayDeletionAvailabilityTracker {
+    private var consecutiveTrustedMisses: [String: Int] = [:]
+    private(set) var availability: DisplayDeletionAvailability = .notChecked
+
+    func beginDetection() {
+        availability = DisplayDeletionAvailability(detectionState: .detecting, offlineStableIDs: [])
+    }
+
+    func recordFailureOrUntrustedResult() {
+        consecutiveTrustedMisses.removeAll()
+        availability = DisplayDeletionAvailability(detectionState: .untrusted, offlineStableIDs: [])
+    }
+
+    func recordSuccessfulDetection(
+        detected: [DetectedDisplay],
+        physicalEvidence: DDCPhysicalEnumerationEvidence,
+        savedDisplays: [DisplayConfigurationV4Display]
+    ) {
+        guard physicalEvidence.isCompletePhysicalSnapshot else {
+            recordFailureOrUntrustedResult()
+            return
+        }
+        let normalizedSelectors = detected.map {
+            $0.systemUUID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        guard !normalizedSelectors.isEmpty,
+              normalizedSelectors.allSatisfy({ !$0.isEmpty }),
+              Set(normalizedSelectors).count == normalizedSelectors.count else {
+            recordFailureOrUntrustedResult()
+            return
+        }
+
+        let online = Set(normalizedSelectors)
+        var nextMisses: [String: Int] = [:]
+        var offline = Set<String>()
+        for display in savedDisplays {
+            let selector = display.selector.lowercased()
+            if online.contains(selector) {
+                nextMisses[selector] = 0
+            } else {
+                let misses = (consecutiveTrustedMisses[selector] ?? 0) + 1
+                nextMisses[selector] = misses
+                if misses >= 2 {
+                    offline.insert(display.id.lowercased())
+                }
+            }
+        }
+        consecutiveTrustedMisses = nextMisses
+        availability = DisplayDeletionAvailability(
+            detectionState: .trusted,
+            offlineStableIDs: offline
+        )
+    }
+
+    func remove(stableID: String) {
+        availability = DisplayDeletionAvailability(
+            detectionState: availability.detectionState,
+            offlineStableIDs: availability.offlineStableIDs.subtracting([stableID.lowercased()])
+        )
+    }
+}
+
 struct DisplayConfigurationV4Display: Codable, Equatable {
     let id: String
     var name: String
@@ -410,9 +557,12 @@ enum DisplayConfigurationStore {
         }
     }
 
-    static func merge(detected: [DetectedDisplay], existing: [DisplayConfiguration], defaults: UserDefaults = .standard) throws -> [DisplayConfiguration] {
+    static func reconcileDetectedDisplays(
+        detected: [DetectedDisplay],
+        existing: [DisplayConfiguration]
+    ) -> DisplayDetectionReconciliation {
         var used = Set<Int>()
-        let merged = detected.sorted { $0.index < $1.index }.enumerated().map { offset, item in
+        let online = detected.sorted { $0.index < $1.index }.enumerated().map { offset, item in
             let exact = existing.indices.first { !used.contains($0) && existing[$0].selector.caseInsensitiveCompare(item.systemUUID) == .orderedSame }
             let legacyNames = existing.indices.filter { !used.contains($0) && Int(existing[$0].selector) != nil && existing[$0].name.caseInsensitiveCompare(item.name) == .orderedSame }
             let match = exact ?? (legacyNames.count == 1 ? legacyNames[0] : nil)
@@ -422,8 +572,34 @@ enum DisplayConfigurationStore {
                 selector: item.systemUUID.uppercased(), localInput: prior?.localInput,
                 targetInput: nil, readEnabled: prior?.readEnabled ?? false)
         }
-        try saveAll(merged, defaults: defaults, clearSafetyMarker: false)
-        return merged
+        let offline = existing.indices.filter { !used.contains($0) }.map { existing[$0] }
+        let persisted = (online + offline).enumerated().map { offset, configuration in
+            DisplayConfiguration(
+                id: configuration.id,
+                index: offset + 1,
+                name: configuration.name,
+                selector: configuration.selector,
+                localInput: configuration.localInput,
+                targetInput: configuration.targetInput,
+                readEnabled: configuration.readEnabled
+            )
+        }
+        let persistedByStableID = Dictionary(uniqueKeysWithValues: persisted.map {
+            (($0.id ?? $0.selector).lowercased(), $0)
+        })
+        let resolvedOnline = online.compactMap {
+            persistedByStableID[($0.id ?? $0.selector).lowercased()]
+        }
+        return DisplayDetectionReconciliation(
+            persistedConfigurations: persisted,
+            onlineConfigurations: resolvedOnline
+        )
+    }
+
+    static func merge(detected: [DetectedDisplay], existing: [DisplayConfiguration], defaults: UserDefaults = .standard) throws -> [DisplayConfiguration] {
+        let reconciliation = reconcileDetectedDisplays(detected: detected, existing: existing)
+        try saveAll(reconciliation.persistedConfigurations, defaults: defaults, clearSafetyMarker: false)
+        return reconciliation.persistedConfigurations
     }
 
     static func defaultConfiguration(index: Int) -> DisplayConfiguration {

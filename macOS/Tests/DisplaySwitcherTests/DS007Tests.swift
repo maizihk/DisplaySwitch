@@ -388,6 +388,95 @@ final class DS007Tests: XCTestCase {
         ))
     }
 
+    func testDS028USBStatusUsesOnlyExactPersistedSettingText() {
+        let enabled = TrayUSBStatusPresentation(isSettingEnabled: true)
+        let disabled = TrayUSBStatusPresentation(isSettingEnabled: false)
+
+        XCTAssertEqual(enabled.title, "USB 切换已开启")
+        XCTAssertEqual(disabled.title, "USB 切换已关闭")
+        XCTAssertEqual(enabled.accessibilityLabel, enabled.title)
+        XCTAssertEqual(disabled.accessibilityLabel, disabled.title)
+        XCTAssertFalse(enabled.title.contains("VID"))
+        XCTAssertFalse(enabled.title.contains("PID"))
+    }
+
+    func testDS028EnabledSettingStaysOnAcrossSafetyAndLearningGateStates() {
+        let enabledSetting = USBSwitchConfiguration(enabled: true)
+        let gateStates = [
+            (configurationAllowsUSB: true, learningAllowsUSB: true),
+            (configurationAllowsUSB: false, learningAllowsUSB: true),
+            (configurationAllowsUSB: true, learningAllowsUSB: false),
+            (configurationAllowsUSB: false, learningAllowsUSB: false)
+        ]
+
+        for gates in gateStates {
+            let oldOperationalValue = true
+                && gates.configurationAllowsUSB
+                && gates.learningAllowsUSB
+            XCTAssertEqual(
+                TrayUSBStatusPresentation(usbSwitch: enabledSetting).title,
+                "USB 切换已开启"
+            )
+            if !gates.configurationAllowsUSB || !gates.learningAllowsUSB {
+                XCTAssertFalse(oldOperationalValue)
+            }
+        }
+    }
+
+    func testDS028AllVisibleTrayRolesHaveSemanticSymbols() {
+        let icons: [TraySemanticIcon] = [
+            .usbStatus(isSettingEnabled: true),
+            .usbStatus(isSettingEnabled: false),
+            .collaborationSwitch,
+            .display,
+            .luminance,
+            .contrast,
+            .volume,
+            .settings,
+            .quit
+        ]
+        XCTAssertTrue(icons.allSatisfy { !$0.symbolName.isEmpty })
+        XCTAssertEqual(Set(icons.map(\.symbolName)).count, icons.count)
+    }
+
+    func testDS028TrayDDCRowUsesCompactSingleLineLayout() {
+        XCTAssertTrue(TrayControlRowLayout.isInsideCompactTarget)
+        XCTAssertEqual(TrayControlRowLayout.width, 252)
+        XCTAssertEqual(TrayControlRowLayout.height, 30)
+        XCTAssertGreaterThanOrEqual(TrayControlRowLayout.sliderWidth, 100)
+        XCTAssertEqual(
+            TrayControlRowLayout.horizontalInset * 2
+                + TrayControlRowLayout.iconWidth
+                + TrayControlRowLayout.iconTitleSpacing
+                + TrayControlRowLayout.titleWidth
+                + TrayControlRowLayout.titleSliderSpacing
+                + TrayControlRowLayout.sliderWidth
+                + TrayControlRowLayout.sliderValueSpacing
+                + TrayControlRowLayout.valueWidth,
+            TrayControlRowLayout.width,
+            accuracy: 0.001
+        )
+    }
+
+    func testDS028BothStatusItemButtonsRouteOnlyToTrayMenu() {
+        XCTAssertTrue(StatusItemClickRouting.supportedEventMask.contains(.leftMouseUp))
+        XCTAssertTrue(StatusItemClickRouting.supportedEventMask.contains(.rightMouseUp))
+        XCTAssertFalse(StatusItemClickRouting.supportedEventMask.contains(.leftMouseDown))
+        XCTAssertEqual(StatusItemClickRouting.destination(for: .leftMouseUp), .trayMenu)
+        XCTAssertEqual(StatusItemClickRouting.destination(for: .rightMouseUp), .trayMenu)
+        XCTAssertEqual(StatusItemClickRouting.destination(for: .other), .none)
+        XCTAssertEqual(TrayStaticMenuAction.allCases, [.settings, .quit])
+    }
+
+    func testDS028SettingsWindowLifecycleShowsAndHidesDockWithoutChangingWindowLevel() {
+        XCTAssertEqual(SettingsWindowLifecycleState.open.activationPolicy, .regular)
+        XCTAssertEqual(SettingsWindowLifecycleState.closed.activationPolicy, .accessory)
+        XCTAssertEqual(SettingsWindowLifecycleState.open.windowLevel, .normal)
+        XCTAssertEqual(SettingsWindowLifecycleState.closed.windowLevel, .normal)
+        XCTAssertFalse(SettingsWindowLifecycleState.open.hidesOnDeactivate)
+        XCTAssertFalse(SettingsWindowLifecycleState.open.isReleasedWhenClosed)
+    }
+
     func testV1PeerIdentityCanNeverBeConfirmedInV2OnlyConfiguration() {
         let profile = completeProfile(name: "Peer", displayID: UUID().uuidString)
         XCTAssertEqual(
