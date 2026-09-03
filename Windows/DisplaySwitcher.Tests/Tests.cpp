@@ -285,14 +285,31 @@ namespace
             ResolveTrayActivation(NIN_SELECT) == TrayActivationAction::ShowMenu &&
             ResolveTrayActivation(WM_MOUSEMOVE) == TrayActivationAction::None,
             L"DS-028: 托盘左右键与键盘激活都只打开同一菜单");
-        auto textOnly = BuildTrayPopupLayout(96, 80, false);
-        auto sliders = BuildTrayPopupLayout(96, 120, true);
-        auto scaled = BuildTrayPopupLayout(192, 240, true);
-        Check(textOnly.width == 260 && sliders.width >= 272 &&
+        Check(std::wstring(TraySemanticIconGlyph(TraySemanticIcon::Exit)) == L"\uE7E8" &&
+            std::wstring(TraySemanticIconGlyph(TraySemanticIcon::Exit)) != L"\uE8BB",
+            L"W-033: 退出使用同一 Fluent/MDL2 字体中的标准电源图标，不使用粗重关闭图标");
+        auto textOnly = BuildTrayPopupLayout(96, 80, 0, false);
+        auto sliders = BuildTrayPopupLayout(96, 120, 30, true);
+        auto longLabel = BuildTrayPopupLayout(96, 80, 140, true);
+        auto scaled = BuildTrayPopupLayout(192, 240, 60, true);
+        Check(textOnly.width == 260 && sliders.width == 260 && sliders.sliderLabelWidth == 32 &&
+            sliders.sliderGap == 4 &&
             sliders.width >= sliders.textLeft + sliders.sliderLabelWidth + sliders.sliderGap +
                 sliders.sliderTrackMinimumWidth + sliders.sliderGap + sliders.sliderValueWidth + sliders.rightPadding &&
+            longLabel.sliderLabelWidth == 140 &&
+            longLabel.width >= longLabel.textLeft + longLabel.sliderLabelWidth + longLabel.sliderGap +
+                longLabel.sliderTrackMinimumWidth + longLabel.sliderGap + longLabel.sliderValueWidth + longLabel.rightPadding &&
             scaled.width >= sliders.width * 2,
-            L"DS-028: 托盘按 DPI 与内容计算紧凑宽度且保留可操作滑杆");
+            L"W-033: 托盘按真实滑杆标签、DPI 与内容紧凑布局且长标签不裁切");
+        for (auto dpi : { 96U, 120U, 144U, 192U })
+        {
+            auto layout = BuildTrayPopupLayout(dpi, MulDiv(80, dpi, 96),
+                MulDiv(48, dpi, 96), true);
+            Check(layout.width >= MulDiv(260, dpi, 96) && layout.sliderLabelWidth >= MulDiv(48, dpi, 96) &&
+                layout.sliderTrackMinimumWidth >= MulDiv(92, dpi, 96) &&
+                layout.sliderValueWidth >= MulDiv(38, dpi, 96),
+                L"W-033: 100% 至 200% DPI 保留中文名称、可操作滑杆以及混合/三位数值空间");
+        }
     }
 
     void TestMonochromeTrayIconContracts()
