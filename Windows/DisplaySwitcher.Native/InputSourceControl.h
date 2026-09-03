@@ -26,6 +26,16 @@ namespace DisplaySwitcher::Native
 
     using DisplayActionObserver = std::function<void(DisplayConfig const&, bool, DdcErrorKind)>;
 
+    struct InputSourceActionPlan
+    {
+        AppConfig config;
+        bool topologyTrusted{};
+        std::wstring error;
+    };
+
+    InputSourceActionPlan PrepareInputSourceActionPlan(AppConfig const& config,
+        DdcEnumerationResult const& enumeration);
+
     InputSourceWriteResult WriteInputSourceWithOneRefresh(IInputSourceTransport& transport,
         std::wstring const& monitorId, int value, DdcCancellationToken const& cancellation);
 

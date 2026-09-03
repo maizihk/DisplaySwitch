@@ -17,6 +17,16 @@ namespace DisplaySwitcher::Native
         bool partialFailure, size_t localPhysicalTargetCount) noexcept;
     bool IsValidNativeInputSourceValue(int value) noexcept;
 
+    enum class NativeMonitorCacheUpdate
+    {
+        Reuse,
+        ReplaceLeases,
+        ReplaceTopology,
+    };
+
+    NativeMonitorCacheUpdate DecideNativeMonitorCacheUpdate(
+        bool forceRefresh, bool equivalentTopology) noexcept;
+
     class NativeMonitorHandleLease final
     {
     public:

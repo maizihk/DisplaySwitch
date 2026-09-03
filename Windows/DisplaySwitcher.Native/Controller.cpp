@@ -23,6 +23,30 @@ namespace
         return _wcsicmp(left.c_str(), right.c_str()) == 0;
     }
 
+    ::DisplaySwitcher::Native::UsbSwitchInitialState BuildUsbRuntimeState(
+        ::DisplaySwitcher::Native::AppConfig const& config, bool learning, bool topologyAllowsUsb)
+    {
+        using namespace ::DisplaySwitcher::Native;
+        auto completeProfiles = config.EnabledCompleteProfiles();
+        bool collaborationValid{};
+        if (config.usbSwitch.collaborationWakeEnabled)
+        {
+            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
+            collaborationValid = profile && profile->coordinationEnabled &&
+                std::any_of(completeProfiles.begin(), completeProfiles.end(), [&](auto const& item)
+                    { return EqualId(item.id, profile->id); });
+        }
+        UsbSwitchInitialState state{ config.usbSwitch.enabled, learning,
+            config.displayConfigurationSafeMode || !topologyAllowsUsb, std::nullopt,
+            config.usbSwitch.collaborationWakeEnabled, collaborationValid };
+        for (auto const& display : config.displays)
+            state.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
+                topologyAllowsUsb && IsDisplayDdcResolved(display), true });
+        state.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
+            std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
+        return state;
+    }
+
 }
 
 namespace DisplaySwitcher::Native
@@ -144,26 +168,12 @@ namespace DisplaySwitcher::Native
         auto hasUnboundV2 = !bootstrapProfiles.empty();
         v2StateMachine_ = std::make_unique<V2StateMachine>(V2StateInitial{
             config.localEndpointId, hasV2, V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
-        bool collaborationValid{};
-        if (config.usbSwitch.collaborationWakeEnabled)
-        {
-            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
-            collaborationValid = profile && profile->coordinationEnabled &&
-                std::any_of(completeProfiles.begin(), completeProfiles.end(), [&](auto const& item) { return EqualId(item.id, profile->id); });
-        }
         auto topologyAllowsUsb = currentTopologyAuthoritative &&
             currentTopologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative;
         trayIcon_->SetUsbSwitchActive(ProjectUsbTrayConfiguredEnabled(config.usbSwitch.enabled,
             { automationConfigured, config.displayConfigurationSafeMode,
                 usbLearningActive_.load(), topologyAllowsUsb }));
-        UsbSwitchInitialState usbInitial{ config.usbSwitch.enabled, usbLearningActive_.load(),
-            config.displayConfigurationSafeMode || !topologyAllowsUsb, std::nullopt,
-            config.usbSwitch.collaborationWakeEnabled, collaborationValid };
-        for (auto const& display : config.displays)
-            usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
-                topologyAllowsUsb && IsDisplayDdcResolved(display), true });
-        usbInitial.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
-            std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
+        auto usbInitial = BuildUsbRuntimeState(config, usbLearningActive_.load(), topologyAllowsUsb);
         if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
         else usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
         auto watcherGeneration = usbObservationGeneration_.BeginConfiguration();
@@ -241,11 +251,28 @@ namespace DisplaySwitcher::Native
         return sideEffectGate_.AllowsSideEffects() && sideEffectGeneration_.load() == generation;
     }
 
+    InputSourceActionPlan Controller::PrepareInputSourceAction(AppConfig const& config)
+    {
+        auto enumeration = EnumerateDdcMonitors(ddcBackends_.Lookup(NativeDdcBackendKey));
+        return PrepareInputSourceActionPlan(config, enumeration);
+    }
+
     void Controller::OnUsbPresenceChanged(uint64_t watcherGeneration, bool present)
     {
         if (!usbObservationGeneration_.Accepts(watcherGeneration)) return;
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
-        if (usbSwitchCoordinator_) ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present));
+        auto config = Config();
+        auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
+            [&](auto const& mapping) { return mapping.targetInput && IsValidInputSourceValue(*mapping.targetInput)
+                && FindDisplayById(config.displays, mapping.displayId); });
+        if (!config.usbSwitch.enabled || !config.HasUsbDeviceConfiguration() || !hasUsbMapping) return;
+        auto plan = PrepareInputSourceAction(config);
+        if (usbSwitchCoordinator_)
+        {
+            usbSwitchCoordinator_->UpdateConfiguration(BuildUsbRuntimeState(
+                plan.config, usbLearningActive_.load(), plan.topologyTrusted));
+            ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present), plan.config);
+        }
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
     }
 
@@ -262,11 +289,11 @@ namespace DisplaySwitcher::Native
         }).detach();
     }
 
-    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions)
+    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions, AppConfig const& actionConfigBase)
     {
         if (!sideEffectGate_.AllowsSideEffects()) return;
         WakeDisplayCoalesced(actions);
-        auto config = Config();
+        auto config = actionConfigBase;
         std::vector<DisplayConfig> selected;
         for (auto const& action : actions)
         {
@@ -286,7 +313,12 @@ namespace DisplaySwitcher::Native
                 auto self = weak.lock();
                 if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
                 auto tracker = self->displayDiagnostics_;
-                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.InputSource(),
+                tracker->Reconcile(actionConfig.displays);
+                DdcCancellationSource cancellation;
+                InputSourceSwitchService service(self->ddcBackends_.InputSource(),
+                    [weak, generation]
+                    { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
+                auto result = service.SwitchDisplaysToMac(actionConfig, cancellation.Begin(),
                     [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
                     {
                         tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
@@ -589,7 +621,7 @@ namespace DisplaySwitcher::Native
         if (message.type == L"wake_display")
         {
             if (!validated.duplicate && usbSwitchCoordinator_)
-                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now));
+                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now), Config());
             return;
         }
         if (message.type != L"status_probe")
@@ -713,29 +745,44 @@ namespace DisplaySwitcher::Native
         {
             SetStatus(L"协同配置不可用"); return;
         }
-        auto selection = config.SelectProfileDisplays(profileId);
-        if (selection.mappedDisplays.empty())
-        {
-            SetStatus(L"该配置没有可用的显示器映射"); return;
-        }
-        auto actionConfig = config; actionConfig.displays = selection.mappedDisplays;
-        auto name = profile->name; auto missing = selection.missingDisplayIds.size();
+        auto name = profile->name;
         SetStatus(L"正在切换到 " + name + L"…");
         auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, actionConfig, name, missing, generation, eventId]
+        std::thread([weak, config, profileId, name, generation, eventId]
         {
             auto controller = weak.lock();
             if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
             auto tracker = controller->displayDiagnostics_;
-            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.InputSource(),
-                [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
+            auto plan = controller->PrepareInputSourceAction(config);
+            size_t missing{};
+            ActionResult result;
+            if (!plan.topologyTrusted) result = { false, plan.error };
+            else
+            {
+                auto selection = plan.config.SelectProfileDisplays(profileId);
+                missing = selection.missingDisplayIds.size();
+                if (selection.mappedDisplays.empty())
+                    result = { false, L"该配置没有可用的显示器映射" };
+                else
                 {
-                    tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
-                        DiagnosticOperationKind::InputSource,
-                        error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
-                        (success ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed));
-                });
+                    auto actionConfig = plan.config;
+                    actionConfig.displays = std::move(selection.mappedDisplays);
+                    tracker->Reconcile(actionConfig.displays);
+                    DdcCancellationSource cancellation;
+                    InputSourceSwitchService service(controller->ddcBackends_.InputSource(),
+                        [weak, generation]
+                        { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
+                    result = service.SwitchDisplaysToMac(actionConfig, cancellation.Begin(),
+                        [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
+                        {
+                            tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
+                                DiagnosticOperationKind::InputSource,
+                                error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
+                                (success ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed));
+                        });
+                }
+            }
             if (auto self = weak.lock(); self && !self->disposed_)
                 self->Enqueue([weak, result, name, missing, generation, eventId]
                 {
