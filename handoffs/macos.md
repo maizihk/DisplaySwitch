@@ -5,7 +5,7 @@
 - 日期：2026-09-03
 - 分支：`codex/macos-tray-icons-shortcuts-audit`
 - 基线：`origin/main@975b46993369d7dbe3839f1ec27fc0faa908409f`，未叠加任何 Windows 待合并 PR。
-- PR：本任务完成验证后创建，目标 `main`，保持开放等待 GUI 验收。
+- PR：[#77](https://github.com/maizihk/DisplaySwitch/pull/77)，目标 `main`，保持开放等待 GUI 验收。
 - 根因：状态栏仍硬编码为 `display.2`；菜单虽然已有语义名称，但每个入口直接获取一个 SF Symbol，未统一配置尺寸/template 属性，也没有最低系统候选，因此无法保证所有真实菜单项都显示且重量一致。
 - 实现：USB 状态、协同切换、显示器分组、亮度、对比度、音量、设置与退出统一经过 `TrayImageFactory`，使用 16 点 regular template SF Symbol 及语义候选。状态栏改为代码绘制的透明单色“显示器 + 百分号”，18 点画布、90% 主体、6% 线宽；仅替换 `NSStatusItem` 图像，彩色 AppIcon、Dock 与设置窗口图标不变。
 - 自动验证：完整 XCTest 222/222 通过，覆盖全部菜单语义可解析、状态图标画布/主体/线宽/安全边界；`./macOS/scripts/build-app.sh` Release arm64 构建成功；输出 App 与 ZIP 解压副本均通过 `codesign --verify --deep --strict`，ZIP 完整性检查通过。测试包使用 ad-hoc 签名，SHA-256 为 `c87573d8f4b6d2f7fcbd03ce4d740ed72b45db14dc7208514fb64b26d531dd55`。CI 状态在 PR 创建后补充。
