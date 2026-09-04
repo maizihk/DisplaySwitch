@@ -204,20 +204,23 @@ protocol MediaKeyFreshReadExecuting: AnyObject {
     func cancelAll()
 }
 
-/// Runs one bounded DDC read batch at a time. Held-key repeat events for the active action share
-/// that fresh sample; other events replace one bounded pending slot instead of creating a read
-/// storm. Invalidation suppresses every late completion from the previous runtime generation.
+/// Runs one bounded DDC read batch at a time. Only consecutive held-key repeats share a fresh
+/// sample; different actions retain FIFO order in a bounded queue. Invalidation suppresses every
+/// queued batch and late completion from the previous runtime generation.
 final class MediaKeyFreshReadCoordinator {
     static let maximumCoalescedRepeatCount = 32
+    static let maximumPendingBatchCount = 8
 
     enum SubmitDisposition: Equatable {
         case started
         case coalesced
         case queued
+        case repeatLimitReached
+        case queueFull
         case ignored
     }
 
-    typealias Completion = (MediaKeyFreshReadResult) -> Void
+    typealias Completion = (MediaKeyFreshReadResult, @escaping () -> Void) -> Void
 
     private struct Pending {
         var request: MediaKeyFreshReadRequest
@@ -234,7 +237,8 @@ final class MediaKeyFreshReadCoordinator {
     private let executor: MediaKeyFreshReadExecuting
     private let lock = NSLock()
     private var active: Active?
-    private var pending: Pending?
+    private var pending: [Pending] = []
+    private var awaitingRoutingToken: UInt64?
     private var coordinatorGeneration: UInt64 = 0
     private var nextToken: UInt64 = 0
     private var operationsAllowed = true
@@ -255,23 +259,29 @@ final class MediaKeyFreshReadCoordinator {
         if !operationsAllowed {
             disposition = .ignored
         } else if var current = active {
-            if canCoalesce(request, into: current.request) {
-                current.coalescedRepeatCount = min(
-                    current.coalescedRepeatCount + 1,
-                    Self.maximumCoalescedRepeatCount
-                )
-                active = current
-                disposition = .coalesced
-            } else if var waiting = pending, canCoalesce(request, into: waiting.request) {
-                waiting.coalescedRepeatCount = min(
-                    waiting.coalescedRepeatCount + 1,
-                    Self.maximumCoalescedRepeatCount
-                )
-                pending = waiting
-                disposition = .coalesced
-            } else {
-                pending = Pending(request: request, coalescedRepeatCount: 0)
+            if pending.isEmpty,
+               awaitingRoutingToken == nil,
+               canCoalesce(request, into: current.request) {
+                if current.coalescedRepeatCount < Self.maximumCoalescedRepeatCount {
+                    current.coalescedRepeatCount += 1
+                    active = current
+                    disposition = .coalesced
+                } else {
+                    disposition = .repeatLimitReached
+                }
+            } else if let lastIndex = pending.indices.last,
+                      canCoalesce(request, into: pending[lastIndex].request) {
+                if pending[lastIndex].coalescedRepeatCount < Self.maximumCoalescedRepeatCount {
+                    pending[lastIndex].coalescedRepeatCount += 1
+                    disposition = .coalesced
+                } else {
+                    disposition = .repeatLimitReached
+                }
+            } else if pending.count < Self.maximumPendingBatchCount {
+                pending.append(Pending(request: request, coalescedRepeatCount: 0))
                 disposition = .queued
+            } else {
+                disposition = .queueFull
             }
         } else {
             itemToStart = makeActive(Pending(request: request, coalescedRepeatCount: 0))
@@ -288,7 +298,8 @@ final class MediaKeyFreshReadCoordinator {
         lock.lock()
         coordinatorGeneration &+= 1
         active = nil
-        pending = nil
+        pending.removeAll()
+        awaitingRoutingToken = nil
         lock.unlock()
         executor.cancelAll()
     }
@@ -299,7 +310,8 @@ final class MediaKeyFreshReadCoordinator {
         if !allowed {
             coordinatorGeneration &+= 1
             active = nil
-            pending = nil
+            pending.removeAll()
+            awaitingRoutingToken = nil
         }
         lock.unlock()
         if !allowed { executor.cancelAll() }
@@ -336,13 +348,13 @@ final class MediaKeyFreshReadCoordinator {
 
     private func finish(token: UInt64, samples: [String: DDCControlValueSample]) {
         var result: MediaKeyFreshReadResult?
-        var next: Active?
 
         lock.lock()
         if let current = active,
            current.token == token,
            current.coordinatorGeneration == coordinatorGeneration,
-           operationsAllowed {
+           operationsAllowed,
+           awaitingRoutingToken == nil {
             let targets = current.request.targets.map { target in
                 MediaKeyDDCTarget(
                     stableID: target.stableID,
@@ -355,16 +367,39 @@ final class MediaKeyFreshReadCoordinator {
                 targets: targets,
                 coalescedRepeatCount: current.coalescedRepeatCount
             )
+            awaitingRoutingToken = token
+        }
+        lock.unlock()
+
+        guard let result else { return }
+        guard let onCompletion else {
+            advanceAfterRouting(token: token)
+            return
+        }
+        onCompletion(result) { [weak self] in
+            self?.advanceAfterRouting(token: token)
+        }
+    }
+
+    private func advanceAfterRouting(token: UInt64) {
+        var next: Active?
+
+        lock.lock()
+        if let current = active,
+           current.token == token,
+           awaitingRoutingToken == token,
+           current.coordinatorGeneration == coordinatorGeneration,
+           operationsAllowed {
+            awaitingRoutingToken = nil
             active = nil
-            if let waiting = pending {
-                pending = nil
+            if !pending.isEmpty {
+                let waiting = pending.removeFirst()
                 next = makeActive(waiting)
                 active = next
             }
         }
         lock.unlock()
 
-        if let result { onCompletion?(result) }
         if let next { start(next) }
     }
 }

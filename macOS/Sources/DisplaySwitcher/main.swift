@@ -449,9 +449,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 self.updateMediaKeyRouteStatus(nil, override: "已收到按键，正在读取显示器当前值")
             }
         }
-        mediaKeyFreshReadCoordinator.onCompletion = { [weak self] result in
+        mediaKeyFreshReadCoordinator.onCompletion = { [weak self] result, advance in
             DispatchQueue.main.async {
-                self?.completeMediaKeyFreshRead(result)
+                guard let self else {
+                    advance()
+                    return
+                }
+                self.completeMediaKeyFreshRead(result)
+                // Route and enqueue every write before the next fresh read is put on workerQueue.
+                advance()
             }
         }
 
@@ -751,6 +757,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             mediaKeyRuntimeStageTrace.append(.freshReadStarted)
         case .queued:
             break
+        case .repeatLimitReached:
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            updateMediaKeyRouteStatus(nil, override: "按键重复过多，已拒绝本次事件")
+        case .queueFull:
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            updateMediaKeyRouteStatus(nil, override: "媒体按键队列已满，已拒绝本次事件")
         case .ignored:
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "DDC 操作当前不可用")
