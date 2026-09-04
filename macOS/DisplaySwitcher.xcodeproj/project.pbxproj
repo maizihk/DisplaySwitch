@@ -57,6 +57,7 @@
 		A10000000000000000000036 /* MediaKeyDDC.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002F /* MediaKeyDDC.swift */; };
 		A10000000000000000000037 /* MediaKeyDDC.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002F /* MediaKeyDDC.swift */; };
 		A10000000000000000000038 /* MediaKeyDDCTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000030 /* MediaKeyDDCTests.swift */; };
+		A10000000000000000000039 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000031 /* CoreAudio.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -106,6 +107,7 @@
 		A2000000000000000000002E /* DiagnosticRecordingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticRecordingTests.swift; sourceTree = "<group>"; };
 		A2000000000000000000002F /* MediaKeyDDC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaKeyDDC.swift; sourceTree = "<group>"; };
 		A20000000000000000000030 /* MediaKeyDDCTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaKeyDDCTests.swift; sourceTree = "<group>"; };
+		A20000000000000000000031 /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -118,6 +120,7 @@
 				A10000000000000000000011 /* CoreDisplay.framework in Frameworks */,
 				A1000000000000000000000A /* Network.framework in Frameworks */,
 				A1000000000000000000000B /* ServiceManagement.framework in Frameworks */,
+				A10000000000000000000039 /* CoreAudio.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,6 +222,7 @@
 				A20000000000000000000016 /* CoreDisplay.framework */,
 				A2000000000000000000000B /* Network.framework */,
 				A2000000000000000000000C /* ServiceManagement.framework */,
+				A20000000000000000000031 /* CoreAudio.framework */,
 				A2000000000000000000000D /* XCTest.framework */,
 			);
 			name = Frameworks;

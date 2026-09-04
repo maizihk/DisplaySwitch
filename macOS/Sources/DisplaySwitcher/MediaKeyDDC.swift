@@ -1,8 +1,10 @@
 import AppKit
+import ApplicationServices
+import CoreAudio
 import CoreGraphics
 import Foundation
 
-enum MediaKeyAction: Equatable {
+enum MediaKeyAction: Hashable {
     case brightnessDown
     case brightnessUp
     case mute
@@ -30,6 +32,29 @@ enum MediaKeyAction: Equatable {
 struct NormalizedMediaKeyEvent: Equatable {
     let action: MediaKeyAction
     let isRepeat: Bool
+    let wasConsumed: Bool
+
+    init(action: MediaKeyAction, isRepeat: Bool, wasConsumed: Bool = false) {
+        self.action = action
+        self.isRepeat = isRepeat
+        self.wasConsumed = wasConsumed
+    }
+}
+
+enum MediaKeyEventPhase: Equatable {
+    case down
+    case up
+}
+
+struct CapturedMediaKeyEvent: Equatable {
+    let action: MediaKeyAction
+    let phase: MediaKeyEventPhase
+    let isRepeat: Bool
+
+    var normalizedKeyDown: NormalizedMediaKeyEvent? {
+        guard phase == .down else { return nil }
+        return NormalizedMediaKeyEvent(action: action, isRepeat: isRepeat)
+    }
 }
 
 /// Normalizes only NX_SYSDEFINED auxiliary-control key-down events. Ordinary F-key events never
@@ -38,6 +63,7 @@ struct NormalizedMediaKeyEvent: Equatable {
 enum MediaKeyEventNormalizer {
     static let auxiliaryControlButtonsSubtype = 8
     static let keyDownState = 10
+    static let keyUpState = 11
 
     private enum SystemKeyType: Int {
         case soundUp = 0
@@ -47,11 +73,17 @@ enum MediaKeyEventNormalizer {
         case mute = 7
     }
 
-    static func normalize(subtype: Int, data1: Int) -> NormalizedMediaKeyEvent? {
+    static func capture(subtype: Int, data1: Int) -> CapturedMediaKeyEvent? {
         guard subtype == auxiliaryControlButtonsSubtype else { return nil }
         let keyType = (data1 >> 16) & 0xffff
         let flags = data1 & 0xffff
-        guard ((flags >> 8) & 0xff) == keyDownState else { return nil }
+        let state = (flags >> 8) & 0xff
+        let phase: MediaKeyEventPhase
+        switch state {
+        case keyDownState: phase = .down
+        case keyUpState: phase = .up
+        default: return nil
+        }
 
         let action: MediaKeyAction
         switch SystemKeyType(rawValue: keyType) {
@@ -62,69 +94,173 @@ enum MediaKeyEventNormalizer {
         case .soundUp: action = .volumeUp
         case nil: return nil
         }
-        return NormalizedMediaKeyEvent(action: action, isRepeat: flags & 1 == 1)
+        return CapturedMediaKeyEvent(action: action, phase: phase, isRepeat: flags & 1 == 1)
+    }
+
+    static func normalize(subtype: Int, data1: Int) -> NormalizedMediaKeyEvent? {
+        capture(subtype: subtype, data1: data1)?.normalizedKeyDown
     }
 }
 
 enum MediaKeyMonitorState: Equatable {
     case permissionRequired
-    case active
+    case passive
+    case activeTakeover
     case unavailable
 
     var diagnosticValue: String {
         switch self {
         case .permissionRequired: return "permission-required"
-        case .active: return "active"
+        case .passive: return "passive"
+        case .activeTakeover: return "active"
         case .unavailable: return "unavailable"
         }
     }
 }
 
-/// A session-scoped, listen-only event tap. The callback always returns the original event, so
-/// native macOS brightness and volume handling remains in place.
+enum MediaKeyEventTapMode: Equatable {
+    case passive
+    case activeTakeover
+
+    var options: CGEventTapOptions {
+        self == .activeTakeover ? .defaultTap : .listenOnly
+    }
+
+    var placement: CGEventTapPlacement {
+        self == .activeTakeover ? .headInsertEventTap : .tailAppendEventTap
+    }
+}
+
+enum MediaKeyTapDisposition: Equatable {
+    case passThrough
+    case consume
+}
+
+struct MediaKeyConsumptionSnapshot: Equatable {
+    let canConsumeVolume: Bool
+    let canConsumeMute: Bool
+    let expiresAt: TimeInterval
+
+    static let disarmed = Self(
+        canConsumeVolume: false,
+        canConsumeMute: false,
+        expiresAt: 0
+    )
+}
+
+/// The event-tap callback only consults this precomputed snapshot. It never performs CoreAudio
+/// or DDC work. A consumed down owns its matching key-up even if the gate disarms in between.
+final class MediaKeyEventConsumptionController {
+    private let lock = NSLock()
+    private let now: () -> TimeInterval
+    private var snapshot = MediaKeyConsumptionSnapshot.disarmed
+    private var consumedActions = Set<MediaKeyAction>()
+
+    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.now = now
+    }
+
+    func update(_ snapshot: MediaKeyConsumptionSnapshot) {
+        lock.lock()
+        self.snapshot = snapshot
+        lock.unlock()
+    }
+
+    func disarm() {
+        update(.disarmed)
+    }
+
+    func disposition(for event: CapturedMediaKeyEvent) -> MediaKeyTapDisposition {
+        lock.lock()
+        defer { lock.unlock() }
+        guard event.action.command == .volume else { return .passThrough }
+        if event.phase == .up {
+            guard consumedActions.remove(event.action) != nil else { return .passThrough }
+            return .consume
+        }
+        guard now() <= snapshot.expiresAt else { return .passThrough }
+        let allowed = event.action == .mute
+            ? snapshot.canConsumeMute
+            : snapshot.canConsumeVolume
+        guard allowed else { return .passThrough }
+        consumedActions.insert(event.action)
+        return .consume
+    }
+}
+
+/// A session-scoped media-key event tap. Passive mode preserves native behavior. Active takeover
+/// may delete only pre-authorized sound/mute events; brightness and unrelated events always pass.
 final class MediaKeyEventMonitor {
+    /// Default/backward-compatible mode remains listen-only until takeover is explicitly armed.
     static let consumesSystemEvents = false
 
     private let handler: (NormalizedMediaKeyEvent) -> Void
+    private let disposition: (CapturedMediaKeyEvent) -> MediaKeyTapDisposition
+    private let onTapDisabled: () -> Void
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var mode: MediaKeyEventTapMode = .passive
 
-    init(handler: @escaping (NormalizedMediaKeyEvent) -> Void) {
+    init(
+        handler: @escaping (NormalizedMediaKeyEvent) -> Void,
+        disposition: @escaping (CapturedMediaKeyEvent) -> MediaKeyTapDisposition = { _ in .passThrough },
+        onTapDisabled: @escaping () -> Void = {}
+    ) {
         self.handler = handler
+        self.disposition = disposition
+        self.onTapDisabled = onTapDisabled
     }
 
     deinit {
         stop()
     }
 
-    func start(requestPermission: Bool = false) -> MediaKeyMonitorState {
+    func start(mode: MediaKeyEventTapMode = .passive, requestPermission: Bool = false) -> MediaKeyMonitorState {
         stop()
-        let allowed = requestPermission ? CGRequestListenEventAccess() : CGPreflightListenEventAccess()
-        guard allowed else { return .permissionRequired }
+        self.mode = mode
+        if mode == .passive {
+            let allowed = requestPermission ? CGRequestListenEventAccess() : CGPreflightListenEventAccess()
+            guard allowed else { return .permissionRequired }
+        } else {
+            guard AXIsProcessTrusted() else { return .permissionRequired }
+        }
         guard let systemDefinedType = CGEventType(rawValue: 14) else { return .unavailable }
         let mask = CGEventMask(1) << systemDefinedType.rawValue
         let context = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
-            place: .tailAppendEventTap,
-            options: .listenOnly,
+            place: mode.placement,
+            options: mode.options,
             eventsOfInterest: mask,
             callback: { _, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
                 let monitor = Unmanaged<MediaKeyEventMonitor>
                     .fromOpaque(userInfo).takeUnretainedValue()
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    monitor.onTapDisabled()
                     if let tap = monitor.eventTap {
                         CGEvent.tapEnable(tap: tap, enable: true)
                     }
                     return Unmanaged.passUnretained(event)
                 }
                 if let appEvent = NSEvent(cgEvent: event),
-                   let normalized = MediaKeyEventNormalizer.normalize(
+                   let captured = MediaKeyEventNormalizer.capture(
                        subtype: Int(appEvent.subtype.rawValue),
                        data1: appEvent.data1
                    ) {
-                    DispatchQueue.main.async { monitor.handler(normalized) }
+                    let tapDisposition = monitor.mode == .activeTakeover
+                        ? monitor.disposition(captured) : .passThrough
+                    if captured.phase == .down {
+                        let normalized = NormalizedMediaKeyEvent(
+                            action: captured.action,
+                            isRepeat: captured.isRepeat,
+                            wasConsumed: tapDisposition == .consume
+                        )
+                        DispatchQueue.main.async { monitor.handler(normalized) }
+                    }
+                    if tapDisposition == .consume {
+                        return nil
+                    }
                 }
                 return Unmanaged.passUnretained(event)
             },
@@ -140,7 +276,7 @@ final class MediaKeyEventMonitor {
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-        return .active
+        return mode == .activeTakeover ? .activeTakeover : .passive
     }
 
     func stop() {
@@ -170,7 +306,22 @@ struct MediaKeyFreshReadRequest: Equatable {
     let event: NormalizedMediaKeyEvent
     let linkAllDisplays: Bool
     let runtimeGeneration: UInt64
+    let audioRouteGeneration: UInt64
     let targets: [MediaKeyFreshReadTarget]
+
+    init(
+        event: NormalizedMediaKeyEvent,
+        linkAllDisplays: Bool,
+        runtimeGeneration: UInt64,
+        audioRouteGeneration: UInt64 = 0,
+        targets: [MediaKeyFreshReadTarget]
+    ) {
+        self.event = event
+        self.linkAllDisplays = linkAllDisplays
+        self.runtimeGeneration = runtimeGeneration
+        self.audioRouteGeneration = audioRouteGeneration
+        self.targets = targets
+    }
 }
 
 struct MediaKeyFreshReadResult: Equatable {
@@ -456,6 +607,673 @@ final class DDCControllerMediaKeyFreshReadExecutor: MediaKeyFreshReadExecuting {
     }
 }
 
+enum AudioOutputTransport: String, Equatable {
+    case hdmi
+    case displayPort = "display-port"
+    case other
+    case unavailable
+
+    init(coreAudioValue: UInt32?) {
+        switch coreAudioValue {
+        case kAudioDeviceTransportTypeHDMI: self = .hdmi
+        case kAudioDeviceTransportTypeDisplayPort: self = .displayPort
+        case nil: self = .unavailable
+        default: self = .other
+        }
+    }
+
+    var isExternalDisplay: Bool { self == .hdmi || self == .displayPort }
+}
+
+struct AudioOutputRouteSnapshot: Equatable {
+    let transport: AudioOutputTransport
+    let isAlive: Bool
+    let systemVolumeSettable: Bool
+    let systemMuteSettable: Bool
+    let isComplete: Bool
+    let generation: UInt64
+
+    static let unavailable = Self(
+        transport: .unavailable,
+        isAlive: false,
+        systemVolumeSettable: true,
+        systemMuteSettable: true,
+        isComplete: false,
+        generation: 0
+    )
+
+    var allowsDDCTakeover: Bool {
+        isComplete && isAlive && transport.isExternalDisplay
+            && !systemVolumeSettable && !systemMuteSettable
+    }
+
+    var diagnosticValue: String {
+        guard isComplete else { return "unavailable" }
+        return "transport-\(transport.rawValue)-alive-\(isAlive)"
+            + "-volume-settable-\(systemVolumeSettable)-mute-settable-\(systemMuteSettable)"
+    }
+}
+
+protocol AudioOutputRouteMonitoring: AnyObject {
+    var snapshot: AudioOutputRouteSnapshot { get }
+    var onChange: ((AudioOutputRouteSnapshot) -> Void)? { get set }
+    func start()
+    func stop()
+}
+
+/// Read-only CoreAudio monitor. Every callback is evaluated on a private serial queue and publishes
+/// only a sanitized immutable snapshot. No audio property is ever written.
+final class CoreAudioOutputRouteMonitor: AudioOutputRouteMonitoring {
+    private let queue = DispatchQueue(label: "DisplaySwitcher.core-audio-route")
+    private let lock = NSLock()
+    private var currentSnapshot = AudioOutputRouteSnapshot.unavailable
+    private var currentDevice = AudioDeviceID(kAudioObjectUnknown)
+    private var installedDeviceAddresses: [AudioObjectPropertyAddress] = []
+    private var generation: UInt64 = 0
+    private var started = false
+    private lazy var listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        self?.refresh()
+    }
+
+    var onChange: ((AudioOutputRouteSnapshot) -> Void)?
+
+    var snapshot: AudioOutputRouteSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentSnapshot
+    }
+
+    func start() {
+        queue.async { [weak self] in
+            guard let self, !self.started else { return }
+            self.started = true
+            var address = Self.defaultOutputAddress
+            let status = AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, self.queue, self.listener
+            )
+            guard status == noErr else {
+                self.started = false
+                self.publish(.unavailable)
+                return
+            }
+            self.refresh()
+        }
+    }
+
+    func stop() {
+        queue.sync {
+            guard started else { return }
+            started = false
+            var address = Self.defaultOutputAddress
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address, queue, listener
+            )
+            removeDeviceListeners(currentDevice)
+            currentDevice = AudioDeviceID(kAudioObjectUnknown)
+            publish(.unavailable)
+        }
+    }
+
+    deinit { stop() }
+
+    private static var defaultOutputAddress: AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    private static var requiredDeviceAddresses: [AudioObjectPropertyAddress] {
+        [
+            AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceIsAlive,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            ),
+            AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+        ]
+    }
+
+    private func refresh() {
+        guard started else { return }
+        let device: AudioDeviceID? = readScalar(
+            object: AudioObjectID(kAudioObjectSystemObject), address: Self.defaultOutputAddress
+        )
+        let nextDevice = device ?? AudioDeviceID(kAudioObjectUnknown)
+        if nextDevice != currentDevice {
+            removeDeviceListeners(currentDevice)
+            currentDevice = nextDevice
+            guard addDeviceListeners(nextDevice) else {
+                generation &+= 1
+                publish(AudioOutputRouteSnapshot(
+                    transport: .unavailable, isAlive: false,
+                    systemVolumeSettable: true, systemMuteSettable: true,
+                    isComplete: false, generation: generation
+                ))
+                return
+            }
+        }
+        generation &+= 1
+        guard nextDevice != kAudioObjectUnknown,
+              let alive: UInt32 = readScalar(
+                  object: nextDevice,
+                  address: AudioObjectPropertyAddress(
+                      mSelector: kAudioDevicePropertyDeviceIsAlive,
+                      mScope: kAudioObjectPropertyScopeGlobal,
+                      mElement: kAudioObjectPropertyElementMain
+                  )
+              ),
+              let transportValue: UInt32 = readScalar(
+                  object: nextDevice,
+                  address: AudioObjectPropertyAddress(
+                      mSelector: kAudioDevicePropertyTransportType,
+                      mScope: kAudioObjectPropertyScopeGlobal,
+                      mElement: kAudioObjectPropertyElementMain
+                  )
+              ),
+              let volumeSettable = anySettable(
+                  object: nextDevice, selector: kAudioDevicePropertyVolumeScalar
+              ),
+              let muteSettable = anySettable(
+                  object: nextDevice, selector: kAudioDevicePropertyMute
+              ) else {
+            publish(AudioOutputRouteSnapshot(
+                transport: .unavailable, isAlive: false,
+                systemVolumeSettable: true, systemMuteSettable: true,
+                isComplete: false, generation: generation
+            ))
+            return
+        }
+        publish(AudioOutputRouteSnapshot(
+            transport: AudioOutputTransport(coreAudioValue: transportValue),
+            isAlive: alive != 0,
+            systemVolumeSettable: volumeSettable,
+            systemMuteSettable: muteSettable,
+            isComplete: true,
+            generation: generation
+        ))
+    }
+
+    private func addDeviceListeners(_ device: AudioDeviceID) -> Bool {
+        guard device != kAudioObjectUnknown else { return false }
+        installedDeviceAddresses.removeAll()
+        guard let channelCount = outputChannelCount(object: device) else { return false }
+        var candidates = Self.requiredDeviceAddresses
+        for selector in [kAudioDevicePropertyVolumeScalar, kAudioDevicePropertyMute] {
+            for element in UInt32(0)...channelCount {
+                var address = AudioObjectPropertyAddress(
+                    mSelector: selector,
+                    mScope: kAudioDevicePropertyScopeOutput,
+                    mElement: element
+                )
+                if AudioObjectHasProperty(device, &address) { candidates.append(address) }
+            }
+        }
+        for var address in candidates {
+            guard AudioObjectAddPropertyListenerBlock(device, &address, queue, listener) == noErr else {
+                removeDeviceListeners(device)
+                return false
+            }
+            installedDeviceAddresses.append(address)
+        }
+        return true
+    }
+
+    private func removeDeviceListeners(_ device: AudioDeviceID) {
+        guard device != kAudioObjectUnknown else {
+            installedDeviceAddresses.removeAll()
+            return
+        }
+        for var address in installedDeviceAddresses {
+            AudioObjectRemovePropertyListenerBlock(device, &address, queue, listener)
+        }
+        installedDeviceAddresses.removeAll()
+    }
+
+    private func readScalar<T>(
+        object: AudioObjectID,
+        address: AudioObjectPropertyAddress
+    ) -> T? {
+        var mutableAddress = address
+        guard AudioObjectHasProperty(object, &mutableAddress) else { return nil }
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: MemoryLayout<T>.size,
+            alignment: MemoryLayout<T>.alignment
+        )
+        defer { storage.deallocate() }
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: MemoryLayout<T>.size)
+        var size = UInt32(MemoryLayout<T>.size)
+        let status = AudioObjectGetPropertyData(object, &mutableAddress, 0, nil, &size, storage)
+        return status == noErr && size == MemoryLayout<T>.size ? storage.load(as: T.self) : nil
+    }
+
+    /// Audio devices may expose volume/mute on the master or individual channels. Any writable
+    /// element means macOS already owns volume control, so takeover must remain disabled.
+    private func anySettable(object: AudioObjectID, selector: AudioObjectPropertySelector) -> Bool? {
+        guard let channelCount = outputChannelCount(object: object) else { return nil }
+        var foundProperty = false
+        for element in UInt32(0)...channelCount {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: element
+            )
+            guard AudioObjectHasProperty(object, &address) else { continue }
+            foundProperty = true
+            var settable = DarwinBoolean(false)
+            guard AudioObjectIsPropertySettable(object, &address, &settable) == noErr else {
+                return nil
+            }
+            if settable.boolValue { return true }
+        }
+        return foundProperty ? false : false
+    }
+
+    private func outputChannelCount(object: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectHasProperty(object, &address) else { return nil }
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(object, &address, 0, nil, &size) == noErr,
+              size >= MemoryLayout<AudioBufferList>.size else { return nil }
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(size), alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { storage.deallocate() }
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: Int(size))
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, storage) == noErr else {
+            return nil
+        }
+        let list = storage.bindMemory(to: AudioBufferList.self, capacity: 1)
+        let count = UnsafeMutableAudioBufferListPointer(list).reduce(UInt32(0)) {
+            $0 &+ $1.mNumberChannels
+        }
+        return count
+    }
+
+    private func publish(_ snapshot: AudioOutputRouteSnapshot) {
+        lock.lock()
+        currentSnapshot = snapshot
+        lock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.onChange?(snapshot) }
+    }
+}
+
+enum AccessibilityTrust {
+    static var isTrusted: Bool { AXIsProcessTrusted() }
+
+    static func request() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+}
+
+enum MediaKeyVolumeTakeoverGate {
+    static func allows(
+        optIn: Bool,
+        accessibilityTrusted: Bool,
+        route: AudioOutputRouteSnapshot,
+        topologyTrusted: Bool,
+        targetCount: Int,
+        freshTargetCount: Int,
+        runtimeGenerationMatches: Bool,
+        audioGenerationMatches: Bool
+    ) -> Bool {
+        optIn && accessibilityTrusted && route.allowsDDCTakeover && topologyTrusted
+            && targetCount > 0 && freshTargetCount == targetCount
+            && runtimeGenerationMatches && audioGenerationMatches
+    }
+}
+
+enum MediaKeyVolumeTakeoverDiagnostic: String, Equatable {
+    case passive
+    case activeDisarmed = "active-disarmed"
+    case activeArmed = "active-armed"
+    case passedThrough = "pass-through"
+    case consumed
+    case ddcSubmitted = "ddc-submitted"
+    case ddcSucceeded = "ddc-succeeded"
+    case ddcFailed = "ddc-failed"
+}
+
+struct DDCVolumeHUDPresentation: Equatable {
+    let title: String
+    let detail: String
+    let fraction: Double
+    let isFailure: Bool
+
+    static func submitted(value: Int, maximum: Int) -> Self {
+        let safeMaximum = max(1, maximum)
+        let fraction = min(1, max(0, Double(value) / Double(safeMaximum)))
+        return Self(
+            title: "DDC 音量",
+            detail: "已提交 \(value) / \(safeMaximum)（\(Int((fraction * 100).rounded()))%）",
+            fraction: fraction,
+            isFailure: false
+        )
+    }
+
+    static func submitted(values: [(value: Int, maximum: Int)]) -> Self? {
+        guard let first = values.first else { return nil }
+        if values.allSatisfy({ $0.value == first.value && $0.maximum == first.maximum }) {
+            return submitted(value: first.value, maximum: first.maximum)
+        }
+        let percentages = values.map {
+            Int((100 * Double($0.value) / Double(max(1, $0.maximum))).rounded())
+        }
+        guard let lower = percentages.min(), let upper = percentages.max() else { return nil }
+        let average = Double(percentages.reduce(0, +)) / Double(percentages.count) / 100
+        return Self(
+            title: "DDC 音量",
+            detail: "已提交到 \(values.count) 台显示器（\(lower)%–\(upper)%）",
+            fraction: min(1, max(0, average)),
+            isFailure: false
+        )
+    }
+
+    static func current(values: [(value: Int, maximum: Int)]) -> Self? {
+        guard let first = values.first else { return nil }
+        let percentages = values.map {
+            Int((100 * Double($0.value) / Double(max(1, $0.maximum))).rounded())
+        }
+        guard let lower = percentages.min(), let upper = percentages.max() else { return nil }
+        let average = Double(percentages.reduce(0, +)) / Double(percentages.count) / 100
+        let detail = values.count == 1
+            ? "当前读取 \(first.value) / \(max(1, first.maximum))（\(lower)%）"
+            : "当前读取 \(values.count) 台显示器（\(lower)%–\(upper)%）"
+        return Self(
+            title: "DDC 音量",
+            detail: detail,
+            fraction: min(1, max(0, average)),
+            isFailure: false
+        )
+    }
+
+    static let failed = Self(
+        title: "DDC 音量",
+        detail: "显示器写入失败；下一次按键将交给 macOS",
+        fraction: 0,
+        isFailure: true
+    )
+}
+
+final class DDCVolumeHUDController {
+    private let panel: NSPanel
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let progress = NSProgressIndicator()
+    private var dismissWorkItem: DispatchWorkItem?
+
+    init() {
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 280, height: 112),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+
+        let background = NSVisualEffectView()
+        background.material = .hudWindow
+        background.blendingMode = .behindWindow
+        background.state = .active
+        background.wantsLayer = true
+        background.layer?.cornerRadius = 16
+        background.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+        titleLabel.alignment = .center
+        detailLabel.font = .systemFont(ofSize: 12)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .center
+        progress.style = .bar
+        progress.minValue = 0
+        progress.maxValue = 1
+        progress.isIndeterminate = false
+        for view in [titleLabel, detailLabel, progress] { view.translatesAutoresizingMaskIntoConstraints = false }
+        background.addSubview(titleLabel)
+        background.addSubview(detailLabel)
+        background.addSubview(progress)
+        panel.contentView = background
+        NSLayoutConstraint.activate([
+            titleLabel.topAnchor.constraint(equalTo: background.topAnchor, constant: 18),
+            titleLabel.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
+            titleLabel.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
+            detailLabel.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
+            detailLabel.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
+            progress.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 12),
+            progress.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 28),
+            progress.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -28)
+        ])
+    }
+
+    func show(_ presentation: DDCVolumeHUDPresentation) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        dismissWorkItem?.cancel()
+        titleLabel.stringValue = presentation.title
+        detailLabel.stringValue = presentation.detail
+        progress.doubleValue = presentation.fraction
+        progress.isHidden = presentation.isFailure
+        if let screen = NSScreen.main {
+            let x = screen.visibleFrame.midX - panel.frame.width / 2
+            let y = screen.visibleFrame.minY + screen.visibleFrame.height * 0.18
+            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        }
+        panel.orderFrontRegardless()
+        let item = DispatchWorkItem { [weak panel] in panel?.orderOut(nil) }
+        dismissWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: item)
+    }
+}
+
+final class MediaKeyVolumeTakeoverController {
+    struct Context: Equatable {
+        let optIn: Bool
+        let accessibilityTrusted: Bool
+        let route: AudioOutputRouteSnapshot
+        let topologyTrusted: Bool
+        let runtimeGeneration: UInt64
+        let targetKeys: Set<DDCWriteKey>
+    }
+
+    enum Completion: Equatable {
+        case unrelated
+        case pending
+        case succeeded(DDCVolumeHUDPresentation)
+        case failed(showHUD: Bool)
+    }
+
+    static let evidenceTTL: TimeInterval = 5
+
+    private struct Evidence {
+        let valueByKey: [DDCWriteKey: Int]
+        let maximumByKey: [DDCWriteKey: Int]
+        let runtimeGeneration: UInt64
+        let audioGeneration: UInt64
+        let expiresAt: TimeInterval
+    }
+
+    private struct Batch {
+        let id: UInt64
+        let expectedValueByKey: [DDCWriteKey: Int]
+        let wasConsumed: Bool
+        var completedKeys: Set<DDCWriteKey>
+    }
+
+    private let now: () -> TimeInterval
+    private(set) var context: Context
+    private var evidence: Evidence?
+    private var batch: Batch?
+    private var sequence: UInt64 = 0
+    private(set) var isArmed = false
+    private(set) var canConsumeMute = false
+
+    init(
+        context: Context = Context(
+            optIn: false, accessibilityTrusted: false, route: .unavailable,
+            topologyTrusted: false, runtimeGeneration: 0, targetKeys: []
+        ),
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
+        self.context = context
+        self.now = now
+    }
+
+    func updateContext(_ context: Context) {
+        guard context != self.context else { return }
+        self.context = context
+        disarm()
+    }
+
+    func disarm() {
+        evidence = nil
+        batch = nil
+        isArmed = false
+        canConsumeMute = false
+    }
+
+    func recordFreshRead(_ result: MediaKeyFreshReadResult) {
+        guard result.request.event.action.command == .volume else { return }
+        let valid = result.targets.compactMap { target -> (DDCWriteKey, DDCControlValueSample)? in
+            guard let sample = target.sample,
+                  !sample.estimated, sample.maximum > 0,
+                  (0...sample.maximum).contains(sample.value) else { return nil }
+            return (DDCWriteKey(stableID: target.stableID, command: .volume), sample)
+        }
+        let samples = Dictionary(valid, uniquingKeysWith: { _, newest in newest })
+        guard MediaKeyVolumeTakeoverGate.allows(
+            optIn: context.optIn,
+            accessibilityTrusted: context.accessibilityTrusted,
+            route: context.route,
+            topologyTrusted: context.topologyTrusted,
+            targetCount: context.targetKeys.count,
+            freshTargetCount: samples.count,
+            runtimeGenerationMatches: result.request.runtimeGeneration == context.runtimeGeneration,
+            audioGenerationMatches: result.request.audioRouteGeneration == context.route.generation
+        ), Set(samples.keys) == context.targetKeys else {
+            disarm()
+            return
+        }
+        evidence = Evidence(
+            valueByKey: samples.mapValues(\.value),
+            maximumByKey: samples.mapValues(\.maximum),
+            runtimeGeneration: context.runtimeGeneration,
+            audioGeneration: context.route.generation,
+            expiresAt: now() + Self.evidenceTTL
+        )
+    }
+
+    func prepare(requests: [DDCWriteRequest], event: NormalizedMediaKeyEvent) -> [DDCWriteRequest] {
+        guard event.action.command == .volume,
+              let evidence,
+              evidence.expiresAt >= now(),
+              evidence.runtimeGeneration == context.runtimeGeneration,
+              evidence.audioGeneration == context.route.generation else {
+            disarm()
+            return requests
+        }
+        let latest = Dictionary(requests.map { ($0.key, $0.value) }, uniquingKeysWith: { _, newest in newest })
+        guard Set(latest.keys) == context.targetKeys else {
+            disarm()
+            return requests
+        }
+        sequence &+= 1
+        batch = Batch(
+            id: sequence,
+            expectedValueByKey: latest,
+            wasConsumed: event.wasConsumed,
+            completedKeys: []
+        )
+        return requests.map { $0.withOrigin(.mediaKey(sequence)) }
+    }
+
+    func recordCompletion(_ request: DDCWriteRequest, succeeded: Bool) -> Completion {
+        guard case .mediaKey(let id) = request.origin,
+              var batch, batch.id == id else { return .unrelated }
+        guard succeeded else {
+            let showHUD = batch.wasConsumed
+            disarm()
+            return .failed(showHUD: showHUD)
+        }
+        guard batch.expectedValueByKey[request.key] == request.value else { return .pending }
+        batch.completedKeys.insert(request.key)
+        self.batch = batch
+        guard batch.completedKeys == Set(batch.expectedValueByKey.keys),
+              let evidence,
+              evidence.expiresAt >= now(),
+              evidence.runtimeGeneration == context.runtimeGeneration,
+              evidence.audioGeneration == context.route.generation,
+              context.targetKeys == Set(batch.expectedValueByKey.keys) else {
+            return .pending
+        }
+        let pairs = batch.expectedValueByKey.compactMap { key, value -> (value: Int, maximum: Int)? in
+            guard let maximum = evidence.maximumByKey[key] else { return nil }
+            return (value: value, maximum: maximum)
+        }
+        guard pairs.count == context.targetKeys.count,
+              let presentation = DDCVolumeHUDPresentation.submitted(values: pairs) else {
+            disarm()
+            return .failed(showHUD: batch.wasConsumed)
+        }
+        isArmed = true
+        // Any successful all-target media volume write establishes a nonzero value or a stored
+        // restore value in MediaKeyDDCRouter, so the next mute toggle is reversible.
+        canConsumeMute = true
+        self.batch = nil
+        return .succeeded(presentation)
+    }
+
+    func noChangePresentation(for event: NormalizedMediaKeyEvent) -> DDCVolumeHUDPresentation? {
+        guard event.action != .mute,
+              isArmed,
+              let evidence,
+              evidence.expiresAt >= now(),
+              evidence.runtimeGeneration == context.runtimeGeneration,
+              evidence.audioGeneration == context.route.generation else { return nil }
+        let pairs = context.targetKeys.compactMap { key -> (value: Int, maximum: Int)? in
+            guard let value = evidence.valueByKey[key],
+                  let maximum = evidence.maximumByKey[key] else { return nil }
+            return (value: value, maximum: maximum)
+        }
+        return pairs.count == context.targetKeys.count
+            ? DDCVolumeHUDPresentation.current(values: pairs) : nil
+    }
+
+    func consumptionSnapshot() -> MediaKeyConsumptionSnapshot {
+        guard isArmed,
+              let evidence,
+              evidence.expiresAt >= now(),
+              evidence.runtimeGeneration == context.runtimeGeneration,
+              evidence.audioGeneration == context.route.generation else {
+            return .disarmed
+        }
+        return MediaKeyConsumptionSnapshot(
+            canConsumeVolume: true,
+            canConsumeMute: canConsumeMute,
+            expiresAt: evidence.expiresAt
+        )
+    }
+
+    func remainingEvidenceTTL() -> TimeInterval {
+        guard let evidence else { return 0 }
+        return max(0, evidence.expiresAt - now())
+    }
+}
+
 enum MediaKeyTopologyPolicy {
     static func allows(_ evidence: DDCPhysicalEnumerationEvidence) -> Bool {
         evidence.isCompletePhysicalSnapshot
@@ -468,6 +1286,8 @@ enum MediaKeyRuntimeStage: String, Equatable {
     case freshReadFailed = "fresh-read-failed"
     case routeBlocked = "route-blocked"
     case writeSubmitted = "write-submitted"
+    case writeSucceeded = "write-succeeded"
+    case writeFailed = "write-failed"
 }
 
 struct MediaKeyRuntimeStageTrace: Equatable {
@@ -740,11 +1560,13 @@ struct MediaKeyShortcutPresentation: Equatable {
 
     static func make(state: MediaKeyMonitorState, lastRoute: String?) -> Self {
         switch state {
-        case .active:
+        case .passive, .activeTakeover:
             let suffix = lastRoute.map { " 最近一次：\($0)。" } ?? ""
             return Self(
                 title: "媒体快捷键关联已启用",
-                detail: "F1/F2 关联亮度，F10/F11/F12 关联音量；系统原生行为不受影响。\(suffix)",
+                detail: state == .activeTakeover
+                    ? "F1/F2 始终放行；符合安全条件时接管 F10/F11/F12。\(suffix)"
+                    : "F1/F2 关联亮度，F10/F11/F12 关联音量；系统原生行为不受影响。\(suffix)",
                 actionTitle: nil
             )
         case .permissionRequired:
@@ -760,5 +1582,54 @@ struct MediaKeyShortcutPresentation: Equatable {
                 actionTitle: "重试"
             )
         }
+    }
+}
+
+struct MediaKeyVolumeTakeoverPresentation: Equatable {
+    let enabled: Bool
+    let title: String
+    let detail: String
+    let actionTitle: String?
+
+    static func make(
+        enabled: Bool,
+        accessibilityTrusted: Bool,
+        monitorState: MediaKeyMonitorState,
+        route: AudioOutputRouteSnapshot,
+        armed: Bool
+    ) -> Self {
+        guard enabled else {
+            return Self(
+                enabled: false,
+                title: "HDMI/DP DDC 音量接管（可选）",
+                detail: "默认关闭。需要辅助功能权限；仅在默认音频输出为 HDMI/DisplayPort，且 macOS 自身无法调音量时接管 F10/F11/F12。",
+                actionTitle: nil
+            )
+        }
+        guard accessibilityTrusted else {
+            return Self(
+                enabled: true,
+                title: "音量接管需要辅助功能权限",
+                detail: "未授权时保持被动监听，不吞按键；可在系统设置中允许 DisplaySwitcher。",
+                actionTitle: "申请辅助功能权限"
+            )
+        }
+        let mode = monitorState == .activeTakeover ? "主动监听" : "被动监听"
+        let routeText: String
+        if !route.isComplete {
+            routeText = "默认音频输出不可确认"
+        } else if !route.transport.isExternalDisplay {
+            routeText = "默认音频输出不是 HDMI/DisplayPort"
+        } else if route.systemVolumeSettable || route.systemMuteSettable {
+            routeText = "macOS 可直接调节当前输出"
+        } else {
+            routeText = "HDMI/DisplayPort 输出符合接管条件"
+        }
+        return Self(
+            enabled: true,
+            title: armed ? "HDMI/DP DDC 音量接管已就绪" : "HDMI/DP DDC 音量接管待确认",
+            detail: "\(mode)；\(routeText)；\(armed ? "下一次音量键可接管" : "首次按键仍交给 macOS，DDC 成功后再接管")。",
+            actionTitle: nil
+        )
     }
 }

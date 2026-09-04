@@ -1,3 +1,4 @@
+import CoreAudio
 import XCTest
 
 final class MediaKeyDDCTests: XCTestCase {
@@ -556,6 +557,263 @@ final class MediaKeyDDCTests: XCTestCase {
         )
     }
 
+    func testCapturedNormalizerIncludesSoundKeyUpButNeverTreatsItAsDDCAction() {
+        let captured = MediaKeyEventNormalizer.capture(
+            subtype: MediaKeyEventNormalizer.auxiliaryControlButtonsSubtype,
+            data1: (0 << 16) | (MediaKeyEventNormalizer.keyUpState << 8)
+        )
+        XCTAssertEqual(captured, CapturedMediaKeyEvent(
+            action: .volumeUp, phase: .up, isRepeat: false
+        ))
+        XCTAssertNil(captured?.normalizedKeyDown)
+        XCTAssertEqual(MediaKeyEventTapMode.passive.options, .listenOnly)
+        XCTAssertEqual(MediaKeyEventTapMode.passive.placement, .tailAppendEventTap)
+        XCTAssertEqual(MediaKeyEventTapMode.activeTakeover.options, .defaultTap)
+        XCTAssertEqual(MediaKeyEventTapMode.activeTakeover.placement, .headInsertEventTap)
+    }
+
+    func testTakeoverGateRequiresPermissionExactDisplayTransportAndUnwritableSystemVolume() {
+        let hdmi = audioRoute(.hdmi)
+        XCTAssertTrue(MediaKeyVolumeTakeoverGate.allows(
+            optIn: true, accessibilityTrusted: true, route: hdmi,
+            topologyTrusted: true, targetCount: 1, freshTargetCount: 1,
+            runtimeGenerationMatches: true, audioGenerationMatches: true
+        ))
+        XCTAssertFalse(MediaKeyVolumeTakeoverGate.allows(
+            optIn: false, accessibilityTrusted: true, route: hdmi,
+            topologyTrusted: true, targetCount: 1, freshTargetCount: 1,
+            runtimeGenerationMatches: true, audioGenerationMatches: true
+        ))
+        XCTAssertFalse(MediaKeyVolumeTakeoverGate.allows(
+            optIn: true, accessibilityTrusted: false, route: hdmi,
+            topologyTrusted: true, targetCount: 1, freshTargetCount: 1,
+            runtimeGenerationMatches: true, audioGenerationMatches: true
+        ))
+        XCTAssertFalse(MediaKeyVolumeTakeoverGate.allows(
+            optIn: true, accessibilityTrusted: true,
+            route: audioRoute(.other), topologyTrusted: true,
+            targetCount: 1, freshTargetCount: 1,
+            runtimeGenerationMatches: true, audioGenerationMatches: true
+        ))
+        XCTAssertFalse(MediaKeyVolumeTakeoverGate.allows(
+            optIn: true, accessibilityTrusted: true,
+            route: audioRoute(.displayPort, volumeSettable: true), topologyTrusted: true,
+            targetCount: 1, freshTargetCount: 1,
+            runtimeGenerationMatches: true, audioGenerationMatches: true
+        ))
+        XCTAssertFalse(MediaKeyVolumeTakeoverGate.allows(
+            optIn: true, accessibilityTrusted: true,
+            route: audioRoute(.hdmi, muteSettable: true), topologyTrusted: true,
+            targetCount: 1, freshTargetCount: 1,
+            runtimeGenerationMatches: true, audioGenerationMatches: true
+        ))
+    }
+
+    func testCoreAudioTransportProjectionRecognizesOnlyHDMIAndDisplayPort() {
+        XCTAssertEqual(AudioOutputTransport(coreAudioValue: kAudioDeviceTransportTypeHDMI), .hdmi)
+        XCTAssertEqual(
+            AudioOutputTransport(coreAudioValue: kAudioDeviceTransportTypeDisplayPort),
+            .displayPort
+        )
+        XCTAssertEqual(AudioOutputTransport(coreAudioValue: kAudioDeviceTransportTypeBuiltIn), .other)
+        XCTAssertEqual(AudioOutputTransport(coreAudioValue: nil), .unavailable)
+    }
+
+    func testFirstSoundPressPassesThenSuccessfulDDCBatchArmsAndConsumesDownRepeatAndKeyUp() {
+        var now: TimeInterval = 10
+        let consumption = MediaKeyEventConsumptionController(now: { now })
+        XCTAssertEqual(
+            consumption.disposition(for: captured(.volumeUp)),
+            .passThrough
+        )
+
+        let controller = takeoverController(now: { now })
+        let result = volumeReadResult(value: 40)
+        controller.recordFreshRead(result)
+        let requests = controller.prepare(
+            requests: [volumeWrite(value: 45)], event: event(.volumeUp)
+        )
+        XCTAssertFalse(controller.isArmed)
+        guard case .succeeded(let hud) = controller.recordCompletion(
+            requests[0], succeeded: true
+        ) else { return XCTFail("expected successful arming") }
+        XCTAssertEqual(hud.title, "DDC 音量")
+        XCTAssertEqual(hud.detail, "已提交 45 / 100（45%）")
+        XCTAssertEqual(hud.fraction, 0.45, accuracy: 0.001)
+
+        consumption.update(controller.consumptionSnapshot())
+        XCTAssertEqual(consumption.disposition(for: captured(.volumeUp)), .consume)
+        XCTAssertEqual(
+            consumption.disposition(for: captured(.volumeUp, repeatEvent: true)),
+            .consume
+        )
+        XCTAssertEqual(
+            consumption.disposition(for: captured(.volumeUp, phase: .up)),
+            .consume
+        )
+        XCTAssertEqual(
+            consumption.disposition(for: captured(.volumeUp, phase: .up)),
+            .passThrough
+        )
+        XCTAssertEqual(consumption.disposition(for: captured(.brightnessUp)), .passThrough)
+        now += 6
+        XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .passThrough)
+    }
+
+    func testAudioOutputSwitchAndGenerationMismatchDisarmWithoutPreparingMediaWrites() {
+        var now: TimeInterval = 20
+        let controller = takeoverController(now: { now })
+        controller.recordFreshRead(volumeReadResult(value: 50))
+        let armedRequests = controller.prepare(
+            requests: [volumeWrite(value: 55)], event: event(.volumeUp)
+        )
+        _ = controller.recordCompletion(armedRequests[0], succeeded: true)
+        XCTAssertTrue(controller.isArmed)
+
+        controller.updateContext(takeoverContext(route: audioRoute(.other, generation: 8)))
+        XCTAssertFalse(controller.isArmed)
+        XCTAssertEqual(controller.consumptionSnapshot(), .disarmed)
+
+        controller.updateContext(takeoverContext(route: audioRoute(.hdmi, generation: 9)))
+        controller.recordFreshRead(volumeReadResult(value: 55, audioGeneration: 7))
+        let unmatched = controller.prepare(
+            requests: [volumeWrite(value: 60)], event: event(.volumeUp)
+        )
+        XCTAssertEqual(unmatched[0].origin, .user)
+        now += 1
+    }
+
+    func testWriteFailureAndTapDisableImmediatelyDisarmAndNextSoundEventPasses() {
+        let controller = takeoverController()
+        controller.recordFreshRead(volumeReadResult(value: 60))
+        let first = controller.prepare(
+            requests: [volumeWrite(value: 65)], event: event(.volumeUp)
+        )
+        _ = controller.recordCompletion(first[0], succeeded: true)
+        XCTAssertTrue(controller.isArmed)
+
+        controller.recordFreshRead(volumeReadResult(value: 65))
+        let second = controller.prepare(
+            requests: [volumeWrite(value: 70)],
+            event: NormalizedMediaKeyEvent(
+                action: .volumeUp, isRepeat: false, wasConsumed: true
+            )
+        )
+        XCTAssertEqual(
+            controller.recordCompletion(second[0], succeeded: false),
+            .failed(showHUD: true)
+        )
+        XCTAssertFalse(controller.isArmed)
+
+        let consumption = MediaKeyEventConsumptionController(now: { 1 })
+        consumption.update(MediaKeyConsumptionSnapshot(
+            canConsumeVolume: true, canConsumeMute: true, expiresAt: 10
+        ))
+        consumption.disarm() // same fail-open action used for event-tap timeout/disable
+        XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .passThrough)
+    }
+
+    func testAllVolumeTargetsMustCompleteBeforeArmingAndHUDDoesNotInventOneSharedValue() {
+        let keys: Set<DDCWriteKey> = [
+            DDCWriteKey(stableID: "A", command: .volume),
+            DDCWriteKey(stableID: "B", command: .volume)
+        ]
+        let controller = MediaKeyVolumeTakeoverController(
+            context: MediaKeyVolumeTakeoverController.Context(
+                optIn: true, accessibilityTrusted: true, route: audioRoute(.hdmi),
+                topologyTrusted: true, runtimeGeneration: 3, targetKeys: keys
+            ),
+            now: { 1 }
+        )
+        controller.recordFreshRead(MediaKeyFreshReadResult(
+            request: MediaKeyFreshReadRequest(
+                event: event(.volumeUp), linkAllDisplays: false,
+                runtimeGeneration: 3, audioRouteGeneration: 7,
+                targets: [freshTarget("A"), freshTarget("B")]
+            ),
+            targets: [target("A", value: 20), target("B", value: 45)],
+            coalescedRepeatCount: 0
+        ))
+        let requests = controller.prepare(
+            requests: [volumeWrite(value: 25), DDCWriteRequest(
+                key: DDCWriteKey(stableID: "B", command: .volume),
+                selector: "selector-B", value: 50
+            )],
+            event: event(.volumeUp)
+        )
+        XCTAssertEqual(controller.recordCompletion(requests[0], succeeded: true), .pending)
+        XCTAssertFalse(controller.isArmed)
+        guard case .succeeded(let hud) = controller.recordCompletion(
+            requests[1], succeeded: true
+        ) else { return XCTFail("expected all-target success") }
+        XCTAssertTrue(controller.isArmed)
+        XCTAssertEqual(hud.detail, "已提交到 2 台显示器（25%–50%）")
+    }
+
+    func testAlreadyArmedBoundaryNoChangeKeepsShortFreshEvidenceAndShowsCurrentValue() {
+        let controller = takeoverController()
+        controller.recordFreshRead(volumeReadResult(value: 95))
+        let writes = controller.prepare(
+            requests: [volumeWrite(value: 100)], event: event(.volumeUp)
+        )
+        _ = controller.recordCompletion(writes[0], succeeded: true)
+        XCTAssertTrue(controller.isArmed)
+
+        controller.recordFreshRead(volumeReadResult(value: 100))
+        let presentation = controller.noChangePresentation(for: event(.volumeUp))
+        XCTAssertEqual(presentation?.detail, "当前读取 100 / 100（100%）")
+        XCTAssertTrue(controller.isArmed)
+    }
+
+    func testSuccessfulVolumeWriteMakesMuteDownAndItsKeyUpConsumableForSafeRestore() {
+        let controller = takeoverController()
+        controller.recordFreshRead(volumeReadResult(value: 35))
+        let writes = controller.prepare(
+            requests: [volumeWrite(value: 0)], event: event(.mute)
+        )
+        _ = controller.recordCompletion(writes[0], succeeded: true)
+        XCTAssertTrue(controller.consumptionSnapshot().canConsumeMute)
+
+        let consumption = MediaKeyEventConsumptionController(now: { 1 })
+        consumption.update(controller.consumptionSnapshot())
+        XCTAssertEqual(consumption.disposition(for: captured(.mute)), .consume)
+        XCTAssertEqual(consumption.disposition(for: captured(.mute, phase: .up)), .consume)
+    }
+
+    func testTakeoverPresentationExplainsOptInPermissionAndFirstPassSafety() {
+        let disabled = MediaKeyVolumeTakeoverPresentation.make(
+            enabled: false, accessibilityTrusted: false, monitorState: .passive,
+            route: .unavailable, armed: false
+        )
+        XCTAssertFalse(disabled.enabled)
+        XCTAssertTrue(disabled.detail.contains("默认关闭"))
+        XCTAssertTrue(disabled.detail.contains("HDMI/DisplayPort"))
+
+        let permission = MediaKeyVolumeTakeoverPresentation.make(
+            enabled: true, accessibilityTrusted: false, monitorState: .passive,
+            route: audioRoute(.hdmi), armed: false
+        )
+        XCTAssertEqual(permission.actionTitle, "申请辅助功能权限")
+        XCTAssertTrue(permission.detail.contains("不吞按键"))
+
+        let waiting = MediaKeyVolumeTakeoverPresentation.make(
+            enabled: true, accessibilityTrusted: true, monitorState: .passive,
+            route: audioRoute(.displayPort), armed: false
+        )
+        XCTAssertTrue(waiting.detail.contains("首次按键仍交给 macOS"))
+    }
+
+    func testHUDModelLabelsValuesAsSubmittedAndSupportsMultipleTargets() {
+        let single = DDCVolumeHUDPresentation.submitted(value: 30, maximum: 60)
+        XCTAssertEqual(single.detail, "已提交 30 / 60（50%）")
+        XCTAssertFalse(single.isFailure)
+        let multiple = DDCVolumeHUDPresentation.submitted(values: [
+            (value: 20, maximum: 100), (value: 50, maximum: 100)
+        ])
+        XCTAssertEqual(multiple?.detail, "已提交到 2 台显示器（20%–50%）")
+        XCTAssertTrue(DDCVolumeHUDPresentation.failed.isFailure)
+    }
+
     private func event(_ action: MediaKeyAction, repeatEvent: Bool = false) -> NormalizedMediaKeyEvent {
         NormalizedMediaKeyEvent(action: action, isRepeat: repeatEvent)
     }
@@ -568,6 +826,67 @@ final class MediaKeyDDCTests: XCTestCase {
         MediaKeyEventNormalizer.normalize(
             subtype: MediaKeyEventNormalizer.auxiliaryControlButtonsSubtype,
             data1: data1(key: key, repeatEvent: repeatEvent)
+        )
+    }
+
+    private func captured(
+        _ action: MediaKeyAction,
+        phase: MediaKeyEventPhase = .down,
+        repeatEvent: Bool = false
+    ) -> CapturedMediaKeyEvent {
+        CapturedMediaKeyEvent(action: action, phase: phase, isRepeat: repeatEvent)
+    }
+
+    private func audioRoute(
+        _ transport: AudioOutputTransport,
+        volumeSettable: Bool = false,
+        muteSettable: Bool = false,
+        generation: UInt64 = 7
+    ) -> AudioOutputRouteSnapshot {
+        AudioOutputRouteSnapshot(
+            transport: transport, isAlive: true,
+            systemVolumeSettable: volumeSettable,
+            systemMuteSettable: muteSettable,
+            isComplete: true, generation: generation
+        )
+    }
+
+    private func takeoverContext(
+        route: AudioOutputRouteSnapshot? = nil
+    ) -> MediaKeyVolumeTakeoverController.Context {
+        MediaKeyVolumeTakeoverController.Context(
+            optIn: true, accessibilityTrusted: true,
+            route: route ?? audioRoute(.hdmi), topologyTrusted: true,
+            runtimeGeneration: 3,
+            targetKeys: [DDCWriteKey(stableID: "A", command: .volume)]
+        )
+    }
+
+    private func takeoverController(
+        now: @escaping () -> TimeInterval = { 1 }
+    ) -> MediaKeyVolumeTakeoverController {
+        MediaKeyVolumeTakeoverController(context: takeoverContext(), now: now)
+    }
+
+    private func volumeReadResult(
+        value: Int,
+        audioGeneration: UInt64 = 7
+    ) -> MediaKeyFreshReadResult {
+        MediaKeyFreshReadResult(
+            request: MediaKeyFreshReadRequest(
+                event: event(.volumeUp), linkAllDisplays: false,
+                runtimeGeneration: 3, audioRouteGeneration: audioGeneration,
+                targets: [freshTarget("A")]
+            ),
+            targets: [target("A", value: value)],
+            coalescedRepeatCount: 0
+        )
+    }
+
+    private func volumeWrite(value: Int) -> DDCWriteRequest {
+        DDCWriteRequest(
+            key: DDCWriteKey(stableID: "A", command: .volume),
+            selector: "selector-A", value: value
         )
     }
 

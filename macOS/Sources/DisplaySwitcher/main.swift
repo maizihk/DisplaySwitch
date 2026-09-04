@@ -224,12 +224,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var mediaKeyRuntimeGeneration: UInt64 = 0
     private var mediaKeyRuntimeStageTrace = MediaKeyRuntimeStageTrace()
     private var mediaKeyPhysicalEvidence = DDCPhysicalEnumerationEvidence.untrusted
+    private let mediaKeyConsumptionController = MediaKeyEventConsumptionController()
+    private let mediaKeyVolumeTakeoverController = MediaKeyVolumeTakeoverController()
+    private let audioOutputRouteMonitor = CoreAudioOutputRouteMonitor()
+    private lazy var ddcVolumeHUDController = DDCVolumeHUDController()
+    private var audioOutputRouteSnapshot = AudioOutputRouteSnapshot.unavailable
+    private var mediaKeyTakeoverLastDiagnostic = MediaKeyVolumeTakeoverDiagnostic.passive
+    private var mediaKeyTakeoverLastDisposition = MediaKeyVolumeTakeoverDiagnostic.passedThrough
+    private var mediaKeyTakeoverExpiryWorkItem: DispatchWorkItem?
     private var mediaKeyPhysicalTopologyTrusted: Bool {
         MediaKeyTopologyPolicy.allows(mediaKeyPhysicalEvidence)
     }
-    private lazy var mediaKeyMonitor = MediaKeyEventMonitor { [weak self] event in
-        self?.handleMediaKeyEvent(event)
-    }
+    private lazy var mediaKeyMonitor = MediaKeyEventMonitor(
+        handler: { [weak self] event in self?.handleMediaKeyEvent(event) },
+        disposition: { [weak self] event in
+            self?.mediaKeyTapDisposition(for: event) ?? .passThrough
+        },
+        onTapDisabled: { [weak self] in
+            DispatchQueue.main.async { self?.handleMediaKeyTapDisabled() }
+        }
+    )
     private let usbMonitor = USBMonitor()
     private lazy var localUSBSwitchCoordinator = LocalUSBSwitchCoordinator(
         configuration: localUSBRuntimeConfiguration(),
@@ -340,6 +354,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.onRequestMediaKeyPermission = { [weak self] in
             self?.refreshMediaKeyMonitor(requestPermission: true)
         }
+        controller.onMediaKeyVolumeTakeoverChanged = { [weak self] _ in
+            self?.mediaKeyVolumeTakeoverConfigurationChanged()
+        }
+        controller.onRequestAccessibilityPermission = { [weak self] in
+            AccessibilityTrust.request()
+            self?.mediaKeyVolumeTakeoverConfigurationChanged()
+        }
         controller.onWriteDDC = { [weak self] stableID, command, value in
             guard let self,
                   let entry = self.configurations.first(where: {
@@ -365,6 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             self?.refreshDDCOperationAccess()
         }
         controller.updateMediaKeyShortcutPresentation(mediaKeyShortcutPresentation())
+        controller.updateMediaKeyVolumeTakeoverPresentation(mediaKeyVolumeTakeoverPresentation())
         return controller
     }()
 
@@ -412,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 switch result {
                 case .success(let value):
                     self.mediaKeyRouter.recordCompletion(request, succeeded: true)
+                    self.handleMediaKeyTakeoverWriteCompletion(request, succeeded: true)
                     guard let index = self.configurations.first(where: {
                         ($0.value.id ?? $0.value.selector).caseInsensitiveCompare(request.key.stableID) == .orderedSame
                     })?.key,
@@ -431,12 +454,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                     )
                 case .failure(let error):
                     self.mediaKeyRouter.recordCompletion(request, succeeded: false)
+                    self.handleMediaKeyTakeoverWriteCompletion(request, succeeded: false)
                     self.ddcValueSamples[request.key.stableID.lowercased()]?[request.key.command] = nil
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
                         value: nil, error: error
                     )
-                    self.showError(title: "显示器调节失败", error: error)
+                    if case .user = request.origin {
+                        self.showError(title: "显示器调节失败", error: error)
+                    }
                 }
             }
         }
@@ -459,6 +485,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 // Route and enqueue every write before the next fresh read is put on workerQueue.
                 advance()
             }
+        }
+        audioOutputRouteMonitor.onChange = { [weak self] snapshot in
+            guard let self else { return }
+            self.audioOutputRouteSnapshot = snapshot
+            self.disarmMediaKeyVolumeTakeover(diagnostic: .passive)
+            self.updateMediaKeyVolumeTakeoverContext()
+            self.refreshMediaKeyMonitor(requestPermission: false)
         }
 
         if let button = statusItem.button {
@@ -499,14 +532,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         configureUSBMonitor()
         configurePeerTransport()
+        audioOutputRouteMonitor.start()
+        updateMediaKeyVolumeTakeoverContext()
         refreshMediaKeyMonitor(requestPermission: false)
         detectDisplays(showFailure: false)
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        if mediaKeyMonitorState != .active {
+        if mediaKeyMonitorState != .passive && mediaKeyMonitorState != .activeTakeover {
             refreshMediaKeyMonitor(requestPermission: false)
         }
+        updateMediaKeyVolumeTakeoverContext()
+        updateMediaKeyVolumeTakeoverPresentation()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -699,16 +736,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func handleMediaKeyEvent(_ event: NormalizedMediaKeyEvent) {
+        updateMediaKeyVolumeTakeoverContext()
         mediaKeyRuntimeStageTrace.beginEvent()
         updateMediaKeyRouteStatus(nil, override: "已收到系统媒体按键")
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "安全状态阻止写入")
+            failConsumedMediaKeyIfNeeded(event)
             return
         }
         guard linkedDDCTopologyResolved, mediaKeyPhysicalTopologyTrusted else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "物理显示器拓扑尚未可信确认")
+            failConsumedMediaKeyIfNeeded(event)
             return
         }
         let document = AppPreferences.localConfiguration
@@ -717,6 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }) else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(.noEnabledTargets)
+            failConsumedMediaKeyIfNeeded(event)
             return
         }
         let targets = entry.targets.map { target in
@@ -732,6 +773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         ) else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "当前没有可信可读取的物理显示器")
+            failConsumedMediaKeyIfNeeded(event)
             return
         }
         if event.action == .mute, event.isRepeat {
@@ -750,6 +792,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             event: event,
             linkAllDisplays: document.linkAllDisplays,
             runtimeGeneration: mediaKeyRuntimeGeneration,
+            audioRouteGeneration: audioOutputRouteSnapshot.generation,
             targets: targets
         ))
         switch disposition {
@@ -760,18 +803,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         case .repeatLimitReached:
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "按键重复过多，已拒绝本次事件")
+            failConsumedMediaKeyIfNeeded(event)
         case .queueFull:
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "媒体按键队列已满，已拒绝本次事件")
+            failConsumedMediaKeyIfNeeded(event)
         case .ignored:
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "DDC 操作当前不可用")
+            failConsumedMediaKeyIfNeeded(event)
         }
     }
 
     private func completeMediaKeyFreshRead(_ result: MediaKeyFreshReadResult) {
         let request = result.request
         guard request.runtimeGeneration == mediaKeyRuntimeGeneration,
+              (request.event.action.command != .volume
+                  || request.audioRouteGeneration == audioOutputRouteSnapshot.generation),
               configurationSafetyGate.allows(.ddc),
               usbLearningSafetyGate.allows(.ddc),
               linkedDDCTopologyResolved,
@@ -780,11 +828,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
               currentMediaKeyTargets(command: request.event.action.command) == request.targets else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "配置或显示器拓扑已变化，已取消")
+            if request.event.action.command == .volume {
+                disarmMediaKeyVolumeTakeover(diagnostic: .activeDisarmed)
+                if request.event.wasConsumed { ddcVolumeHUDController.show(.failed) }
+                refreshMediaKeyMonitor(requestPermission: false)
+            }
             return
         }
 
         if result.failedTargetCount > 0 {
             mediaKeyRuntimeStageTrace.append(.freshReadFailed)
+            if request.event.action.command == .volume {
+                disarmMediaKeyVolumeTakeover(diagnostic: .ddcFailed)
+                if request.event.wasConsumed { ddcVolumeHUDController.show(.failed) }
+                refreshMediaKeyMonitor(requestPermission: false)
+            }
         }
         for target in result.targets {
             if let sample = target.sample {
@@ -796,28 +854,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             command: request.event.action.command,
             targets: result.targets
         )
+        if request.event.action.command == .volume {
+            updateMediaKeyVolumeTakeoverContext()
+            mediaKeyVolumeTakeoverController.recordFreshRead(result)
+        }
 
         var finalOutcome: MediaKeyDDCRouteOutcome = .missingTrustedValues
-        var submittedCount = 0
+        var pendingRequests: [DDCWriteRequest] = []
         for offset in 0...result.coalescedRepeatCount {
             let event = offset == 0
                 ? request.event
-                : NormalizedMediaKeyEvent(action: request.event.action, isRepeat: true)
+                : NormalizedMediaKeyEvent(
+                    action: request.event.action,
+                    isRepeat: true,
+                    wasConsumed: request.event.wasConsumed
+                )
             let plan = mediaKeyRouter.plan(
                 event: event,
                 linkAllDisplays: request.linkAllDisplays,
                 targets: result.targets
             )
             finalOutcome = plan.outcome
-            submittedCount += plan.requests.count
-            for writeRequest in plan.requests {
-                ddcWriteCoordinator.submit(writeRequest)
-            }
+            pendingRequests.append(contentsOf: plan.requests)
         }
+        if request.event.action.command == .volume, !pendingRequests.isEmpty {
+            pendingRequests = mediaKeyVolumeTakeoverController.prepare(
+                requests: pendingRequests,
+                event: request.event
+            )
+        }
+        for writeRequest in pendingRequests { ddcWriteCoordinator.submit(writeRequest) }
+        let submittedCount = pendingRequests.count
         if submittedCount > 0 {
             mediaKeyRuntimeStageTrace.append(.writeSubmitted)
+            if request.event.action.command == .volume {
+                mediaKeyTakeoverLastDiagnostic = .ddcSubmitted
+            }
         } else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            if request.event.action.command == .volume {
+                if finalOutcome == .unchanged,
+                   let presentation = mediaKeyVolumeTakeoverController.noChangePresentation(
+                       for: request.event
+                   ) {
+                    mediaKeyTakeoverLastDiagnostic = .ddcSucceeded
+                    mediaKeyConsumptionController.update(
+                        mediaKeyVolumeTakeoverController.consumptionSnapshot()
+                    )
+                    ddcVolumeHUDController.show(presentation)
+                    scheduleMediaKeyTakeoverExpiry()
+                } else {
+                    disarmMediaKeyVolumeTakeover(diagnostic: .ddcFailed)
+                    if request.event.wasConsumed { ddcVolumeHUDController.show(.failed) }
+                    refreshMediaKeyMonitor(requestPermission: false)
+                }
+            }
         }
         updateMediaKeyRouteStatus(finalOutcome)
     }
@@ -842,13 +933,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                     lastRoute: mediaKeyLastStatusText
                 )
             )
+            updateMediaKeyVolumeTakeoverPresentation()
         }
     }
 
     private func refreshMediaKeyMonitor(requestPermission: Bool) {
-        mediaKeyMonitorState = mediaKeyMonitor.start(requestPermission: requestPermission)
+        let consumption = mediaKeyVolumeTakeoverController.consumptionSnapshot()
+        let wantsActive = consumption.canConsumeVolume || consumption.canConsumeMute
+        let desiredMode: MediaKeyEventTapMode = wantsActive ? .activeTakeover : .passive
+        mediaKeyMonitorState = mediaKeyMonitor.start(
+            mode: desiredMode,
+            requestPermission: desiredMode == .passive && requestPermission
+        )
+        if desiredMode == .activeTakeover, mediaKeyMonitorState != .activeTakeover {
+            disarmMediaKeyVolumeTakeover(diagnostic: .passive)
+            mediaKeyMonitorState = mediaKeyMonitor.start(
+                mode: .passive,
+                requestPermission: requestPermission
+            )
+        }
         if settingsWindowHasBeenShown {
             settingsWindowController.updateMediaKeyShortcutPresentation(mediaKeyShortcutPresentation())
+            updateMediaKeyVolumeTakeoverPresentation()
         }
     }
 
@@ -856,6 +962,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         .make(
             state: mediaKeyMonitorState,
             lastRoute: mediaKeyLastStatusText
+        )
+    }
+
+    private func mediaKeyVolumeTakeoverPresentation() -> MediaKeyVolumeTakeoverPresentation {
+        .make(
+            enabled: AppPreferences.mediaKeyVolumeTakeoverEnabled,
+            accessibilityTrusted: AccessibilityTrust.isTrusted,
+            monitorState: mediaKeyMonitorState,
+            route: audioOutputRouteSnapshot,
+            armed: mediaKeyVolumeTakeoverController.isArmed
+        )
+    }
+
+    private func updateMediaKeyVolumeTakeoverPresentation() {
+        guard settingsWindowHasBeenShown else { return }
+        settingsWindowController.updateMediaKeyVolumeTakeoverPresentation(
+            mediaKeyVolumeTakeoverPresentation()
+        )
+    }
+
+    private func updateMediaKeyVolumeTakeoverContext() {
+        let targetKeys = Set(currentMediaKeyTargets(command: .volume).map {
+            DDCWriteKey(stableID: $0.stableID, command: .volume)
+        })
+        mediaKeyVolumeTakeoverController.updateContext(.init(
+            optIn: AppPreferences.mediaKeyVolumeTakeoverEnabled,
+            accessibilityTrusted: AccessibilityTrust.isTrusted,
+            route: audioOutputRouteSnapshot,
+            topologyTrusted: linkedDDCTopologyResolved && mediaKeyPhysicalTopologyTrusted,
+            runtimeGeneration: mediaKeyRuntimeGeneration,
+            targetKeys: targetKeys
+        ))
+        mediaKeyConsumptionController.update(
+            mediaKeyVolumeTakeoverController.consumptionSnapshot()
+        )
+    }
+
+    private func mediaKeyTapDisposition(
+        for event: CapturedMediaKeyEvent
+    ) -> MediaKeyTapDisposition {
+        let disposition = mediaKeyConsumptionController.disposition(for: event)
+        if event.phase == .down, event.action.command == .volume {
+            DispatchQueue.main.async { [weak self] in
+                self?.mediaKeyTakeoverLastDisposition = disposition == .consume
+                    ? .consumed : .passedThrough
+            }
+        }
+        return disposition
+    }
+
+    private func handleMediaKeyTapDisabled() {
+        disarmMediaKeyVolumeTakeover(diagnostic: .passive)
+        refreshMediaKeyMonitor(requestPermission: false)
+    }
+
+    private func failConsumedMediaKeyIfNeeded(_ event: NormalizedMediaKeyEvent) {
+        guard event.action.command == .volume, event.wasConsumed else { return }
+        disarmMediaKeyVolumeTakeover(diagnostic: .ddcFailed)
+        ddcVolumeHUDController.show(.failed)
+        refreshMediaKeyMonitor(requestPermission: false)
+    }
+
+    private func mediaKeyVolumeTakeoverConfigurationChanged() {
+        disarmMediaKeyVolumeTakeover(diagnostic: .passive)
+        updateMediaKeyVolumeTakeoverContext()
+        refreshMediaKeyMonitor(requestPermission: false)
+    }
+
+    private func disarmMediaKeyVolumeTakeover(
+        diagnostic: MediaKeyVolumeTakeoverDiagnostic
+    ) {
+        mediaKeyTakeoverExpiryWorkItem?.cancel()
+        mediaKeyTakeoverExpiryWorkItem = nil
+        mediaKeyVolumeTakeoverController.disarm()
+        mediaKeyConsumptionController.disarm()
+        mediaKeyTakeoverLastDiagnostic = diagnostic
+        updateMediaKeyVolumeTakeoverPresentation()
+    }
+
+    private func handleMediaKeyTakeoverWriteCompletion(
+        _ request: DDCWriteRequest,
+        succeeded: Bool
+    ) {
+        switch mediaKeyVolumeTakeoverController.recordCompletion(request, succeeded: succeeded) {
+        case .unrelated, .pending:
+            return
+        case .failed(let showHUD):
+            mediaKeyRuntimeStageTrace.append(.writeFailed)
+            mediaKeyTakeoverLastDiagnostic = .ddcFailed
+            mediaKeyConsumptionController.disarm()
+            if showHUD || request.origin != .user { ddcVolumeHUDController.show(.failed) }
+            refreshMediaKeyMonitor(requestPermission: false)
+        case .succeeded(let presentation):
+            mediaKeyRuntimeStageTrace.append(.writeSucceeded)
+            mediaKeyTakeoverLastDiagnostic = .ddcSucceeded
+            mediaKeyConsumptionController.update(
+                mediaKeyVolumeTakeoverController.consumptionSnapshot()
+            )
+            ddcVolumeHUDController.show(presentation)
+            refreshMediaKeyMonitor(requestPermission: false)
+            scheduleMediaKeyTakeoverExpiry()
+        }
+    }
+
+    private func scheduleMediaKeyTakeoverExpiry() {
+        mediaKeyTakeoverExpiryWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.disarmMediaKeyVolumeTakeover(diagnostic: .activeDisarmed)
+            self.refreshMediaKeyMonitor(requestPermission: false)
+        }
+        mediaKeyTakeoverExpiryWorkItem = item
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + mediaKeyVolumeTakeoverController.remainingEvidenceTTL(),
+            execute: item
         )
     }
 
@@ -1511,6 +1732,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         settingsWindowHasBeenShown = true
         _ = NSApp.setActivationPolicy(SettingsWindowLifecycleState.open.activationPolicy)
         settingsWindowController.show()
+        settingsWindowController.updateMediaKeyShortcutPresentation(mediaKeyShortcutPresentation())
+        settingsWindowController.updateMediaKeyVolumeTakeoverPresentation(
+            mediaKeyVolumeTakeoverPresentation()
+        )
         if case .requiresUserReview(let error) = configurationSafetyGate.state {
             settingsWindowController.presentConfigurationSafetyWarning(error)
         }
@@ -1547,7 +1772,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             mediaKeyStatus: "monitor-\(mediaKeyMonitorState.diagnosticValue)"
                 + " route-\(mediaKeyLastRoute?.diagnosticValue ?? "none")"
                 + " topology-trusted-\(mediaKeyPhysicalTopologyTrusted)"
-                + " stages-\(mediaKeyRuntimeStageTrace.diagnosticValue)",
+                + " stages-\(mediaKeyRuntimeStageTrace.diagnosticValue)"
+                + " takeover-enabled-\(AppPreferences.mediaKeyVolumeTakeoverEnabled)"
+                + " audio-\(audioOutputRouteSnapshot.diagnosticValue)"
+                + " takeover-armed-\(mediaKeyVolumeTakeoverController.isArmed)"
+                + " event-\(mediaKeyTakeoverLastDisposition.rawValue)"
+                + " ddc-\(mediaKeyTakeoverLastDiagnostic.rawValue)",
             peerInspectionText: peerInspectionDiagnostics.exportText(),
             inputSourceText: inputSourceDiagnostics.exportText()
         )
@@ -1730,6 +1960,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     func applicationWillTerminate(_ notification: Notification) {
         mediaKeyMonitor.stop()
+        audioOutputRouteMonitor.stop()
+        mediaKeyTakeoverExpiryWorkItem?.cancel()
         invalidateMediaKeyRuntime(resetPhysicalEvidence: true)
         mediaKeyFreshReadCoordinator.setOperationsAllowed(false)
         ddcWriteCoordinator.cancelAll()
@@ -2010,6 +2242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         mediaKeyFreshReadCoordinator.invalidate()
         mediaKeyRouter.invalidateSessionState()
         mediaKeyRuntimeStageTrace.clear()
+        disarmMediaKeyVolumeTakeover(diagnostic: .activeDisarmed)
         if resetPhysicalEvidence {
             mediaKeyPhysicalEvidence = .untrusted
         }
