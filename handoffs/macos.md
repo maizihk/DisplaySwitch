@@ -1,6 +1,22 @@
 # macOS 交接记录
 
-## 当前状态：DS-030 托盘图标完整性与媒体键审计
+## 当前状态：DS-031 原生媒体键关联 DDC
+
+- 日期：2026-09-04
+- 分支：`codex/macos-media-keys-ddc`
+- 堆叠基线：`codex/macos-tray-icons-shortcuts-audit@eef0785b18f16f6c8ed71072378fdf62222a6a10`，即 PR #77；未叠加 Windows 分支。
+- 实现提交：`e251a2e`；PR 与文档提交以本分支最新记录为准。
+- 根因：此前只完成媒体键入口审计，运行时没有系统媒体动作监听、权限状态、可信读值路由、长按投影或静音恢复状态，因此 F1/F2/F10/F11/F12 只执行系统行为，没有关联外接显示器 DDC。
+- 监听与权限：新增 listen-only `CGEvent` session event tap，只接受 `NX_SYSDEFINED` 的辅助控制 key-down，并归一化系统亮度减/加、静音、音量减/加；普通 F 键和 Fn 本身不匹配。回调始终返回原 `CGEvent`，不会吞键或重发事件。权限使用 `CGPreflightListenEventAccess` / 用户按钮触发的 `CGRequestListenEventAccess`，属于输入监控，不要求辅助功能；拒绝或监听不可用只停用快捷键关联，其他功能保持工作。
+- DDC 语义：目标先经过现有功能开关、配置/学习安全门、在线运行时集合及 `DDCPhysicalEnumerationEvidence.isCompletePhysicalSnapshot` 物理拓扑门。联动关闭时在每台非估算可信值上分别增减 5，保持差值并跳过无可信值目标；联动开启时要求所有启用目标都有相同可信值，才写入同一绝对值，混合或未知整次零写入。亮度与音量长按复用既有 per-display latest-wins、generation 和取消，乐观投影只从可信样本起步，失败立即丢弃投影和失效样本。
+- 静音语义：只对已启用音量的可信目标工作；会话内按 stable ID 保存最近非零音量，第一次写 0，再次恢复。静音 repeat 不切换，缺失可信值/恢复值、能力不支持或联动恢复值不一致时零写入；状态不落盘，并在检测、配置重载、安全状态和退出时清空。
+- UI 与诊断：常规页新增媒体快捷键状态行，明确五个系统媒体动作、原生行为不受影响、输入监控设置路径及安全失败范围；诊断仅输出脱敏 monitor/route/topology 枚举，不含显示器 ID、权限数据库或本机路径。
+- 自动验证：完整 XCTest 234/234 通过，新增 fake 覆盖动作归一化、repeat、非吞事件、联动/非联动、混合/未知/估算、虚拟/RDP 类不可信拓扑、静音恢复、generation 取消和零真实硬件副作用。`build-app.sh` 完成 Release arm64 构建并使用本机有效 Apple Development 身份签名；输出 App 和 ZIP 解压副本均通过 `codesign --verify --deep --strict`，ZIP `unzip -t` 通过。
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-031-media-keys-macOS-test.zip`，SHA-256 `f1a255c202f89a3592ee084e416a9f688e2917d3e76174eadeacc53f9066e07e`。测试身份只适用于本机开发验证，不等于 Developer ID、公证或正式发布。
+- 待验证：首次申请/拒绝/系统设置重新允许输入监控，两种“将 F1、F2 等键用作标准功能键”模式，五类媒体键及长按重复，联动开启/关闭、混合/未知读值与真实外接显示器 DDC。未执行真实 DDC、USB、网络、唤醒、输入源或系统权限修改。
+- 安全边界：未修改 Windows、`PROTOCOL.md`、共享合同、配置 schema 或版本；没有为权限失败添加绕过，也未自动打开系统设置或改写 TCC。
+
+## 上一状态：DS-030 托盘图标完整性与媒体键审计
 
 - 日期：2026-09-03
 - 分支：`codex/macos-tray-icons-shortcuts-audit`
