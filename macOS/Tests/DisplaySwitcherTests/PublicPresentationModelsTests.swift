@@ -980,6 +980,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             ),
             detailedRecordingEnabled: true,
             ddcDiagnostics: [diagnostic],
+            mediaKeyStatus: "monitor-active route-applied-2 topology-trusted-true",
             peerInspectionText: "inspection=I1 stage=completed result=v2-available",
             inputSourceText: "op=O1 display=D1 stage=write-transport-result"
         ).text
@@ -988,6 +989,7 @@ final class PublicPresentationModelsTests: XCTestCase {
         XCTAssertTrue(report.contains("profile=P1 enabled=true endpoint-bound=true status=已连接"))
         XCTAssertTrue(report.contains("trigger-configured=true"))
         XCTAssertTrue(report.contains("display=D1 controls=luminance"))
+        XCTAssertTrue(report.contains("media-keys=monitor-active route-applied-2 topology-trusted-true"))
         XCTAssertTrue(report.contains("checksum legacy"))
         XCTAssertTrue(report.contains("does not access the network"))
         for privateValue in privateValues {

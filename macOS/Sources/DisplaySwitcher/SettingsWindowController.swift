@@ -221,6 +221,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     var onRefreshDisplays: (() -> Void)?
     var onDisplayDeleted: ((String, String) -> Void)?
     var onDetailedDiagnosticRecordingChanged: ((Bool) -> Void)?
+    var onRequestMediaKeyPermission: (() -> Void)?
     var onWindowClosed: (() -> Void)?
     var collaborationStatus: ((CollaborationProfile) -> CollaborationConnectionState)?
     var cachedDDCValue: ((String, DDCCommand) -> Int?)?
@@ -233,6 +234,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let linkedCheckbox = NSSwitch()
     private let launchAtLoginCheckbox = NSSwitch()
     private let detailedDiagnosticRecordingCheckbox = NSSwitch()
+    private let mediaKeyShortcutTitleLabel = NSTextField(labelWithString: "媒体快捷键关联需要输入监控权限")
+    private let mediaKeyShortcutDetailLabel = NSTextField(wrappingLabelWithString: "")
+    private lazy var requestMediaKeyPermissionButton = NSButton(
+        title: "申请权限",
+        target: self,
+        action: #selector(requestMediaKeyPermission)
+    )
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
     private let usbCollaborationProfilePopup = NSPopUpButton()
@@ -324,6 +332,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         window.delegate = self
         buildInterface()
         updateLocalNetworkPermissionPresentation(.notChecked)
+        updateMediaKeyShortcutPresentation(
+            .make(state: .permissionRequired, lastRoute: nil)
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -398,6 +409,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     func updateUSBSwitchStatus(_ text: String, isError: Bool) {
         usbStatusLabel.stringValue = text
         usbStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    func updateMediaKeyShortcutPresentation(_ presentation: MediaKeyShortcutPresentation) {
+        mediaKeyShortcutTitleLabel.stringValue = presentation.title
+        mediaKeyShortcutDetailLabel.stringValue = presentation.detail
+        requestMediaKeyPermissionButton.title = presentation.actionTitle ?? ""
+        requestMediaKeyPermissionButton.isHidden = presentation.actionTitle == nil
     }
 
     func refreshDisplayConfigurationProjection() {
@@ -487,7 +505,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
                     title: "详细诊断记录",
                     description: "默认关闭。仅在排查问题时开启；关闭会清空本次会话的详细记录。",
                     symbolName: "stethoscope"
-                )
+                ),
+                separator(),
+                mediaKeyShortcutRow()
             ])
         ]))
 
@@ -535,7 +555,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             removeProfileButton,
             refreshDisplaysButton,
             refreshDiagnosticPreviewButton,
-            copyDiagnosticPreviewButton
+            copyDiagnosticPreviewButton,
+            requestMediaKeyPermissionButton
         ] {
             SettingsActionButtonStyle.apply(to: button)
         }
@@ -552,6 +573,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         removeProfileButton.setAccessibilityLabel("删除协同配置")
         inspectProfileButton.setAccessibilityLabel("检测当前协同配置")
         requestLocalNetworkPermissionButton.setAccessibilityLabel("检查本地网络权限")
+        requestMediaKeyPermissionButton.setAccessibilityLabel("申请媒体快捷键输入监控权限")
         learnUSBButton.setAccessibilityLabel("学习 USB 设备")
         peerStatusLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         let peerHint = NSTextField(wrappingLabelWithString:
@@ -1139,6 +1161,45 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         return row
     }
 
+    private func mediaKeyShortcutRow() -> NSView {
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: "keyboard.badge.ellipsis", accessibilityDescription: "媒体快捷键")
+        icon.contentTintColor = .secondaryLabelColor
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        mediaKeyShortcutTitleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        mediaKeyShortcutDetailLabel.font = .systemFont(ofSize: 11)
+        mediaKeyShortcutDetailLabel.textColor = .secondaryLabelColor
+        mediaKeyShortcutDetailLabel.maximumNumberOfLines = 3
+        let labels = NSStackView(views: [mediaKeyShortcutTitleLabel, mediaKeyShortcutDetailLabel])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        labels.translatesAutoresizingMaskIntoConstraints = false
+
+        requestMediaKeyPermissionButton.setContentHuggingPriority(.required, for: .horizontal)
+        requestMediaKeyPermissionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.addSubview(icon)
+        row.addSubview(labels)
+        row.addSubview(requestMediaKeyPermissionButton)
+        NSLayoutConstraint.activate([
+            row.widthAnchor.constraint(equalToConstant: 590),
+            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
+            icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 22),
+            icon.heightAnchor.constraint(equalToConstant: 22),
+            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
+            labels.centerYAnchor.constraint(equalTo: row.centerYAnchor),
+            labels.trailingAnchor.constraint(lessThanOrEqualTo: requestMediaKeyPermissionButton.leadingAnchor, constant: -16),
+            requestMediaKeyPermissionButton.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
+            requestMediaKeyPermissionButton.centerYAnchor.constraint(equalTo: row.centerYAnchor)
+        ])
+        return row
+    }
+
     private func displayReadControls(index: Int, name: String) -> (button: NSButton, status: NSTextField) {
         let readButton = NSButton(title: "读取 DDC 参数", target: self, action: #selector(readDisplayDDC(_:)))
         SettingsActionButtonStyle.apply(to: readButton)
@@ -1457,6 +1518,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     @objc private func refreshDisplays() {
         onRefreshDisplays?()
+    }
+
+    @objc private func requestMediaKeyPermission() {
+        onRequestMediaKeyPermission?()
     }
 
     @objc private func confirmDeleteDisplay(_ sender: NSButton) {

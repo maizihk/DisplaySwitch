@@ -304,6 +304,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             cancellation: { [weak self] in self?.ddcController.cancelAll() }
         )
     )
+    private var mediaKeyRouter = MediaKeyDDCRouter()
+    private var mediaKeyMonitorState: MediaKeyMonitorState = .unavailable
+    private var mediaKeyLastRoute: MediaKeyDDCRouteOutcome?
+    private var mediaKeyPhysicalTopologyTrusted = false
+    private lazy var mediaKeyMonitor = MediaKeyEventMonitor { [weak self] event in
+        self?.handleMediaKeyEvent(event)
+    }
     private let usbMonitor = USBMonitor()
     private lazy var localUSBSwitchCoordinator = LocalUSBSwitchCoordinator(
         configuration: localUSBRuntimeConfiguration(),
@@ -411,6 +418,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         controller.onDetailedDiagnosticRecordingChanged = { [weak self] _ in
             self?.clearDetailedDiagnostics()
         }
+        controller.onRequestMediaKeyPermission = { [weak self] in
+            self?.refreshMediaKeyMonitor(requestPermission: true)
+        }
         controller.onWriteDDC = { [weak self] stableID, command, value in
             guard let self,
                   let entry = self.configurations.first(where: {
@@ -435,6 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             self?.ddcController.cancelAll()
             self?.refreshDDCOperationAccess()
         }
+        controller.updateMediaKeyShortcutPresentation(mediaKeyShortcutPresentation())
         return controller
     }()
 
@@ -481,6 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 guard let self else { return }
                 switch result {
                 case .success(let value):
+                    self.mediaKeyRouter.recordCompletion(request, succeeded: true)
                     guard let index = self.configurations.first(where: {
                         ($0.value.id ?? $0.value.selector).caseInsensitiveCompare(request.key.stableID) == .orderedSame
                     })?.key,
@@ -499,6 +511,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         value: value, error: nil
                     )
                 case .failure(let error):
+                    self.mediaKeyRouter.recordCompletion(request, succeeded: false)
+                    self.ddcValueSamples[request.key.stableID.lowercased()]?[request.key.command] = nil
                     self.settingsWindowController.updateDDCWriteStatus(
                         stableID: request.key.stableID, command: request.key.command,
                         value: nil, error: error
@@ -546,7 +560,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         }
         configureUSBMonitor()
         configurePeerTransport()
+        refreshMediaKeyMonitor(requestPermission: false)
         detectDisplays(showFailure: false)
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if mediaKeyMonitorState != .active {
+            refreshMediaKeyMonitor(requestPermission: false)
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -621,6 +642,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         ddcWriteCoordinator.cancelAll()
+        mediaKeyRouter.invalidateSessionState()
+        mediaKeyPhysicalTopologyTrusted = false
+        ddcValueSamples.removeAll()
         let existing = AppPreferences.loadDisplayConfigurations().configurations
         displayDeletionAvailabilityTracker.beginDetection()
         configurations.removeAll()
@@ -659,6 +683,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         })
                         self.linkedDDCRuntimeConfigurations = self.configurations
                         self.linkedDDCTopologyResolved = true
+                        self.mediaKeyPhysicalTopologyTrusted = MediaKeyTopologyPolicy.allows(
+                            detectedScan.physicalEvidence
+                        )
                         let savedDocument = AppPreferences.localConfiguration
                         self.displayDeletionAvailabilityTracker.recordSuccessfulDetection(
                             detected: detectedDisplays,
@@ -687,6 +714,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 DispatchQueue.main.async {
                     self?.linkedDDCTopologyResolved = false
                     self?.linkedDDCRuntimeConfigurations.removeAll()
+                    self?.mediaKeyPhysicalTopologyTrusted = false
+                    self?.mediaKeyRouter.invalidateSessionState()
                     self?.displayDeletionAvailabilityTracker.recordFailureOrUntrustedResult()
                     self?.rebuildDisplayMenuItems()
                     if self?.settingsWindowHasBeenShown == true {
@@ -732,6 +761,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         ) {
             ddcWriteCoordinator.submit(request)
         }
+    }
+
+    private func handleMediaKeyEvent(_ event: NormalizedMediaKeyEvent) {
+        guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else {
+            updateMediaKeyRouteStatus(nil, override: "安全状态阻止写入")
+            return
+        }
+        guard linkedDDCTopologyResolved, mediaKeyPhysicalTopologyTrusted else {
+            updateMediaKeyRouteStatus(nil, override: "物理显示器拓扑尚未可信确认")
+            return
+        }
+        let document = AppPreferences.localConfiguration
+        guard let entry = linkedDDCEntries(visibility: .settings).first(where: {
+            $0.command == event.action.command
+        }) else {
+            updateMediaKeyRouteStatus(.noEnabledTargets)
+            return
+        }
+        let targets = entry.targets.map { target in
+            MediaKeyDDCTarget(
+                stableID: target.stableID,
+                selector: target.selector,
+                sample: ddcValueSamples[target.stableID.lowercased()]?[event.action.command]
+            )
+        }
+        let plan = mediaKeyRouter.plan(
+            event: event,
+            linkAllDisplays: document.linkAllDisplays,
+            targets: targets
+        )
+        updateMediaKeyRouteStatus(plan.outcome)
+        for request in plan.requests {
+            ddcWriteCoordinator.submit(request)
+        }
+    }
+
+    private func updateMediaKeyRouteStatus(
+        _ outcome: MediaKeyDDCRouteOutcome?,
+        override: String? = nil
+    ) {
+        mediaKeyLastRoute = outcome
+        if settingsWindowHasBeenShown {
+            settingsWindowController.updateMediaKeyShortcutPresentation(
+                .make(
+                    state: mediaKeyMonitorState,
+                    lastRoute: override ?? outcome?.userFacingValue
+                )
+            )
+        }
+    }
+
+    private func refreshMediaKeyMonitor(requestPermission: Bool) {
+        mediaKeyMonitorState = mediaKeyMonitor.start(requestPermission: requestPermission)
+        if settingsWindowHasBeenShown {
+            settingsWindowController.updateMediaKeyShortcutPresentation(mediaKeyShortcutPresentation())
+        }
+    }
+
+    private func mediaKeyShortcutPresentation() -> MediaKeyShortcutPresentation {
+        .make(
+            state: mediaKeyMonitorState,
+            lastRoute: mediaKeyLastRoute?.userFacingValue
+        )
     }
 
     private func readDDCForSettings(stableID: String) {
@@ -1419,6 +1511,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             ddcCapabilities: ddcController.capabilities,
             detailedRecordingEnabled: AppPreferences.detailedDiagnosticRecordingEnabled,
             ddcDiagnostics: diagnostics,
+            mediaKeyStatus: "monitor-\(mediaKeyMonitorState.diagnosticValue)"
+                + " route-\(mediaKeyLastRoute?.diagnosticValue ?? "none")"
+                + " topology-trusted-\(mediaKeyPhysicalTopologyTrusted)",
             peerInspectionText: peerInspectionDiagnostics.exportText(),
             inputSourceText: inputSourceDiagnostics.exportText()
         )
@@ -1433,6 +1528,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     @discardableResult
     private func applyPersistedDisplayRuntimeState() -> DisplayConfigurationStoreV5Document {
         ddcWriteCoordinator.cancelAll()
+        mediaKeyRouter.invalidateSessionState()
         let result = AppPreferences.loadDisplayConfigurations()
         configurationSafetyGate.apply(result)
         refreshDDCOperationAccess()
@@ -1596,6 +1692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        mediaKeyMonitor.stop()
+        mediaKeyRouter.invalidateSessionState()
         ddcWriteCoordinator.cancelAll()
         peerTransport.stop()
         releaseSingleInstanceLock()
@@ -1836,6 +1934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func enterConfigurationSafetyState(_ error: DisplayConfigurationStoreError) {
         configurationSafetyGate.requireUserReview(error)
+        mediaKeyRouter.invalidateSessionState()
         localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration())
         refreshDDCOperationAccess()
         usbMonitor.stop()
