@@ -5,16 +5,16 @@
 - 日期：2026-09-04
 - 分支：`codex/macos-media-keys-ddc`
 - 堆叠基线：`codex/macos-tray-icons-shortcuts-audit@eef0785b18f16f6c8ed71072378fdf62222a6a10`，即 PR #77；未叠加 Windows 分支。
-- 实现提交：`e251a2e`、实机失败修复 `2c95e21`；PR：[#79](https://github.com/maizihk/DisplaySwitch/pull/79)，目标为前置图标分支，保持开放且不合并。
+- 实现提交：`e251a2e`、新鲜读取修复 `2c95e21`、事件顺序修复 `bfaa101`；PR：[#79](https://github.com/maizihk/DisplaySwitch/pull/79)，目标为前置图标分支，保持开放且不合并。
 - CI：PR #79 当前没有检查；macOS workflow 只对目标为 `main` 的 PR 自动运行。前置 #77 合并并将 #79 改为 `main` 后再执行最终 GitHub Actions 验证，不用手动 workflow 代替。
 - 原实现根因：启动、托盘打开、显示器检测和配置重载只从本地缓存恢复 DDC 值，并明确标记为 `estimated`；媒体键路由为避免猜值会拒绝所有估算样本，所以冷启动即使 event tap 已收到 F1/F2/F10/F11/F12 对应的系统媒体动作，也会停在 `missingTrustedValues`，外接显示器保持零写入。菜单图标则只验证了 SF Symbol 名称能解析，没有对最终标准菜单项和自定义行的实际 image 所有权作生产覆盖。
 - 监听与权限：新增 listen-only `CGEvent` session event tap，只接受 `NX_SYSDEFINED` 的辅助控制 key-down，并归一化系统亮度减/加、静音、音量减/加；普通 F 键和 Fn 本身不匹配。回调始终返回原 `CGEvent`，不会吞键或重发事件。权限使用 `CGPreflightListenEventAccess` / 用户按钮触发的 `CGRequestListenEventAccess`，属于输入监控，不要求辅助功能；拒绝或监听不可用只停用快捷键关联，其他功能保持工作。
-- DDC 语义：媒体事件到达后，由可替换 fake 的 coordinator 在既有串行 worker 上对完整可信 CG/IOAV 一一匹配的在线启用目标执行新鲜 DDC 读取；只有真实、范围有效且非估算的结果进入路由。联动关闭时单台读取失败只跳过该目标；联动开启时任一失败、未知或混合值均整组零写入。读取期间同动作 repeat 最多合并 32 次，其他动作只占一个待处理槽；配置/拓扑 generation、安全门或退出变化会取消并拒绝迟到结果。所有写入继续走 per-display latest-wins coordinator，乐观投影在每批新鲜读取前清除。
+- DDC 语义：媒体事件到达后，由可替换 fake 的 coordinator 在既有串行 worker 上对完整可信 CG/IOAV 一一匹配的在线启用目标执行新鲜 DDC 读取；只有真实、范围有效且非估算的结果进入路由。联动关闭时单台读取失败只跳过该目标；联动开启时任一失败、未知或混合值均整组零写入。只在队列为空时与 active 连续同动作 repeat 合并，或与 FIFO 队尾连续同动作 repeat 合并；不同动作按到达顺序进入最多八批的队列，不再覆盖或重排。当前批在主线程完成路由并把写入提交到串行 worker 后显式确认，下一批读取才会排入 worker。repeat 最多合并 32 次，重复或队列超限均返回明确 disposition 并显示阻止状态；配置/拓扑 generation、安全门或退出变化会清空整队并拒绝迟到结果。所有写入继续走 per-display latest-wins coordinator，乐观投影在每批新鲜读取前清除。
 - 静音语义：只对已启用音量的可信目标工作；会话内按 stable ID 保存最近非零音量，第一次写 0，再次恢复。静音 repeat 不切换，缺失可信值/恢复值、能力不支持或联动恢复值不一致时零写入；状态不落盘，并在检测、配置重载、安全状态和退出时清空。
 - 菜单图标：实际构建的 USB 启用/停用、协同切换、显示器子菜单、亮度/对比度/音量自定义行、设置和退出共九种生产角色均进入统一投影。标准菜单项必有 16×16 template image，自定义行拥有自己的 `NSImageView`；SF Symbol 不可用时改用确定性单色自绘兜底，不再产生空 image。
 - UI 与诊断：常规页新增媒体快捷键状态行，明确五个系统媒体动作、原生行为不受影响、输入监控设置路径及安全失败范围；诊断新增脱敏 `event-seen`、`fresh-read-started`、`fresh-read-failed`、`route-blocked`、`write-submitted` 阶段，不含显示器 ID、权限数据库或本机路径。
-- 自动验证：定向 XCTest 55/55、完整 XCTest 244/244 通过；新增 fake 覆盖冷启动首次事件、新鲜读取成功/失败/部分成功、repeat 有界合并、单待处理槽、联动混合/未知、generation 变化、虚拟/RDP 类不可信拓扑、生产菜单 image 所有权/自绘兜底和零真实硬件副作用。`build-app.sh` 完成 Release arm64 构建并使用本机有效 Apple Development 身份签名；输出 App、打包暂存副本和 ZIP 解压副本均通过 `codesign --verify --deep --strict`，ZIP `unzip -t` 通过。
-- 测试包：`macOS/outputs/DisplaySwitcher-DS-031-media-keys-fresh-read-macOS-test.zip`，SHA-256 `fca99d8a3061e062ae9e4b9b5c51c6c398aa268ddcbea9071410b5049fb65871`。测试身份只适用于本机开发验证，不等于 Developer ID、公证或正式发布。
+- 自动验证：媒体键定向 XCTest 25/25、完整 XCTest 248/248 通过；新增 fake 覆盖冷启动首次事件、新鲜读取成功/失败/部分成功、`up/down/up` 在 98 边界按 `100→95→100` 执行、亮度/音量/静音三批不丢事件、下一批等待当前路由确认、连续 repeat 单读取与显式 cap、队列容量拒绝、generation 整队清空、联动混合/未知、虚拟/RDP 类不可信拓扑、生产菜单 image 所有权/自绘兜底和零真实硬件副作用。`build-app.sh` 完成 Release arm64 构建并使用本机有效 Apple Development 身份签名；输出 App、打包暂存副本和 ZIP 解压副本均通过 `codesign --verify --deep --strict`，ZIP `unzip -t` 通过。
+- 测试包：`macOS/outputs/DisplaySwitcher-DS-031-media-keys-fresh-read-macOS-test.zip`，SHA-256 `0e0a80a92b305280932e0846601d26e15f440e469a01b41093fb1d51c4adbf50`。测试身份只适用于本机开发验证，不等于 Developer ID、公证或正式发布。
 - 待验证：首次申请/拒绝/系统设置重新允许输入监控，两种“将 F1、F2 等键用作标准功能键”模式，五类媒体键及长按重复，联动开启/关闭、混合/未知读值与真实外接显示器 DDC。未执行真实 DDC、USB、网络、唤醒、输入源或系统权限修改。
 - 安全边界：未修改 Windows、`PROTOCOL.md`、共享合同、配置 schema 或版本；没有为权限失败添加绕过，也未自动打开系统设置或改写 TCC。
 
