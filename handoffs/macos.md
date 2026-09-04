@@ -5,7 +5,8 @@
 - 日期：2026-09-04
 - 分支：`codex/macos-media-keys-ddc`
 - 堆叠基线：`codex/macos-tray-icons-shortcuts-audit@eef0785b18f16f6c8ed71072378fdf62222a6a10`，即 PR #77；未叠加 Windows 分支。
-- 实现提交：`e251a2e`；PR 与文档提交以本分支最新记录为准。
+- 实现提交：`e251a2e`；PR：[#79](https://github.com/maizihk/DisplaySwitch/pull/79)，目标为前置图标分支，保持开放且不合并。
+- CI：PR #79 当前没有检查；macOS workflow 只对目标为 `main` 的 PR 自动运行。前置 #77 合并并将 #79 改为 `main` 后再执行最终 GitHub Actions 验证，不用手动 workflow 代替。
 - 根因：此前只完成媒体键入口审计，运行时没有系统媒体动作监听、权限状态、可信读值路由、长按投影或静音恢复状态，因此 F1/F2/F10/F11/F12 只执行系统行为，没有关联外接显示器 DDC。
 - 监听与权限：新增 listen-only `CGEvent` session event tap，只接受 `NX_SYSDEFINED` 的辅助控制 key-down，并归一化系统亮度减/加、静音、音量减/加；普通 F 键和 Fn 本身不匹配。回调始终返回原 `CGEvent`，不会吞键或重发事件。权限使用 `CGPreflightListenEventAccess` / 用户按钮触发的 `CGRequestListenEventAccess`，属于输入监控，不要求辅助功能；拒绝或监听不可用只停用快捷键关联，其他功能保持工作。
 - DDC 语义：目标先经过现有功能开关、配置/学习安全门、在线运行时集合及 `DDCPhysicalEnumerationEvidence.isCompletePhysicalSnapshot` 物理拓扑门。联动关闭时在每台非估算可信值上分别增减 5，保持差值并跳过无可信值目标；联动开启时要求所有启用目标都有相同可信值，才写入同一绝对值，混合或未知整次零写入。亮度与音量长按复用既有 per-display latest-wins、generation 和取消，乐观投影只从可信样本起步，失败立即丢弃投影和失效样本。
