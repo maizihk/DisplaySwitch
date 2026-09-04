@@ -424,7 +424,7 @@
 - [ ] 暂不启用全局媒体键监听，不申请辅助功能/输入监控权限，不吞系统事件，也不发送 DDC；需先明确联动关闭时控制哪台显示器、系统原生亮度/音量是否同步，以及 F10 静音的恢复值/显示器能力语义。
 - [ ] 菜单项图标、18 点状态图标在 1x/2x Retina、浅色/深色菜单栏及真实菜单布局中仍需 GUI 验证；未执行真实 DDC、USB、网络、唤醒或输入源动作。
 
-### DS-031 macOS 原生媒体键关联 DDC（自动验证完成，权限/实机待验）
+### DS-031 macOS 原生媒体键关联 DDC（亮度实机通过，音量接管待验）
 
 - [x] 使用只读 `CGEvent` session event tap 监听系统最终产生的 `NX_SYSDEFINED` 辅助控制动作，只归一化亮度减/加、静音、音量减/加；不匹配普通 F 键码、不单独监听 Fn，回调始终返回原事件，系统原生行为继续执行。
 - [x] 权限入口使用 `CGPreflightListenEventAccess` / `CGRequestListenEventAccess`，只申请输入监控而非辅助功能权限；未授权或监听创建失败时零 DDC 写入，常规、托盘、USB、协同和手动 DDC 不受影响，常规页给出明确状态与系统设置路径。
@@ -435,6 +435,13 @@
 - [x] 诊断增加脱敏阶段 `event-seen`、`fresh-read-started`、`fresh-read-failed`、`route-blocked`、`write-submitted`，用于区分系统是否产生媒体事件、读取失败和安全阻止；仍只监听 `NX_SYSDEFINED`，不增加普通 F/Fn 键监听。
 - [x] USB 开关状态、协同切换、显示器子菜单、亮度/对比度/音量自定义行、设置和退出均使用生产菜单角色投影；标准菜单项必有 16×16 template image，自定义行拥有独立 `NSImageView`，SF Symbol 不可用时使用确定性单色自绘图标，避免菜单图标缺失。
 - [x] fake 测试覆盖五类媒体动作、冷启动首次事件、新鲜读取成功/失败/部分成功、`up/down/up` 边界顺序、亮度/音量/静音 FIFO 不丢事件、下一批等待当前路由确认、连续 repeat 合并与显式容量上限、generation 整队取消、联动混合/未知、非吞事件、离线/虚拟/RDP 类不可信拓扑、静音存取、生产菜单图标和零真实硬件副作用；媒体键定向 XCTest 25/25、完整 XCTest 248/248、Apple Development Release arm64 构建、App 与 ZIP 解压副本严格验签及 ZIP 完整性均通过。
+- [x] 实机确认 F1/F2 已正确调节外接显示器 DDC 亮度，F10/F11/F12 也已实际改变显示器 VCP `0x62`；原生音量 OSD 仍出现的根因不是 DDC 读写失败，而是原事件 tap 明确使用 `.listenOnly` 并始终放行系统事件。
+- [x] 新增默认关闭、向后兼容的“HDMI/DP DDC 音量接管”本机 opt-in。CoreAudio 只使用公开 `AudioObject` 读取和监听默认输出、alive、精确 HDMI/DisplayPort transport、输出声道及系统 volume/mute 可写性；任何属性或监听不完整均 fail-closed。启用后，非 HDMI/DP 或系统可调输出纯交给 macOS 且零 DDC，符合条件 HDMI/DP 在权限不足时仍放行并执行 DDC；关闭时保留既有 listen-only + DDC 行为。
+- [x] 只有辅助功能已授权、完整可信物理拓扑、全部在线 `volumeEnabled` 目标、5 秒内非估算 `0x62` 样本以及配置/DDC/音频 generation 全部一致，且整批 DDC 写成功后才 armed。首次未 armed 按键继续交给 macOS 并照常走 DDC；armed 后 active tap 只吞 F10/F11/F12 的 down/repeat 与配对 key-up，F1/F2 和其他事件永远放行。读取/写入失败、输出/拓扑/配置变化、超时、tap 被禁用或队列拒绝立即 disarm，不申请 Post Event、不重放合成事件。
+- [x] 使用公开 AppKit 的非激活、忽略鼠标、跨 Space borderless `NSPanel` 显示“DDC 音量”和成功提交值/百分比；边界无写入时只标记“当前读取”，不冒充硬件回读或成功写入。常规页提供开关、辅助功能授权入口、被动/主动、音频路由和 armed 状态；诊断仅输出脱敏 transport/可写性、pass-through/consumed 与 DDC submitted/succeeded/failed。
+- [x] tap timeout/user-disable 在 event-tap callback 线程先同步锁内清空消费快照和残留 key-up ownership，再异步由主线程 disarm/切回 passive；active tap 不在安全状态更新前自行重启，同模式监听不重复重建。
+- [x] 新增 fake 测试覆盖权限、HDMI/DisplayPort 与系统可写性、输出切换、audio generation、首键放行后 armed、全目标写完成、sound down/repeat/配对 key-up、F1/F2 放行、F10 恢复、非显示/系统可调输出零 fresh read/write、tap-disable 返回前同步 fail-open、5 秒 TTL、HUD 提交/当前读取模型和零真实硬件副作用；媒体键定向 XCTest 38/38、完整 XCTest 261/261 通过。Release arm64、Apple Development App/ZIP 解压副本严格验签、ZIP 完整性与 arm64 架构均通过；测试包 SHA-256 `e0b02b201820d058207b95b1fef988482943136fb740ffef8010864dc69e9cdc`。
+- [ ] 仍需实机验证：首次开启/关闭 opt-in、辅助功能拒绝/允许/撤销，内建扬声器/耳机/USB/Bluetooth/AirPlay 与 macOS 可调 HDMI 的原生行为，符合条件的 HDMI/DP 首键放行及后续 F10/F11/F12 吞键、长按、切换默认输出、失败 HUD 和跨 Space/全屏 HUD。没有公开稳定 API 将 CoreAudio 输出映射到某一 CGDisplay，因此接管目标严格使用用户显式启用的全部在线 DDC 音量目标，不猜测映射。
 - [ ] 仍需用户在输入监控允许/拒绝/重新允许、标准功能键开关两种模式、长按重复、联动开关、混合/未知值及真实外接显示器上验证；自动验证未执行真实 DDC、USB、网络、唤醒或输入源动作。
 
 ### M-203 Bonjour/mDNS 自动发现
@@ -483,4 +490,4 @@
 | 2026-09-02 | DS-028 托盘与设置窗口生命周期 | 自动验证完成，GUI 待验 | 075e536、状态语义修复提交 | 托盘增加只反映持久化开关的匿名 USB 状态与全语义图标，DDC 行压缩为 252 点单行；学习/安全门只控制执行能力，不篡改设置状态文案；左右键只开菜单，设置窗口使用 regular/accessory 正常生命周期；定向 124/124 + 32/32、最新完整 XCTest 221/221 通过，真实 GUI 待验 |
 | 2026-09-02 | DS-029 离线显示器安全手动删除 | 自动验证完成，GUI 待验 | fc064b1、可信度修复提交 | 检测保留离线配置；CG 身份与本机 IOAV 物理服务一一完整匹配后才累计两次缺失并允许确认删除，虚拟/漏枚举结果拒绝；原子级联清映射和稳定身份缓存，部分映射保留、最后映射安全停用且零硬件/网络动作；安全复核定向 95/95、最新完整 XCTest 221/221 通过，真实断开/重接待验 |
 | 2026-09-03 | DS-030 macOS 托盘图标完整性与媒体键审计 | 图标自动验证完成，快捷键待定 | 5468c29、PR #77 | 菜单可见语义统一使用 16 点 template SF Symbol 候选；状态栏改为 18 点、90% 主体、6% 线宽的“显示器 + 百分号”template image；完整 XCTest 222/222、Release arm64 构建、App/ZIP 解压副本严格验签、ZIP 完整性检查及 GitHub Actions `build-and-test` 通过。媒体键全局媒体键尚未实现，目标勿按普通 F 键码监听；目标与系统事件语义确认前保持零监听、零 DDC。 |
-| 2026-09-04 | DS-031 macOS 原生媒体键关联 DDC | 实机失败根因与事件顺序已修复，权限/实机复验待完成 | e251a2e、2c95e21、bfaa101、PR #79 | 冷启动媒体键不再依赖 `estimated` 缓存：先新鲜读取完整可信物理目标，再按联动/非联动安全语义路由；不同动作按有界 FIFO 顺序执行，只合并连续同动作 repeat，当前批完成路由后才读下一批，容量超限明确拒绝，generation/安全门变化清空队列并作废迟到结果。真实菜单的九种生产角色均保证 16×16 template image，并有自绘兜底。媒体键定向 XCTest 25/25、完整 XCTest 248/248、Apple Development Release 构建、App/ZIP 解压副本严格验签和 ZIP 完整性通过；堆叠 PR 待前置合并后运行最终 CI。 |
+| 2026-09-04 | DS-031 macOS 原生媒体键关联 DDC | F1/F2 与 VCP 0x62 实机通过，安全音量接管自动验证完成 | e251a2e、2c95e21、bfaa101、be15fd8、321dcdd、PR #79 | 实机证明 F10/F11/F12 的 DDC 音量写已成功，残留系统 OSD 根因是 listen-only tap。新增默认关闭的 HDMI/DP opt-in：非显示/系统可调路由纯系统且零 DDC；符合条件的路由在 CoreAudio、辅助功能、完整拓扑、全部在线 volume 目标、5 秒可信样本和 generation 同时满足且整批写成功后才 active/armed。首键、tap disable 和所有失败均同步 fail-open，F1/F2 永不吞。公开 AppKit HUD 只显示提交值或边界当前读取。定向 38/38、完整 XCTest 261/261、Release arm64、Apple Development App/ZIP 解压副本严格验签及 ZIP 完整性通过；实机接管待验。 |
