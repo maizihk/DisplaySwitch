@@ -424,7 +424,7 @@
 - [ ] 暂不启用全局媒体键监听，不申请辅助功能/输入监控权限，不吞系统事件，也不发送 DDC；需先明确联动关闭时控制哪台显示器、系统原生亮度/音量是否同步，以及 F10 静音的恢复值/显示器能力语义。
 - [ ] 菜单项图标、18 点状态图标在 1x/2x Retina、浅色/深色菜单栏及真实菜单布局中仍需 GUI 验证；未执行真实 DDC、USB、网络、唤醒或输入源动作。
 
-### DS-031 macOS 原生媒体键关联 DDC（亮度实机通过，音量接管待验）
+### DS-031 macOS 原生媒体键关联 DDC（亮度/音量写入实机通过，接管与 UI 待验）
 
 - [x] 使用只读 `CGEvent` session event tap 监听系统最终产生的 `NX_SYSDEFINED` 辅助控制动作，只归一化亮度减/加、静音、音量减/加；不匹配普通 F 键码、不单独监听 Fn，回调始终返回原事件，系统原生行为继续执行。
 - [x] 权限入口使用 `CGPreflightListenEventAccess` / `CGRequestListenEventAccess`，只申请输入监控而非辅助功能权限；未授权或监听创建失败时零 DDC 写入，常规、托盘、USB、协同和手动 DDC 不受影响，常规页给出明确状态与系统设置路径。
@@ -439,9 +439,11 @@
 - [x] 新增默认关闭、向后兼容的“HDMI/DP DDC 音量接管”本机 opt-in。CoreAudio 只使用公开 `AudioObject` 读取和监听默认输出、alive、精确 HDMI/DisplayPort transport、输出声道及系统 volume/mute 可写性；任何属性或监听不完整均 fail-closed。启用后，非 HDMI/DP 或系统可调输出纯交给 macOS 且零 DDC，符合条件 HDMI/DP 在权限不足时仍放行并执行 DDC；关闭时保留既有 listen-only + DDC 行为。
 - [x] 只有辅助功能已授权、完整可信物理拓扑、全部在线 `volumeEnabled` 目标、非估算 `0x62` 新鲜样本以及配置/DDC/音频 generation 全部一致，且整批 DDC 写成功后才 session armed。首次未 armed 按键继续交给 macOS 并照常走 DDC；armed 不因普通闲置超时自动解除，直到输出/拓扑/目标/配置/generation/权限/opt-in/tap 或读写状态变化。每个已吞事件仍必须先完成与当前动作绑定的全目标新鲜读取，证据生成当前批次后即清除、不可跨事件复用；读取失败整批零写、一次失败 HUD 并立即 disarm。active tap 只吞 F10/F11/F12 的 down/repeat 与配对 key-up，F1/F2 和其他事件永远放行，不申请 Post Event、不重放合成事件。
 - [x] 使用公开 AppKit 的非激活、忽略鼠标、跨 Space borderless `NSPanel` 显示“DDC 音量”和成功提交值/百分比；边界无写入时只标记“当前读取”，不冒充硬件回读或成功写入。常规页提供开关、辅助功能授权入口、被动/主动、音频路由和 armed 状态；诊断仅输出脱敏 transport/可写性、pass-through/consumed 与 DDC submitted/succeeded/failed。
+- [x] 修复常规页权限区只隐藏按钮但保留固定高度容器的布局根因：输入监控与辅助功能分别保留自己的完整状态行，权限动作只作为行内 arranged subview 动态加入/移除；权限已满足时不留下空动作行或孤立分隔，状态变化立即重新布局。两种权限文案、按钮和 VoiceOver 分组保持独立，普通动作按钮统一 regular/rounded。
+- [x] DDC 音量 HUD 在 macOS 26 及以上使用公开 `NSGlassEffectView`，macOS 12–15 回退 `NSVisualEffectView`；统一连续圆角、动态描边/阴影、template 音量/静音/失败图标和紧凑进度。窗口按鼠标所在屏幕、无匹配屏幕时回退主屏，锚定 `visibleFrame` 右上角并保留安全边距；保持非激活、忽略鼠标、跨 Space/全屏，连续按键复用同一窗口并重置淡出版本，旧计时不能关闭新内容。
 - [x] tap timeout/user-disable 在 event-tap callback 线程先同步锁内清空消费快照和残留 key-up ownership，再异步由主线程 disarm/切回 passive；active tap 不在安全状态更新前自行重启，同模式监听不重复重建。
-- [x] 新增 fake 测试覆盖权限、HDMI/DisplayPort 与系统可写性、输出切换、audio generation、首键放行后 armed、全目标写完成、sound down/repeat/配对 key-up、F1/F2 放行、F10 恢复、非显示/系统可调输出零 fresh read/write、tap-disable 返回前同步 fail-open、一小时模拟闲置后仍接管但下一动作必须新鲜读取、旧事件证据不可复用、HUD 提交/当前读取模型和零真实硬件副作用；媒体键定向 XCTest 39/39、完整 XCTest 262/262 通过。Release arm64、Apple Development App/ZIP 解压副本严格验签、ZIP 完整性与 arm64 架构均通过；测试包 SHA-256 `beb92470bcd93a8fd4e0fc216ab4abaa40fa1c449150445fb10190215628b815`。
-- [ ] 仍需实机验证：首次开启/关闭 opt-in、辅助功能拒绝/允许/撤销，内建扬声器/耳机/USB/Bluetooth/AirPlay 与 macOS 可调 HDMI 的原生行为，符合条件的 HDMI/DP 首键放行及后续 F10/F11/F12 吞键、长按、切换默认输出、失败 HUD 和跨 Space/全屏 HUD。没有公开稳定 API 将 CoreAudio 输出映射到某一 CGDisplay，因此接管目标严格使用用户显式启用的全部在线 DDC 音量目标，不猜测映射。
+- [x] 新增 fake 测试覆盖权限、HDMI/DisplayPort 与系统可写性、输出切换、audio generation、首键放行后 armed、全目标写完成、sound down/repeat/配对 key-up、F1/F2 放行、F10 恢复、非显示/系统可调输出零 fresh read/write、tap-disable 返回前同步 fail-open、一小时模拟闲置后仍接管但下一动作必须新鲜读取、旧事件证据不可复用，以及权限行完整性/两种权限独立、HUD 新旧材质选择、多屏右上角、连续更新/失败/非激活行为和零真实硬件副作用；媒体键定向 XCTest 46/46、完整 XCTest 269/269 通过。Release arm64 使用 Apple Development 签名，输出 App 与最终 ZIP 解压副本均严格验签，ZIP 完整性和 arm64 架构通过；测试包 SHA-256 `a044952b64054b3eabda4329ef86cf3ba4dcf4c3ce5b89ca57edb808dae6f4b1`。
+- [ ] 仍需实机验证：首次开启/关闭 opt-in、辅助功能拒绝/允许/撤销，内建扬声器/耳机/USB/Bluetooth/AirPlay 与 macOS 可调 HDMI 的原生行为，符合条件的 HDMI/DP 首键放行及后续 F10/F11/F12 吞键、长按、切换默认输出；权限行在权限切换、浅/深色与 VoiceOver 下的紧凑布局，以及 macOS 26 液态玻璃、旧系统回退、多屏右上角、失败、连续按键、跨 Space/全屏 HUD。没有公开稳定 API 将 CoreAudio 输出映射到某一 CGDisplay，因此接管目标严格使用用户显式启用的全部在线 DDC 音量目标，不猜测映射。
 - [ ] 仍需用户在输入监控允许/拒绝/重新允许、标准功能键开关两种模式、长按重复、联动开关、混合/未知值及真实外接显示器上验证；自动验证未执行真实 DDC、USB、网络、唤醒或输入源动作。
 
 ### M-203 Bonjour/mDNS 自动发现
