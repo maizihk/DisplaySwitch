@@ -62,7 +62,7 @@
       <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
       <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
       <GenerateDebugInformation Condition="'$(Configuration)'=='Release'">false</GenerateDebugInformation>
-      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;Gdi32.lib;Version.lib;Bcrypt.lib;Normaliz.lib;Wtsapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Dxva2.lib;Dwmapi.lib;Hid.lib;Ws2_32.lib;Shell32.lib;Advapi32.lib;Ole32.lib;Gdi32.lib;Version.lib;Bcrypt.lib;Normaliz.lib;Wtsapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -78,6 +78,8 @@
     <ClInclude Include="DdcBackends.h" />
     <ClInclude Include="DdcControl.h" />
     <ClInclude Include="InputSourceControl.h" />
+    <ClInclude Include="MediaKeys.h" />
+    <ClInclude Include="MediaKeyWatcher.h" />
     <ClInclude Include="DiagnosticReport.h" />
     <ClInclude Include="DisplayModel.h" />
     <ClInclude Include="ProfileDetection.h" />
@@ -106,6 +108,8 @@
     <ClCompile Include="DdcBackends.cpp" />
     <ClCompile Include="DdcControl.cpp" />
     <ClCompile Include="InputSourceControl.cpp" />
+    <ClCompile Include="MediaKeys.cpp" />
+    <ClCompile Include="MediaKeyWatcher.cpp" />
     <ClCompile Include="DiagnosticReport.cpp" />
     <ClCompile Include="Diagnostics.cpp" />
     <ClCompile Include="DisplayModel.cpp" />

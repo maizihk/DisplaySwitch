@@ -6,6 +6,8 @@
 #include <wtsapi32.h>
 #include <bcrypt.h>
 #include <dwmapi.h>
+#include <hidsdi.h>
+#include <hidpi.h>
 #include <shellapi.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
@@ -21,6 +23,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cstddef>
 #include <cmath>
 #include <cwctype>
 #include <filesystem>

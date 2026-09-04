@@ -40,7 +40,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Ole32.lib;Shell32.lib;Dwmapi.lib;Dxva2.lib;Gdi32.lib;Advapi32.lib;Version.lib;Bcrypt.lib;Normaliz.lib;Ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Setupapi.lib;Cfgmgr32.lib;Ole32.lib;Shell32.lib;Dwmapi.lib;Dxva2.lib;Gdi32.lib;Advapi32.lib;Version.lib;Bcrypt.lib;Normaliz.lib;Ws2_32.lib;Hid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -52,6 +52,7 @@
     <ClCompile Include="..\DisplaySwitcher.Native\DdcControl.cpp"><Link>Native\DdcControl.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DdcBackends.cpp"><Link>Native\DdcBackends.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\InputSourceControl.cpp"><Link>Native\InputSourceControl.cpp</Link></ClCompile>
+    <ClCompile Include="..\DisplaySwitcher.Native\MediaKeys.cpp"><Link>Native\MediaKeys.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\Diagnostics.cpp"><Link>Native\Diagnostics.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\DiagnosticReport.cpp"><Link>Native\DiagnosticReport.cpp</Link></ClCompile>
     <ClCompile Include="..\DisplaySwitcher.Native\ProfileDetection.cpp"><Link>Native\ProfileDetection.cpp</Link></ClCompile>

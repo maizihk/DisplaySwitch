@@ -4,6 +4,7 @@
 #include "../DisplaySwitcher.Native/DdcBackends.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/InputSourceControl.h"
+#include "../DisplaySwitcher.Native/MediaKeys.h"
 #include "../DisplaySwitcher.Native/DiagnosticReport.h"
 #include "../DisplaySwitcher.Native/Diagnostics.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
@@ -2180,6 +2181,174 @@ namespace
         Check(native.reads.empty() && native.writes.empty(), L"运行时安全门关闭时所有 DDC 调用计数必须为零");
     }
 
+    void TestMediaKeyRouting()
+    {
+        Check(NormalizeKeyboardMediaKey(VK_VOLUME_UP, true) == MediaKeyAction::VolumeUp
+            && NormalizeKeyboardMediaKey(VK_VOLUME_DOWN, true) == MediaKeyAction::VolumeDown
+            && NormalizeKeyboardMediaKey(VK_VOLUME_MUTE, true) == MediaKeyAction::VolumeMute
+            && !NormalizeKeyboardMediaKey(VK_VOLUME_UP, false)
+            && !NormalizeKeyboardMediaKey(VK_F1, true),
+            L"W-034: 只归一化键盘最终产生的标准音量媒体键，释放、Fn/F 键和普通键不得路由");
+        Check(MediaKeyRawInputRegistrationFlags() == RIDEV_INPUTSINK
+            && (MediaKeyRawInputRegistrationFlags() & RIDEV_NOLEGACY) == 0,
+            L"W-034: 后台 Raw Input 只观察，不禁用旧输入消息或吞掉系统原生媒体动作");
+        Check(NormalizeConsumerControlUsage(0x006F, true) == MediaKeyAction::BrightnessUp
+            && NormalizeConsumerControlUsage(0x0070, true) == MediaKeyAction::BrightnessDown
+            && !NormalizeConsumerControlUsage(0x006F, false)
+            && !NormalizeConsumerControlUsage(0x00E9, true),
+            L"W-034: 亮度只接受标准 Consumer Control usage；无标准 usage 的设备自然不支持");
+
+        auto config = ConfigWithDisplays(2);
+        for (auto& display : config.displays)
+        {
+            display.brightnessEnabled = true;
+            display.volumeEnabled = true;
+            display.brightnessMax = 100;
+            display.volumeMax = 100;
+        }
+        config.displays[0].brightnessValue = 30;
+        config.displays[1].brightnessValue = 70;
+        config.displays[0].volumeValue = 25;
+        config.displays[1].volumeValue = 65;
+
+        MediaKeyRouter router;
+        auto relative = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 1);
+        Check(relative.state == MediaKeyPlanState::Ready && relative.writes.size() == 2
+            && relative.writes[0].value == 35 && relative.writes[1].value == 75
+            && !relative.writes[0].linked && !relative.writes[1].linked,
+            L"W-034: 非联动媒体亮度对所有启用且可信目标执行相同步进并保留差值");
+        auto repeated = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 1);
+        Check(repeated.writes.size() == 2 && repeated.writes[0].value == 40
+            && repeated.writes[1].value == 80,
+            L"W-034: 按住产生的重复事件从 generation 内待提交值继续步进，供 latest-wins 合并");
+        router.OnWriteFailed(DdcVcpCode::Brightness,
+            { config.displays[0].id, config.displays[1].id });
+        auto afterFailure = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 1);
+        Check(afterFailure.writes.size() == 2 && afterFailure.writes[0].value == 35
+            && afterFailure.writes[1].value == 75,
+            L"W-034: 写入失败清除乐观步进，后续事件不得继续建立在未提交值上");
+        auto afterReload = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessDown, 2);
+        Check(afterReload.writes.size() == 2 && afterReload.writes[0].value == 25
+            && afterReload.writes[1].value == 65,
+            L"W-034: 配置 generation 变化清除旧待提交值并从当前可信缓存重新规划");
+        MediaKeyRouter volumeRouter;
+        auto volumeStep = volumeRouter.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeDown, 2);
+        Check(volumeStep.writes.size() == 2 && volumeStep.writes[0].value == 20
+            && volumeStep.writes[1].value == 60,
+            L"W-034: 标准音量媒体键使用同一生产路由并按 5 对全部合格目标相对步进");
+
+        auto partiallyUnknown = config;
+        partiallyUnknown.displays[1].brightnessValue.reset();
+        MediaKeyRouter partialRouter;
+        auto partial = partialRouter.Plan(partiallyUnknown,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::BrightnessDown, 3);
+        Check(partial.state == MediaKeyPlanState::Ready && partial.writes.size() == 1
+            && partial.writes[0].displayId == partiallyUnknown.displays[0].id
+            && partial.writes[0].value == 25,
+            L"W-034: 非联动未知值目标零写入，但其他具有可信值的显示器继续相同步进");
+        auto offline = config;
+        offline.displays[1].bindingStatus = DisplayBindingStatus::Offline;
+        MediaKeyRouter offlineRouter;
+        auto offlinePlan = offlineRouter.Plan(offline, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeUp, 4);
+        Check(offlinePlan.writes.size() == 1
+            && offlinePlan.writes[0].displayId == offline.displays[0].id,
+            L"W-034: 离线显示器不得进入媒体键目标，其他可信物理显示器仍可执行");
+        for (auto trust : { DisplayTopologyTrust::RemoteSessionLimited,
+            DisplayTopologyTrust::IncompleteOrUnavailable })
+        {
+            MediaKeyRouter blockedRouter;
+            auto blocked = blockedRouter.Plan(config, trust, MediaKeyAction::VolumeUp, 5);
+            Check(blocked.state == MediaKeyPlanState::UntrustedTopology && blocked.writes.empty(),
+                L"W-034: RDP、虚拟、部分或不可信拓扑必须在媒体路由层保持零 DDC 目标");
+        }
+        auto safeConfig = config;
+        safeConfig.displayConfigurationSafeMode = true;
+        MediaKeyRouter safeRouter;
+        Check(safeRouter.Plan(safeConfig, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeUp, 5).writes.empty(),
+            L"W-034: 配置安全模式即使存在缓存和本地拓扑也必须零媒体键目标");
+        auto noDisplays = config;
+        noDisplays.displays.clear();
+        MediaKeyRouter emptyRouter;
+        Check(emptyRouter.Plan(noDisplays, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 5).writes.empty(),
+            L"W-034: 零显示器冷启动媒体事件安全忽略");
+
+        auto linked = config;
+        linked.linkAllDisplays = true;
+        linked.displays[0].brightnessValue = 40;
+        linked.displays[1].brightnessValue = 40;
+        linked.displays[0].brightnessMax = 80;
+        linked.displays[1].brightnessMax = 60;
+        MediaKeyRouter linkedRouter;
+        auto linkedPlan = linkedRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 6);
+        Check(linkedPlan.writes.size() == 1 && linkedPlan.writes[0].linked
+            && linkedPlan.writes[0].value == 45 && linkedPlan.writes[0].targetDisplayIds.size() == 2,
+            L"W-034: 联动同值使用确定性公共基准并提交一个同绝对值批量写计划");
+        auto linkedRepeat = linkedRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 6);
+        Check(linkedRepeat.writes.size() == 1 && linkedRepeat.writes[0].value == 50,
+            L"W-034: 联动重复事件继续增加同一公共绝对目标");
+        auto linkedNearMaximum = linked;
+        linkedNearMaximum.displays[0].brightnessValue = 58;
+        linkedNearMaximum.displays[1].brightnessValue = 58;
+        MediaKeyRouter maximumRouter;
+        auto maximumPlan = maximumRouter.Plan(linkedNearMaximum,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::BrightnessUp, 60);
+        Check(maximumPlan.writes.size() == 1 && maximumPlan.writes[0].value == 60,
+            L"W-034: 联动快捷键绝对值受全部目标共同最小上限约束");
+        linked.displays[1].brightnessValue = 41;
+        MediaKeyRouter mixedRouter;
+        auto mixed = mixedRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 7);
+        Check(mixed.state == MediaKeyPlanState::MixedLinkedValue && mixed.writes.empty(),
+            L"W-034: 联动混合值无法安全确定公共基准时必须零写入，禁止退化成相对调节");
+        linked.displays[1].brightnessValue.reset();
+        MediaKeyRouter unknownRouter;
+        auto unknown = unknownRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessDown, 8);
+        Check(unknown.state == MediaKeyPlanState::UnknownValue && unknown.writes.empty(),
+            L"W-034: 联动任一目标值未知时必须零写入，不能用单台缓存冒充全体");
+
+        MediaKeyRouter muteRouter;
+        auto muted = muteRouter.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeMute, 9);
+        Check(muted.writes.size() == 2 && muted.writes[0].value == 0 && muted.writes[1].value == 0,
+            L"W-034: 静音只为启用音量且有可信非零值的目标写入 0");
+        auto restored = muteRouter.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeMute, 9);
+        Check(restored.writes.size() == 2 && restored.writes[0].value == 25
+            && restored.writes[1].value == 65,
+            L"W-034: 再次静音按显示器恢复会话内最近非零值且不持久化猜测");
+        auto linkedMute = config;
+        linkedMute.linkAllDisplays = true;
+        linkedMute.displays[0].volumeValue = 50;
+        linkedMute.displays[1].volumeValue = 50;
+        MediaKeyRouter linkedMuteRouter;
+        auto linkedMuted = linkedMuteRouter.Plan(linkedMute,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 10);
+        auto linkedRestored = linkedMuteRouter.Plan(linkedMute,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 10);
+        Check(linkedMuted.writes.size() == 1 && linkedMuted.writes[0].value == 0
+            && linkedRestored.writes.size() == 1 && linkedRestored.writes[0].value == 50,
+            L"W-034: 联动静音和恢复始终保持所有目标同一绝对值语义");
+
+        auto disabled = config;
+        for (auto& display : disabled.displays)
+        { display.brightnessEnabled = false; display.volumeEnabled = false; }
+        MediaKeyRouter disabledRouter;
+        Check(disabledRouter.Plan(disabled, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 11).writes.empty(),
+            L"W-034: 冷启动后首次媒体事件没有启用目标时安全零写入");
+    }
+
     void TestUsbLearningAndAbout()
     {
         auto device = [](wchar_t const* reference, wchar_t const* name, int vendor, int product)
@@ -2894,6 +3063,7 @@ int wmain()
         TestUsbColdStartRehydration();
         TestInputSourceColdStartTopologyRefresh();
         TestDdcControls();
+        TestMediaKeyRouting();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();
         TestProfileDetectionThreadingAndKeyCache();

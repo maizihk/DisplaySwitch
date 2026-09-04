@@ -2,6 +2,7 @@
 #include "AppConfig.h"
 #include "DdcControl.h"
 #include "DdcBackends.h"
+#include "MediaKeys.h"
 #include "DiagnosticReport.h"
 #include "ProfileDetection.h"
 #include "UdpPeer.h"
@@ -63,7 +64,10 @@ namespace DisplaySwitcher::Native
         bool EnsurePeerListening(int port);
         bool IsPeerListening(int port) const;
         void WriteTrayDdc(std::wstring const& displayId, DdcVcpCode code, int value);
+        void SubmitDdcWrite(DdcWriteRequest request);
         void ProcessTrayDdcWrites();
+        void OnMediaKey(MediaKeyAction action);
+        void ProcessMediaKeyEvents();
         void RefreshTrayDdcControls();
         DiagnosticSnapshot BuildDiagnosticSnapshot();
         void OnDisplayTopologyChanged();
@@ -116,6 +120,10 @@ namespace DisplaySwitcher::Native
         std::atomic<bool> usbLearningActive_{};
         std::jthread peerHealthThread_;
         DdcWriteQueue trayDdcWrites_;
+        std::mutex mediaKeyMutex_;
+        std::vector<std::pair<MediaKeyAction, uint64_t>> mediaKeyEvents_;
+        bool mediaKeyWorkerActive_{};
+        MediaKeyRouter mediaKeyRouter_;
         DdcBackendSet ddcBackends_;
         AboutInfo aboutInfo_{ PublicAboutInfo() };
         std::shared_ptr<DisplayOperationTracker> displayDiagnostics_{ std::make_shared<DisplayOperationTracker>() };

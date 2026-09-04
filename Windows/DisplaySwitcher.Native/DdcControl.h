@@ -208,6 +208,9 @@ namespace DisplaySwitcher::Native
         DdcVcpCode code{ DdcVcpCode::Brightness };
         int value{};
         uint64_t generation{};
+        std::shared_ptr<AppConfig const> actionConfig;
+        std::optional<bool> linkAllDisplays;
+        std::vector<std::wstring> mediaKeyTargetDisplayIds;
     };
 
     class DdcWriteQueue final

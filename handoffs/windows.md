@@ -1,6 +1,17 @@
 # Windows 交接记录
 
-## 当前任务：W-033 Windows 托盘菜单图标与 DDC 行紧凑化
+## 当前任务：W-034 Windows 后台媒体键 DDC 路由与待验修复集成
+
+- 日期：2026-09-04。综合分支 `codex/windows-media-keys-integration` 从 `origin/main@975b469` 建立，按原提交顺序保留 PR #74 单色通知图标、PR #75 冷启动输入源动作前刷新（用户已实机确认）和 PR #76 托盘退出图标/DDC 行紧凑化；旧 PR 保持开放，不改写历史。
+- 根因：正式 Windows 实现此前没有后台媒体动作入口；托盘隐藏 HWND 只处理 Shell、主题、显示拓扑和 WTS 消息。直接监听 Fn/OEM F 键既不通用，也可能吞掉或重复系统行为。
+- 事件边界：新增 `MediaKeyWatcher`，用 `RIDEV_INPUTSINK` 观察标准音量键盘 Raw Input 和 HID Consumer Control 的亮度增减 usage；不设置 `RIDEV_NOLEGACY`，不监听 Fn/F 键、不猜 OEM 键码、不用低级 hook。无标准亮度事件的设备自然不支持。
+- 路由语义：每次动作在后台强制刷新当前物理拓扑和句柄租约。关闭联动时，对全部启用对应功能、在线唯一解析且有可信值的显示器做相同步进 5；开启联动时只从确定的公共值生成一个绝对目标，混合/未知零写入。静音按显示器保存会话内最近非零值，未知/不支持不写。
+- 安全与生命周期：动作计划复用 `DdcWriteQueue` latest-wins、`DdcControlService` 一次刷新重试/最终 RDP gate、side-effect generation、取消和 action-time config；失败清除乐观值，配置变化、拓扑变化及退出清理待处理事件。Raw Input 只观察，Windows 原生媒体行为继续发生。
+- 纯 fake 测试已加入标准音量/亮度事件、释放和非标准键拒绝、重复、联动/非联动、混合/未知、部分未知/离线、RDP/不可信、generation、失败基准与静音恢复。本机 macOS 无法运行 Windows x64 Release；完整 checks、Release、分发与 artifact 以综合 PR CI 为准。
+- 不修改 macOS、`PROTOCOL.md`、共享合同/schema 或版本号；未执行真实 DDC、USB、网络、唤醒或输入源动作。
+- 实机待验：不同键盘标准媒体事件、按住重复、原生 Windows 行为不受影响、两屏相对步进/联动/静音、RDP/会话切换，以及 #74/#76 的托盘视觉。
+
+## 上一任务：W-033 Windows 托盘菜单图标与 DDC 行紧凑化
 
 - 日期：2026-09-03。原分支：`codex/windows-tray-menu-polish`，堆叠基线：`origin/codex/windows-monochrome-tray-icon@0ebaccc`（PR #74）；综合分支同时保留 PR #75 的 W-032 冷启动修复。
 - 根因：退出项使用 `E8BB` 关闭 X，而其他项均为常规 Fluent/MDL2 语义图标；DDC 标签列固定 64 像素、间距固定 8 像素且含滑杆时强制 272 像素目标宽度，短标签浪费空间而长标签仍可能裁切。

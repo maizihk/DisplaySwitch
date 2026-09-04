@@ -90,6 +90,7 @@ namespace DisplaySwitcher::Native
             [weak](std::wstring const& profileId) { if (auto self = weak.lock()) self->ManualSwitch(profileId); },
             [weak](std::wstring const& displayId, DdcVcpCode code, int value)
             { if (auto self = weak.lock()) self->WriteTrayDdc(displayId, code, value); },
+            [weak](MediaKeyAction action) { if (auto self = weak.lock()) self->OnMediaKey(action); },
             [weak] { if (auto self = weak.lock()) self->OnDisplayTopologyChanged(); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
@@ -111,6 +112,11 @@ namespace DisplaySwitcher::Native
         ++sideEffectGeneration_;
         sideEffectGate_.Block();
         trayDdcWrites_.CancelPending();
+        {
+            std::scoped_lock lock(mediaKeyMutex_);
+            mediaKeyEvents_.clear();
+            mediaKeyRouter_.ResetPending();
+        }
         auto config = Config();
         auto currentTopologyTrust = DisplayTopologyTrust::IncompleteOrUnavailable;
         bool currentTopologyAuthoritative{};
@@ -826,9 +832,79 @@ namespace DisplaySwitcher::Native
     {
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
         auto generation = sideEffectGeneration_.load();
-        if (!trayDdcWrites_.Submit({ displayId, code, value, generation })) return;
+        SubmitDdcWrite({ displayId, code, value, generation });
+    }
+
+    void Controller::SubmitDdcWrite(DdcWriteRequest request)
+    {
+        if (!AllowsSideEffects(request.generation) || profileDetectionActive_) return;
+        if (!trayDdcWrites_.Submit(std::move(request))) return;
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak] { if (auto self = weak.lock()) self->ProcessTrayDdcWrites(); }).detach();
+    }
+
+    void Controller::OnMediaKey(MediaKeyAction action)
+    {
+        if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_ || disposed_) return;
+        auto generation = sideEffectGeneration_.load();
+        bool startWorker{};
+        {
+            std::scoped_lock lock(mediaKeyMutex_);
+            mediaKeyEvents_.push_back({ action, generation });
+            if (!mediaKeyWorkerActive_)
+            {
+                mediaKeyWorkerActive_ = true;
+                startWorker = true;
+            }
+        }
+        if (!startWorker) return;
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak] { if (auto self = weak.lock()) self->ProcessMediaKeyEvents(); }).detach();
+    }
+
+    void Controller::ProcessMediaKeyEvents()
+    {
+        for (;;)
+        {
+            std::vector<std::pair<MediaKeyAction, uint64_t>> events;
+            {
+                std::scoped_lock lock(mediaKeyMutex_);
+                if (mediaKeyEvents_.empty())
+                {
+                    mediaKeyWorkerActive_ = false;
+                    return;
+                }
+                events.swap(mediaKeyEvents_);
+            }
+            auto generation = events.front().second;
+            if (!AllowsSideEffects(generation) || profileDetectionActive_) continue;
+            auto baseConfig = Config();
+            auto actionPlan = PrepareInputSourceAction(baseConfig);
+            if (!AllowsSideEffects(generation) || !actionPlan.topologyTrusted) continue;
+            auto backend = ddcBackends_.Lookup(NativeDdcBackendKey);
+            auto trust = backend ? backend->TopologyTrust() : DisplayTopologyTrust::IncompleteOrUnavailable;
+            auto actionConfig = std::make_shared<AppConfig const>(std::move(actionPlan.config));
+            for (auto const& event : events)
+            {
+                if (event.second != generation || !AllowsSideEffects(generation)) continue;
+                MediaKeyPlan mediaPlan;
+                {
+                    std::scoped_lock lock(mediaKeyMutex_);
+                    mediaPlan = mediaKeyRouter_.Plan(*actionConfig, trust, event.first,
+                        configurationGeneration_.load(), 5);
+                }
+                WriteDiagnostic("media_key.plan state=" + std::to_string(static_cast<int>(mediaPlan.state))
+                    + " writes=" + std::to_string(mediaPlan.writes.size()));
+                for (auto const& write : mediaPlan.writes)
+                {
+                    DdcWriteRequest request{ write.displayId, write.code, write.value, generation };
+                    request.actionConfig = actionConfig;
+                    request.linkAllDisplays = write.linked;
+                    request.mediaKeyTargetDisplayIds = write.targetDisplayIds;
+                    SubmitDdcWrite(std::move(request));
+                }
+            }
+        }
     }
 
     void Controller::ProcessTrayDdcWrites()
@@ -836,16 +912,44 @@ namespace DisplaySwitcher::Native
         while (auto request = trayDdcWrites_.TakeNext())
         {
             if (!AllowsSideEffects(request->generation) || profileDetectionActive_) continue;
-            auto config = Config();
+            auto config = request->actionConfig ? *request->actionConfig : Config();
             DdcCancellationSource cancellation; auto token = cancellation.Begin();
             std::weak_ptr<Controller> weak = shared_from_this();
             DdcControlService service([this](std::wstring const& key) { return ddcBackends_.Lookup(key); },
                 [weak, generation = request->generation]
                 { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
             auto result = service.Write(config, request->displayId, request->code, request->value,
-                config.linkAllDisplays, token);
+                request->linkAllDisplays.value_or(config.linkAllDisplays), token);
             displayDiagnostics_->RecordBatch(config.displays, result, DiagnosticOperationKind::Write);
-            if (!result.success || !AllowsSideEffects(request->generation)) continue;
+            if (!result.success || !AllowsSideEffects(request->generation))
+            {
+                if (!request->mediaKeyTargetDisplayIds.empty())
+                {
+                    std::scoped_lock lock(mediaKeyMutex_);
+                    mediaKeyRouter_.OnWriteFailed(request->code, request->mediaKeyTargetDisplayIds);
+                }
+                continue;
+            }
+            if (request->actionConfig)
+            {
+                auto persisted = Config();
+                for (auto const& item : result.items)
+                {
+                    if (!item.success) continue;
+                    auto source = FindDisplayById(config.displays, item.displayId);
+                    auto destination = FindDisplayById(persisted.displays, item.displayId);
+                    if (!source || !destination) continue;
+                    auto const& from = config.displays[*source];
+                    auto& to = persisted.displays[*destination];
+                    if (item.code == DdcVcpCode::Brightness)
+                    { to.brightnessValue = from.brightnessValue; to.brightnessMax = from.brightnessMax; }
+                    else if (item.code == DdcVcpCode::Contrast)
+                    { to.contrastValue = from.contrastValue; to.contrastMax = from.contrastMax; }
+                    else
+                    { to.volumeValue = from.volumeValue; to.volumeMax = from.volumeMax; }
+                }
+                config = std::move(persisted);
+            }
             try { config.Save(); }
             catch (...)
             {
@@ -1281,6 +1385,14 @@ namespace DisplaySwitcher::Native
     void Controller::Dispose()
     {
         if (disposed_.exchange(true)) return;
+        ++sideEffectGeneration_;
+        sideEffectGate_.Block();
+        trayDdcWrites_.CancelPending();
+        {
+            std::scoped_lock lock(mediaKeyMutex_);
+            mediaKeyEvents_.clear();
+            mediaKeyRouter_.ResetPending();
+        }
         diagnosticHeartbeats_.Reset();
         StopPeerHealthCheck();
         if (peer_)

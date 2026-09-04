@@ -370,9 +370,11 @@ namespace DisplaySwitcher::Native
 {
     TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch,
         std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc,
-        std::function<void()> topologyChanged, std::function<void()> exit) :
+        std::function<void(MediaKeyAction)> mediaKey, std::function<void()> topologyChanged,
+        std::function<void()> exit) :
         showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)),
-        writeDdc_(std::move(writeDdc)), topologyChanged_(std::move(topologyChanged)), exit_(std::move(exit))
+        writeDdc_(std::move(writeDdc)), mediaKey_(std::move(mediaKey)),
+        topologyChanged_(std::move(topologyChanged)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
         className_ = L"DisplaySwitcher.Tray." + std::to_wstring(GetCurrentProcessId());
@@ -395,6 +397,7 @@ namespace DisplaySwitcher::Native
             icon_ = LoadIconW(nullptr, IDI_APPLICATION);
             ownsIcon_ = false;
         }
+        mediaKeyWatcher_ = std::make_unique<MediaKeyWatcher>(window_, mediaKey_);
         sessionNotificationsRegistered_ = WTSRegisterSessionNotification(window_, NOTIFY_FOR_THIS_SESSION) != FALSE;
         auto data = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
         if (!Shell_NotifyIconW(NIM_ADD, &data))
@@ -402,6 +405,7 @@ namespace DisplaySwitcher::Native
             auto error = GetLastError();
             if (sessionNotificationsRegistered_) WTSUnRegisterSessionNotification(window_);
             sessionNotificationsRegistered_ = false;
+            mediaKeyWatcher_.reset();
             DestroyWindow(window_);
             window_ = nullptr;
             if (ownsIcon_ && icon_) DestroyIcon(icon_);
@@ -422,6 +426,7 @@ namespace DisplaySwitcher::Native
         disposed_ = true;
         if (window_)
         {
+            mediaKeyWatcher_.reset();
             if (sessionNotificationsRegistered_)
             {
                 WTSUnRegisterSessionNotification(window_);
@@ -509,6 +514,13 @@ namespace DisplaySwitcher::Native
         {
             if (topologyChanged_) topologyChanged_();
             return 0;
+        }
+        if (message == WM_INPUT)
+        {
+            if (mediaKeyWatcher_) mediaKeyWatcher_->HandleRawInput(reinterpret_cast<HRAWINPUT>(lParam));
+            // Raw input is observational only. DefWindowProc keeps normal input
+            // cleanup and the system media action is never swallowed.
+            return DefWindowProcW(window, message, wParam, lParam);
         }
         if (message == PopupCommandMessage)
         {
