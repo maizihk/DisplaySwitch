@@ -978,10 +978,25 @@ enum MediaKeyVolumeTakeoverDiagnostic: String, Equatable {
 }
 
 struct DDCVolumeHUDPresentation: Equatable {
+    enum Icon: Equatable {
+        case volume
+        case muted
+        case failure
+
+        var symbolName: String {
+            switch self {
+            case .volume: "speaker.wave.2.fill"
+            case .muted: "speaker.slash.fill"
+            case .failure: "exclamationmark.triangle.fill"
+            }
+        }
+    }
+
     let title: String
     let detail: String
     let fraction: Double
     let isFailure: Bool
+    let icon: Icon
 
     static func submitted(value: Int, maximum: Int) -> Self {
         let safeMaximum = max(1, maximum)
@@ -990,7 +1005,8 @@ struct DDCVolumeHUDPresentation: Equatable {
             title: "DDC 音量",
             detail: "已提交 \(value) / \(safeMaximum)（\(Int((fraction * 100).rounded()))%）",
             fraction: fraction,
-            isFailure: false
+            isFailure: false,
+            icon: value == 0 ? .muted : .volume
         )
     }
 
@@ -1008,7 +1024,8 @@ struct DDCVolumeHUDPresentation: Equatable {
             title: "DDC 音量",
             detail: "已提交到 \(values.count) 台显示器（\(lower)%–\(upper)%）",
             fraction: min(1, max(0, average)),
-            isFailure: false
+            isFailure: false,
+            icon: upper == 0 ? .muted : .volume
         )
     }
 
@@ -1026,7 +1043,8 @@ struct DDCVolumeHUDPresentation: Equatable {
             title: "DDC 音量",
             detail: detail,
             fraction: min(1, max(0, average)),
-            isFailure: false
+            isFailure: false,
+            icon: upper == 0 ? .muted : .volume
         )
     }
 
@@ -1034,20 +1052,193 @@ struct DDCVolumeHUDPresentation: Equatable {
         title: "DDC 音量",
         detail: "显示器写入失败；下一次按键将交给 macOS",
         fraction: 0,
-        isFailure: true
+        isFailure: true,
+        icon: .failure
     )
+}
+
+enum DDCVolumeHUDBackgroundStyle: Equatable {
+    case liquidGlass
+    case visualEffect
+}
+
+enum DDCVolumeHUDBackgroundPolicy {
+    static func style(isMacOS26OrNewer: Bool) -> DDCVolumeHUDBackgroundStyle {
+        isMacOS26OrNewer ? .liquidGlass : .visualEffect
+    }
+
+    static var currentStyle: DDCVolumeHUDBackgroundStyle {
+        if #available(macOS 26.0, *) {
+            return style(isMacOS26OrNewer: true)
+        }
+        return style(isMacOS26OrNewer: false)
+    }
+}
+
+struct DDCVolumeHUDScreen: Equatable {
+    let frame: CGRect
+    let visibleFrame: CGRect
+}
+
+enum DDCVolumeHUDPlacement {
+    static let safeMargin: CGFloat = 24
+
+    static func targetVisibleFrame(
+        mouseLocation: CGPoint,
+        screens: [DDCVolumeHUDScreen],
+        mainVisibleFrame: CGRect?
+    ) -> CGRect? {
+        screens.first(where: { $0.frame.contains(mouseLocation) })?.visibleFrame
+            ?? mainVisibleFrame
+    }
+
+    static func origin(
+        panelSize: CGSize,
+        visibleFrame: CGRect,
+        margin: CGFloat = safeMargin
+    ) -> CGPoint {
+        CGPoint(
+            x: max(visibleFrame.minX, visibleFrame.maxX - panelSize.width - margin),
+            y: max(visibleFrame.minY, visibleFrame.maxY - panelSize.height - margin)
+        )
+    }
+}
+
+struct DDCVolumeHUDWindowBehavior: Equatable {
+    let isNonactivating = true
+    let ignoresMouseEvents = true
+    let joinsAllSpaces = true
+    let supportsFullScreen = true
+    let reusesOneWindow = true
+}
+
+struct DDCVolumeHUDSessionModel: Equatable {
+    struct Update: Equatable {
+        let revision: UInt64
+        let reusesExistingWindow: Bool
+    }
+
+    private(set) var revision: UInt64 = 0
+    private(set) var isVisible = false
+    private(set) var presentation: DDCVolumeHUDPresentation?
+
+    mutating func present(_ presentation: DDCVolumeHUDPresentation) -> Update {
+        revision &+= 1
+        let reusesExistingWindow = isVisible
+        isVisible = true
+        self.presentation = presentation
+        return Update(revision: revision, reusesExistingWindow: reusesExistingWindow)
+    }
+
+    mutating func dismiss(ifCurrent expectedRevision: UInt64) -> Bool {
+        guard isVisible, revision == expectedRevision else { return false }
+        isVisible = false
+        return true
+    }
+}
+
+private final class DDCVolumeHUDChromeView: NSView {
+    override var wantsUpdateLayer: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 20
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        layer?.borderWidth = 0.5
+        updateLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func updateLayer() {
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+private enum DDCVolumeHUDBackgroundFactory {
+    struct Result {
+        let root: NSView
+        let content: NSView
+    }
+
+    static func make(style: DDCVolumeHUDBackgroundStyle) -> Result {
+        let content = NSView()
+        let chrome = DDCVolumeHUDChromeView()
+        let effect: NSView
+        if #available(macOS 26.0, *), style == .liquidGlass {
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.cornerRadius = 20
+            glass.tintColor = nil
+            content.autoresizingMask = [.width, .height]
+            glass.contentView = content
+            effect = glass
+        } else {
+            let material = NSVisualEffectView()
+            material.material = .hudWindow
+            material.blendingMode = .behindWindow
+            material.state = .active
+            material.wantsLayer = true
+            material.layer?.cornerRadius = 20
+            material.layer?.cornerCurve = .continuous
+            content.translatesAutoresizingMaskIntoConstraints = false
+            material.addSubview(content)
+            NSLayoutConstraint.activate([
+                content.leadingAnchor.constraint(equalTo: material.leadingAnchor),
+                content.trailingAnchor.constraint(equalTo: material.trailingAnchor),
+                content.topAnchor.constraint(equalTo: material.topAnchor),
+                content.bottomAnchor.constraint(equalTo: material.bottomAnchor)
+            ])
+            effect = material
+        }
+        effect.translatesAutoresizingMaskIntoConstraints = false
+        chrome.addSubview(effect)
+        NSLayoutConstraint.activate([
+            effect.leadingAnchor.constraint(equalTo: chrome.leadingAnchor),
+            effect.trailingAnchor.constraint(equalTo: chrome.trailingAnchor),
+            effect.topAnchor.constraint(equalTo: chrome.topAnchor),
+            effect.bottomAnchor.constraint(equalTo: chrome.bottomAnchor)
+        ])
+        return Result(root: chrome, content: content)
+    }
 }
 
 final class DDCVolumeHUDController {
     private let panel: NSPanel
+    private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let progress = NSProgressIndicator()
     private var dismissWorkItem: DispatchWorkItem?
+    private var session = DDCVolumeHUDSessionModel()
+    private let screenProvider: () -> (mouseLocation: CGPoint, screens: [DDCVolumeHUDScreen], mainVisibleFrame: CGRect?)
 
-    init() {
+    init(
+        backgroundStyle: DDCVolumeHUDBackgroundStyle = DDCVolumeHUDBackgroundPolicy.currentStyle,
+        screenProvider: @escaping () -> (
+            mouseLocation: CGPoint,
+            screens: [DDCVolumeHUDScreen],
+            mainVisibleFrame: CGRect?
+        ) = {
+            (
+                NSEvent.mouseLocation,
+                NSScreen.screens.map { DDCVolumeHUDScreen(frame: $0.frame, visibleFrame: $0.visibleFrame) },
+                NSScreen.main?.visibleFrame
+            )
+        }
+    ) {
+        self.screenProvider = screenProvider
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 280, height: 112),
+            contentRect: NSRect(x: 0, y: 0, width: 304, height: 104),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -1059,57 +1250,120 @@ final class DDCVolumeHUDController {
         panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.animationBehavior = .none
 
-        let background = NSVisualEffectView()
-        background.material = .hudWindow
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.wantsLayer = true
-        background.layer?.cornerRadius = 16
-        background.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
-        titleLabel.alignment = .center
+        let backgroundResult = DDCVolumeHUDBackgroundFactory.make(style: backgroundStyle)
+        let background = backgroundResult.root
+        let content = backgroundResult.content
+        background.frame = panel.contentLayoutRect
+        background.autoresizingMask = [.width, .height]
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.contentTintColor = .labelColor
+        titleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+        titleLabel.alignment = .left
         detailLabel.font = .systemFont(ofSize: 12)
         detailLabel.textColor = .secondaryLabelColor
-        detailLabel.alignment = .center
+        detailLabel.alignment = .left
+        detailLabel.lineBreakMode = .byTruncatingTail
         progress.style = .bar
+        progress.controlSize = .small
         progress.minValue = 0
         progress.maxValue = 1
         progress.isIndeterminate = false
-        for view in [titleLabel, detailLabel, progress] { view.translatesAutoresizingMaskIntoConstraints = false }
-        background.addSubview(titleLabel)
-        background.addSubview(detailLabel)
-        background.addSubview(progress)
+        for view in [iconView, titleLabel, detailLabel, progress] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+        }
+        content.addSubview(iconView)
+        content.addSubview(titleLabel)
+        content.addSubview(detailLabel)
+        content.addSubview(progress)
         panel.contentView = background
         NSLayoutConstraint.activate([
-            titleLabel.topAnchor.constraint(equalTo: background.topAnchor, constant: 18),
-            titleLabel.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            titleLabel.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 8),
-            detailLabel.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 16),
-            detailLabel.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -16),
-            progress.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 12),
-            progress.leadingAnchor.constraint(equalTo: background.leadingAnchor, constant: 28),
-            progress.trailingAnchor.constraint(equalTo: background.trailingAnchor, constant: -28)
+            iconView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 18),
+            iconView.centerYAnchor.constraint(equalTo: content.centerYAnchor, constant: -2),
+            iconView.widthAnchor.constraint(equalToConstant: 28),
+            iconView.heightAnchor.constraint(equalToConstant: 28),
+            titleLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 14),
+            titleLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -18),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 5),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            progress.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 9),
+            progress.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            progress.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+            progress.heightAnchor.constraint(equalToConstant: 5)
         ])
+        background.layoutSubtreeIfNeeded()
+        if content.translatesAutoresizingMaskIntoConstraints {
+            content.frame = background.bounds
+        }
+        panel.setAccessibilityElement(true)
+        panel.setAccessibilityRole(.group)
+        panel.setAccessibilityLabel("DDC 音量状态")
     }
 
     func show(_ presentation: DDCVolumeHUDPresentation) {
         dispatchPrecondition(condition: .onQueue(.main))
         dismissWorkItem?.cancel()
+        let update = session.present(presentation)
         titleLabel.stringValue = presentation.title
         detailLabel.stringValue = presentation.detail
         progress.doubleValue = presentation.fraction
         progress.isHidden = presentation.isFailure
-        if let screen = NSScreen.main {
-            let x = screen.visibleFrame.midX - panel.frame.width / 2
-            let y = screen.visibleFrame.minY + screen.visibleFrame.height * 0.18
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
+        iconView.image = NSImage(
+            systemSymbolName: presentation.icon.symbolName,
+            accessibilityDescription: presentation.isFailure ? "DDC 音量写入失败" : "DDC 音量"
+        )
+        iconView.image?.isTemplate = true
+        iconView.contentTintColor = presentation.isFailure ? .systemOrange : .labelColor
+        panel.setAccessibilityValue(presentation.detail)
+
+        let screens = screenProvider()
+        if let visibleFrame = DDCVolumeHUDPlacement.targetVisibleFrame(
+            mouseLocation: screens.mouseLocation,
+            screens: screens.screens,
+            mainVisibleFrame: screens.mainVisibleFrame
+        ) {
+            panel.setFrameOrigin(DDCVolumeHUDPlacement.origin(
+                panelSize: panel.frame.size,
+                visibleFrame: visibleFrame
+            ))
         }
-        panel.orderFrontRegardless()
-        let item = DispatchWorkItem { [weak panel] in panel?.orderOut(nil) }
+        if update.reusesExistingWindow {
+            panel.alphaValue = 1
+            panel.orderFrontRegardless()
+        } else {
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+            }
+        }
+        let expectedRevision = update.revision
+        let item = DispatchWorkItem { [weak self] in
+            self?.dismiss(ifCurrent: expectedRevision)
+        }
         dismissWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.35, execute: item)
+    }
+
+    private func dismiss(ifCurrent expectedRevision: UInt64) {
+        guard session.dismiss(ifCurrent: expectedRevision) else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            guard let self,
+                  self.session.revision == expectedRevision,
+                  !self.session.isVisible else { return }
+            self.panel.orderOut(nil)
+            self.panel.alphaValue = 1
+        }
     }
 }
 
@@ -1585,9 +1839,15 @@ struct MediaKeyDDCRouter {
 }
 
 struct MediaKeyShortcutPresentation: Equatable {
+    enum Action: Equatable {
+        case requestInputMonitoring
+        case retryListener
+    }
+
     let title: String
     let detail: String
     let actionTitle: String?
+    let action: Action?
 
     static func make(state: MediaKeyMonitorState, lastRoute: String?) -> Self {
         switch state {
@@ -1598,29 +1858,37 @@ struct MediaKeyShortcutPresentation: Equatable {
                 detail: state == .activeTakeover
                     ? "F1/F2 始终放行；符合安全条件时接管 F10/F11/F12。\(suffix)"
                     : "F1/F2 关联亮度，F10/F11/F12 关联音量；系统原生行为不受影响。\(suffix)",
-                actionTitle: nil
+                actionTitle: nil,
+                action: nil
             )
         case .permissionRequired:
             return Self(
                 title: "媒体快捷键关联需要输入监控权限",
                 detail: "未授权时仅停用快捷键关联，其他功能不受影响。请在“系统设置 > 隐私与安全性 > 输入监控”中允许 DisplaySwitcher。",
-                actionTitle: "申请权限"
+                actionTitle: "申请权限",
+                action: .requestInputMonitoring
             )
         case .unavailable:
             return Self(
                 title: "媒体快捷键监听未启动",
                 detail: "未执行任何快捷键 DDC 写入；可重试监听，其他功能不受影响。",
-                actionTitle: "重试"
+                actionTitle: "重试",
+                action: .retryListener
             )
         }
     }
 }
 
 struct MediaKeyVolumeTakeoverPresentation: Equatable {
+    enum Action: Equatable {
+        case requestAccessibility
+    }
+
     let enabled: Bool
     let title: String
     let detail: String
     let actionTitle: String?
+    let action: Action?
 
     static func make(
         enabled: Bool,
@@ -1634,7 +1902,8 @@ struct MediaKeyVolumeTakeoverPresentation: Equatable {
                 enabled: false,
                 title: "HDMI/DP DDC 音量接管（可选）",
                 detail: "默认关闭。需要辅助功能权限；仅在默认音频输出为 HDMI/DisplayPort，且 macOS 自身无法调音量时接管 F10/F11/F12。",
-                actionTitle: nil
+                actionTitle: nil,
+                action: nil
             )
         }
         guard accessibilityTrusted else {
@@ -1642,7 +1911,8 @@ struct MediaKeyVolumeTakeoverPresentation: Equatable {
                 enabled: true,
                 title: "音量接管需要辅助功能权限",
                 detail: "未授权时保持被动监听，不吞按键；仅当输出符合 HDMI/DP 条件时仍额外执行 DDC。可在系统设置中允许 DisplaySwitcher。",
-                actionTitle: "申请辅助功能权限"
+                actionTitle: "申请辅助功能权限",
+                action: .requestAccessibility
             )
         }
         let mode = monitorState == .activeTakeover ? "主动监听" : "被动监听"
@@ -1668,7 +1938,91 @@ struct MediaKeyVolumeTakeoverPresentation: Equatable {
             enabled: true,
             title: armed ? "HDMI/DP DDC 音量接管已就绪" : "HDMI/DP DDC 音量接管待确认",
             detail: "\(mode)；\(routeText)；\(behaviorText)。",
-            actionTitle: nil
+            actionTitle: nil,
+            action: nil
         )
+    }
+}
+
+enum MediaKeySettingsActionKind: Equatable {
+    case requestInputMonitoring
+    case requestAccessibility
+    case retryListener
+}
+
+struct MediaKeySettingsRowPresentation: Equatable {
+    enum Role: Equatable {
+        case shortcutStatus
+        case volumeTakeover
+    }
+
+    let role: Role
+    let title: String
+    let detail: String
+    let action: MediaKeySettingsActionKind?
+    let actionTitle: String?
+
+    var hasCompleteContent: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static func shortcut(_ presentation: MediaKeyShortcutPresentation) -> Self {
+        Self(
+            role: .shortcutStatus,
+            title: presentation.title,
+            detail: presentation.detail,
+            action: presentation.action.map {
+                switch $0 {
+                case .requestInputMonitoring: .requestInputMonitoring
+                case .retryListener: .retryListener
+                }
+            },
+            actionTitle: presentation.actionTitle
+        )
+    }
+
+    static func volumeTakeover(_ presentation: MediaKeyVolumeTakeoverPresentation) -> Self {
+        Self(
+            role: .volumeTakeover,
+            title: presentation.title,
+            detail: presentation.detail,
+            action: presentation.action.map { _ in .requestAccessibility },
+            actionTitle: presentation.actionTitle
+        )
+    }
+}
+
+/// Both permission actions live inside their complete status row. There are no conditional
+/// spacer or separator rows, so removing an action cannot leave an empty settings row behind.
+struct MediaKeySettingsSectionPresentation: Equatable {
+    enum Item: Equatable {
+        case row(MediaKeySettingsRowPresentation)
+        case separator
+    }
+
+    let items: [Item]
+
+    static func make(
+        shortcut: MediaKeyShortcutPresentation,
+        volumeTakeover: MediaKeyVolumeTakeoverPresentation
+    ) -> Self {
+        Self(items: [
+            .row(.shortcut(shortcut)),
+            .separator,
+            .row(.volumeTakeover(volumeTakeover))
+        ])
+    }
+
+    var hasEmptyRow: Bool {
+        items.contains {
+            guard case .row(let row) = $0 else { return false }
+            return !row.hasCompleteContent
+        }
+    }
+
+    var hasOrphanedSeparator: Bool {
+        guard items.first != .separator, items.last != .separator else { return true }
+        return zip(items, items.dropFirst()).contains { $0 == .separator && $1 == .separator }
     }
 }

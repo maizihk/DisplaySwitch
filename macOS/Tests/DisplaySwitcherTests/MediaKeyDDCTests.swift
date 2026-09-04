@@ -913,11 +913,144 @@ final class MediaKeyDDCTests: XCTestCase {
         let single = DDCVolumeHUDPresentation.submitted(value: 30, maximum: 60)
         XCTAssertEqual(single.detail, "已提交 30 / 60（50%）")
         XCTAssertFalse(single.isFailure)
+        XCTAssertEqual(single.icon, .volume)
         let multiple = DDCVolumeHUDPresentation.submitted(values: [
             (value: 20, maximum: 100), (value: 50, maximum: 100)
         ])
         XCTAssertEqual(multiple?.detail, "已提交到 2 台显示器（20%–50%）")
         XCTAssertTrue(DDCVolumeHUDPresentation.failed.isFailure)
+        XCTAssertEqual(DDCVolumeHUDPresentation.submitted(value: 0, maximum: 100).icon, .muted)
+        XCTAssertEqual(DDCVolumeHUDPresentation.failed.icon, .failure)
+    }
+
+    func testMediaKeySettingsRowsNeverLeaveBlankPermissionSpaceOrExtraSeparators() {
+        let satisfied = MediaKeySettingsSectionPresentation.make(
+            shortcut: .make(state: .passive, lastRoute: nil),
+            volumeTakeover: .make(
+                enabled: true,
+                accessibilityTrusted: true,
+                monitorState: .activeTakeover,
+                route: audioRoute(.hdmi),
+                armed: true
+            )
+        )
+        let missing = MediaKeySettingsSectionPresentation.make(
+            shortcut: .make(state: .permissionRequired, lastRoute: nil),
+            volumeTakeover: .make(
+                enabled: true,
+                accessibilityTrusted: false,
+                monitorState: .passive,
+                route: audioRoute(.hdmi),
+                armed: false
+            )
+        )
+
+        for presentation in [satisfied, missing] {
+            XCTAssertEqual(presentation.items.count, 3)
+            XCTAssertFalse(presentation.hasEmptyRow)
+            XCTAssertFalse(presentation.hasOrphanedSeparator)
+            XCTAssertEqual(presentation.items.filter { $0 == .separator }.count, 1)
+        }
+    }
+
+    func testInputMonitoringAndAccessibilityActionsRemainIndependent() throws {
+        let inputMissing = MediaKeySettingsSectionPresentation.make(
+            shortcut: .make(state: .permissionRequired, lastRoute: nil),
+            volumeTakeover: .make(
+                enabled: true,
+                accessibilityTrusted: true,
+                monitorState: .activeTakeover,
+                route: audioRoute(.hdmi),
+                armed: true
+            )
+        )
+        let accessibilityMissing = MediaKeySettingsSectionPresentation.make(
+            shortcut: .make(state: .passive, lastRoute: nil),
+            volumeTakeover: .make(
+                enabled: true,
+                accessibilityTrusted: false,
+                monitorState: .passive,
+                route: audioRoute(.hdmi),
+                armed: false
+            )
+        )
+
+        let inputRows = inputMissing.items.compactMap { item -> MediaKeySettingsRowPresentation? in
+            guard case .row(let row) = item else { return nil }
+            return row
+        }
+        XCTAssertEqual(inputRows.map(\.action), [.requestInputMonitoring, nil])
+
+        let accessibilityRows = accessibilityMissing.items.compactMap { item -> MediaKeySettingsRowPresentation? in
+            guard case .row(let row) = item else { return nil }
+            return row
+        }
+        XCTAssertEqual(accessibilityRows.map(\.action), [nil, .requestAccessibility])
+    }
+
+    func testHUDMaterialPolicySelectsPublicGlassOnlyForMacOS26() {
+        XCTAssertEqual(DDCVolumeHUDBackgroundPolicy.style(isMacOS26OrNewer: true), .liquidGlass)
+        XCTAssertEqual(DDCVolumeHUDBackgroundPolicy.style(isMacOS26OrNewer: false), .visualEffect)
+    }
+
+    func testHUDUsesMouseScreenTopRightAndStaysInsideVisibleFrame() throws {
+        let primary = DDCVolumeHUDScreen(
+            frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+            visibleFrame: CGRect(x: 0, y: 25, width: 1440, height: 851)
+        )
+        let secondary = DDCVolumeHUDScreen(
+            frame: CGRect(x: -1920, y: -120, width: 1920, height: 1080),
+            visibleFrame: CGRect(x: -1920, y: -120, width: 1920, height: 1056)
+        )
+        let visibleFrame = try XCTUnwrap(DDCVolumeHUDPlacement.targetVisibleFrame(
+            mouseLocation: CGPoint(x: -800, y: 400),
+            screens: [primary, secondary],
+            mainVisibleFrame: primary.visibleFrame
+        ))
+        XCTAssertEqual(visibleFrame, secondary.visibleFrame)
+
+        let size = CGSize(width: 304, height: 104)
+        let origin = DDCVolumeHUDPlacement.origin(panelSize: size, visibleFrame: visibleFrame)
+        let panelFrame = CGRect(origin: origin, size: size)
+        XCTAssertTrue(visibleFrame.contains(panelFrame))
+        XCTAssertEqual(panelFrame.maxX, visibleFrame.maxX - DDCVolumeHUDPlacement.safeMargin)
+        XCTAssertEqual(panelFrame.maxY, visibleFrame.maxY - DDCVolumeHUDPlacement.safeMargin)
+    }
+
+    func testHUDFallsBackToMainVisibleFrameWhenMouseMatchesNoScreen() {
+        let main = CGRect(x: 20, y: 40, width: 1200, height: 760)
+        XCTAssertEqual(
+            DDCVolumeHUDPlacement.targetVisibleFrame(
+                mouseLocation: CGPoint(x: 10_000, y: 10_000),
+                screens: [],
+                mainVisibleFrame: main
+            ),
+            main
+        )
+    }
+
+    func testHUDContinuousUpdatesReuseWindowAndResetDismissRevision() {
+        var session = DDCVolumeHUDSessionModel()
+        let submitted = DDCVolumeHUDPresentation.submitted(value: 40, maximum: 100)
+        let first = session.present(submitted)
+        let second = session.present(.failed)
+
+        XCTAssertFalse(first.reusesExistingWindow)
+        XCTAssertTrue(second.reusesExistingWindow)
+        XCTAssertEqual(session.presentation, .failed)
+        XCTAssertFalse(session.dismiss(ifCurrent: first.revision))
+        XCTAssertTrue(session.isVisible)
+        XCTAssertTrue(session.dismiss(ifCurrent: second.revision))
+        XCTAssertFalse(session.isVisible)
+    }
+
+    func testHUDWindowBehaviorNeverTakesFocusOrMouseAndSupportsAllSpaces() {
+        let behavior = DDCVolumeHUDWindowBehavior()
+        XCTAssertTrue(behavior.isNonactivating)
+        XCTAssertTrue(behavior.ignoresMouseEvents)
+        XCTAssertTrue(behavior.joinsAllSpaces)
+        XCTAssertTrue(behavior.supportsFullScreen)
+        XCTAssertTrue(behavior.reusesOneWindow)
     }
 
     private func event(_ action: MediaKeyAction, repeatEvent: Bool = false) -> NormalizedMediaKeyEvent {

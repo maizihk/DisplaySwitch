@@ -243,6 +243,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         target: self,
         action: #selector(requestMediaKeyPermission)
     )
+    private let mediaKeyShortcutTrailingStack = NSStackView()
+    private weak var mediaKeyShortcutRowContainer: NSView?
     private let mediaKeyVolumeTakeoverCheckbox = NSSwitch()
     private let mediaKeyVolumeTakeoverTitleLabel = NSTextField(labelWithString: "HDMI/DP DDC 音量接管（可选）")
     private let mediaKeyVolumeTakeoverDetailLabel = NSTextField(wrappingLabelWithString: "")
@@ -251,6 +253,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         target: self,
         action: #selector(requestAccessibilityPermission)
     )
+    private let mediaKeyVolumeTakeoverTrailingStack = NSStackView()
+    private weak var mediaKeyVolumeTakeoverRowContainer: NSView?
     private let usbAutomationCheckbox = NSSwitch()
     private let usbArrivalSwitchCheckbox = NSSwitch()
     private let usbCollaborationProfilePopup = NSPopUpButton()
@@ -429,18 +433,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func updateMediaKeyShortcutPresentation(_ presentation: MediaKeyShortcutPresentation) {
-        mediaKeyShortcutTitleLabel.stringValue = presentation.title
-        mediaKeyShortcutDetailLabel.stringValue = presentation.detail
-        requestMediaKeyPermissionButton.title = presentation.actionTitle ?? ""
-        requestMediaKeyPermissionButton.isHidden = presentation.actionTitle == nil
+        let row = MediaKeySettingsRowPresentation.shortcut(presentation)
+        mediaKeyShortcutTitleLabel.stringValue = row.title
+        mediaKeyShortcutDetailLabel.stringValue = row.detail
+        mediaKeyShortcutRowContainer?.setAccessibilityValue("\(row.title)。\(row.detail)")
+        if let actionTitle = row.actionTitle {
+            requestMediaKeyPermissionButton.title = actionTitle
+            mediaKeyShortcutTrailingStack.setViews([requestMediaKeyPermissionButton], in: .center)
+        } else {
+            mediaKeyShortcutTrailingStack.setViews([], in: .center)
+        }
+        relayoutMediaKeySettingsRows()
     }
 
     func updateMediaKeyVolumeTakeoverPresentation(_ presentation: MediaKeyVolumeTakeoverPresentation) {
+        let row = MediaKeySettingsRowPresentation.volumeTakeover(presentation)
         mediaKeyVolumeTakeoverCheckbox.state = presentation.enabled ? .on : .off
-        mediaKeyVolumeTakeoverTitleLabel.stringValue = presentation.title
-        mediaKeyVolumeTakeoverDetailLabel.stringValue = presentation.detail
-        requestAccessibilityPermissionButton.title = presentation.actionTitle ?? ""
-        requestAccessibilityPermissionButton.isHidden = presentation.actionTitle == nil
+        mediaKeyVolumeTakeoverTitleLabel.stringValue = row.title
+        mediaKeyVolumeTakeoverDetailLabel.stringValue = row.detail
+        mediaKeyVolumeTakeoverRowContainer?.setAccessibilityValue("\(row.title)。\(row.detail)")
+        var controls: [NSView] = [mediaKeyVolumeTakeoverCheckbox]
+        if let actionTitle = row.actionTitle {
+            requestAccessibilityPermissionButton.title = actionTitle
+            controls.append(requestAccessibilityPermissionButton)
+        }
+        mediaKeyVolumeTakeoverTrailingStack.setViews(controls, in: .center)
+        relayoutMediaKeySettingsRows()
+    }
+
+    private func relayoutMediaKeySettingsRows() {
+        mediaKeyShortcutTrailingStack.needsLayout = true
+        mediaKeyVolumeTakeoverTrailingStack.needsLayout = true
+        window?.contentView?.needsLayout = true
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     func refreshDisplayConfigurationProjection() {
@@ -585,7 +610,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
             refreshDisplaysButton,
             refreshDiagnosticPreviewButton,
             copyDiagnosticPreviewButton,
-            requestMediaKeyPermissionButton
+            requestMediaKeyPermissionButton,
+            requestAccessibilityPermissionButton
         ] {
             SettingsActionButtonStyle.apply(to: button)
         }
@@ -1205,27 +1231,37 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         labels.alignment = .leading
         labels.spacing = 2
         labels.translatesAutoresizingMaskIntoConstraints = false
+        labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         requestMediaKeyPermissionButton.setContentHuggingPriority(.required, for: .horizontal)
         requestMediaKeyPermissionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        mediaKeyShortcutTrailingStack.orientation = .horizontal
+        mediaKeyShortcutTrailingStack.alignment = .centerY
+        mediaKeyShortcutTrailingStack.translatesAutoresizingMaskIntoConstraints = false
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(icon)
         row.addSubview(labels)
-        row.addSubview(requestMediaKeyPermissionButton)
+        row.addSubview(mediaKeyShortcutTrailingStack)
         NSLayoutConstraint.activate([
             row.widthAnchor.constraint(equalToConstant: 590),
-            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
             icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
             icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 22),
             icon.heightAnchor.constraint(equalToConstant: 22),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
-            labels.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            labels.trailingAnchor.constraint(lessThanOrEqualTo: requestMediaKeyPermissionButton.leadingAnchor, constant: -16),
-            requestMediaKeyPermissionButton.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
-            requestMediaKeyPermissionButton.centerYAnchor.constraint(equalTo: row.centerYAnchor)
+            labels.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            labels.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8),
+            labels.trailingAnchor.constraint(equalTo: mediaKeyShortcutTrailingStack.leadingAnchor, constant: -16),
+            mediaKeyShortcutTrailingStack.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
+            mediaKeyShortcutTrailingStack.centerYAnchor.constraint(equalTo: row.centerYAnchor)
         ])
+        row.setAccessibilityElement(true)
+        row.setAccessibilityRole(.group)
+        row.setAccessibilityLabel("媒体快捷键与输入监控权限")
+        mediaKeyShortcutRowContainer = row
+        mediaKeyShortcutTrailingStack.setViews([], in: .center)
         return row
     }
 
@@ -1244,30 +1280,36 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, NSTe
         labels.alignment = .leading
         labels.spacing = 2
         labels.translatesAutoresizingMaskIntoConstraints = false
+        labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let controls = NSStackView(views: [mediaKeyVolumeTakeoverCheckbox, requestAccessibilityPermissionButton])
-        controls.orientation = .vertical
-        controls.alignment = .trailing
-        controls.spacing = 6
-        controls.translatesAutoresizingMaskIntoConstraints = false
+        mediaKeyVolumeTakeoverTrailingStack.orientation = .vertical
+        mediaKeyVolumeTakeoverTrailingStack.alignment = .trailing
+        mediaKeyVolumeTakeoverTrailingStack.spacing = 6
+        mediaKeyVolumeTakeoverTrailingStack.translatesAutoresizingMaskIntoConstraints = false
         let row = NSView()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(icon)
         row.addSubview(labels)
-        row.addSubview(controls)
+        row.addSubview(mediaKeyVolumeTakeoverTrailingStack)
         NSLayoutConstraint.activate([
             row.widthAnchor.constraint(equalToConstant: 590),
-            row.heightAnchor.constraint(greaterThanOrEqualToConstant: 82),
             icon.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 8),
             icon.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 22),
             icon.heightAnchor.constraint(equalToConstant: 22),
             labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
-            labels.centerYAnchor.constraint(equalTo: row.centerYAnchor),
-            labels.trailingAnchor.constraint(lessThanOrEqualTo: controls.leadingAnchor, constant: -16),
-            controls.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
-            controls.centerYAnchor.constraint(equalTo: row.centerYAnchor)
+            labels.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            labels.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8),
+            labels.trailingAnchor.constraint(equalTo: mediaKeyVolumeTakeoverTrailingStack.leadingAnchor, constant: -16),
+            mediaKeyVolumeTakeoverTrailingStack.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -8),
+            mediaKeyVolumeTakeoverTrailingStack.centerYAnchor.constraint(equalTo: row.centerYAnchor)
         ])
+        row.setAccessibilityElement(true)
+        row.setAccessibilityRole(.group)
+        row.setAccessibilityLabel("HDMI/DisplayPort DDC 音量接管与辅助功能权限")
+        mediaKeyVolumeTakeoverRowContainer = row
+        mediaKeyVolumeTakeoverTrailingStack.setViews([mediaKeyVolumeTakeoverCheckbox], in: .center)
         return row
     }
 
