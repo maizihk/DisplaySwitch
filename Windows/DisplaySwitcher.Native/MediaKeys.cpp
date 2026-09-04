@@ -39,6 +39,9 @@ namespace DisplaySwitcher::Native
         // HID Usage Tables, Consumer page: Brightness Increment / Decrement.
         if (usage == 0x006F) return MediaKeyAction::BrightnessUp;
         if (usage == 0x0070) return MediaKeyAction::BrightnessDown;
+        if (usage == 0x00E2) return MediaKeyAction::VolumeMute;
+        if (usage == 0x00E9) return MediaKeyAction::VolumeUp;
+        if (usage == 0x00EA) return MediaKeyAction::VolumeDown;
         return std::nullopt;
     }
 

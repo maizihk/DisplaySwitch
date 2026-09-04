@@ -2194,9 +2194,12 @@ namespace
             L"W-034: 后台 Raw Input 只观察，不禁用旧输入消息或吞掉系统原生媒体动作");
         Check(NormalizeConsumerControlUsage(0x006F, true) == MediaKeyAction::BrightnessUp
             && NormalizeConsumerControlUsage(0x0070, true) == MediaKeyAction::BrightnessDown
+            && NormalizeConsumerControlUsage(0x00E2, true) == MediaKeyAction::VolumeMute
+            && NormalizeConsumerControlUsage(0x00E9, true) == MediaKeyAction::VolumeUp
+            && NormalizeConsumerControlUsage(0x00EA, true) == MediaKeyAction::VolumeDown
             && !NormalizeConsumerControlUsage(0x006F, false)
-            && !NormalizeConsumerControlUsage(0x00E9, true),
-            L"W-034: 亮度只接受标准 Consumer Control usage；无标准 usage 的设备自然不支持");
+            && !NormalizeConsumerControlUsage(0x00B5, true),
+            L"W-034: Consumer Control 只接受标准亮度和音量 usage；无标准 usage 的设备自然不支持");
 
         auto config = ConfigWithDisplays(2);
         for (auto& display : config.displays)
