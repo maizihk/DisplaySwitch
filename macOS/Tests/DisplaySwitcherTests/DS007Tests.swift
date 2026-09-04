@@ -453,6 +453,29 @@ final class DS007Tests: XCTestCase {
         }
     }
 
+    func testDS030MacOS27StandardRolesExplicitlyRequestVisibleImages() throws {
+        guard #available(macOS 27.0, *) else { return }
+
+        let standardRoles = TrayMenuIconRole.allCases.filter {
+            $0.placement == .standardMenuItem
+        }
+        XCTAssertEqual(standardRoles.count, 6)
+        for role in standardRoles {
+            let item = NSMenuItem(title: "测试", action: nil, keyEquivalent: "")
+            TrayImageFactory.apply(
+                role: role,
+                accessibilityDescription: "测试菜单项",
+                to: item
+            )
+            XCTAssertNotNil(item.image, "Missing produced image for \(role)")
+            XCTAssertEqual(
+                item.preferredImageVisibility,
+                .visible,
+                "macOS 27 may hide the production image for \(role)"
+            )
+        }
+    }
+
     func testDS031FallbackDrawingPreventsMissingIconsWithoutSFSymbols() {
         for role in TrayMenuIconRole.allCases {
             let image = TrayImageFactory.menuImage(

@@ -379,6 +379,9 @@ enum TrayImageFactory {
         to item: NSMenuItem
     ) {
         item.image = menuImage(for: role, accessibilityDescription: accessibilityDescription)
+        if #available(macOS 27.0, *) {
+            item.preferredImageVisibility = .visible
+        }
     }
 
     static func statusImage(accessibilityDescription: String) -> NSImage {
