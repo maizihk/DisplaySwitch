@@ -645,9 +645,9 @@ final class MediaKeyDDCTests: XCTestCase {
         XCTAssertEqual(AudioOutputTransport(coreAudioValue: nil), .unavailable)
     }
 
-    func testFirstSoundPressPassesThenSuccessfulDDCBatchArmsAndConsumesDownRepeatAndKeyUp() {
+    func testFirstSoundPressArmsAndLongIdleStillConsumesOnlyAfterANewFreshRead() {
         var now: TimeInterval = 10
-        let consumption = MediaKeyEventConsumptionController(now: { now })
+        let consumption = MediaKeyEventConsumptionController()
         XCTAssertEqual(
             consumption.disposition(for: captured(.volumeUp)),
             .passThrough
@@ -682,13 +682,65 @@ final class MediaKeyDDCTests: XCTestCase {
             .passThrough
         )
         XCTAssertEqual(consumption.disposition(for: captured(.brightnessUp)), .passThrough)
-        now += 6
-        XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .passThrough)
+        now += 60 * 60
+        consumption.update(controller.consumptionSnapshot())
+        XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .consume)
+        XCTAssertEqual(
+            consumption.disposition(for: captured(.volumeDown, phase: .up)),
+            .consume
+        )
+
+        // Long-idle arming is session-scoped, but the next write still requires a new read.
+        controller.recordFreshRead(volumeReadResult(value: 45, action: .volumeDown))
+        let afterIdle = controller.prepare(
+            requests: [volumeWrite(value: 40)],
+            event: NormalizedMediaKeyEvent(
+                action: .volumeDown, isRepeat: false, wasConsumed: true
+            )
+        )
+        XCTAssertEqual(afterIdle[0].origin, .mediaKey(2))
+        XCTAssertEqual(controller.armedAt, 10)
+    }
+
+    func testArmedSessionCannotReusePreviousEventEvidenceAndReadFailureDisarms() {
+        let withoutNewRead = takeoverController()
+        withoutNewRead.recordFreshRead(volumeReadResult(value: 40))
+        let first = withoutNewRead.prepare(
+            requests: [volumeWrite(value: 45)], event: event(.volumeUp)
+        )
+        _ = withoutNewRead.recordCompletion(first[0], succeeded: true)
+        XCTAssertTrue(withoutNewRead.isArmed)
+
+        let rejected = withoutNewRead.prepare(
+            requests: [volumeWrite(value: 50)],
+            event: NormalizedMediaKeyEvent(
+                action: .volumeUp, isRepeat: false, wasConsumed: true
+            )
+        )
+        XCTAssertEqual(rejected[0].origin, .user)
+        XCTAssertFalse(withoutNewRead.isArmed)
+
+        let failedRead = takeoverController()
+        failedRead.recordFreshRead(volumeReadResult(value: 40))
+        let arming = failedRead.prepare(
+            requests: [volumeWrite(value: 45)], event: event(.volumeUp)
+        )
+        _ = failedRead.recordCompletion(arming[0], succeeded: true)
+        failedRead.recordFreshRead(MediaKeyFreshReadResult(
+            request: MediaKeyFreshReadRequest(
+                event: event(.volumeDown), linkAllDisplays: false,
+                runtimeGeneration: 3, audioRouteGeneration: 7,
+                targets: [freshTarget("A")]
+            ),
+            targets: [target("A", value: nil)],
+            coalescedRepeatCount: 0
+        ))
+        XCTAssertFalse(failedRead.isArmed)
+        XCTAssertEqual(failedRead.consumptionSnapshot(), .disarmed)
     }
 
     func testAudioOutputSwitchAndGenerationMismatchDisarmWithoutPreparingMediaWrites() {
-        var now: TimeInterval = 20
-        let controller = takeoverController(now: { now })
+        let controller = takeoverController()
         controller.recordFreshRead(volumeReadResult(value: 50))
         let armedRequests = controller.prepare(
             requests: [volumeWrite(value: 55)], event: event(.volumeUp)
@@ -706,7 +758,6 @@ final class MediaKeyDDCTests: XCTestCase {
             requests: [volumeWrite(value: 60)], event: event(.volumeUp)
         )
         XCTAssertEqual(unmatched[0].origin, .user)
-        now += 1
     }
 
     func testWriteFailureAndTapDisableImmediatelyDisarmAndNextSoundEventPasses() {
@@ -731,18 +782,18 @@ final class MediaKeyDDCTests: XCTestCase {
         )
         XCTAssertFalse(controller.isArmed)
 
-        let consumption = MediaKeyEventConsumptionController(now: { 1 })
+        let consumption = MediaKeyEventConsumptionController()
         consumption.update(MediaKeyConsumptionSnapshot(
-            canConsumeVolume: true, canConsumeMute: true, expiresAt: 10
+            canConsumeVolume: true, canConsumeMute: true
         ))
         consumption.disarm() // same fail-open action used for event-tap timeout/disable
         XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .passThrough)
     }
 
     func testTapDisableSynchronouslyFailsOpenAndClearsStaleKeyUpOwnership() {
-        let consumption = MediaKeyEventConsumptionController(now: { 1 })
+        let consumption = MediaKeyEventConsumptionController()
         consumption.update(MediaKeyConsumptionSnapshot(
-            canConsumeVolume: true, canConsumeMute: true, expiresAt: 10
+            canConsumeVolume: true, canConsumeMute: true
         ))
         XCTAssertEqual(consumption.disposition(for: captured(.volumeUp)), .consume)
 
@@ -792,7 +843,7 @@ final class MediaKeyDDCTests: XCTestCase {
         XCTAssertEqual(hud.detail, "已提交到 2 台显示器（25%–50%）")
     }
 
-    func testAlreadyArmedBoundaryNoChangeKeepsShortFreshEvidenceAndShowsCurrentValue() {
+    func testAlreadyArmedBoundaryNoChangeConsumesFreshEvidenceAndShowsCurrentValue() {
         let controller = takeoverController()
         controller.recordFreshRead(volumeReadResult(value: 95))
         let writes = controller.prepare(
@@ -809,14 +860,14 @@ final class MediaKeyDDCTests: XCTestCase {
 
     func testSuccessfulVolumeWriteMakesMuteDownAndItsKeyUpConsumableForSafeRestore() {
         let controller = takeoverController()
-        controller.recordFreshRead(volumeReadResult(value: 35))
+        controller.recordFreshRead(volumeReadResult(value: 35, action: .mute))
         let writes = controller.prepare(
             requests: [volumeWrite(value: 0)], event: event(.mute)
         )
         _ = controller.recordCompletion(writes[0], succeeded: true)
         XCTAssertTrue(controller.consumptionSnapshot().canConsumeMute)
 
-        let consumption = MediaKeyEventConsumptionController(now: { 1 })
+        let consumption = MediaKeyEventConsumptionController()
         consumption.update(controller.consumptionSnapshot())
         XCTAssertEqual(consumption.disposition(for: captured(.mute)), .consume)
         XCTAssertEqual(consumption.disposition(for: captured(.mute, phase: .up)), .consume)
@@ -850,6 +901,12 @@ final class MediaKeyDDCTests: XCTestCase {
             route: audioRoute(.other), armed: false
         )
         XCTAssertTrue(systemManaged.detail.contains("完全交给 macOS，不执行 DDC"))
+
+        let armed = MediaKeyVolumeTakeoverPresentation.make(
+            enabled: true, accessibilityTrusted: true, monitorState: .activeTakeover,
+            route: audioRoute(.hdmi), armed: true
+        )
+        XCTAssertTrue(armed.detail.contains("每次写入前仍会重新读取显示器"))
     }
 
     func testHUDModelLabelsValuesAsSubmittedAndSupportsMultipleTargets() {
@@ -919,11 +976,12 @@ final class MediaKeyDDCTests: XCTestCase {
 
     private func volumeReadResult(
         value: Int,
-        audioGeneration: UInt64 = 7
+        audioGeneration: UInt64 = 7,
+        action: MediaKeyAction = .volumeUp
     ) -> MediaKeyFreshReadResult {
         MediaKeyFreshReadResult(
             request: MediaKeyFreshReadRequest(
-                event: event(.volumeUp), linkAllDisplays: false,
+                event: event(action), linkAllDisplays: false,
                 runtimeGeneration: 3, audioRouteGeneration: audioGeneration,
                 targets: [freshTarget("A")]
             ),

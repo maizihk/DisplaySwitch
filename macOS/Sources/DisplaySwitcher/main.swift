@@ -231,7 +231,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private var audioOutputRouteSnapshot = AudioOutputRouteSnapshot.unavailable
     private var mediaKeyTakeoverLastDiagnostic = MediaKeyVolumeTakeoverDiagnostic.passive
     private var mediaKeyTakeoverLastDisposition = MediaKeyVolumeTakeoverDiagnostic.passedThrough
-    private var mediaKeyTakeoverExpiryWorkItem: DispatchWorkItem?
     private var mediaKeyPhysicalTopologyTrusted: Bool {
         MediaKeyTopologyPolicy.allows(mediaKeyPhysicalEvidence)
     }
@@ -858,6 +857,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 disarmMediaKeyVolumeTakeover(diagnostic: .ddcFailed)
                 if request.event.wasConsumed { ddcVolumeHUDController.show(.failed) }
                 refreshMediaKeyMonitor(requestPermission: false)
+                if request.event.wasConsumed {
+                    updateMediaKeyRouteStatus(.missingTrustedValues)
+                    return
+                }
             }
         }
         for target in result.targets {
@@ -918,7 +921,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         mediaKeyVolumeTakeoverController.consumptionSnapshot()
                     )
                     ddcVolumeHUDController.show(presentation)
-                    scheduleMediaKeyTakeoverExpiry()
                 } else {
                     disarmMediaKeyVolumeTakeover(diagnostic: .ddcFailed)
                     if request.event.wasConsumed { ddcVolumeHUDController.show(.failed) }
@@ -1049,8 +1051,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func disarmMediaKeyVolumeTakeover(
         diagnostic: MediaKeyVolumeTakeoverDiagnostic
     ) {
-        mediaKeyTakeoverExpiryWorkItem?.cancel()
-        mediaKeyTakeoverExpiryWorkItem = nil
         mediaKeyVolumeTakeoverController.disarm()
         mediaKeyConsumptionController.disarm()
         mediaKeyTakeoverLastDiagnostic = diagnostic
@@ -1078,22 +1078,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             )
             ddcVolumeHUDController.show(presentation)
             refreshMediaKeyMonitor(requestPermission: false)
-            scheduleMediaKeyTakeoverExpiry()
         }
-    }
-
-    private func scheduleMediaKeyTakeoverExpiry() {
-        mediaKeyTakeoverExpiryWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.disarmMediaKeyVolumeTakeover(diagnostic: .activeDisarmed)
-            self.refreshMediaKeyMonitor(requestPermission: false)
-        }
-        mediaKeyTakeoverExpiryWorkItem = item
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + mediaKeyVolumeTakeoverController.remainingEvidenceTTL(),
-            execute: item
-        )
     }
 
     private func readDDCForSettings(stableID: String) {
@@ -1977,7 +1962,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     func applicationWillTerminate(_ notification: Notification) {
         mediaKeyMonitor.stop()
         audioOutputRouteMonitor.stop()
-        mediaKeyTakeoverExpiryWorkItem?.cancel()
         invalidateMediaKeyRuntime(resetPhysicalEvidence: true)
         mediaKeyFreshReadCoordinator.setOperationsAllowed(false)
         ddcWriteCoordinator.cancelAll()

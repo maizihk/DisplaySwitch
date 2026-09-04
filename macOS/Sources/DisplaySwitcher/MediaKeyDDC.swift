@@ -139,12 +139,10 @@ enum MediaKeyTapDisposition: Equatable {
 struct MediaKeyConsumptionSnapshot: Equatable {
     let canConsumeVolume: Bool
     let canConsumeMute: Bool
-    let expiresAt: TimeInterval
 
     static let disarmed = Self(
         canConsumeVolume: false,
-        canConsumeMute: false,
-        expiresAt: 0
+        canConsumeMute: false
     )
 }
 
@@ -152,13 +150,8 @@ struct MediaKeyConsumptionSnapshot: Equatable {
 /// or DDC work. A consumed down owns its matching key-up even if the gate disarms in between.
 final class MediaKeyEventConsumptionController {
     private let lock = NSLock()
-    private let now: () -> TimeInterval
     private var snapshot = MediaKeyConsumptionSnapshot.disarmed
     private var consumedActions = Set<MediaKeyAction>()
-
-    init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
-        self.now = now
-    }
 
     func update(_ snapshot: MediaKeyConsumptionSnapshot) {
         lock.lock()
@@ -194,7 +187,6 @@ final class MediaKeyEventConsumptionController {
             guard consumedActions.remove(event.action) != nil else { return .passThrough }
             return .consume
         }
-        guard now() <= snapshot.expiresAt else { return .passThrough }
         let allowed = event.action == .mute
             ? snapshot.canConsumeMute
             : snapshot.canConsumeVolume
@@ -1138,19 +1130,20 @@ final class MediaKeyVolumeTakeoverController {
         case failed(showHUD: Bool)
     }
 
-    static let evidenceTTL: TimeInterval = 5
-
     private struct Evidence {
+        let event: NormalizedMediaKeyEvent
         let valueByKey: [DDCWriteKey: Int]
         let maximumByKey: [DDCWriteKey: Int]
         let runtimeGeneration: UInt64
         let audioGeneration: UInt64
-        let expiresAt: TimeInterval
     }
 
     private struct Batch {
         let id: UInt64
         let expectedValueByKey: [DDCWriteKey: Int]
+        let maximumByKey: [DDCWriteKey: Int]
+        let runtimeGeneration: UInt64
+        let audioGeneration: UInt64
         let wasConsumed: Bool
         var completedKeys: Set<DDCWriteKey>
     }
@@ -1162,6 +1155,7 @@ final class MediaKeyVolumeTakeoverController {
     private var sequence: UInt64 = 0
     private(set) var isArmed = false
     private(set) var canConsumeMute = false
+    private(set) var armedAt: TimeInterval?
 
     init(
         context: Context = Context(
@@ -1185,6 +1179,7 @@ final class MediaKeyVolumeTakeoverController {
         batch = nil
         isArmed = false
         canConsumeMute = false
+        armedAt = nil
     }
 
     func recordFreshRead(_ result: MediaKeyFreshReadResult) {
@@ -1210,18 +1205,18 @@ final class MediaKeyVolumeTakeoverController {
             return
         }
         evidence = Evidence(
+            event: result.request.event,
             valueByKey: samples.mapValues(\.value),
             maximumByKey: samples.mapValues(\.maximum),
             runtimeGeneration: context.runtimeGeneration,
-            audioGeneration: context.route.generation,
-            expiresAt: now() + Self.evidenceTTL
+            audioGeneration: context.route.generation
         )
     }
 
     func prepare(requests: [DDCWriteRequest], event: NormalizedMediaKeyEvent) -> [DDCWriteRequest] {
         guard event.action.command == .volume,
               let evidence,
-              evidence.expiresAt >= now(),
+              evidence.event.action == event.action,
               evidence.runtimeGeneration == context.runtimeGeneration,
               evidence.audioGeneration == context.route.generation else {
             disarm()
@@ -1236,9 +1231,15 @@ final class MediaKeyVolumeTakeoverController {
         batch = Batch(
             id: sequence,
             expectedValueByKey: latest,
+            maximumByKey: evidence.maximumByKey,
+            runtimeGeneration: evidence.runtimeGeneration,
+            audioGeneration: evidence.audioGeneration,
             wasConsumed: event.wasConsumed,
             completedKeys: []
         )
+        // Fresh values are single-event evidence. The next consumed event must complete its own
+        // hardware read before any media-key write can be prepared.
+        self.evidence = nil
         return requests.map { $0.withOrigin(.mediaKey(sequence)) }
     }
 
@@ -1253,16 +1254,15 @@ final class MediaKeyVolumeTakeoverController {
         guard batch.expectedValueByKey[request.key] == request.value else { return .pending }
         batch.completedKeys.insert(request.key)
         self.batch = batch
-        guard batch.completedKeys == Set(batch.expectedValueByKey.keys),
-              let evidence,
-              evidence.expiresAt >= now(),
-              evidence.runtimeGeneration == context.runtimeGeneration,
-              evidence.audioGeneration == context.route.generation,
+        guard batch.completedKeys == Set(batch.expectedValueByKey.keys) else { return .pending }
+        guard batch.runtimeGeneration == context.runtimeGeneration,
+              batch.audioGeneration == context.route.generation,
               context.targetKeys == Set(batch.expectedValueByKey.keys) else {
-            return .pending
+            disarm()
+            return .failed(showHUD: batch.wasConsumed)
         }
         let pairs = batch.expectedValueByKey.compactMap { key, value -> (value: Int, maximum: Int)? in
-            guard let maximum = evidence.maximumByKey[key] else { return nil }
+            guard let maximum = batch.maximumByKey[key] else { return nil }
             return (value: value, maximum: maximum)
         }
         guard pairs.count == context.targetKeys.count,
@@ -1270,6 +1270,7 @@ final class MediaKeyVolumeTakeoverController {
             disarm()
             return .failed(showHUD: batch.wasConsumed)
         }
+        if !isArmed { armedAt = now() }
         isArmed = true
         // Any successful all-target media volume write establishes a nonzero value or a stored
         // restore value in MediaKeyDDCRouter, so the next mute toggle is reversible.
@@ -1282,9 +1283,10 @@ final class MediaKeyVolumeTakeoverController {
         guard event.action != .mute,
               isArmed,
               let evidence,
-              evidence.expiresAt >= now(),
+              evidence.event.action == event.action,
               evidence.runtimeGeneration == context.runtimeGeneration,
               evidence.audioGeneration == context.route.generation else { return nil }
+        defer { self.evidence = nil }
         let pairs = context.targetKeys.compactMap { key -> (value: Int, maximum: Int)? in
             guard let value = evidence.valueByKey[key],
                   let maximum = evidence.maximumByKey[key] else { return nil }
@@ -1295,23 +1297,11 @@ final class MediaKeyVolumeTakeoverController {
     }
 
     func consumptionSnapshot() -> MediaKeyConsumptionSnapshot {
-        guard isArmed,
-              let evidence,
-              evidence.expiresAt >= now(),
-              evidence.runtimeGeneration == context.runtimeGeneration,
-              evidence.audioGeneration == context.route.generation else {
-            return .disarmed
-        }
+        guard isArmed else { return .disarmed }
         return MediaKeyConsumptionSnapshot(
             canConsumeVolume: true,
-            canConsumeMute: canConsumeMute,
-            expiresAt: evidence.expiresAt
+            canConsumeMute: canConsumeMute
         )
-    }
-
-    func remainingEvidenceTTL() -> TimeInterval {
-        guard let evidence else { return 0 }
-        return max(0, evidence.expiresAt - now())
     }
 }
 
@@ -1668,7 +1658,9 @@ struct MediaKeyVolumeTakeoverPresentation: Equatable {
         }
         let behaviorText: String
         if route.allowsDDCTakeover {
-            behaviorText = armed ? "下一次音量键可接管" : "首次按键仍交给 macOS，DDC 成功后再接管"
+            behaviorText = armed
+                ? "音量键已接管，每次写入前仍会重新读取显示器"
+                : "首次按键仍交给 macOS，DDC 成功后再接管"
         } else {
             behaviorText = "当前音量键完全交给 macOS，不执行 DDC"
         }
