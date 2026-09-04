@@ -240,6 +240,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         disposition: { [weak self] event in
             self?.mediaKeyTapDisposition(for: event) ?? .passThrough
         },
+        onTapDisabledSynchronously: { [weak self] in
+            self?.mediaKeyConsumptionController.failOpenAfterTapDisabled()
+        },
+        onTapWillRestartSynchronously: { [weak self] in
+            self?.mediaKeyConsumptionController.resetConsumedActionOwnership()
+        },
         onTapDisabled: { [weak self] in
             DispatchQueue.main.async { self?.handleMediaKeyTapDisabled() }
         }
@@ -739,6 +745,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         updateMediaKeyVolumeTakeoverContext()
         mediaKeyRuntimeStageTrace.beginEvent()
         updateMediaKeyRouteStatus(nil, override: "已收到系统媒体按键")
+        if event.action.command == .volume,
+           !MediaKeyVolumeDDCRoutePolicy.allowsDDCProcessing(
+               optIn: AppPreferences.mediaKeyVolumeTakeoverEnabled,
+               route: audioOutputRouteSnapshot
+           ) {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            updateMediaKeyRouteStatus(nil, override: "当前音频输出由 macOS 处理，未执行 DDC")
+            failConsumedMediaKeyIfNeeded(event)
+            return
+        }
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else {
             mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "安全状态阻止写入")

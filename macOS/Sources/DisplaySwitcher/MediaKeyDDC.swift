@@ -170,6 +170,22 @@ final class MediaKeyEventConsumptionController {
         update(.disarmed)
     }
 
+    /// Event-tap disable notifications are delivered on the tap callback thread. Clear both the
+    /// gate and any key-up ownership synchronously so no event can be consumed while main-thread
+    /// teardown is still pending.
+    func failOpenAfterTapDisabled() {
+        lock.lock()
+        snapshot = .disarmed
+        consumedActions.removeAll()
+        lock.unlock()
+    }
+
+    func resetConsumedActionOwnership() {
+        lock.lock()
+        consumedActions.removeAll()
+        lock.unlock()
+    }
+
     func disposition(for event: CapturedMediaKeyEvent) -> MediaKeyTapDisposition {
         lock.lock()
         defer { lock.unlock() }
@@ -196,6 +212,8 @@ final class MediaKeyEventMonitor {
 
     private let handler: (NormalizedMediaKeyEvent) -> Void
     private let disposition: (CapturedMediaKeyEvent) -> MediaKeyTapDisposition
+    private let onTapDisabledSynchronously: () -> Void
+    private let onTapWillRestartSynchronously: () -> Void
     private let onTapDisabled: () -> Void
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -204,10 +222,14 @@ final class MediaKeyEventMonitor {
     init(
         handler: @escaping (NormalizedMediaKeyEvent) -> Void,
         disposition: @escaping (CapturedMediaKeyEvent) -> MediaKeyTapDisposition = { _ in .passThrough },
+        onTapDisabledSynchronously: @escaping () -> Void = {},
+        onTapWillRestartSynchronously: @escaping () -> Void = {},
         onTapDisabled: @escaping () -> Void = {}
     ) {
         self.handler = handler
         self.disposition = disposition
+        self.onTapDisabledSynchronously = onTapDisabledSynchronously
+        self.onTapWillRestartSynchronously = onTapWillRestartSynchronously
         self.onTapDisabled = onTapDisabled
     }
 
@@ -216,6 +238,10 @@ final class MediaKeyEventMonitor {
     }
 
     func start(mode: MediaKeyEventTapMode = .passive, requestPermission: Bool = false) -> MediaKeyMonitorState {
+        if eventTap != nil, self.mode == mode {
+            return mode == .activeTakeover ? .activeTakeover : .passive
+        }
+        if eventTap != nil { onTapWillRestartSynchronously() }
         stop()
         self.mode = mode
         if mode == .passive {
@@ -237,8 +263,11 @@ final class MediaKeyEventMonitor {
                 let monitor = Unmanaged<MediaKeyEventMonitor>
                     .fromOpaque(userInfo).takeUnretainedValue()
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    monitor.onTapDisabledSynchronously()
                     monitor.onTapDisabled()
-                    if let tap = monitor.eventTap {
+                    // Passive taps cannot delete events and are safe to re-enable after the
+                    // synchronous fail-open. Active taps stay disabled until main rebuilds them.
+                    if monitor.mode == .passive, let tap = monitor.eventTap {
                         CGEvent.tapEnable(tap: tap, enable: true)
                     }
                     return Unmanaged.passUnretained(event)
@@ -933,6 +962,18 @@ enum MediaKeyVolumeTakeoverGate {
     }
 }
 
+/// Enabling takeover changes volume routing semantics: only an exact display-audio route that
+/// macOS cannot adjust may reach DDC. With the option off, DS-031's listen-only behavior remains
+/// backward compatible and continues to mirror volume keys to DDC.
+enum MediaKeyVolumeDDCRoutePolicy {
+    static func allowsDDCProcessing(
+        optIn: Bool,
+        route: AudioOutputRouteSnapshot
+    ) -> Bool {
+        !optIn || route.allowsDDCTakeover
+    }
+}
+
 enum MediaKeyVolumeTakeoverDiagnostic: String, Equatable {
     case passive
     case activeDisarmed = "active-disarmed"
@@ -1610,7 +1651,7 @@ struct MediaKeyVolumeTakeoverPresentation: Equatable {
             return Self(
                 enabled: true,
                 title: "音量接管需要辅助功能权限",
-                detail: "未授权时保持被动监听，不吞按键；可在系统设置中允许 DisplaySwitcher。",
+                detail: "未授权时保持被动监听，不吞按键；仅当输出符合 HDMI/DP 条件时仍额外执行 DDC。可在系统设置中允许 DisplaySwitcher。",
                 actionTitle: "申请辅助功能权限"
             )
         }
@@ -1625,10 +1666,16 @@ struct MediaKeyVolumeTakeoverPresentation: Equatable {
         } else {
             routeText = "HDMI/DisplayPort 输出符合接管条件"
         }
+        let behaviorText: String
+        if route.allowsDDCTakeover {
+            behaviorText = armed ? "下一次音量键可接管" : "首次按键仍交给 macOS，DDC 成功后再接管"
+        } else {
+            behaviorText = "当前音量键完全交给 macOS，不执行 DDC"
+        }
         return Self(
             enabled: true,
             title: armed ? "HDMI/DP DDC 音量接管已就绪" : "HDMI/DP DDC 音量接管待确认",
-            detail: "\(mode)；\(routeText)；\(armed ? "下一次音量键可接管" : "首次按键仍交给 macOS，DDC 成功后再接管")。",
+            detail: "\(mode)；\(routeText)；\(behaviorText)。",
             actionTitle: nil
         )
     }

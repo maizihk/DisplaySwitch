@@ -609,6 +609,32 @@ final class MediaKeyDDCTests: XCTestCase {
         ))
     }
 
+    func testOptInVolumeRoutingSkipsFreshReadAndWritesForSystemManagedOutputs() {
+        var freshReadCount = 0
+        var writeCount = 0
+        func route(_ snapshot: AudioOutputRouteSnapshot) {
+            guard MediaKeyVolumeDDCRoutePolicy.allowsDDCProcessing(
+                optIn: true, route: snapshot
+            ) else { return }
+            freshReadCount += 1
+            writeCount += 1
+        }
+
+        route(audioRoute(.other)) // built-in, headphone, USB, Bluetooth, or AirPlay
+        route(.unavailable)
+        route(audioRoute(.hdmi, volumeSettable: true))
+        route(audioRoute(.displayPort, muteSettable: true))
+        XCTAssertEqual(freshReadCount, 0)
+        XCTAssertEqual(writeCount, 0)
+
+        route(audioRoute(.hdmi))
+        XCTAssertEqual(freshReadCount, 1)
+        XCTAssertEqual(writeCount, 1)
+        XCTAssertTrue(MediaKeyVolumeDDCRoutePolicy.allowsDDCProcessing(
+            optIn: false, route: audioRoute(.other)
+        ))
+    }
+
     func testCoreAudioTransportProjectionRecognizesOnlyHDMIAndDisplayPort() {
         XCTAssertEqual(AudioOutputTransport(coreAudioValue: kAudioDeviceTransportTypeHDMI), .hdmi)
         XCTAssertEqual(
@@ -713,6 +739,22 @@ final class MediaKeyDDCTests: XCTestCase {
         XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .passThrough)
     }
 
+    func testTapDisableSynchronouslyFailsOpenAndClearsStaleKeyUpOwnership() {
+        let consumption = MediaKeyEventConsumptionController(now: { 1 })
+        consumption.update(MediaKeyConsumptionSnapshot(
+            canConsumeVolume: true, canConsumeMute: true, expiresAt: 10
+        ))
+        XCTAssertEqual(consumption.disposition(for: captured(.volumeUp)), .consume)
+
+        consumption.failOpenAfterTapDisabled()
+
+        XCTAssertEqual(consumption.disposition(for: captured(.volumeDown)), .passThrough)
+        XCTAssertEqual(
+            consumption.disposition(for: captured(.volumeUp, phase: .up)),
+            .passThrough
+        )
+    }
+
     func testAllVolumeTargetsMustCompleteBeforeArmingAndHUDDoesNotInventOneSharedValue() {
         let keys: Set<DDCWriteKey> = [
             DDCWriteKey(stableID: "A", command: .volume),
@@ -795,12 +837,19 @@ final class MediaKeyDDCTests: XCTestCase {
         )
         XCTAssertEqual(permission.actionTitle, "申请辅助功能权限")
         XCTAssertTrue(permission.detail.contains("不吞按键"))
+        XCTAssertTrue(permission.detail.contains("仍额外执行 DDC"))
 
         let waiting = MediaKeyVolumeTakeoverPresentation.make(
             enabled: true, accessibilityTrusted: true, monitorState: .passive,
             route: audioRoute(.displayPort), armed: false
         )
         XCTAssertTrue(waiting.detail.contains("首次按键仍交给 macOS"))
+
+        let systemManaged = MediaKeyVolumeTakeoverPresentation.make(
+            enabled: true, accessibilityTrusted: true, monitorState: .passive,
+            route: audioRoute(.other), armed: false
+        )
+        XCTAssertTrue(systemManaged.detail.contains("完全交给 macOS，不执行 DDC"))
     }
 
     func testHUDModelLabelsValuesAsSubmittedAndSupportsMultipleTargets() {
