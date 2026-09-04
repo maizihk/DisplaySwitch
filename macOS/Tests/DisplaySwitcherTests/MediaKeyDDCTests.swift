@@ -211,6 +211,224 @@ final class MediaKeyDDCTests: XCTestCase {
         XCTAssertEqual(executor.cancelCount, 1)
     }
 
+    func testColdStartFirstEventWaitsForFreshReadBeforeRouting() {
+        let executor = ControlledMediaKeyFreshReadExecutor()
+        let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+        var plans: [MediaKeyDDCPlan] = []
+        var router = MediaKeyDDCRouter()
+        coordinator.onCompletion = { result in
+            router.beginFreshReadRouting(command: .luminance, targets: result.targets)
+            plans.append(router.plan(
+                event: result.request.event,
+                linkAllDisplays: result.request.linkAllDisplays,
+                targets: result.targets
+            ))
+        }
+
+        XCTAssertEqual(coordinator.submit(freshRequest(.brightnessUp)), .started)
+        XCTAssertTrue(plans.isEmpty)
+        XCTAssertEqual(executor.pending.count, 1)
+
+        executor.completeFirst(samples: [
+            "a": DDCControlValueSample(value: 40, maximum: 100, estimated: false)
+        ])
+        XCTAssertEqual(plans.first?.requests.map(\.value), [45])
+        XCTAssertEqual(plans.first?.outcome, .applied(1))
+    }
+
+    func testIndependentFreshReadFailureSkipsOnlyFailedTarget() {
+        let executor = ControlledMediaKeyFreshReadExecutor()
+        let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+        var plan: MediaKeyDDCPlan?
+        var router = MediaKeyDDCRouter()
+        coordinator.onCompletion = { result in
+            router.beginFreshReadRouting(command: .volume, targets: result.targets)
+            plan = router.plan(
+                event: result.request.event,
+                linkAllDisplays: false,
+                targets: result.targets
+            )
+        }
+        coordinator.submit(freshRequest(
+            .volumeDown,
+            targets: [freshTarget("A"), freshTarget("B")]
+        ))
+        executor.completeFirst(samples: [
+            "a": DDCControlValueSample(value: 50, maximum: 100, estimated: false)
+        ])
+
+        XCTAssertEqual(plan?.requests.map(\.key.stableID), ["A"])
+        XCTAssertEqual(plan?.requests.map(\.value), [45])
+        XCTAssertEqual(plan?.outcome, .applied(1))
+    }
+
+    func testLinkedFreshReadFailureOrMixedValuesBlocksWholeGroup() {
+        func route(samples: [String: DDCControlValueSample]) -> MediaKeyDDCPlan? {
+            let executor = ControlledMediaKeyFreshReadExecutor()
+            let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+            var plan: MediaKeyDDCPlan?
+            var router = MediaKeyDDCRouter()
+            coordinator.onCompletion = { result in
+                router.beginFreshReadRouting(command: .luminance, targets: result.targets)
+                plan = router.plan(
+                    event: result.request.event,
+                    linkAllDisplays: true,
+                    targets: result.targets
+                )
+            }
+            coordinator.submit(freshRequest(
+                .brightnessUp,
+                linked: true,
+                targets: [freshTarget("A"), freshTarget("B")]
+            ))
+            executor.completeFirst(samples: samples)
+            return plan
+        }
+
+        let unknown = route(samples: [
+            "a": DDCControlValueSample(value: 40, maximum: 100, estimated: false)
+        ])
+        XCTAssertTrue(unknown?.requests.isEmpty == true)
+        XCTAssertEqual(unknown?.outcome, .missingTrustedValues)
+
+        let mixed = route(samples: [
+            "a": DDCControlValueSample(value: 40, maximum: 100, estimated: false),
+            "b": DDCControlValueSample(value: 41, maximum: 100, estimated: false)
+        ])
+        XCTAssertTrue(mixed?.requests.isEmpty == true)
+        XCTAssertEqual(mixed?.outcome, .mixedLinkedValues)
+    }
+
+    func testHeldRepeatEventsShareOneBoundedFreshRead() {
+        let executor = ControlledMediaKeyFreshReadExecutor()
+        let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+        var result: MediaKeyFreshReadResult?
+        coordinator.onCompletion = { result = $0 }
+
+        coordinator.submit(freshRequest(.brightnessUp))
+        for _ in 0..<100 {
+            XCTAssertEqual(
+                coordinator.submit(freshRequest(.brightnessUp, repeatEvent: true)),
+                .coalesced
+            )
+        }
+        XCTAssertEqual(executor.pending.count, 1)
+        executor.completeFirst(samples: [
+            "a": DDCControlValueSample(value: 20, maximum: 100, estimated: false)
+        ])
+        XCTAssertEqual(
+            result?.coalescedRepeatCount,
+            MediaKeyFreshReadCoordinator.maximumCoalescedRepeatCount
+        )
+        XCTAssertTrue(executor.pending.isEmpty)
+    }
+
+    func testDifferentActionUsesOnePendingSlotAndItsRepeatsCoalesce() {
+        let executor = ControlledMediaKeyFreshReadExecutor()
+        let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+        var completed: [MediaKeyFreshReadResult] = []
+        coordinator.onCompletion = { completed.append($0) }
+
+        XCTAssertEqual(coordinator.submit(freshRequest(.brightnessUp)), .started)
+        XCTAssertEqual(coordinator.submit(freshRequest(.volumeDown)), .queued)
+        XCTAssertEqual(
+            coordinator.submit(freshRequest(.volumeDown, repeatEvent: true)),
+            .coalesced
+        )
+        XCTAssertEqual(executor.pending.count, 1)
+
+        executor.completeFirst(samples: [:])
+        XCTAssertEqual(executor.pending.count, 1)
+        XCTAssertEqual(executor.pending.first?.command, .volume)
+        executor.completeFirst(samples: [:])
+        XCTAssertEqual(completed.map(\.coalescedRepeatCount), [0, 1])
+        XCTAssertTrue(executor.pending.isEmpty)
+    }
+
+    func testGenerationChangeDiscardsLateFreshReadCompletion() {
+        let executor = ControlledMediaKeyFreshReadExecutor()
+        let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+        var completions = 0
+        coordinator.onCompletion = { _ in completions += 1 }
+        coordinator.submit(freshRequest(.volumeUp, generation: 7))
+
+        coordinator.invalidate()
+        executor.completeFirst(samples: [
+            "a": DDCControlValueSample(value: 20, maximum: 100, estimated: false)
+        ])
+        XCTAssertEqual(completions, 0)
+        XCTAssertEqual(executor.cancelCount, 1)
+    }
+
+    func testVirtualRDPOrIncompleteTopologyProducesZeroFreshReadsAndWrites() {
+        let executor = ControlledMediaKeyFreshReadExecutor()
+        let coordinator = MediaKeyFreshReadCoordinator(executor: executor)
+        var writes = 0
+        coordinator.onCompletion = { result in
+            var router = MediaKeyDDCRouter()
+            writes += router.plan(
+                event: result.request.event,
+                linkAllDisplays: result.request.linkAllDisplays,
+                targets: result.targets
+            ).requests.count
+        }
+        let targets = [freshTarget("A")]
+        for evidence in [
+            DDCPhysicalEnumerationEvidence.untrusted,
+            DDCPhysicalEnumerationEvidence(
+                cgEnumerationSucceeded: true,
+                externalCGDisplayCount: 2,
+                extractedIdentityCount: 1,
+                registryEnumerationSucceeded: true,
+                externalRegistryServiceCount: 1,
+                matchedPhysicalTransportCount: 1
+            )
+        ] {
+            if MediaKeyFreshReadAdmission.allows(
+                operationsAllowed: true,
+                physicalEvidence: evidence,
+                targets: targets
+            ) {
+                coordinator.submit(freshRequest(.brightnessUp))
+            }
+        }
+        XCTAssertTrue(executor.pending.isEmpty)
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testFreshReadExecutorRejectsEstimatedCacheFallback() {
+        let completed = expectation(description: "fresh read filtered")
+        var batch = DDCReadBatchResult()
+        batch.readings["A"] = [
+            .luminance: DDCResolvedReading(
+                reading: DDCReading(current: 70, maximum: 100, estimated: true),
+                estimated: true
+            )
+        ]
+        let executor = DDCControllerMediaKeyFreshReadExecutor(
+            queue: DispatchQueue(label: "MediaKeyDDCTests.fresh-read"),
+            read: { _ in batch },
+            cancellation: {}
+        )
+        executor.execute(targets: [freshTarget("A")], command: .luminance) { samples in
+            XCTAssertTrue(samples.isEmpty)
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 1)
+    }
+
+    func testRuntimeTraceUsesSanitizedStageNames() {
+        var trace = MediaKeyRuntimeStageTrace()
+        trace.beginEvent()
+        trace.append(.freshReadStarted)
+        trace.append(.freshReadFailed)
+        trace.append(.routeBlocked)
+        XCTAssertEqual(
+            trace.diagnosticValue,
+            "event-seen,fresh-read-started,fresh-read-failed,route-blocked"
+        )
+    }
+
     private func event(_ action: MediaKeyAction, repeatEvent: Bool = false) -> NormalizedMediaKeyEvent {
         NormalizedMediaKeyEvent(action: action, isRepeat: repeatEvent)
     }
@@ -240,6 +458,25 @@ final class MediaKeyDDCTests: XCTestCase {
             }
         )
     }
+
+    private func freshTarget(_ id: String) -> MediaKeyFreshReadTarget {
+        MediaKeyFreshReadTarget(stableID: id, selector: "selector-\(id)")
+    }
+
+    private func freshRequest(
+        _ action: MediaKeyAction,
+        repeatEvent: Bool = false,
+        linked: Bool = false,
+        generation: UInt64 = 1,
+        targets: [MediaKeyFreshReadTarget]? = nil
+    ) -> MediaKeyFreshReadRequest {
+        MediaKeyFreshReadRequest(
+            event: event(action, repeatEvent: repeatEvent),
+            linkAllDisplays: linked,
+            runtimeGeneration: generation,
+            targets: targets ?? [freshTarget("A")]
+        )
+    }
 }
 
 private final class ControlledMediaKeyWriteExecutor: DDCWriteExecuting {
@@ -257,5 +494,31 @@ private final class ControlledMediaKeyWriteExecutor: DDCWriteExecuting {
     func completeFirst() {
         let item = pending.removeFirst()
         item.1(.success(item.0.value))
+    }
+}
+
+private final class ControlledMediaKeyFreshReadExecutor: MediaKeyFreshReadExecuting {
+    var pending: [(
+        targets: [MediaKeyFreshReadTarget],
+        command: DDCCommand,
+        completion: ([String: DDCControlValueSample]) -> Void
+    )] = []
+    var cancelCount = 0
+
+    func execute(
+        targets: [MediaKeyFreshReadTarget],
+        command: DDCCommand,
+        completion: @escaping ([String: DDCControlValueSample]) -> Void
+    ) {
+        pending.append((targets, command, completion))
+    }
+
+    func cancelAll() {
+        cancelCount += 1
+    }
+
+    func completeFirst(samples: [String: DDCControlValueSample]) {
+        let item = pending.removeFirst()
+        item.completion(samples)
     }
 }

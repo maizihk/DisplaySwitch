@@ -3,101 +3,6 @@ import Darwin
 import Foundation
 import IOKit.pwr_mgt
 
-private enum TrayImageFactory {
-    private static let menuSymbolConfiguration = NSImage.SymbolConfiguration(
-        pointSize: 14,
-        weight: .regular
-    )
-
-    static func menuImage(
-        for icon: TraySemanticIcon,
-        accessibilityDescription: String
-    ) -> NSImage? {
-        for symbolName in icon.symbolCandidates {
-            guard let symbol = NSImage(
-                systemSymbolName: symbolName,
-                accessibilityDescription: accessibilityDescription
-            ), let configured = symbol.withSymbolConfiguration(menuSymbolConfiguration) else {
-                continue
-            }
-            configured.isTemplate = true
-            configured.size = NSSize(width: 16, height: 16)
-            return configured
-        }
-        return nil
-    }
-
-    static func statusImage(accessibilityDescription: String) -> NSImage {
-        let canvas = TrayStatusIconDesign.canvasSize
-        let image = NSImage(
-            size: NSSize(width: canvas, height: canvas),
-            flipped: false
-        ) { destination in
-            NSGraphicsContext.saveGraphicsState()
-            defer { NSGraphicsContext.restoreGraphicsState() }
-
-            let scale = min(destination.width, destination.height) / canvas
-            let transform = NSAffineTransform()
-            transform.translateX(
-                by: destination.minX + (destination.width - canvas * scale) / 2,
-                yBy: destination.minY + (destination.height - canvas * scale) / 2
-            )
-            transform.scale(by: scale)
-            transform.concat()
-
-            NSColor.black.setStroke()
-            NSColor.black.setFill()
-            let strokeWidth = TrayStatusIconDesign.strokeWidth
-            let centerMinimum = TrayStatusIconDesign.paintedMinimum + strokeWidth / 2
-            let centerMaximum = TrayStatusIconDesign.paintedMaximum - strokeWidth / 2
-
-            let screen = NSBezierPath(
-                roundedRect: NSRect(
-                    x: centerMinimum,
-                    y: 4.45,
-                    width: centerMaximum - centerMinimum,
-                    height: centerMaximum - 4.45
-                ),
-                xRadius: 1.8,
-                yRadius: 1.8
-            )
-            screen.lineWidth = strokeWidth
-            screen.stroke()
-
-            let stand = NSBezierPath()
-            stand.lineWidth = strokeWidth
-            stand.lineCapStyle = .round
-            stand.move(to: NSPoint(x: canvas / 2, y: 4.45))
-            stand.line(to: NSPoint(x: canvas / 2, y: centerMinimum))
-            stand.move(to: NSPoint(x: 5.8, y: centerMinimum))
-            stand.line(to: NSPoint(x: 12.2, y: centerMinimum))
-            stand.stroke()
-
-            let percent = NSBezierPath()
-            percent.lineWidth = strokeWidth
-            percent.lineCapStyle = .round
-            percent.move(to: NSPoint(x: 5.55, y: 7.75))
-            percent.line(to: NSPoint(x: 12.45, y: 13.25))
-            percent.stroke()
-
-            for center in [NSPoint(x: 5.9, y: 12.7), NSPoint(x: 12.1, y: 8.3)] {
-                NSBezierPath(
-                    ovalIn: NSRect(
-                        x: center.x - 1.05,
-                        y: center.y - 1.05,
-                        width: 2.1,
-                        height: 2.1
-                    )
-                ).fill()
-            }
-            return true
-        }
-        image.isTemplate = true
-        image.accessibilityDescription = accessibilityDescription
-        return image
-    }
-}
-
 private enum DisplayControl: String, CaseIterable {
     case luminance
     case contrast
@@ -119,11 +24,11 @@ private enum DisplayControl: String, CaseIterable {
         }
     }
 
-    var semanticIcon: TraySemanticIcon {
+    var menuIconRole: TrayMenuIconRole {
         switch self {
-        case .luminance: return .luminance
-        case .contrast: return .contrast
-        case .volume: return .volume
+        case .luminance: return .luminanceControl
+        case .contrast: return .contrastControl
+        case .volume: return .volumeControl
         }
     }
 }
@@ -160,9 +65,8 @@ private final class SliderRowView: NSView {
         ))
         slider.setAccessibilityLabel("\(accessibilityPrefix)\(control.title)")
 
-        let icon = NSImageView()
-        icon.image = TrayImageFactory.menuImage(
-            for: control.semanticIcon,
+        let icon = TrayControlIconView(
+            role: control.menuIconRole,
             accessibilityDescription: control.title
         )
         icon.translatesAutoresizingMaskIntoConstraints = false
@@ -304,10 +208,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             cancellation: { [weak self] in self?.ddcController.cancelAll() }
         )
     )
+    private lazy var mediaKeyFreshReadCoordinator = MediaKeyFreshReadCoordinator(
+        executor: DDCControllerMediaKeyFreshReadExecutor(
+            queue: workerQueue,
+            read: { [weak self] targets in
+                self?.ddcController.read(targets: targets) ?? DDCReadBatchResult()
+            },
+            cancellation: { [weak self] in self?.ddcController.cancelAll() }
+        )
+    )
     private var mediaKeyRouter = MediaKeyDDCRouter()
     private var mediaKeyMonitorState: MediaKeyMonitorState = .unavailable
     private var mediaKeyLastRoute: MediaKeyDDCRouteOutcome?
-    private var mediaKeyPhysicalTopologyTrusted = false
+    private var mediaKeyLastStatusText: String?
+    private var mediaKeyRuntimeGeneration: UInt64 = 0
+    private var mediaKeyRuntimeStageTrace = MediaKeyRuntimeStageTrace()
+    private var mediaKeyPhysicalEvidence = DDCPhysicalEnumerationEvidence.untrusted
+    private var mediaKeyPhysicalTopologyTrusted: Bool {
+        MediaKeyTopologyPolicy.allows(mediaKeyPhysicalEvidence)
+    }
     private lazy var mediaKeyMonitor = MediaKeyEventMonitor { [weak self] event in
         self?.handleMediaKeyEvent(event)
     }
@@ -458,14 +377,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private lazy var settingsItem: NSMenuItem = {
         let item = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: ",")
         item.target = self
-        item.image = TrayImageFactory.menuImage(for: .settings, accessibilityDescription: "设置")
+        TrayImageFactory.apply(role: .settings, accessibilityDescription: "设置", to: item)
         return item
     }()
 
     private lazy var quitItem: NSMenuItem = {
         let item = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         item.target = self
-        item.image = TrayImageFactory.menuImage(for: .quit, accessibilityDescription: "退出")
+        TrayImageFactory.apply(role: .quit, accessibilityDescription: "退出", to: item)
         return item
     }()
 
@@ -519,6 +438,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                     )
                     self.showError(title: "显示器调节失败", error: error)
                 }
+            }
+        }
+        mediaKeyFreshReadCoordinator.onReadStarted = { [weak self] request in
+            DispatchQueue.main.async {
+                guard let self,
+                      request.runtimeGeneration == self.mediaKeyRuntimeGeneration else { return }
+                self.mediaKeyRuntimeStageTrace.beginEvent()
+                self.mediaKeyRuntimeStageTrace.append(.freshReadStarted)
+                self.updateMediaKeyRouteStatus(nil, override: "已收到按键，正在读取显示器当前值")
+            }
+        }
+        mediaKeyFreshReadCoordinator.onCompletion = { [weak self] result in
+            DispatchQueue.main.async {
+                self?.completeMediaKeyFreshRead(result)
             }
         }
 
@@ -642,8 +575,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             return
         }
         ddcWriteCoordinator.cancelAll()
-        mediaKeyRouter.invalidateSessionState()
-        mediaKeyPhysicalTopologyTrusted = false
+        invalidateMediaKeyRuntime(resetPhysicalEvidence: true)
         ddcValueSamples.removeAll()
         let existing = AppPreferences.loadDisplayConfigurations().configurations
         displayDeletionAvailabilityTracker.beginDetection()
@@ -683,9 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                         })
                         self.linkedDDCRuntimeConfigurations = self.configurations
                         self.linkedDDCTopologyResolved = true
-                        self.mediaKeyPhysicalTopologyTrusted = MediaKeyTopologyPolicy.allows(
-                            detectedScan.physicalEvidence
-                        )
+                        self.mediaKeyPhysicalEvidence = detectedScan.physicalEvidence
                         let savedDocument = AppPreferences.localConfiguration
                         self.displayDeletionAvailabilityTracker.recordSuccessfulDetection(
                             detected: detectedDisplays,
@@ -714,8 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 DispatchQueue.main.async {
                     self?.linkedDDCTopologyResolved = false
                     self?.linkedDDCRuntimeConfigurations.removeAll()
-                    self?.mediaKeyPhysicalTopologyTrusted = false
-                    self?.mediaKeyRouter.invalidateSessionState()
+                    self?.invalidateMediaKeyRuntime(resetPhysicalEvidence: true)
                     self?.displayDeletionAvailabilityTracker.recordFailureOrUntrustedResult()
                     self?.rebuildDisplayMenuItems()
                     if self?.settingsWindowHasBeenShown == true {
@@ -764,11 +693,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     }
 
     private func handleMediaKeyEvent(_ event: NormalizedMediaKeyEvent) {
+        mediaKeyRuntimeStageTrace.beginEvent()
+        updateMediaKeyRouteStatus(nil, override: "已收到系统媒体按键")
         guard configurationSafetyGate.allows(.ddc), usbLearningSafetyGate.allows(.ddc) else {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "安全状态阻止写入")
             return
         }
         guard linkedDDCTopologyResolved, mediaKeyPhysicalTopologyTrusted else {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(nil, override: "物理显示器拓扑尚未可信确认")
             return
         }
@@ -776,25 +709,112 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         guard let entry = linkedDDCEntries(visibility: .settings).first(where: {
             $0.command == event.action.command
         }) else {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
             updateMediaKeyRouteStatus(.noEnabledTargets)
             return
         }
         let targets = entry.targets.map { target in
-            MediaKeyDDCTarget(
+            MediaKeyFreshReadTarget(
                 stableID: target.stableID,
-                selector: target.selector,
-                sample: ddcValueSamples[target.stableID.lowercased()]?[event.action.command]
+                selector: target.selector
             )
         }
-        let plan = mediaKeyRouter.plan(
+        guard MediaKeyFreshReadAdmission.allows(
+            operationsAllowed: true,
+            physicalEvidence: mediaKeyPhysicalEvidence,
+            targets: targets
+        ) else {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            updateMediaKeyRouteStatus(nil, override: "当前没有可信可读取的物理显示器")
+            return
+        }
+        if event.action == .mute, event.isRepeat {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            let plan = mediaKeyRouter.plan(
+                event: event,
+                linkAllDisplays: document.linkAllDisplays,
+                targets: targets.map {
+                    MediaKeyDDCTarget(stableID: $0.stableID, selector: $0.selector, sample: nil)
+                }
+            )
+            updateMediaKeyRouteStatus(plan.outcome)
+            return
+        }
+        let disposition = mediaKeyFreshReadCoordinator.submit(MediaKeyFreshReadRequest(
             event: event,
             linkAllDisplays: document.linkAllDisplays,
+            runtimeGeneration: mediaKeyRuntimeGeneration,
             targets: targets
-        )
-        updateMediaKeyRouteStatus(plan.outcome)
-        for request in plan.requests {
-            ddcWriteCoordinator.submit(request)
+        ))
+        switch disposition {
+        case .started, .coalesced:
+            mediaKeyRuntimeStageTrace.append(.freshReadStarted)
+        case .queued:
+            break
+        case .ignored:
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            updateMediaKeyRouteStatus(nil, override: "DDC 操作当前不可用")
         }
+    }
+
+    private func completeMediaKeyFreshRead(_ result: MediaKeyFreshReadResult) {
+        let request = result.request
+        guard request.runtimeGeneration == mediaKeyRuntimeGeneration,
+              configurationSafetyGate.allows(.ddc),
+              usbLearningSafetyGate.allows(.ddc),
+              linkedDDCTopologyResolved,
+              mediaKeyPhysicalTopologyTrusted,
+              request.linkAllDisplays == AppPreferences.localConfiguration.linkAllDisplays,
+              currentMediaKeyTargets(command: request.event.action.command) == request.targets else {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+            updateMediaKeyRouteStatus(nil, override: "配置或显示器拓扑已变化，已取消")
+            return
+        }
+
+        if result.failedTargetCount > 0 {
+            mediaKeyRuntimeStageTrace.append(.freshReadFailed)
+        }
+        for target in result.targets {
+            if let sample = target.sample {
+                ddcValueSamples[target.stableID.lowercased(), default: [:]][request.event.action.command] = sample
+            }
+        }
+        refreshLinkedTrayControlRows()
+        mediaKeyRouter.beginFreshReadRouting(
+            command: request.event.action.command,
+            targets: result.targets
+        )
+
+        var finalOutcome: MediaKeyDDCRouteOutcome = .missingTrustedValues
+        var submittedCount = 0
+        for offset in 0...result.coalescedRepeatCount {
+            let event = offset == 0
+                ? request.event
+                : NormalizedMediaKeyEvent(action: request.event.action, isRepeat: true)
+            let plan = mediaKeyRouter.plan(
+                event: event,
+                linkAllDisplays: request.linkAllDisplays,
+                targets: result.targets
+            )
+            finalOutcome = plan.outcome
+            submittedCount += plan.requests.count
+            for writeRequest in plan.requests {
+                ddcWriteCoordinator.submit(writeRequest)
+            }
+        }
+        if submittedCount > 0 {
+            mediaKeyRuntimeStageTrace.append(.writeSubmitted)
+        } else {
+            mediaKeyRuntimeStageTrace.append(.routeBlocked)
+        }
+        updateMediaKeyRouteStatus(finalOutcome)
+    }
+
+    private func currentMediaKeyTargets(command: DDCCommand) -> [MediaKeyFreshReadTarget] {
+        linkedDDCEntries(visibility: .settings).first(where: { $0.command == command })?
+            .targets.map {
+                MediaKeyFreshReadTarget(stableID: $0.stableID, selector: $0.selector)
+            } ?? []
     }
 
     private func updateMediaKeyRouteStatus(
@@ -802,11 +822,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         override: String? = nil
     ) {
         mediaKeyLastRoute = outcome
+        mediaKeyLastStatusText = override ?? outcome?.userFacingValue
         if settingsWindowHasBeenShown {
             settingsWindowController.updateMediaKeyShortcutPresentation(
                 .make(
                     state: mediaKeyMonitorState,
-                    lastRoute: override ?? outcome?.userFacingValue
+                    lastRoute: mediaKeyLastStatusText
                 )
             )
         }
@@ -822,7 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     private func mediaKeyShortcutPresentation() -> MediaKeyShortcutPresentation {
         .make(
             state: mediaKeyMonitorState,
-            lastRoute: mediaKeyLastRoute?.userFacingValue
+            lastRoute: mediaKeyLastStatusText
         )
     }
 
@@ -1513,7 +1534,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             ddcDiagnostics: diagnostics,
             mediaKeyStatus: "monitor-\(mediaKeyMonitorState.diagnosticValue)"
                 + " route-\(mediaKeyLastRoute?.diagnosticValue ?? "none")"
-                + " topology-trusted-\(mediaKeyPhysicalTopologyTrusted)",
+                + " topology-trusted-\(mediaKeyPhysicalTopologyTrusted)"
+                + " stages-\(mediaKeyRuntimeStageTrace.diagnosticValue)",
             peerInspectionText: peerInspectionDiagnostics.exportText(),
             inputSourceText: inputSourceDiagnostics.exportText()
         )
@@ -1528,7 +1550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
     @discardableResult
     private func applyPersistedDisplayRuntimeState() -> DisplayConfigurationStoreV5Document {
         ddcWriteCoordinator.cancelAll()
-        mediaKeyRouter.invalidateSessionState()
+        invalidateMediaKeyRuntime(resetPhysicalEvidence: false)
         let result = AppPreferences.loadDisplayConfigurations()
         configurationSafetyGate.apply(result)
         refreshDDCOperationAccess()
@@ -1635,9 +1657,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
                 self?.setControl(control, value: value, fromDisplay: id)
             }
             let displayItem = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-            displayItem.image = TrayImageFactory.menuImage(
-                for: .display,
-                accessibilityDescription: entry.title
+            TrayImageFactory.apply(
+                role: .displaySubmenu,
+                accessibilityDescription: entry.title,
+                to: displayItem
             )
             displayItem.submenu = controls.menu
             displayControls[displayID] = controls
@@ -1657,9 +1680,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             let item = NSMenuItem(title: entry.title, action: #selector(switchToProfile(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = entry.profileID
-            item.image = TrayImageFactory.menuImage(
-                for: .collaborationSwitch,
-                accessibilityDescription: entry.title
+            TrayImageFactory.apply(
+                role: .collaborationSwitch,
+                accessibilityDescription: entry.title,
+                to: item
             )
             item.isEnabled = configurationSafetyGate.state == .ready
             menu.insertItem(item, at: offset + 1)
@@ -1680,9 +1704,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
             usbSwitch: AppPreferences.localConfiguration.usbSwitch
         )
         usbStatusItem.title = presentation.title
-        usbStatusItem.image = TrayImageFactory.menuImage(
-            for: .usbStatus(isSettingEnabled: presentation.isSettingEnabled),
-            accessibilityDescription: presentation.accessibilityLabel
+        TrayImageFactory.apply(
+            role: presentation.isSettingEnabled ? .usbEnabled : .usbDisabled,
+            accessibilityDescription: presentation.accessibilityLabel,
+            to: usbStatusItem
         )
         usbStatusItem.setAccessibilityLabel(presentation.accessibilityLabel)
     }
@@ -1693,7 +1718,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     func applicationWillTerminate(_ notification: Notification) {
         mediaKeyMonitor.stop()
-        mediaKeyRouter.invalidateSessionState()
+        invalidateMediaKeyRuntime(resetPhysicalEvidence: true)
+        mediaKeyFreshReadCoordinator.setOperationsAllowed(false)
         ddcWriteCoordinator.cancelAll()
         peerTransport.stop()
         releaseSingleInstanceLock()
@@ -1934,7 +1960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
 
     private func enterConfigurationSafetyState(_ error: DisplayConfigurationStoreError) {
         configurationSafetyGate.requireUserReview(error)
-        mediaKeyRouter.invalidateSessionState()
+        invalidateMediaKeyRuntime(resetPhysicalEvidence: false)
         localUSBSwitchCoordinator.updateConfiguration(localUSBRuntimeConfiguration())
         refreshDDCOperationAccess()
         usbMonitor.stop()
@@ -1964,6 +1990,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Handof
         let allowed = configurationSafetyGate.allows(.ddc) && usbLearningSafetyGate.allows(.ddc)
         ddcController.setOperationsAllowed(allowed)
         ddcWriteCoordinator.setOperationsAllowed(allowed)
+        mediaKeyFreshReadCoordinator.setOperationsAllowed(allowed)
+    }
+
+    private func invalidateMediaKeyRuntime(resetPhysicalEvidence: Bool) {
+        mediaKeyRuntimeGeneration &+= 1
+        mediaKeyFreshReadCoordinator.invalidate()
+        mediaKeyRouter.invalidateSessionState()
+        mediaKeyRuntimeStageTrace.clear()
+        if resetPhysicalEvidence {
+            mediaKeyPhysicalEvidence = .untrusted
+        }
     }
 
     private func updateConfigurationSafetyUI() {

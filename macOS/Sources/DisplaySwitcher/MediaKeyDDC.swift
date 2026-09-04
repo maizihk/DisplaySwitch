@@ -161,9 +161,297 @@ struct MediaKeyDDCTarget: Equatable {
     let sample: DDCControlValueSample?
 }
 
+struct MediaKeyFreshReadTarget: Equatable {
+    let stableID: String
+    let selector: String
+}
+
+struct MediaKeyFreshReadRequest: Equatable {
+    let event: NormalizedMediaKeyEvent
+    let linkAllDisplays: Bool
+    let runtimeGeneration: UInt64
+    let targets: [MediaKeyFreshReadTarget]
+}
+
+struct MediaKeyFreshReadResult: Equatable {
+    let request: MediaKeyFreshReadRequest
+    let targets: [MediaKeyDDCTarget]
+    let coalescedRepeatCount: Int
+
+    var failedTargetCount: Int {
+        targets.filter { $0.sample == nil }.count
+    }
+}
+
+enum MediaKeyFreshReadAdmission {
+    static func allows(
+        operationsAllowed: Bool,
+        physicalEvidence: DDCPhysicalEnumerationEvidence,
+        targets: [MediaKeyFreshReadTarget]
+    ) -> Bool {
+        operationsAllowed
+            && MediaKeyTopologyPolicy.allows(physicalEvidence)
+            && !targets.isEmpty
+    }
+}
+
+protocol MediaKeyFreshReadExecuting: AnyObject {
+    func execute(
+        targets: [MediaKeyFreshReadTarget],
+        command: DDCCommand,
+        completion: @escaping ([String: DDCControlValueSample]) -> Void
+    )
+    func cancelAll()
+}
+
+/// Runs one bounded DDC read batch at a time. Held-key repeat events for the active action share
+/// that fresh sample; other events replace one bounded pending slot instead of creating a read
+/// storm. Invalidation suppresses every late completion from the previous runtime generation.
+final class MediaKeyFreshReadCoordinator {
+    static let maximumCoalescedRepeatCount = 32
+
+    enum SubmitDisposition: Equatable {
+        case started
+        case coalesced
+        case queued
+        case ignored
+    }
+
+    typealias Completion = (MediaKeyFreshReadResult) -> Void
+
+    private struct Pending {
+        var request: MediaKeyFreshReadRequest
+        var coalescedRepeatCount: Int
+    }
+
+    private struct Active {
+        let request: MediaKeyFreshReadRequest
+        var coalescedRepeatCount: Int
+        let token: UInt64
+        let coordinatorGeneration: UInt64
+    }
+
+    private let executor: MediaKeyFreshReadExecuting
+    private let lock = NSLock()
+    private var active: Active?
+    private var pending: Pending?
+    private var coordinatorGeneration: UInt64 = 0
+    private var nextToken: UInt64 = 0
+    private var operationsAllowed = true
+
+    var onReadStarted: ((MediaKeyFreshReadRequest) -> Void)?
+    var onCompletion: Completion?
+
+    init(executor: MediaKeyFreshReadExecuting) {
+        self.executor = executor
+    }
+
+    @discardableResult
+    func submit(_ request: MediaKeyFreshReadRequest) -> SubmitDisposition {
+        var itemToStart: Active?
+        let disposition: SubmitDisposition
+
+        lock.lock()
+        if !operationsAllowed {
+            disposition = .ignored
+        } else if var current = active {
+            if canCoalesce(request, into: current.request) {
+                current.coalescedRepeatCount = min(
+                    current.coalescedRepeatCount + 1,
+                    Self.maximumCoalescedRepeatCount
+                )
+                active = current
+                disposition = .coalesced
+            } else if var waiting = pending, canCoalesce(request, into: waiting.request) {
+                waiting.coalescedRepeatCount = min(
+                    waiting.coalescedRepeatCount + 1,
+                    Self.maximumCoalescedRepeatCount
+                )
+                pending = waiting
+                disposition = .coalesced
+            } else {
+                pending = Pending(request: request, coalescedRepeatCount: 0)
+                disposition = .queued
+            }
+        } else {
+            itemToStart = makeActive(Pending(request: request, coalescedRepeatCount: 0))
+            active = itemToStart
+            disposition = .started
+        }
+        lock.unlock()
+
+        if let itemToStart { start(itemToStart) }
+        return disposition
+    }
+
+    func invalidate() {
+        lock.lock()
+        coordinatorGeneration &+= 1
+        active = nil
+        pending = nil
+        lock.unlock()
+        executor.cancelAll()
+    }
+
+    func setOperationsAllowed(_ allowed: Bool) {
+        lock.lock()
+        operationsAllowed = allowed
+        if !allowed {
+            coordinatorGeneration &+= 1
+            active = nil
+            pending = nil
+        }
+        lock.unlock()
+        if !allowed { executor.cancelAll() }
+    }
+
+    private func canCoalesce(
+        _ incoming: MediaKeyFreshReadRequest,
+        into existing: MediaKeyFreshReadRequest
+    ) -> Bool {
+        incoming.event.isRepeat
+            && incoming.event.action == existing.event.action
+            && incoming.linkAllDisplays == existing.linkAllDisplays
+            && incoming.runtimeGeneration == existing.runtimeGeneration
+            && incoming.targets == existing.targets
+    }
+
+    private func makeActive(_ pending: Pending) -> Active {
+        nextToken &+= 1
+        return Active(
+            request: pending.request,
+            coalescedRepeatCount: pending.coalescedRepeatCount,
+            token: nextToken,
+            coordinatorGeneration: coordinatorGeneration
+        )
+    }
+
+    private func start(_ item: Active) {
+        onReadStarted?(item.request)
+        executor.execute(targets: item.request.targets, command: item.request.event.action.command) {
+            [weak self] samples in
+            self?.finish(token: item.token, samples: samples)
+        }
+    }
+
+    private func finish(token: UInt64, samples: [String: DDCControlValueSample]) {
+        var result: MediaKeyFreshReadResult?
+        var next: Active?
+
+        lock.lock()
+        if let current = active,
+           current.token == token,
+           current.coordinatorGeneration == coordinatorGeneration,
+           operationsAllowed {
+            let targets = current.request.targets.map { target in
+                MediaKeyDDCTarget(
+                    stableID: target.stableID,
+                    selector: target.selector,
+                    sample: samples[target.stableID.lowercased()]
+                )
+            }
+            result = MediaKeyFreshReadResult(
+                request: current.request,
+                targets: targets,
+                coalescedRepeatCount: current.coalescedRepeatCount
+            )
+            active = nil
+            if let waiting = pending {
+                pending = nil
+                next = makeActive(waiting)
+                active = next
+            }
+        }
+        lock.unlock()
+
+        if let result { onCompletion?(result) }
+        if let next { start(next) }
+    }
+}
+
+final class DDCControllerMediaKeyFreshReadExecutor: MediaKeyFreshReadExecuting {
+    private let queue: DispatchQueue
+    private let read: ([DDCDisplayTarget]) -> DDCReadBatchResult
+    private let cancellation: () -> Void
+
+    init(
+        queue: DispatchQueue,
+        read: @escaping ([DDCDisplayTarget]) -> DDCReadBatchResult,
+        cancellation: @escaping () -> Void
+    ) {
+        self.queue = queue
+        self.read = read
+        self.cancellation = cancellation
+    }
+
+    func execute(
+        targets: [MediaKeyFreshReadTarget],
+        command: DDCCommand,
+        completion: @escaping ([String: DDCControlValueSample]) -> Void
+    ) {
+        queue.async { [read] in
+            let batch = read(targets.map {
+                DDCDisplayTarget(
+                    stableID: $0.stableID,
+                    selector: $0.selector,
+                    enabledCommands: [command]
+                )
+            })
+            var samples: [String: DDCControlValueSample] = [:]
+            for target in targets {
+                guard let resolved = batch[target.stableID]?[command],
+                      !resolved.estimated,
+                      !resolved.reading.estimated,
+                      resolved.reading.maximum > 0,
+                      (0...resolved.reading.maximum).contains(resolved.reading.current) else {
+                    continue
+                }
+                samples[target.stableID.lowercased()] = DDCControlValueSample(
+                    value: resolved.reading.current,
+                    maximum: resolved.reading.maximum,
+                    estimated: false
+                )
+            }
+            completion(samples)
+        }
+    }
+
+    func cancelAll() {
+        cancellation()
+    }
+}
+
 enum MediaKeyTopologyPolicy {
     static func allows(_ evidence: DDCPhysicalEnumerationEvidence) -> Bool {
         evidence.isCompletePhysicalSnapshot
+    }
+}
+
+enum MediaKeyRuntimeStage: String, Equatable {
+    case eventSeen = "event-seen"
+    case freshReadStarted = "fresh-read-started"
+    case freshReadFailed = "fresh-read-failed"
+    case routeBlocked = "route-blocked"
+    case writeSubmitted = "write-submitted"
+}
+
+struct MediaKeyRuntimeStageTrace: Equatable {
+    private(set) var stages: [MediaKeyRuntimeStage] = []
+
+    mutating func beginEvent() {
+        stages = [.eventSeen]
+    }
+
+    mutating func append(_ stage: MediaKeyRuntimeStage) {
+        if stages.last != stage { stages.append(stage) }
+    }
+
+    mutating func clear() {
+        stages.removeAll()
+    }
+
+    var diagnosticValue: String {
+        stages.isEmpty ? "none" : stages.map(\.rawValue).joined(separator: ",")
     }
 }
 
@@ -224,6 +512,14 @@ struct MediaKeyDDCRouter {
         )
         if !succeeded || projectedValues[key]?.value == request.value {
             projectedValues.removeValue(forKey: key)
+        }
+    }
+
+    mutating func beginFreshReadRouting(command: DDCCommand, targets: [MediaKeyDDCTarget]) {
+        for target in targets {
+            projectedValues.removeValue(
+                forKey: projectionKey(stableID: target.stableID, command: command)
+            )
         }
     }
 
