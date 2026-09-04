@@ -23,6 +23,28 @@ namespace DisplaySwitcher::Native
         NoValueChange,
     };
 
+    enum class MediaKeyInputSource
+    {
+        Keyboard,
+        ConsumerControl,
+    };
+
+    class MediaKeyEventDeduplicator final
+    {
+    public:
+        bool ShouldDispatch(MediaKeyAction action, MediaKeyInputSource source,
+            uint64_t timestampMilliseconds) noexcept;
+
+    private:
+        struct LastEvent
+        {
+            MediaKeyAction action;
+            MediaKeyInputSource source;
+            uint64_t timestampMilliseconds{};
+        };
+        std::optional<LastEvent> lastDispatched_;
+    };
+
     struct MediaKeyWrite
     {
         std::wstring displayId;

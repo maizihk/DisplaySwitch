@@ -2183,6 +2183,18 @@ namespace
 
     void TestMediaKeyRouting()
     {
+        MediaKeyEventDeduplicator deduplicator;
+        Check(deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::Keyboard, 100)
+            && !deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::ConsumerControl, 105)
+            && deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::Keyboard, 120)
+            && deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::Keyboard, 125)
+            && deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::ConsumerControl, 200),
+            L"W-034: 同一次按键的键盘/HID 双路上报只分发一次，同来源及超窗重复仍保留长按步进");
         Check(NormalizeKeyboardMediaKey(VK_VOLUME_UP, true) == MediaKeyAction::VolumeUp
             && NormalizeKeyboardMediaKey(VK_VOLUME_DOWN, true) == MediaKeyAction::VolumeDown
             && NormalizeKeyboardMediaKey(VK_VOLUME_MUTE, true) == MediaKeyAction::VolumeMute
@@ -2330,6 +2342,23 @@ namespace
         Check(restored.writes.size() == 2 && restored.writes[0].value == 25
             && restored.writes[1].value == 65,
             L"W-034: 再次静音按显示器恢复会话内最近非零值且不持久化猜测");
+        MediaKeyRouter generationMuteRouter;
+        auto generationMuted = generationMuteRouter.Plan(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 20);
+        auto zeroVolume = config;
+        zeroVolume.displays[0].volumeValue = 0;
+        zeroVolume.displays[1].volumeValue = 0;
+        auto staleRestore = generationMuteRouter.Plan(zeroVolume,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 21);
+        Check(generationMuted.writes.size() == 2 && staleRestore.writes.empty(),
+            L"W-034: 配置 generation 变化后旧静音恢复值必须清除，绝不跨重载恢复");
+        MediaKeyRouter resetMuteRouter;
+        static_cast<void>(resetMuteRouter.Plan(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 30));
+        resetMuteRouter.ResetPending();
+        Check(resetMuteRouter.Plan(zeroVolume, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeMute, 30).writes.empty(),
+            L"W-034: 安全门或退出调用 ResetPending 后同时清除静音恢复值");
         auto linkedMute = config;
         linkedMute.linkAllDisplays = true;
         linkedMute.displays[0].volumeValue = 50;

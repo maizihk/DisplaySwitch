@@ -21,9 +21,11 @@ namespace DisplaySwitcher::Native
     private:
         static bool Register(HWND window, USHORT usagePage, USHORT usage) noexcept;
         static void Unregister(USHORT usagePage, USHORT usage) noexcept;
+        void Dispatch(MediaKeyAction action, MediaKeyInputSource source) const;
         void HandleHid(RAWINPUT const& input) const;
 
         Callback callback_;
+        mutable MediaKeyEventDeduplicator deduplicator_;
         bool keyboardRegistered_{};
         bool consumerControlRegistered_{};
     };

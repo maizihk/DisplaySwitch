@@ -40,12 +40,17 @@ namespace DisplaySwitcher::Native
         {
             auto action = NormalizeKeyboardMediaKey(raw->data.keyboard.VKey,
                 (raw->data.keyboard.Flags & RI_KEY_BREAK) == 0);
-            if (action && callback_) callback_(*action);
+            if (action) Dispatch(*action, MediaKeyInputSource::Keyboard);
         }
         else if (raw->header.dwType == RIM_TYPEHID)
         {
             HandleHid(*raw);
         }
+    }
+
+    void MediaKeyWatcher::Dispatch(MediaKeyAction action, MediaKeyInputSource source) const
+    {
+        if (callback_ && deduplicator_.ShouldDispatch(action, source, GetTickCount64())) callback_(action);
     }
 
     void MediaKeyWatcher::HandleHid(RAWINPUT const& input) const
@@ -75,7 +80,7 @@ namespace DisplaySwitcher::Native
             for (ULONG index = 0; index < usageCount; ++index)
             {
                 auto action = NormalizeConsumerControlUsage(usages[index], true);
-                if (action && callback_) callback_(*action);
+                if (action) Dispatch(*action, MediaKeyInputSource::ConsumerControl);
             }
         }
     }

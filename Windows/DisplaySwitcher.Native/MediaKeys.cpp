@@ -24,6 +24,20 @@ namespace
 
 namespace DisplaySwitcher::Native
 {
+    bool MediaKeyEventDeduplicator::ShouldDispatch(MediaKeyAction action,
+        MediaKeyInputSource source, uint64_t timestampMilliseconds) noexcept
+    {
+        constexpr uint64_t CrossSourceDuplicateWindowMilliseconds = 30;
+        if (lastDispatched_ && lastDispatched_->action == action
+            && lastDispatched_->source != source
+            && timestampMilliseconds >= lastDispatched_->timestampMilliseconds
+            && timestampMilliseconds - lastDispatched_->timestampMilliseconds
+                <= CrossSourceDuplicateWindowMilliseconds)
+            return false;
+        lastDispatched_ = LastEvent{ action, source, timestampMilliseconds };
+        return true;
+    }
+
     std::optional<MediaKeyAction> NormalizeKeyboardMediaKey(uint16_t virtualKey, bool keyDown) noexcept
     {
         if (!keyDown) return std::nullopt;
@@ -70,6 +84,7 @@ namespace DisplaySwitcher::Native
         {
             configurationGeneration_ = configurationGeneration;
             pendingValues_.clear();
+            muteRestoreValues_.clear();
         }
         if (config.displayConfigurationSafeMode
             || topologyTrust != DisplayTopologyTrust::LocalPhysicalAuthoritative)
@@ -172,5 +187,6 @@ namespace DisplaySwitcher::Native
     void MediaKeyRouter::ResetPending() noexcept
     {
         pendingValues_.clear();
+        muteRestoreValues_.clear();
     }
 }
