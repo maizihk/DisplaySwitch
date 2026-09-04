@@ -988,9 +988,46 @@ final class MediaKeyDDCTests: XCTestCase {
         XCTAssertEqual(accessibilityRows.map(\.action), [nil, .requestAccessibility])
     }
 
-    func testHUDMaterialPolicySelectsPublicGlassOnlyForMacOS26() {
-        XCTAssertEqual(DDCVolumeHUDBackgroundPolicy.style(isMacOS26OrNewer: true), .liquidGlass)
-        XCTAssertEqual(DDCVolumeHUDBackgroundPolicy.style(isMacOS26OrNewer: false), .visualEffect)
+    func testHUDMaterialContractUsesClearGlassWithoutOpaqueOrDoubleChrome() {
+        let modern = DDCVolumeHUDMaterialContract.make(isMacOS26OrNewer: true)
+        XCTAssertEqual(modern.backgroundStyle, .liquidGlass)
+        XCTAssertEqual(modern.glassStyle, .clear)
+        XCTAssertEqual(modern.materialLayerCount, 1)
+        XCTAssertFalse(modern.drawsOpaqueContentBackground)
+        XCTAssertFalse(modern.drawsManualBorder)
+        XCTAssertFalse(modern.usesOuterClippingWrapper)
+
+        let fallback = DDCVolumeHUDMaterialContract.make(isMacOS26OrNewer: false)
+        XCTAssertEqual(fallback.backgroundStyle, .visualEffect)
+        XCTAssertEqual(fallback.glassStyle, .unavailable)
+        XCTAssertEqual(fallback.fallbackMaterial, .popover)
+        XCTAssertEqual(fallback.materialLayerCount, 1)
+        XCTAssertFalse(fallback.drawsOpaqueContentBackground)
+        XCTAssertFalse(fallback.drawsManualBorder)
+        XCTAssertFalse(fallback.usesOuterClippingWrapper)
+    }
+
+    func testHUDFactoryKeepsContentClearAndUsesOneDirectSystemMaterial() throws {
+        let fallback = DDCVolumeHUDBackgroundFactory.make(
+            contract: .make(isMacOS26OrNewer: false)
+        )
+        let material = try XCTUnwrap(fallback.root as? NSVisualEffectView)
+        XCTAssertEqual(material.material, .popover)
+        XCTAssertTrue(material.subviews.contains { $0 === fallback.content })
+        XCTAssertNil(fallback.content.layer?.backgroundColor)
+        XCTAssertEqual(material.layer?.borderWidth ?? 0, 0)
+        XCTAssertFalse(material.subviews.contains { $0 is NSVisualEffectView })
+
+        if #available(macOS 26.0, *) {
+            let modern = DDCVolumeHUDBackgroundFactory.make(
+                contract: .make(isMacOS26OrNewer: true)
+            )
+            let glass = try XCTUnwrap(modern.root as? NSGlassEffectView)
+            XCTAssertEqual(glass.style, .clear)
+            XCTAssertTrue(glass.contentView === modern.content)
+            XCTAssertNil(modern.content.layer?.backgroundColor)
+            XCTAssertNil(glass.superview)
+        }
     }
 
     func testHUDUsesMouseScreenTopRightAndStaysInsideVisibleFrame() throws {

@@ -1062,16 +1062,41 @@ enum DDCVolumeHUDBackgroundStyle: Equatable {
     case visualEffect
 }
 
-enum DDCVolumeHUDBackgroundPolicy {
-    static func style(isMacOS26OrNewer: Bool) -> DDCVolumeHUDBackgroundStyle {
-        isMacOS26OrNewer ? .liquidGlass : .visualEffect
+enum DDCVolumeHUDGlassStyle: Equatable {
+    case clear
+    case unavailable
+}
+
+enum DDCVolumeHUDFallbackMaterial: Equatable {
+    case popover
+}
+
+struct DDCVolumeHUDMaterialContract: Equatable {
+    let backgroundStyle: DDCVolumeHUDBackgroundStyle
+    let glassStyle: DDCVolumeHUDGlassStyle
+    let fallbackMaterial: DDCVolumeHUDFallbackMaterial
+    let materialLayerCount: Int
+    let drawsOpaqueContentBackground: Bool
+    let drawsManualBorder: Bool
+    let usesOuterClippingWrapper: Bool
+
+    static func make(isMacOS26OrNewer: Bool) -> Self {
+        Self(
+            backgroundStyle: isMacOS26OrNewer ? .liquidGlass : .visualEffect,
+            glassStyle: isMacOS26OrNewer ? .clear : .unavailable,
+            fallbackMaterial: .popover,
+            materialLayerCount: 1,
+            drawsOpaqueContentBackground: false,
+            drawsManualBorder: false,
+            usesOuterClippingWrapper: false
+        )
     }
 
-    static var currentStyle: DDCVolumeHUDBackgroundStyle {
+    static var current: Self {
         if #available(macOS 26.0, *) {
-            return style(isMacOS26OrNewer: true)
+            return make(isMacOS26OrNewer: true)
         }
-        return style(isMacOS26OrNewer: false)
+        return make(isMacOS26OrNewer: false)
     }
 }
 
@@ -1137,78 +1162,43 @@ struct DDCVolumeHUDSessionModel: Equatable {
     }
 }
 
-private final class DDCVolumeHUDChromeView: NSView {
-    override var wantsUpdateLayer: Bool { true }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.cornerRadius = 20
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = true
-        layer?.borderWidth = 0.5
-        updateLayer()
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func updateLayer() {
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-    }
-}
-
-private enum DDCVolumeHUDBackgroundFactory {
+enum DDCVolumeHUDBackgroundFactory {
     struct Result {
         let root: NSView
         let content: NSView
     }
 
-    static func make(style: DDCVolumeHUDBackgroundStyle) -> Result {
+    static func make(contract: DDCVolumeHUDMaterialContract) -> Result {
         let content = NSView()
-        let chrome = DDCVolumeHUDChromeView()
-        let effect: NSView
-        if #available(macOS 26.0, *), style == .liquidGlass {
+        if #available(macOS 26.0, *),
+           contract.backgroundStyle == .liquidGlass,
+           contract.glassStyle == .clear {
             let glass = NSGlassEffectView()
-            glass.style = .regular
+            glass.style = .clear
             glass.cornerRadius = 20
             glass.tintColor = nil
             content.autoresizingMask = [.width, .height]
             glass.contentView = content
-            effect = glass
-        } else {
-            let material = NSVisualEffectView()
-            material.material = .hudWindow
-            material.blendingMode = .behindWindow
-            material.state = .active
-            material.wantsLayer = true
-            material.layer?.cornerRadius = 20
-            material.layer?.cornerCurve = .continuous
-            content.translatesAutoresizingMaskIntoConstraints = false
-            material.addSubview(content)
-            NSLayoutConstraint.activate([
-                content.leadingAnchor.constraint(equalTo: material.leadingAnchor),
-                content.trailingAnchor.constraint(equalTo: material.trailingAnchor),
-                content.topAnchor.constraint(equalTo: material.topAnchor),
-                content.bottomAnchor.constraint(equalTo: material.bottomAnchor)
-            ])
-            effect = material
+            return Result(root: glass, content: content)
         }
-        effect.translatesAutoresizingMaskIntoConstraints = false
-        chrome.addSubview(effect)
+
+        let material = NSVisualEffectView()
+        material.material = .popover
+        material.blendingMode = .behindWindow
+        material.state = .active
+        material.wantsLayer = true
+        material.layer?.cornerRadius = 20
+        material.layer?.cornerCurve = .continuous
+        material.layer?.masksToBounds = true
+        content.translatesAutoresizingMaskIntoConstraints = false
+        material.addSubview(content)
         NSLayoutConstraint.activate([
-            effect.leadingAnchor.constraint(equalTo: chrome.leadingAnchor),
-            effect.trailingAnchor.constraint(equalTo: chrome.trailingAnchor),
-            effect.topAnchor.constraint(equalTo: chrome.topAnchor),
-            effect.bottomAnchor.constraint(equalTo: chrome.bottomAnchor)
+            content.leadingAnchor.constraint(equalTo: material.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: material.trailingAnchor),
+            content.topAnchor.constraint(equalTo: material.topAnchor),
+            content.bottomAnchor.constraint(equalTo: material.bottomAnchor)
         ])
-        return Result(root: chrome, content: content)
+        return Result(root: material, content: content)
     }
 }
 
@@ -1223,7 +1213,7 @@ final class DDCVolumeHUDController {
     private let screenProvider: () -> (mouseLocation: CGPoint, screens: [DDCVolumeHUDScreen], mainVisibleFrame: CGRect?)
 
     init(
-        backgroundStyle: DDCVolumeHUDBackgroundStyle = DDCVolumeHUDBackgroundPolicy.currentStyle,
+        materialContract: DDCVolumeHUDMaterialContract = .current,
         screenProvider: @escaping () -> (
             mouseLocation: CGPoint,
             screens: [DDCVolumeHUDScreen],
@@ -1253,7 +1243,7 @@ final class DDCVolumeHUDController {
         panel.becomesKeyOnlyIfNeeded = true
         panel.animationBehavior = .none
 
-        let backgroundResult = DDCVolumeHUDBackgroundFactory.make(style: backgroundStyle)
+        let backgroundResult = DDCVolumeHUDBackgroundFactory.make(contract: materialContract)
         let background = backgroundResult.root
         let content = backgroundResult.content
         background.frame = panel.contentLayoutRect
