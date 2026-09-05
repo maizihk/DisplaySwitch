@@ -1,6 +1,8 @@
 import Foundation
 
 enum AppPreferences {
+    private static let mediaKeyVolumeTakeoverKey = "mediaKeyVolumeTakeoverEnabled"
+
     static var displayConfigurations: [DisplayConfiguration] {
         DisplayConfigurationStore.load().configurations
     }
@@ -29,5 +31,14 @@ enum AppPreferences {
 
     static func setDetailedDiagnosticRecordingEnabled(_ enabled: Bool) {
         DetailedDiagnosticRecordingPreference.shared.setEnabled(enabled)
+    }
+
+    /// Local-only opt-in. Absence is intentionally false for backward compatibility.
+    static var mediaKeyVolumeTakeoverEnabled: Bool {
+        UserDefaults.standard.bool(forKey: mediaKeyVolumeTakeoverKey)
+    }
+
+    static func setMediaKeyVolumeTakeoverEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: mediaKeyVolumeTakeoverKey)
     }
 }

@@ -156,6 +156,7 @@ struct DiagnosticReport: Equatable {
         ddcCapabilities: DDCBackendCapabilities,
         detailedRecordingEnabled: Bool,
         ddcDiagnostics: [NativeDDCDiagnosticSnapshot?],
+        mediaKeyStatus: String = "not-enabled",
         peerInspectionText: String,
         inputSourceText: String
     ) -> DiagnosticReport {
@@ -202,7 +203,8 @@ struct DiagnosticReport: Equatable {
             "availability=\(availabilityText(ddcAvailability))"
                 + " enumerate=\(ddcCapabilities.canEnumerate)"
                 + " read=\(ddcCapabilities.canReadVCP)"
-                + " write=\(ddcCapabilities.canWriteVCP)"
+                + " write=\(ddcCapabilities.canWriteVCP)",
+            "media-keys=\(mediaKeyStatus)"
         ]
 
         if document.displays.isEmpty {

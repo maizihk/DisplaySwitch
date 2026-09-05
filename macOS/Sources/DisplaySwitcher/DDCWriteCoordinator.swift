@@ -5,10 +5,32 @@ struct DDCWriteKey: Hashable {
     let command: DDCCommand
 }
 
+enum DDCWriteOrigin: Equatable {
+    case user
+    case mediaKey(UInt64)
+}
+
 struct DDCWriteRequest: Equatable {
     let key: DDCWriteKey
     let selector: String
     let value: Int
+    let origin: DDCWriteOrigin
+
+    init(
+        key: DDCWriteKey,
+        selector: String,
+        value: Int,
+        origin: DDCWriteOrigin = .user
+    ) {
+        self.key = key
+        self.selector = selector
+        self.value = value
+        self.origin = origin
+    }
+
+    func withOrigin(_ origin: DDCWriteOrigin) -> Self {
+        Self(key: key, selector: selector, value: value, origin: origin)
+    }
 }
 
 protocol DDCWriteExecuting: AnyObject {

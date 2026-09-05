@@ -423,24 +423,69 @@ final class DS007Tests: XCTestCase {
         }
     }
 
-    func testDS030AllVisibleTrayRolesHaveResolvableSemanticSymbols() {
-        let icons: [TraySemanticIcon] = [
-            .usbStatus(isSettingEnabled: true),
-            .usbStatus(isSettingEnabled: false),
-            .collaborationSwitch,
-            .display,
-            .luminance,
-            .contrast,
-            .volume,
-            .settings,
-            .quit
-        ]
-        XCTAssertTrue(icons.allSatisfy { !$0.symbolName.isEmpty && !$0.symbolCandidates.isEmpty })
-        XCTAssertEqual(Set(icons.map(\.symbolName)).count, icons.count)
-        for icon in icons {
-            XCTAssertNotNil(icon.symbolCandidates.lazy.compactMap {
-                NSImage(systemSymbolName: $0, accessibilityDescription: "测试菜单项")
-            }.first, "No SF Symbol candidate resolved for \(icon)")
+    func testDS031EveryProducedTrayRoleOwnsACompleteTemplateImage() {
+        XCTAssertEqual(TrayMenuIconRole.allCases.count, 9)
+        XCTAssertEqual(
+            Set(TrayMenuIconRole.allCases.filter { $0.placement == .standardMenuItem }),
+            Set([.usbEnabled, .usbDisabled, .collaborationSwitch, .displaySubmenu, .settings, .quit])
+        )
+        XCTAssertEqual(
+            Set(TrayMenuIconRole.allCases.filter { $0.placement == .customControlView }),
+            Set([.luminanceControl, .contrastControl, .volumeControl])
+        )
+
+        for role in TrayMenuIconRole.allCases {
+            let image: NSImage?
+            switch role.placement {
+            case .standardMenuItem:
+                let item = NSMenuItem(title: "测试", action: nil, keyEquivalent: "")
+                TrayImageFactory.apply(role: role, accessibilityDescription: "测试菜单项", to: item)
+                image = item.image
+            case .customControlView:
+                image = TrayControlIconView(
+                    role: role,
+                    accessibilityDescription: "测试控制项"
+                ).image
+            }
+            XCTAssertNotNil(image, "Missing produced image for \(role)")
+            XCTAssertEqual(image?.size, NSSize(width: 16, height: 16))
+            XCTAssertTrue(image?.isTemplate == true)
+        }
+    }
+
+    func testDS030MacOS27StandardRolesExplicitlyRequestVisibleImages() throws {
+        guard #available(macOS 27.0, *) else { return }
+
+        let standardRoles = TrayMenuIconRole.allCases.filter {
+            $0.placement == .standardMenuItem
+        }
+        XCTAssertEqual(standardRoles.count, 6)
+        for role in standardRoles {
+            let item = NSMenuItem(title: "测试", action: nil, keyEquivalent: "")
+            TrayImageFactory.apply(
+                role: role,
+                accessibilityDescription: "测试菜单项",
+                to: item
+            )
+            XCTAssertNotNil(item.image, "Missing produced image for \(role)")
+            XCTAssertEqual(
+                item.preferredImageVisibility,
+                .visible,
+                "macOS 27 may hide the production image for \(role)"
+            )
+        }
+    }
+
+    func testDS031FallbackDrawingPreventsMissingIconsWithoutSFSymbols() {
+        for role in TrayMenuIconRole.allCases {
+            let image = TrayImageFactory.menuImage(
+                for: role,
+                accessibilityDescription: "fallback",
+                systemSymbolProvider: { _, _ in nil }
+            )
+            XCTAssertEqual(image.size, NSSize(width: 16, height: 16))
+            XCTAssertTrue(image.isTemplate)
+            XCTAssertNotNil(image.tiffRepresentation)
         }
     }
 

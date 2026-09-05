@@ -307,6 +307,271 @@ enum TraySemanticIcon: Equatable {
     }
 }
 
+enum TrayMenuIconPlacement: Equatable {
+    case standardMenuItem
+    case customControlView
+}
+
+enum TrayMenuIconRole: CaseIterable, Hashable {
+    case usbEnabled
+    case usbDisabled
+    case collaborationSwitch
+    case displaySubmenu
+    case luminanceControl
+    case contrastControl
+    case volumeControl
+    case settings
+    case quit
+
+    var semanticIcon: TraySemanticIcon {
+        switch self {
+        case .usbEnabled: return .usbStatus(isSettingEnabled: true)
+        case .usbDisabled: return .usbStatus(isSettingEnabled: false)
+        case .collaborationSwitch: return .collaborationSwitch
+        case .displaySubmenu: return .display
+        case .luminanceControl: return .luminance
+        case .contrastControl: return .contrast
+        case .volumeControl: return .volume
+        case .settings: return .settings
+        case .quit: return .quit
+        }
+    }
+
+    var placement: TrayMenuIconPlacement {
+        switch self {
+        case .luminanceControl, .contrastControl, .volumeControl:
+            return .customControlView
+        default:
+            return .standardMenuItem
+        }
+    }
+}
+
+enum TrayImageFactory {
+    private static let menuSymbolConfiguration = NSImage.SymbolConfiguration(
+        pointSize: 14,
+        weight: .regular
+    )
+
+    static func menuImage(
+        for role: TrayMenuIconRole,
+        accessibilityDescription: String,
+        systemSymbolProvider: ((String, String) -> NSImage?)? = nil
+    ) -> NSImage {
+        let provider = systemSymbolProvider ?? { name, description in
+            NSImage(systemSymbolName: name, accessibilityDescription: description)
+        }
+        for symbolName in role.semanticIcon.symbolCandidates {
+            guard let symbol = provider(symbolName, accessibilityDescription),
+                  let configured = symbol.withSymbolConfiguration(menuSymbolConfiguration) else {
+                continue
+            }
+            configured.isTemplate = true
+            configured.size = NSSize(width: 16, height: 16)
+            return configured
+        }
+        return fallbackMenuImage(for: role, accessibilityDescription: accessibilityDescription)
+    }
+
+    static func apply(
+        role: TrayMenuIconRole,
+        accessibilityDescription: String,
+        to item: NSMenuItem
+    ) {
+        item.image = menuImage(for: role, accessibilityDescription: accessibilityDescription)
+        if #available(macOS 27.0, *) {
+            item.preferredImageVisibility = .visible
+        }
+    }
+
+    static func statusImage(accessibilityDescription: String) -> NSImage {
+        let canvas = TrayStatusIconDesign.canvasSize
+        let image = NSImage(
+            size: NSSize(width: canvas, height: canvas),
+            flipped: false
+        ) { destination in
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+
+            let scale = min(destination.width, destination.height) / canvas
+            let transform = NSAffineTransform()
+            transform.translateX(
+                by: destination.minX + (destination.width - canvas * scale) / 2,
+                yBy: destination.minY + (destination.height - canvas * scale) / 2
+            )
+            transform.scale(by: scale)
+            transform.concat()
+
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            let strokeWidth = TrayStatusIconDesign.strokeWidth
+            let centerMinimum = TrayStatusIconDesign.paintedMinimum + strokeWidth / 2
+            let centerMaximum = TrayStatusIconDesign.paintedMaximum - strokeWidth / 2
+
+            let screen = NSBezierPath(
+                roundedRect: NSRect(
+                    x: centerMinimum,
+                    y: 4.45,
+                    width: centerMaximum - centerMinimum,
+                    height: centerMaximum - 4.45
+                ),
+                xRadius: 1.8,
+                yRadius: 1.8
+            )
+            screen.lineWidth = strokeWidth
+            screen.stroke()
+
+            let stand = NSBezierPath()
+            stand.lineWidth = strokeWidth
+            stand.lineCapStyle = .round
+            stand.move(to: NSPoint(x: canvas / 2, y: 4.45))
+            stand.line(to: NSPoint(x: canvas / 2, y: centerMinimum))
+            stand.move(to: NSPoint(x: 5.8, y: centerMinimum))
+            stand.line(to: NSPoint(x: 12.2, y: centerMinimum))
+            stand.stroke()
+
+            let percent = NSBezierPath()
+            percent.lineWidth = strokeWidth
+            percent.lineCapStyle = .round
+            percent.move(to: NSPoint(x: 5.55, y: 7.75))
+            percent.line(to: NSPoint(x: 12.45, y: 13.25))
+            percent.stroke()
+
+            for center in [NSPoint(x: 5.9, y: 12.7), NSPoint(x: 12.1, y: 8.3)] {
+                NSBezierPath(
+                    ovalIn: NSRect(
+                        x: center.x - 1.05,
+                        y: center.y - 1.05,
+                        width: 2.1,
+                        height: 2.1
+                    )
+                ).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = accessibilityDescription
+        return image
+    }
+
+    private static func fallbackMenuImage(
+        for role: TrayMenuIconRole,
+        accessibilityDescription: String
+    ) -> NSImage {
+        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
+            NSGraphicsContext.saveGraphicsState()
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            let path = NSBezierPath()
+            path.lineWidth = 1.4
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+
+            switch role {
+            case .usbEnabled, .usbDisabled:
+                path.move(to: NSPoint(x: 3, y: 8))
+                path.line(to: NSPoint(x: 13, y: 8))
+                path.move(to: NSPoint(x: 3, y: 5.5))
+                path.line(to: NSPoint(x: 3, y: 10.5))
+                path.move(to: NSPoint(x: 13, y: 5.5))
+                path.line(to: NSPoint(x: 13, y: 10.5))
+                path.stroke()
+                if role == .usbDisabled {
+                    let slash = NSBezierPath()
+                    slash.lineWidth = 1.8
+                    slash.lineCapStyle = .round
+                    slash.move(to: NSPoint(x: 3, y: 13))
+                    slash.line(to: NSPoint(x: 13, y: 3))
+                    slash.stroke()
+                }
+            case .collaborationSwitch:
+                path.move(to: NSPoint(x: 2.5, y: 10.5))
+                path.line(to: NSPoint(x: 12.5, y: 10.5))
+                path.move(to: NSPoint(x: 9.5, y: 13))
+                path.line(to: NSPoint(x: 12.5, y: 10.5))
+                path.line(to: NSPoint(x: 9.5, y: 8))
+                path.move(to: NSPoint(x: 13.5, y: 5.5))
+                path.line(to: NSPoint(x: 3.5, y: 5.5))
+                path.move(to: NSPoint(x: 6.5, y: 8))
+                path.line(to: NSPoint(x: 3.5, y: 5.5))
+                path.line(to: NSPoint(x: 6.5, y: 3))
+                path.stroke()
+            case .displaySubmenu:
+                NSBezierPath(roundedRect: NSRect(x: 2, y: 4.5, width: 12, height: 8.5), xRadius: 1.4, yRadius: 1.4).stroke()
+                path.move(to: NSPoint(x: 8, y: 4.5))
+                path.line(to: NSPoint(x: 8, y: 2.5))
+                path.move(to: NSPoint(x: 5.5, y: 2.5))
+                path.line(to: NSPoint(x: 10.5, y: 2.5))
+                path.stroke()
+            case .luminanceControl:
+                NSBezierPath(ovalIn: NSRect(x: 5.5, y: 5.5, width: 5, height: 5)).stroke()
+                for index in 0..<8 {
+                    let angle = CGFloat(index) * .pi / 4
+                    path.move(to: NSPoint(x: 8 + cos(angle) * 4.2, y: 8 + sin(angle) * 4.2))
+                    path.line(to: NSPoint(x: 8 + cos(angle) * 6, y: 8 + sin(angle) * 6))
+                }
+                path.stroke()
+            case .contrastControl:
+                let circle = NSBezierPath(ovalIn: NSRect(x: 2.5, y: 2.5, width: 11, height: 11))
+                circle.stroke()
+                NSGraphicsContext.saveGraphicsState()
+                circle.addClip()
+                NSBezierPath(rect: NSRect(x: 2.5, y: 2.5, width: 5.5, height: 11)).fill()
+                NSGraphicsContext.restoreGraphicsState()
+            case .volumeControl:
+                path.move(to: NSPoint(x: 2.5, y: 6))
+                path.line(to: NSPoint(x: 5.5, y: 6))
+                path.line(to: NSPoint(x: 9, y: 3.5))
+                path.line(to: NSPoint(x: 9, y: 12.5))
+                path.line(to: NSPoint(x: 5.5, y: 10))
+                path.line(to: NSPoint(x: 2.5, y: 10))
+                path.close()
+                path.fill()
+                let wave = NSBezierPath()
+                wave.lineWidth = 1.4
+                wave.appendArc(withCenter: NSPoint(x: 8.5, y: 8), radius: 4, startAngle: -55, endAngle: 55)
+                wave.appendArc(withCenter: NSPoint(x: 8.5, y: 8), radius: 6, startAngle: -48, endAngle: 48)
+                wave.stroke()
+            case .settings:
+                NSBezierPath(ovalIn: NSRect(x: 3, y: 3, width: 10, height: 10)).stroke()
+                NSBezierPath(ovalIn: NSRect(x: 6.2, y: 6.2, width: 3.6, height: 3.6)).stroke()
+                for index in 0..<4 {
+                    let angle = CGFloat(index) * .pi / 2
+                    path.move(to: NSPoint(x: 8 + cos(angle) * 5, y: 8 + sin(angle) * 5))
+                    path.line(to: NSPoint(x: 8 + cos(angle) * 6.5, y: 8 + sin(angle) * 6.5))
+                }
+                path.stroke()
+            case .quit:
+                path.appendArc(withCenter: NSPoint(x: 8, y: 8), radius: 5.2, startAngle: -50, endAngle: 230)
+                path.move(to: NSPoint(x: 8, y: 14))
+                path.line(to: NSPoint(x: 8, y: 7))
+                path.stroke()
+            }
+            return !rect.isEmpty
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = accessibilityDescription
+        return image
+    }
+}
+
+final class TrayControlIconView: NSImageView {
+    init(role: TrayMenuIconRole, accessibilityDescription: String) {
+        super.init(frame: .zero)
+        precondition(role.placement == .customControlView)
+        image = TrayImageFactory.menuImage(
+            for: role,
+            accessibilityDescription: accessibilityDescription
+        )
+        setAccessibilityLabel(accessibilityDescription)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+}
+
 enum TrayStatusIconDesign {
     static let canvasSize: CGFloat = 18
     static let contentOccupancy: CGFloat = 0.90
