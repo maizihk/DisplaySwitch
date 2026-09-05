@@ -423,7 +423,7 @@ final class DS007Tests: XCTestCase {
         }
     }
 
-    func testDS028AllVisibleTrayRolesHaveSemanticSymbols() {
+    func testDS030AllVisibleTrayRolesHaveResolvableSemanticSymbols() {
         let icons: [TraySemanticIcon] = [
             .usbStatus(isSettingEnabled: true),
             .usbStatus(isSettingEnabled: false),
@@ -435,8 +435,23 @@ final class DS007Tests: XCTestCase {
             .settings,
             .quit
         ]
-        XCTAssertTrue(icons.allSatisfy { !$0.symbolName.isEmpty })
+        XCTAssertTrue(icons.allSatisfy { !$0.symbolName.isEmpty && !$0.symbolCandidates.isEmpty })
         XCTAssertEqual(Set(icons.map(\.symbolName)).count, icons.count)
+        for icon in icons {
+            XCTAssertNotNil(icon.symbolCandidates.lazy.compactMap {
+                NSImage(systemSymbolName: $0, accessibilityDescription: "测试菜单项")
+            }.first, "No SF Symbol candidate resolved for \(icon)")
+        }
+    }
+
+    func testDS030StatusIconUsesNinetyPercentTemplateGeometry() {
+        XCTAssertEqual(TrayStatusIconDesign.canvasSize, 18)
+        XCTAssertEqual(TrayStatusIconDesign.contentOccupancy, 0.90)
+        XCTAssertEqual(TrayStatusIconDesign.strokeFraction, 0.06)
+        XCTAssertEqual(TrayStatusIconDesign.contentSize, 16.2, accuracy: 0.001)
+        XCTAssertEqual(TrayStatusIconDesign.strokeWidth, 1.08, accuracy: 0.001)
+        XCTAssertEqual(TrayStatusIconDesign.paintedMinimum, 0.9, accuracy: 0.001)
+        XCTAssertEqual(TrayStatusIconDesign.paintedMaximum, 17.1, accuracy: 0.001)
     }
 
     func testDS028TrayDDCRowUsesCompactSingleLineLayout() {
