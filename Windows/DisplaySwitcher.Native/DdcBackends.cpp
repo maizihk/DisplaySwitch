@@ -26,6 +26,14 @@ namespace DisplaySwitcher::Native
             return DisplayTopologyTrust::IncompleteOrUnavailable;
         return DisplayTopologyTrust::LocalPhysicalAuthoritative;
     }
+
+    NativeMonitorCacheUpdate DecideNativeMonitorCacheUpdate(
+        bool forceRefresh, bool equivalentTopology) noexcept
+    {
+        if (!equivalentTopology) return NativeMonitorCacheUpdate::ReplaceTopology;
+        return forceRefresh ? NativeMonitorCacheUpdate::ReplaceLeases
+            : NativeMonitorCacheUpdate::Reuse;
+    }
 }
 
 namespace
@@ -463,10 +471,19 @@ namespace
                 || (!remoteSession && session.cached->topologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative)))
             return *session.cached;
         auto current = EnumerateNativeMonitors();
-        if (session.cached && session.cached->success && current.success
+        auto equivalentTopology = session.cached && session.cached->success && current.success
             && session.cached->topologyTrust == current.topologyTrust
-            && session.cached->fingerprint == current.fingerprint)
+            && session.cached->fingerprint == current.fingerprint;
+        auto update = DecideNativeMonitorCacheUpdate(force, equivalentTopology);
+        if (session.cached && update != NativeMonitorCacheUpdate::ReplaceTopology)
+        {
+            // A forced enumeration is also an explicit lease refresh. The logical
+            // topology generation stays stable, but startup-era DXVA2 handles are
+            // replaced before an input-source action reuses them.
+            if (update == NativeMonitorCacheUpdate::ReplaceLeases)
+                session.cached = std::move(current);
             return *session.cached;
+        }
         session.generation.fetch_add(1, std::memory_order_acq_rel);
         session.cached = std::move(current);
         session.topologyTrust.store(session.cached->topologyTrust, std::memory_order_release);

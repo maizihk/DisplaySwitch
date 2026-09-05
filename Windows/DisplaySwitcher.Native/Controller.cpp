@@ -23,6 +23,30 @@ namespace
         return _wcsicmp(left.c_str(), right.c_str()) == 0;
     }
 
+    ::DisplaySwitcher::Native::UsbSwitchInitialState BuildUsbRuntimeState(
+        ::DisplaySwitcher::Native::AppConfig const& config, bool learning, bool topologyAllowsUsb)
+    {
+        using namespace ::DisplaySwitcher::Native;
+        auto completeProfiles = config.EnabledCompleteProfiles();
+        bool collaborationValid{};
+        if (config.usbSwitch.collaborationWakeEnabled)
+        {
+            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
+            collaborationValid = profile && profile->coordinationEnabled &&
+                std::any_of(completeProfiles.begin(), completeProfiles.end(), [&](auto const& item)
+                    { return EqualId(item.id, profile->id); });
+        }
+        UsbSwitchInitialState state{ config.usbSwitch.enabled, learning,
+            config.displayConfigurationSafeMode || !topologyAllowsUsb, std::nullopt,
+            config.usbSwitch.collaborationWakeEnabled, collaborationValid };
+        for (auto const& display : config.displays)
+            state.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
+                topologyAllowsUsb && IsDisplayDdcResolved(display), true });
+        state.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
+            std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
+        return state;
+    }
+
 }
 
 namespace DisplaySwitcher::Native
@@ -66,6 +90,7 @@ namespace DisplaySwitcher::Native
             [weak](std::wstring const& profileId) { if (auto self = weak.lock()) self->ManualSwitch(profileId); },
             [weak](std::wstring const& displayId, DdcVcpCode code, int value)
             { if (auto self = weak.lock()) self->WriteTrayDdc(displayId, code, value); },
+            [weak](MediaKeyAction action) { if (auto self = weak.lock()) self->OnMediaKey(action); },
             [weak] { if (auto self = weak.lock()) self->OnDisplayTopologyChanged(); },
             [weak] { if (auto self = weak.lock()) { auto exit = self->exitApplication_; if (exit) exit(); } });
         ApplyConfiguration();
@@ -87,6 +112,11 @@ namespace DisplaySwitcher::Native
         ++sideEffectGeneration_;
         sideEffectGate_.Block();
         trayDdcWrites_.CancelPending();
+        {
+            std::scoped_lock lock(mediaKeyMutex_);
+            mediaKeyEvents_.clear();
+            mediaKeyRouter_.ResetPending();
+        }
         auto config = Config();
         auto currentTopologyTrust = DisplayTopologyTrust::IncompleteOrUnavailable;
         bool currentTopologyAuthoritative{};
@@ -144,26 +174,12 @@ namespace DisplaySwitcher::Native
         auto hasUnboundV2 = !bootstrapProfiles.empty();
         v2StateMachine_ = std::make_unique<V2StateMachine>(V2StateInitial{
             config.localEndpointId, hasV2, V2CoordinatorState::Idle, {}, {}, std::move(v2Targets) });
-        bool collaborationValid{};
-        if (config.usbSwitch.collaborationWakeEnabled)
-        {
-            auto profile = config.FindCollaborationProfile(config.usbSwitch.collaborationProfileId);
-            collaborationValid = profile && profile->coordinationEnabled &&
-                std::any_of(completeProfiles.begin(), completeProfiles.end(), [&](auto const& item) { return EqualId(item.id, profile->id); });
-        }
         auto topologyAllowsUsb = currentTopologyAuthoritative &&
             currentTopologyTrust == DisplayTopologyTrust::LocalPhysicalAuthoritative;
         trayIcon_->SetUsbSwitchActive(ProjectUsbTrayConfiguredEnabled(config.usbSwitch.enabled,
             { automationConfigured, config.displayConfigurationSafeMode,
                 usbLearningActive_.load(), topologyAllowsUsb }));
-        UsbSwitchInitialState usbInitial{ config.usbSwitch.enabled, usbLearningActive_.load(),
-            config.displayConfigurationSafeMode || !topologyAllowsUsb, std::nullopt,
-            config.usbSwitch.collaborationWakeEnabled, collaborationValid };
-        for (auto const& display : config.displays)
-            usbInitial.displayMappings.push_back({ display.id, config.UsbInputForDisplay(display.id),
-                topologyAllowsUsb && IsDisplayDdcResolved(display), true });
-        usbInitial.bindingKey = config.usbSwitch.deviceLocalReference + L"|" +
-            std::to_wstring(config.usbSwitch.vendorId) + L"|" + std::to_wstring(config.usbSwitch.productId);
+        auto usbInitial = BuildUsbRuntimeState(config, usbLearningActive_.load(), topologyAllowsUsb);
         if (usbSwitchCoordinator_) usbSwitchCoordinator_->UpdateConfiguration(std::move(usbInitial));
         else usbSwitchCoordinator_ = std::make_unique<UsbSwitchCoordinator>(std::move(usbInitial));
         auto watcherGeneration = usbObservationGeneration_.BeginConfiguration();
@@ -241,18 +257,36 @@ namespace DisplaySwitcher::Native
         return sideEffectGate_.AllowsSideEffects() && sideEffectGeneration_.load() == generation;
     }
 
+    InputSourceActionPlan Controller::PrepareInputSourceAction(AppConfig const& config)
+    {
+        auto enumeration = EnumerateDdcMonitors(ddcBackends_.Lookup(NativeDdcBackendKey));
+        return PrepareInputSourceActionPlan(config, enumeration);
+    }
+
     void Controller::OnUsbPresenceChanged(uint64_t watcherGeneration, bool present)
     {
         if (!usbObservationGeneration_.Accepts(watcherGeneration)) return;
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
-        if (usbSwitchCoordinator_) ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present));
+        auto generation = sideEffectGeneration_.load();
+        auto config = Config();
+        if (!AllowsSideEffects(generation)) return;
+        auto hasUsbMapping = std::any_of(config.usbSwitch.displayInputs.begin(), config.usbSwitch.displayInputs.end(),
+            [&](auto const& mapping) { return mapping.targetInput && IsValidInputSourceValue(*mapping.targetInput)
+                && FindDisplayById(config.displays, mapping.displayId); });
+        if (!config.usbSwitch.enabled || !config.HasUsbDeviceConfiguration() || !hasUsbMapping) return;
+        auto plan = PrepareInputSourceAction(config);
+        if (usbSwitchCoordinator_ && AllowsSideEffects(generation))
+        {
+            usbSwitchCoordinator_->UpdateConfiguration(BuildUsbRuntimeState(
+                plan.config, usbLearningActive_.load(), plan.topologyTrusted));
+            ApplyUsbActions(usbSwitchCoordinator_->ObserveUsb(NowMilliseconds(), present), plan.config, generation);
+        }
         WriteDiagnostic(present ? "controller.usb_presence present=1" : "controller.usb_presence present=0");
     }
 
-    void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions)
+    void Controller::WakeDisplayCoalesced(std::vector<UsbSwitchAction> const& actions, uint64_t generation)
     {
         if (std::none_of(actions.begin(), actions.end(), [](auto const& action) { return action.kind == UsbSwitchAction::Kind::WakeDisplay; })) return;
-        auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak, generation]
         {
@@ -262,11 +296,12 @@ namespace DisplaySwitcher::Native
         }).detach();
     }
 
-    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions)
+    void Controller::ApplyUsbActions(std::vector<UsbSwitchAction> actions, AppConfig const& actionConfigBase,
+        uint64_t generation)
     {
-        if (!sideEffectGate_.AllowsSideEffects()) return;
-        WakeDisplayCoalesced(actions);
-        auto config = Config();
+        if (!AllowsSideEffects(generation)) return;
+        WakeDisplayCoalesced(actions, generation);
+        auto config = actionConfigBase;
         std::vector<DisplayConfig> selected;
         for (auto const& action : actions)
         {
@@ -278,7 +313,6 @@ namespace DisplaySwitcher::Native
         }
         if (!selected.empty())
         {
-            auto generation = sideEffectGeneration_.load();
             auto actionConfig = config; actionConfig.displays = std::move(selected);
             std::weak_ptr<Controller> weak = shared_from_this();
             std::thread([weak, generation, actionConfig]
@@ -286,7 +320,12 @@ namespace DisplaySwitcher::Native
                 auto self = weak.lock();
                 if (!self || self->disposed_ || !self->AllowsSideEffects(generation)) return;
                 auto tracker = self->displayDiagnostics_;
-                auto result = SwitchDisplaysToMac(actionConfig, self->ddcBackends_.InputSource(),
+                tracker->Reconcile(actionConfig.displays);
+                DdcCancellationSource cancellation;
+                InputSourceSwitchService service(self->ddcBackends_.InputSource(),
+                    [weak, generation]
+                    { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
+                auto result = service.SwitchDisplaysToMac(actionConfig, cancellation.Begin(),
                     [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
                     {
                         tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
@@ -589,7 +628,10 @@ namespace DisplaySwitcher::Native
         if (message.type == L"wake_display")
         {
             if (!validated.duplicate && usbSwitchCoordinator_)
-                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now));
+            {
+                auto generation = sideEffectGeneration_.load();
+                ApplyUsbActions(usbSwitchCoordinator_->ReceiveWakeDisplay(now), Config(), generation);
+            }
             return;
         }
         if (message.type != L"status_probe")
@@ -713,29 +755,44 @@ namespace DisplaySwitcher::Native
         {
             SetStatus(L"协同配置不可用"); return;
         }
-        auto selection = config.SelectProfileDisplays(profileId);
-        if (selection.mappedDisplays.empty())
-        {
-            SetStatus(L"该配置没有可用的显示器映射"); return;
-        }
-        auto actionConfig = config; actionConfig.displays = selection.mappedDisplays;
-        auto name = profile->name; auto missing = selection.missingDisplayIds.size();
+        auto name = profile->name;
         SetStatus(L"正在切换到 " + name + L"…");
         auto generation = sideEffectGeneration_.load();
         std::weak_ptr<Controller> weak = shared_from_this();
-        std::thread([weak, actionConfig, name, missing, generation, eventId]
+        std::thread([weak, config, profileId, name, generation, eventId]
         {
             auto controller = weak.lock();
             if (!controller || controller->disposed_ || !controller->AllowsSideEffects(generation)) return;
             auto tracker = controller->displayDiagnostics_;
-            auto result = SwitchDisplaysToMac(actionConfig, controller->ddcBackends_.InputSource(),
-                [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
+            auto plan = controller->PrepareInputSourceAction(config);
+            size_t missing{};
+            ActionResult result;
+            if (!plan.topologyTrusted) result = { false, plan.error };
+            else
+            {
+                auto selection = plan.config.SelectProfileDisplays(profileId);
+                missing = selection.missingDisplayIds.size();
+                if (selection.mappedDisplays.empty())
+                    result = { false, L"该配置没有可用的显示器映射" };
+                else
                 {
-                    tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
-                        DiagnosticOperationKind::InputSource,
-                        error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
-                        (success ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed));
-                });
+                    auto actionConfig = plan.config;
+                    actionConfig.displays = std::move(selection.mappedDisplays);
+                    tracker->Reconcile(actionConfig.displays);
+                    DdcCancellationSource cancellation;
+                    InputSourceSwitchService service(controller->ddcBackends_.InputSource(),
+                        [weak, generation]
+                        { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
+                    result = service.SwitchDisplaysToMac(actionConfig, cancellation.Begin(),
+                        [tracker](DisplayConfig const& display, bool success, DdcErrorKind error)
+                        {
+                            tracker->Record(display.id, display.nativeMonitorId, display.topologyGeneration,
+                                DiagnosticOperationKind::InputSource,
+                                error == DdcErrorKind::AmbiguousMonitor ? DiagnosticOperationState::Ambiguous :
+                                (success ? DiagnosticOperationState::Success : DiagnosticOperationState::Failed));
+                        });
+                }
+            }
             if (auto self = weak.lock(); self && !self->disposed_)
                 self->Enqueue([weak, result, name, missing, generation, eventId]
                 {
@@ -775,9 +832,79 @@ namespace DisplaySwitcher::Native
     {
         if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_) return;
         auto generation = sideEffectGeneration_.load();
-        if (!trayDdcWrites_.Submit({ displayId, code, value, generation })) return;
+        SubmitDdcWrite({ displayId, code, value, generation });
+    }
+
+    void Controller::SubmitDdcWrite(DdcWriteRequest request)
+    {
+        if (!AllowsSideEffects(request.generation) || profileDetectionActive_) return;
+        if (!trayDdcWrites_.Submit(std::move(request))) return;
         std::weak_ptr<Controller> weak = shared_from_this();
         std::thread([weak] { if (auto self = weak.lock()) self->ProcessTrayDdcWrites(); }).detach();
+    }
+
+    void Controller::OnMediaKey(MediaKeyAction action)
+    {
+        if (!sideEffectGate_.AllowsSideEffects() || profileDetectionActive_ || disposed_) return;
+        auto generation = sideEffectGeneration_.load();
+        bool startWorker{};
+        {
+            std::scoped_lock lock(mediaKeyMutex_);
+            mediaKeyEvents_.push_back({ action, generation });
+            if (!mediaKeyWorkerActive_)
+            {
+                mediaKeyWorkerActive_ = true;
+                startWorker = true;
+            }
+        }
+        if (!startWorker) return;
+        std::weak_ptr<Controller> weak = shared_from_this();
+        std::thread([weak] { if (auto self = weak.lock()) self->ProcessMediaKeyEvents(); }).detach();
+    }
+
+    void Controller::ProcessMediaKeyEvents()
+    {
+        for (;;)
+        {
+            std::vector<std::pair<MediaKeyAction, uint64_t>> events;
+            {
+                std::scoped_lock lock(mediaKeyMutex_);
+                if (mediaKeyEvents_.empty())
+                {
+                    mediaKeyWorkerActive_ = false;
+                    return;
+                }
+                events.swap(mediaKeyEvents_);
+            }
+            auto generation = events.front().second;
+            if (!AllowsSideEffects(generation) || profileDetectionActive_) continue;
+            auto baseConfig = Config();
+            auto actionPlan = PrepareInputSourceAction(baseConfig);
+            if (!AllowsSideEffects(generation) || !actionPlan.topologyTrusted) continue;
+            auto backend = ddcBackends_.Lookup(NativeDdcBackendKey);
+            auto trust = backend ? backend->TopologyTrust() : DisplayTopologyTrust::IncompleteOrUnavailable;
+            auto actionConfig = std::make_shared<AppConfig const>(std::move(actionPlan.config));
+            for (auto const& event : events)
+            {
+                if (event.second != generation || !AllowsSideEffects(generation)) continue;
+                MediaKeyPlan mediaPlan;
+                {
+                    std::scoped_lock lock(mediaKeyMutex_);
+                    mediaPlan = mediaKeyRouter_.Plan(*actionConfig, trust, event.first,
+                        configurationGeneration_.load(), 5);
+                }
+                WriteDiagnostic("media_key.plan state=" + std::to_string(static_cast<int>(mediaPlan.state))
+                    + " writes=" + std::to_string(mediaPlan.writes.size()));
+                for (auto const& write : mediaPlan.writes)
+                {
+                    DdcWriteRequest request{ write.displayId, write.code, write.value, generation };
+                    request.actionConfig = actionConfig;
+                    request.linkAllDisplays = write.linked;
+                    request.mediaKeyTargetDisplayIds = write.targetDisplayIds;
+                    SubmitDdcWrite(std::move(request));
+                }
+            }
+        }
     }
 
     void Controller::ProcessTrayDdcWrites()
@@ -785,16 +912,44 @@ namespace DisplaySwitcher::Native
         while (auto request = trayDdcWrites_.TakeNext())
         {
             if (!AllowsSideEffects(request->generation) || profileDetectionActive_) continue;
-            auto config = Config();
+            auto config = request->actionConfig ? *request->actionConfig : Config();
             DdcCancellationSource cancellation; auto token = cancellation.Begin();
             std::weak_ptr<Controller> weak = shared_from_this();
             DdcControlService service([this](std::wstring const& key) { return ddcBackends_.Lookup(key); },
                 [weak, generation = request->generation]
                 { if (auto current = weak.lock()) return current->AllowsSideEffects(generation); return false; });
             auto result = service.Write(config, request->displayId, request->code, request->value,
-                config.linkAllDisplays, token);
+                request->linkAllDisplays.value_or(config.linkAllDisplays), token);
             displayDiagnostics_->RecordBatch(config.displays, result, DiagnosticOperationKind::Write);
-            if (!result.success || !AllowsSideEffects(request->generation)) continue;
+            if (!result.success || !AllowsSideEffects(request->generation))
+            {
+                if (!request->mediaKeyTargetDisplayIds.empty())
+                {
+                    std::scoped_lock lock(mediaKeyMutex_);
+                    mediaKeyRouter_.OnWriteFailed(request->code, request->mediaKeyTargetDisplayIds);
+                }
+                continue;
+            }
+            if (request->actionConfig)
+            {
+                auto persisted = Config();
+                for (auto const& item : result.items)
+                {
+                    if (!item.success) continue;
+                    auto source = FindDisplayById(config.displays, item.displayId);
+                    auto destination = FindDisplayById(persisted.displays, item.displayId);
+                    if (!source || !destination) continue;
+                    auto const& from = config.displays[*source];
+                    auto& to = persisted.displays[*destination];
+                    if (item.code == DdcVcpCode::Brightness)
+                    { to.brightnessValue = from.brightnessValue; to.brightnessMax = from.brightnessMax; }
+                    else if (item.code == DdcVcpCode::Contrast)
+                    { to.contrastValue = from.contrastValue; to.contrastMax = from.contrastMax; }
+                    else
+                    { to.volumeValue = from.volumeValue; to.volumeMax = from.volumeMax; }
+                }
+                config = std::move(persisted);
+            }
             try { config.Save(); }
             catch (...)
             {
@@ -1230,6 +1385,14 @@ namespace DisplaySwitcher::Native
     void Controller::Dispose()
     {
         if (disposed_.exchange(true)) return;
+        ++sideEffectGeneration_;
+        sideEffectGate_.Block();
+        trayDdcWrites_.CancelPending();
+        {
+            std::scoped_lock lock(mediaKeyMutex_);
+            mediaKeyEvents_.clear();
+            mediaKeyRouter_.ResetPending();
+        }
         diagnosticHeartbeats_.Reset();
         StopPeerHealthCheck();
         if (peer_)

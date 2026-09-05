@@ -4,6 +4,7 @@
 #include "../DisplaySwitcher.Native/DdcBackends.h"
 #include "../DisplaySwitcher.Native/DdcControl.h"
 #include "../DisplaySwitcher.Native/InputSourceControl.h"
+#include "../DisplaySwitcher.Native/MediaKeys.h"
 #include "../DisplaySwitcher.Native/DiagnosticReport.h"
 #include "../DisplaySwitcher.Native/Diagnostics.h"
 #include "../DisplaySwitcher.Native/DisplayModel.h"
@@ -16,6 +17,8 @@
 #include "../DisplaySwitcher.Native/UsbSwitchCoordinator.h"
 #include "../DisplaySwitcher.Native/SettingsWindowContracts.h"
 #include "../DisplaySwitcher.Native/TrayContracts.h"
+#include "../DisplaySwitcher.Native/TrayMonochromeIcon.h"
+#include <array>
 #include <iostream>
 
 using namespace DisplaySwitcher::Native;
@@ -283,14 +286,119 @@ namespace
             ResolveTrayActivation(NIN_SELECT) == TrayActivationAction::ShowMenu &&
             ResolveTrayActivation(WM_MOUSEMOVE) == TrayActivationAction::None,
             L"DS-028: 托盘左右键与键盘激活都只打开同一菜单");
-        auto textOnly = BuildTrayPopupLayout(96, 80, false);
-        auto sliders = BuildTrayPopupLayout(96, 120, true);
-        auto scaled = BuildTrayPopupLayout(192, 240, true);
-        Check(textOnly.width == 260 && sliders.width >= 272 &&
+        Check(std::wstring(TraySemanticIconGlyph(TraySemanticIcon::Exit)) == L"\uE7E8" &&
+            std::wstring(TraySemanticIconGlyph(TraySemanticIcon::Exit)) != L"\uE8BB",
+            L"W-033: 退出使用同一 Fluent/MDL2 字体中的标准电源图标，不使用粗重关闭图标");
+        auto textOnly = BuildTrayPopupLayout(96, 80, 0, false);
+        auto sliders = BuildTrayPopupLayout(96, 120, 30, true);
+        auto longLabel = BuildTrayPopupLayout(96, 80, 140, true);
+        auto scaled = BuildTrayPopupLayout(192, 240, 60, true);
+        Check(textOnly.width == 260 && sliders.width == 260 && sliders.sliderLabelWidth == 32 &&
+            sliders.sliderGap == 4 &&
             sliders.width >= sliders.textLeft + sliders.sliderLabelWidth + sliders.sliderGap +
                 sliders.sliderTrackMinimumWidth + sliders.sliderGap + sliders.sliderValueWidth + sliders.rightPadding &&
+            longLabel.sliderLabelWidth == 140 &&
+            longLabel.width >= longLabel.textLeft + longLabel.sliderLabelWidth + longLabel.sliderGap +
+                longLabel.sliderTrackMinimumWidth + longLabel.sliderGap + longLabel.sliderValueWidth + longLabel.rightPadding &&
             scaled.width >= sliders.width * 2,
-            L"DS-028: 托盘按 DPI 与内容计算紧凑宽度且保留可操作滑杆");
+            L"W-033: 托盘按真实滑杆标签、DPI 与内容紧凑布局且长标签不裁切");
+        for (auto dpi : { 96U, 120U, 144U, 192U })
+        {
+            auto layout = BuildTrayPopupLayout(dpi, MulDiv(80, dpi, 96),
+                MulDiv(48, dpi, 96), true);
+            Check(layout.width >= MulDiv(260, dpi, 96) && layout.sliderLabelWidth >= MulDiv(48, dpi, 96) &&
+                layout.sliderTrackMinimumWidth >= MulDiv(92, dpi, 96) &&
+                layout.sliderValueWidth >= MulDiv(38, dpi, 96),
+                L"W-033: 100% 至 200% DPI 保留中文名称、可操作滑杆以及混合/三位数值空间");
+        }
+    }
+
+    void TestMonochromeTrayIconContracts()
+    {
+        Check(ClassifyTaskbarTheme(DWORD{ 1 }) == TaskbarTheme::Light &&
+            SelectTrayIconTone(TaskbarTheme::Light, 0) == TrayIconTone::Black,
+            L"W-031: 浅色系统任务栏选择黑色通知区域图标");
+        Check(ClassifyTaskbarTheme(DWORD{ 0 }) == TaskbarTheme::Dark &&
+            SelectTrayIconTone(TaskbarTheme::Dark, 255) == TrayIconTone::White,
+            L"W-031: 深色系统任务栏选择白色通知区域图标");
+        Check(ClassifyTaskbarTheme(std::nullopt) == TaskbarTheme::Unknown &&
+            SelectTrayIconTone(TaskbarTheme::Unknown, 220) == TrayIconTone::Black &&
+            SelectTrayIconTone(TaskbarTheme::Unknown, 20) == TrayIconTone::White,
+            L"W-031: 主题读取失败时按系统背景亮度确定高对比黑白 fallback");
+
+        std::array<std::pair<UINT, int>, 4> dpiSizes{
+            std::pair<UINT, int>{ 96, 16 }, { 120, 20 }, { 144, 24 }, { 192, 32 } };
+        for (auto const& [dpi, expectedSize] : dpiSizes)
+        {
+            auto geometry = BuildTrayIconGeometry(dpi);
+            auto black = RenderMonochromeTrayIconPixels(geometry, TrayIconTone::Black);
+            auto white = RenderMonochromeTrayIconPixels(geometry, TrayIconTone::White);
+            auto visibleBounds = [&](auto const& pixels)
+            {
+                RECT bounds{ geometry.pixelSize, geometry.pixelSize, -1, -1 };
+                for (int y = 0; y < geometry.pixelSize; ++y)
+                    for (int x = 0; x < geometry.pixelSize; ++x)
+                        if ((pixels[static_cast<size_t>(y) * geometry.pixelSize + x] >> 24) != 0)
+                        {
+                            bounds.left = (std::min)(bounds.left, static_cast<LONG>(x));
+                            bounds.top = (std::min)(bounds.top, static_cast<LONG>(y));
+                            bounds.right = (std::max)(bounds.right, static_cast<LONG>(x));
+                            bounds.bottom = (std::max)(bounds.bottom, static_cast<LONG>(y));
+                        }
+                return bounds;
+            };
+            auto bounds = visibleBounds(black);
+            auto visibleWidth = bounds.right - bounds.left + 1;
+            auto visibleHeight = bounds.bottom - bounds.top + 1;
+            uint64_t alphaSum{};
+            size_t visiblePixelCount{};
+            bool matchingAlpha = true;
+            bool blackPremultiplied = true;
+            bool whitePremultiplied = true;
+            for (size_t index = 0; index < black.size(); ++index)
+            {
+                auto blackAlpha = black[index] >> 24;
+                auto whiteAlpha = white[index] >> 24;
+                auto expectedWhite = (whiteAlpha << 16) | (whiteAlpha << 8) | whiteAlpha;
+                alphaSum += blackAlpha;
+                if (blackAlpha) ++visiblePixelCount;
+                matchingAlpha = matchingAlpha && blackAlpha == whiteAlpha;
+                blackPremultiplied = blackPremultiplied && (black[index] & 0x00FFFFFF) == 0;
+                whitePremultiplied = whitePremultiplied &&
+                    (white[index] & 0x00FFFFFF) == expectedWhite;
+            }
+            auto alphaCoverage = static_cast<double>(alphaSum) /
+                (255.0 * geometry.bodySize * geometry.bodySize);
+            auto visiblePixelCoverage = static_cast<double>(visiblePixelCount) /
+                (geometry.bodySize * geometry.bodySize);
+            Check(geometry.pixelSize == expectedSize && geometry.bodySize == MulDiv(expectedSize, 90, 100) &&
+                black.size() == static_cast<size_t>(expectedSize * expectedSize) && black.size() == white.size() &&
+                bounds.left >= geometry.bodyLeft && bounds.top >= geometry.bodyTop &&
+                bounds.right < geometry.bodyLeft + geometry.bodySize &&
+                bounds.bottom < geometry.bodyTop + geometry.bodySize &&
+                visibleWidth >= geometry.bodySize - 1 && visibleHeight >= geometry.bodySize - 1,
+                L"W-031: 16/20/24/32 像素图标主体占槽位约 90% 且不裁边");
+            Check(alphaSum > 0 && matchingAlpha && blackPremultiplied && whitePremultiplied,
+                L"W-031: 每个 DPI 渲染均为非空透明背景及匹配 alpha 的预乘黑白线稿");
+            Check(visiblePixelCoverage >= 0.42 && visiblePixelCoverage <= 0.58 &&
+                alphaCoverage >= 0.27 && alphaCoverage <= 0.34 &&
+                (dpi != 96 || (geometry.bodySize * TrayIconStrokeRatio >= 0.8 &&
+                    geometry.bodySize * TrayIconStrokeRatio <= 0.9)),
+                L"W-031: 6% 笔画在各 DPI 的可见/alpha 覆盖率受限且 100% DPI 视觉线宽约 0.8-0.9 像素");
+        }
+
+        std::optional<TrayIconRenderState> current;
+        auto light = TrayIconRenderState{ TrayIconTone::Black, 16 };
+        auto dark = TrayIconRenderState{ TrayIconTone::White, 16 };
+        int updates{};
+        if (TrayIconRefreshRequired(current, light)) { current = light; ++updates; }
+        if (TrayIconRefreshRequired(current, light)) { current = light; ++updates; }
+        if (TrayIconRefreshRequired(current, dark)) { current = dark; ++updates; }
+        if (TrayIconRefreshRequired(current, dark)) { current = dark; ++updates; }
+        Check(updates == 2 && IsTrayAppearanceMessage(WM_SETTINGCHANGE) &&
+            IsTrayAppearanceMessage(WM_THEMECHANGED) && IsTrayAppearanceMessage(WM_DPICHANGED) &&
+            !IsTrayAppearanceMessage(WM_DISPLAYCHANGE),
+            L"W-031: 相同主题不刷新，单次主题切换只产生一次有效原位更新");
     }
 
     struct FakeDdcBackend final : IDdcBackend
@@ -1565,6 +1673,90 @@ namespace
             L"W-030: 冷启动恢复后部分映射只执行合格目标并隔离不可用显示器");
     }
 
+    void TestInputSourceColdStartTopologyRefresh()
+    {
+        auto config = ConfigWithDisplays(2);
+        config.displays[0].nativeMonitorId = L"ds13:synthetic-a";
+        config.displays[1].nativeMonitorId = L"ds13:synthetic-b";
+        for (auto& display : config.displays)
+        {
+            display.bindingStatus = DisplayBindingStatus::Offline;
+            display.topologyGeneration = 0;
+        }
+        std::vector<DdcMonitorInfo> current{
+            { L"ds13:synthetic-a", L"显示器 A", L"DISPLAY1", L"target-a", {}, 1, false, 41 },
+            { L"ds13:synthetic-b", L"显示器 B", L"DISPLAY2", L"target-b", {}, 1, false, 41 },
+        };
+        DdcEnumerationResult trusted{ true, DdcErrorKind::None, {}, current, true,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative };
+        auto plan = PrepareInputSourceActionPlan(config, trusted);
+        auto selection = plan.config.SelectProfileDisplays(config.collaborationProfiles[0].id);
+        Check(plan.topologyTrusted && selection.mappedDisplays.size() == 2
+            && std::all_of(plan.config.displays.begin(), plan.config.displays.end(), [](auto const& display)
+                { return IsDisplayDdcResolved(display) && display.topologyGeneration == 41; })
+            && std::all_of(config.displays.begin(), config.displays.end(), [](auto const& display)
+                { return display.bindingStatus == DisplayBindingStatus::Offline && display.topologyGeneration == 0; }),
+            L"W-032: 升级后冷启动的过期运行态绑定必须在首次输入源动作前从可信拓扑恢复，且不写回原配置");
+
+        auto disabled = config;
+        disabled.usbSwitch.enabled = false;
+        auto enabled = config;
+        enabled.usbSwitch.enabled = true;
+        auto disabledPlan = PrepareInputSourceActionPlan(disabled, trusted);
+        auto enabledPlan = PrepareInputSourceActionPlan(enabled, trusted);
+        Check(disabledPlan.topologyTrusted && enabledPlan.topologyTrusted
+            && disabledPlan.config.SelectProfileDisplays(config.collaborationProfiles[0].id).mappedDisplays.size() == 2
+            && enabledPlan.config.SelectProfileDisplays(config.collaborationProfiles[0].id).mappedDisplays.size() == 2,
+            L"W-032: USB 开关值不得改变同一物理拓扑下的手动输入源动作计划");
+
+        auto oneMonitor = trusted;
+        oneMonitor.monitors.resize(1);
+        auto partialPlan = PrepareInputSourceActionPlan(config, oneMonitor);
+        FakeInputSourceTransport partialTransport;
+        DdcCancellationSource cancellation;
+        auto partialResult = InputSourceSwitchService(&partialTransport).SwitchDisplaysToMac(
+            partialPlan.config, cancellation.Begin());
+        Check(partialPlan.topologyTrusted && !partialResult.success && partialTransport.writes.size() == 1
+            && partialTransport.writes[0].first == L"ds13:synthetic-a",
+            L"W-032: 本地可信拓扑中单屏离线只隔离该屏，其他有效显示器仍须切换");
+
+        for (auto const trust : { DisplayTopologyTrust::RemoteSessionLimited,
+            DisplayTopologyTrust::IncompleteOrUnavailable })
+        {
+            auto unavailable = trusted;
+            unavailable.complete = false;
+            unavailable.topologyTrust = trust;
+            auto unavailablePlan = PrepareInputSourceActionPlan(config, unavailable);
+            FakeInputSourceTransport transport;
+            auto result = unavailablePlan.topologyTrusted
+                ? InputSourceSwitchService(&transport).SwitchDisplaysToMac(
+                    unavailablePlan.config, cancellation.Begin())
+                : ActionResult{ false, unavailablePlan.error };
+            Check(!unavailablePlan.topologyTrusted && !result.success && transport.writes.empty(),
+                L"W-032: RDP、虚拟、部分或不完整拓扑在动作前刷新后仍必须零输入源写入");
+        }
+
+        bool allowed = true;
+        FakeInputSourceTransport concurrentTransport;
+        concurrentTransport.onWrite = [&] { allowed = false; };
+        auto concurrent = InputSourceSwitchService(&concurrentTransport, [&] { return allowed; })
+            .SwitchDisplaysToMac(plan.config, cancellation.Begin());
+        Check(!concurrent.success && concurrentTransport.writes.size() == 1,
+            L"W-032: 配置重载与输入源批处理并发时必须在下一台显示器前停止");
+
+        allowed = false;
+        FakeInputSourceTransport stalePlanTransport;
+        auto stalePlan = InputSourceSwitchService(&stalePlanTransport, [&] { return allowed; })
+            .SwitchDisplaysToMac(plan.config, cancellation.Begin());
+        Check(!stalePlan.success && stalePlanTransport.writes.empty(),
+            L"W-032: 配置在枚举后发生重载时，过期动作计划必须在首个显示器前零写入");
+
+        Check(DecideNativeMonitorCacheUpdate(false, true) == NativeMonitorCacheUpdate::Reuse
+            && DecideNativeMonitorCacheUpdate(true, true) == NativeMonitorCacheUpdate::ReplaceLeases
+            && DecideNativeMonitorCacheUpdate(true, false) == NativeMonitorCacheUpdate::ReplaceTopology,
+            L"W-032: 用户动作强刷新相同拓扑时替换 DXVA2 句柄租约但不伪造拓扑 generation");
+    }
+
     void TestDdcControls()
     {
         auto config = ConfigWithDisplays(2);
@@ -1987,6 +2179,206 @@ namespace
         auto gated = FakeService(native, [&] { return allowed; });
         gated.Read(config, {}, cancellation.Begin()); gated.Write(config, firstId, DdcVcpCode::Brightness, 12, true, cancellation.Begin());
         Check(native.reads.empty() && native.writes.empty(), L"运行时安全门关闭时所有 DDC 调用计数必须为零");
+    }
+
+    void TestMediaKeyRouting()
+    {
+        MediaKeyEventDeduplicator deduplicator;
+        Check(deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::Keyboard, 100)
+            && !deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::ConsumerControl, 105)
+            && deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::Keyboard, 120)
+            && deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::Keyboard, 125)
+            && deduplicator.ShouldDispatch(MediaKeyAction::VolumeUp,
+                MediaKeyInputSource::ConsumerControl, 200),
+            L"W-034: 同一次按键的键盘/HID 双路上报只分发一次，同来源及超窗重复仍保留长按步进");
+        Check(NormalizeKeyboardMediaKey(VK_VOLUME_UP, true) == MediaKeyAction::VolumeUp
+            && NormalizeKeyboardMediaKey(VK_VOLUME_DOWN, true) == MediaKeyAction::VolumeDown
+            && NormalizeKeyboardMediaKey(VK_VOLUME_MUTE, true) == MediaKeyAction::VolumeMute
+            && !NormalizeKeyboardMediaKey(VK_VOLUME_UP, false)
+            && !NormalizeKeyboardMediaKey(VK_F1, true),
+            L"W-034: 只归一化键盘最终产生的标准音量媒体键，释放、Fn/F 键和普通键不得路由");
+        Check(MediaKeyRawInputRegistrationFlags() == RIDEV_INPUTSINK
+            && (MediaKeyRawInputRegistrationFlags() & RIDEV_NOLEGACY) == 0,
+            L"W-034: 后台 Raw Input 只观察，不禁用旧输入消息或吞掉系统原生媒体动作");
+        Check(NormalizeConsumerControlUsage(0x006F, true) == MediaKeyAction::BrightnessUp
+            && NormalizeConsumerControlUsage(0x0070, true) == MediaKeyAction::BrightnessDown
+            && NormalizeConsumerControlUsage(0x00E2, true) == MediaKeyAction::VolumeMute
+            && NormalizeConsumerControlUsage(0x00E9, true) == MediaKeyAction::VolumeUp
+            && NormalizeConsumerControlUsage(0x00EA, true) == MediaKeyAction::VolumeDown
+            && !NormalizeConsumerControlUsage(0x006F, false)
+            && !NormalizeConsumerControlUsage(0x00B5, true),
+            L"W-034: Consumer Control 只接受标准亮度和音量 usage；无标准 usage 的设备自然不支持");
+
+        auto config = ConfigWithDisplays(2);
+        for (auto& display : config.displays)
+        {
+            display.brightnessEnabled = true;
+            display.volumeEnabled = true;
+            display.brightnessMax = 100;
+            display.volumeMax = 100;
+        }
+        config.displays[0].brightnessValue = 30;
+        config.displays[1].brightnessValue = 70;
+        config.displays[0].volumeValue = 25;
+        config.displays[1].volumeValue = 65;
+
+        MediaKeyRouter router;
+        auto relative = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 1);
+        Check(relative.state == MediaKeyPlanState::Ready && relative.writes.size() == 2
+            && relative.writes[0].value == 35 && relative.writes[1].value == 75
+            && !relative.writes[0].linked && !relative.writes[1].linked,
+            L"W-034: 非联动媒体亮度对所有启用且可信目标执行相同步进并保留差值");
+        auto repeated = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 1);
+        Check(repeated.writes.size() == 2 && repeated.writes[0].value == 40
+            && repeated.writes[1].value == 80,
+            L"W-034: 按住产生的重复事件从 generation 内待提交值继续步进，供 latest-wins 合并");
+        router.OnWriteFailed(DdcVcpCode::Brightness,
+            { config.displays[0].id, config.displays[1].id });
+        auto afterFailure = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 1);
+        Check(afterFailure.writes.size() == 2 && afterFailure.writes[0].value == 35
+            && afterFailure.writes[1].value == 75,
+            L"W-034: 写入失败清除乐观步进，后续事件不得继续建立在未提交值上");
+        auto afterReload = router.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessDown, 2);
+        Check(afterReload.writes.size() == 2 && afterReload.writes[0].value == 25
+            && afterReload.writes[1].value == 65,
+            L"W-034: 配置 generation 变化清除旧待提交值并从当前可信缓存重新规划");
+        MediaKeyRouter volumeRouter;
+        auto volumeStep = volumeRouter.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeDown, 2);
+        Check(volumeStep.writes.size() == 2 && volumeStep.writes[0].value == 20
+            && volumeStep.writes[1].value == 60,
+            L"W-034: 标准音量媒体键使用同一生产路由并按 5 对全部合格目标相对步进");
+
+        auto partiallyUnknown = config;
+        partiallyUnknown.displays[1].brightnessValue.reset();
+        MediaKeyRouter partialRouter;
+        auto partial = partialRouter.Plan(partiallyUnknown,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::BrightnessDown, 3);
+        Check(partial.state == MediaKeyPlanState::Ready && partial.writes.size() == 1
+            && partial.writes[0].displayId == partiallyUnknown.displays[0].id
+            && partial.writes[0].value == 25,
+            L"W-034: 非联动未知值目标零写入，但其他具有可信值的显示器继续相同步进");
+        auto offline = config;
+        offline.displays[1].bindingStatus = DisplayBindingStatus::Offline;
+        MediaKeyRouter offlineRouter;
+        auto offlinePlan = offlineRouter.Plan(offline, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeUp, 4);
+        Check(offlinePlan.writes.size() == 1
+            && offlinePlan.writes[0].displayId == offline.displays[0].id,
+            L"W-034: 离线显示器不得进入媒体键目标，其他可信物理显示器仍可执行");
+        for (auto trust : { DisplayTopologyTrust::RemoteSessionLimited,
+            DisplayTopologyTrust::IncompleteOrUnavailable })
+        {
+            MediaKeyRouter blockedRouter;
+            auto blocked = blockedRouter.Plan(config, trust, MediaKeyAction::VolumeUp, 5);
+            Check(blocked.state == MediaKeyPlanState::UntrustedTopology && blocked.writes.empty(),
+                L"W-034: RDP、虚拟、部分或不可信拓扑必须在媒体路由层保持零 DDC 目标");
+        }
+        auto safeConfig = config;
+        safeConfig.displayConfigurationSafeMode = true;
+        MediaKeyRouter safeRouter;
+        Check(safeRouter.Plan(safeConfig, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeUp, 5).writes.empty(),
+            L"W-034: 配置安全模式即使存在缓存和本地拓扑也必须零媒体键目标");
+        auto noDisplays = config;
+        noDisplays.displays.clear();
+        MediaKeyRouter emptyRouter;
+        Check(emptyRouter.Plan(noDisplays, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 5).writes.empty(),
+            L"W-034: 零显示器冷启动媒体事件安全忽略");
+
+        auto linked = config;
+        linked.linkAllDisplays = true;
+        linked.displays[0].brightnessValue = 40;
+        linked.displays[1].brightnessValue = 40;
+        linked.displays[0].brightnessMax = 80;
+        linked.displays[1].brightnessMax = 60;
+        MediaKeyRouter linkedRouter;
+        auto linkedPlan = linkedRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 6);
+        Check(linkedPlan.writes.size() == 1 && linkedPlan.writes[0].linked
+            && linkedPlan.writes[0].value == 45 && linkedPlan.writes[0].targetDisplayIds.size() == 2,
+            L"W-034: 联动同值使用确定性公共基准并提交一个同绝对值批量写计划");
+        auto linkedRepeat = linkedRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 6);
+        Check(linkedRepeat.writes.size() == 1 && linkedRepeat.writes[0].value == 50,
+            L"W-034: 联动重复事件继续增加同一公共绝对目标");
+        auto linkedNearMaximum = linked;
+        linkedNearMaximum.displays[0].brightnessValue = 58;
+        linkedNearMaximum.displays[1].brightnessValue = 58;
+        MediaKeyRouter maximumRouter;
+        auto maximumPlan = maximumRouter.Plan(linkedNearMaximum,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::BrightnessUp, 60);
+        Check(maximumPlan.writes.size() == 1 && maximumPlan.writes[0].value == 60,
+            L"W-034: 联动快捷键绝对值受全部目标共同最小上限约束");
+        linked.displays[1].brightnessValue = 41;
+        MediaKeyRouter mixedRouter;
+        auto mixed = mixedRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 7);
+        Check(mixed.state == MediaKeyPlanState::MixedLinkedValue && mixed.writes.empty(),
+            L"W-034: 联动混合值无法安全确定公共基准时必须零写入，禁止退化成相对调节");
+        linked.displays[1].brightnessValue.reset();
+        MediaKeyRouter unknownRouter;
+        auto unknown = unknownRouter.Plan(linked, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessDown, 8);
+        Check(unknown.state == MediaKeyPlanState::UnknownValue && unknown.writes.empty(),
+            L"W-034: 联动任一目标值未知时必须零写入，不能用单台缓存冒充全体");
+
+        MediaKeyRouter muteRouter;
+        auto muted = muteRouter.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeMute, 9);
+        Check(muted.writes.size() == 2 && muted.writes[0].value == 0 && muted.writes[1].value == 0,
+            L"W-034: 静音只为启用音量且有可信非零值的目标写入 0");
+        auto restored = muteRouter.Plan(config, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeMute, 9);
+        Check(restored.writes.size() == 2 && restored.writes[0].value == 25
+            && restored.writes[1].value == 65,
+            L"W-034: 再次静音按显示器恢复会话内最近非零值且不持久化猜测");
+        MediaKeyRouter generationMuteRouter;
+        auto generationMuted = generationMuteRouter.Plan(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 20);
+        auto zeroVolume = config;
+        zeroVolume.displays[0].volumeValue = 0;
+        zeroVolume.displays[1].volumeValue = 0;
+        auto staleRestore = generationMuteRouter.Plan(zeroVolume,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 21);
+        Check(generationMuted.writes.size() == 2 && staleRestore.writes.empty(),
+            L"W-034: 配置 generation 变化后旧静音恢复值必须清除，绝不跨重载恢复");
+        MediaKeyRouter resetMuteRouter;
+        static_cast<void>(resetMuteRouter.Plan(config,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 30));
+        resetMuteRouter.ResetPending();
+        Check(resetMuteRouter.Plan(zeroVolume, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::VolumeMute, 30).writes.empty(),
+            L"W-034: 安全门或退出调用 ResetPending 后同时清除静音恢复值");
+        auto linkedMute = config;
+        linkedMute.linkAllDisplays = true;
+        linkedMute.displays[0].volumeValue = 50;
+        linkedMute.displays[1].volumeValue = 50;
+        MediaKeyRouter linkedMuteRouter;
+        auto linkedMuted = linkedMuteRouter.Plan(linkedMute,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 10);
+        auto linkedRestored = linkedMuteRouter.Plan(linkedMute,
+            DisplayTopologyTrust::LocalPhysicalAuthoritative, MediaKeyAction::VolumeMute, 10);
+        Check(linkedMuted.writes.size() == 1 && linkedMuted.writes[0].value == 0
+            && linkedRestored.writes.size() == 1 && linkedRestored.writes[0].value == 50,
+            L"W-034: 联动静音和恢复始终保持所有目标同一绝对值语义");
+
+        auto disabled = config;
+        for (auto& display : disabled.displays)
+        { display.brightnessEnabled = false; display.volumeEnabled = false; }
+        MediaKeyRouter disabledRouter;
+        Check(disabledRouter.Plan(disabled, DisplayTopologyTrust::LocalPhysicalAuthoritative,
+            MediaKeyAction::BrightnessUp, 11).writes.empty(),
+            L"W-034: 冷启动后首次媒体事件没有启用目标时安全零写入");
     }
 
     void TestUsbLearningAndAbout()
@@ -2684,6 +3076,7 @@ int wmain()
         TestFreshInstallAndCounts(root);
         TestSettingsWindowLayoutContracts();
         TestTrayInteractionAndLayoutContracts();
+        TestMonochromeTrayIconContracts();
         TestDetailedDiagnosticRecording(root);
         TestProfileManagementAndReorder(root);
         TestValidationAndNfc(root);
@@ -2700,7 +3093,9 @@ int wmain()
         TestOfflineDisplayRemovalSafety();
         TestUsbTriggerStability();
         TestUsbColdStartRehydration();
+        TestInputSourceColdStartTopologyRefresh();
         TestDdcControls();
+        TestMediaKeyRouting();
         TestUsbLearningAndAbout();
         TestProfileNetworkDetection();
         TestProfileDetectionThreadingAndKeyCache();

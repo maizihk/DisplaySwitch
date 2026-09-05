@@ -1,6 +1,8 @@
 #pragma once
 #include "DdcControl.h"
+#include "MediaKeyWatcher.h"
 #include "TrayContracts.h"
+#include "TrayMonochromeIcon.h"
 
 namespace DisplaySwitcher::Native
 {
@@ -23,7 +25,8 @@ namespace DisplaySwitcher::Native
     public:
         TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch,
             std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc,
-            std::function<void()> topologyChanged, std::function<void()> exit);
+            std::function<void(MediaKeyAction)> mediaKey, std::function<void()> topologyChanged,
+            std::function<void()> exit);
         ~TrayIcon();
         TrayIcon(TrayIcon const&) = delete;
         TrayIcon& operator=(TrayIcon const&) = delete;
@@ -38,17 +41,23 @@ namespace DisplaySwitcher::Native
         static LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
         LRESULT HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
         void ShowContextMenu();
+        bool RefreshShellIcon(bool force = false);
         NOTIFYICONDATAW Data(UINT flags) const;
         static std::wstring Limit(std::wstring const& value, size_t length);
 
         std::function<void()> showSettings_;
         std::function<void(std::wstring const&)> manualSwitch_;
         std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc_;
+        std::function<void(MediaKeyAction)> mediaKey_;
         std::function<void()> topologyChanged_;
         std::function<void()> exit_;
         HINSTANCE instance_{};
         HICON icon_{};
+        bool ownsIcon_{};
+        bool trayAdded_{};
+        std::optional<TrayIconRenderState> iconRenderState_;
         HWND window_{};
+        std::unique_ptr<MediaKeyWatcher> mediaKeyWatcher_;
         std::wstring className_;
         std::wstring status_{ L"正在初始化…" };
         bool usbSwitchActive_{};

@@ -1,6 +1,6 @@
 #include "pch.h"
 #include "TrayIcon.h"
-#include "resource.h"
+#include "TrayMonochromeIcon.h"
 
 namespace
 {
@@ -50,22 +50,6 @@ namespace
         if (result) return result;
         wcscpy_s(font.lfFaceName, L"Segoe MDL2 Assets");
         return CreateFontIndirectW(&font);
-    }
-
-    wchar_t const* IconGlyph(DisplaySwitcher::Native::TraySemanticIcon icon) noexcept
-    {
-        using Icon = DisplaySwitcher::Native::TraySemanticIcon;
-        switch (icon)
-        {
-        case Icon::Usb: return L"\uE88E";
-        case Icon::SwitchProfile: return L"\uE8AB";
-        case Icon::Brightness: return L"\uE706";
-        case Icon::Contrast: return L"\uE793";
-        case Icon::Volume: return L"\uE767";
-        case Icon::Settings: return L"\uE713";
-        case Icon::Exit: return L"\uE8BB";
-        default: return L"\u2022";
-        }
     }
 
     struct PopupMenuItem
@@ -180,7 +164,7 @@ namespace
             iconBounds.left += state.layout.iconLeft;
             iconBounds.right = iconBounds.left + state.layout.iconWidth;
             auto previousIconFont = SelectObject(dc, state.iconFont ? state.iconFont : GetStockObject(DEFAULT_GUI_FONT));
-            auto glyph = state.iconFont ? IconGlyph(item.icon) : L"\u2022";
+            auto glyph = state.iconFont ? TraySemanticIconGlyph(item.icon) : L"\u2022";
             DrawTextW(dc, glyph, 1, &iconBounds, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             SelectObject(dc, previousIconFont);
             textBounds.left += state.layout.textLeft;
@@ -386,13 +370,13 @@ namespace DisplaySwitcher::Native
 {
     TrayIcon::TrayIcon(std::function<void()> showSettings, std::function<void(std::wstring const&)> manualSwitch,
         std::function<void(std::wstring const&, DdcVcpCode, int)> writeDdc,
-        std::function<void()> topologyChanged, std::function<void()> exit) :
+        std::function<void(MediaKeyAction)> mediaKey, std::function<void()> topologyChanged,
+        std::function<void()> exit) :
         showSettings_(std::move(showSettings)), manualSwitch_(std::move(manualSwitch)),
-        writeDdc_(std::move(writeDdc)), topologyChanged_(std::move(topologyChanged)), exit_(std::move(exit))
+        writeDdc_(std::move(writeDdc)), mediaKey_(std::move(mediaKey)),
+        topologyChanged_(std::move(topologyChanged)), exit_(std::move(exit))
     {
         instance_ = GetModuleHandleW(nullptr);
-        icon_ = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON));
-        if (!icon_) icon_ = LoadIconW(nullptr, IDI_APPLICATION);
         className_ = L"DisplaySwitcher.Tray." + std::to_wstring(GetCurrentProcessId());
         WNDCLASSEXW windowClass{ sizeof(windowClass) };
         windowClass.lpfnWndProc = WindowProcedure;
@@ -401,10 +385,37 @@ namespace DisplaySwitcher::Native
         if (!RegisterClassExW(&windowClass)) winrt::throw_last_error();
         window_ = CreateWindowExW(0, className_.c_str(), L"DisplaySwitcher tray host", 0,
             0, 0, 0, 0, nullptr, nullptr, instance_, this);
-        if (!window_) winrt::throw_last_error();
+        if (!window_)
+        {
+            auto error = GetLastError();
+            UnregisterClassW(className_.c_str(), instance_);
+            SetLastError(error);
+            winrt::throw_last_error();
+        }
+        if (!RefreshShellIcon(true))
+        {
+            icon_ = LoadIconW(nullptr, IDI_APPLICATION);
+            ownsIcon_ = false;
+        }
+        mediaKeyWatcher_ = std::make_unique<MediaKeyWatcher>(window_, mediaKey_);
         sessionNotificationsRegistered_ = WTSRegisterSessionNotification(window_, NOTIFY_FOR_THIS_SESSION) != FALSE;
         auto data = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
-        if (!Shell_NotifyIconW(NIM_ADD, &data)) winrt::throw_last_error();
+        if (!Shell_NotifyIconW(NIM_ADD, &data))
+        {
+            auto error = GetLastError();
+            if (sessionNotificationsRegistered_) WTSUnRegisterSessionNotification(window_);
+            sessionNotificationsRegistered_ = false;
+            mediaKeyWatcher_.reset();
+            DestroyWindow(window_);
+            window_ = nullptr;
+            if (ownsIcon_ && icon_) DestroyIcon(icon_);
+            icon_ = nullptr;
+            ownsIcon_ = false;
+            UnregisterClassW(className_.c_str(), instance_);
+            SetLastError(error);
+            winrt::throw_last_error();
+        }
+        trayAdded_ = true;
         data.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &data);
     }
@@ -415,6 +426,7 @@ namespace DisplaySwitcher::Native
         disposed_ = true;
         if (window_)
         {
+            mediaKeyWatcher_.reset();
             if (sessionNotificationsRegistered_)
             {
                 WTSUnRegisterSessionNotification(window_);
@@ -422,9 +434,13 @@ namespace DisplaySwitcher::Native
             }
             auto data = Data(0);
             Shell_NotifyIconW(NIM_DELETE, &data);
+            trayAdded_ = false;
             DestroyWindow(window_);
             window_ = nullptr;
         }
+        if (ownsIcon_ && icon_) DestroyIcon(icon_);
+        icon_ = nullptr;
+        ownsIcon_ = false;
         if (!className_.empty()) UnregisterClassW(className_.c_str(), instance_);
     }
 
@@ -446,7 +462,7 @@ namespace DisplaySwitcher::Native
     {
         if (disposed_) return;
         status_ = status;
-        auto data = Data(NIF_ICON | NIF_TIP);
+        auto data = Data(NIF_TIP);
         Shell_NotifyIconW(NIM_MODIFY, &data);
     }
 
@@ -468,7 +484,7 @@ namespace DisplaySwitcher::Native
     void TrayIcon::ShowBalloon(std::wstring const& title, std::wstring const& message)
     {
         if (disposed_) return;
-        auto data = Data(NIF_ICON | NIF_TIP | NIF_INFO);
+        auto data = Data(NIF_TIP | NIF_INFO);
         wcscpy_s(data.szInfoTitle, Limit(title, 63).c_str());
         wcscpy_s(data.szInfo, Limit(message, 255).c_str());
         data.dwInfoFlags = NIIF_WARNING;
@@ -489,10 +505,22 @@ namespace DisplaySwitcher::Native
 
     LRESULT TrayIcon::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     {
+        if (IsTrayAppearanceMessage(message))
+        {
+            RefreshShellIcon();
+            return 0;
+        }
         if (message == WM_DISPLAYCHANGE || message == WM_WTSSESSION_CHANGE)
         {
             if (topologyChanged_) topologyChanged_();
             return 0;
+        }
+        if (message == WM_INPUT)
+        {
+            if (mediaKeyWatcher_) mediaKeyWatcher_->HandleRawInput(reinterpret_cast<HRAWINPUT>(lParam));
+            // Raw input is observational only. DefWindowProc keeps normal input
+            // cleanup and the system media action is never swallowed.
+            return DefWindowProcW(window, message, wParam, lParam);
         }
         if (message == PopupCommandMessage)
         {
@@ -513,6 +541,35 @@ namespace DisplaySwitcher::Native
             }
         }
         return DefWindowProcW(window, message, wParam, lParam);
+    }
+
+    bool TrayIcon::RefreshShellIcon(bool force)
+    {
+        auto dpi = window_ ? GetDpiForWindow(window_) : 0;
+        if (!dpi) dpi = GetDpiForSystem();
+        auto desired = TrayIconRenderState{ ReadSystemTrayIconTone(), TrayIconPixelSizeForDpi(dpi) };
+        if (!force && !TrayIconRefreshRequired(iconRenderState_, desired)) return false;
+        auto replacement = CreateMonochromeTrayIcon(BuildTrayIconGeometry(dpi), desired.tone);
+        if (!replacement) return false;
+
+        auto previous = icon_;
+        auto previousOwned = ownsIcon_;
+        icon_ = replacement;
+        ownsIcon_ = true;
+        if (trayAdded_)
+        {
+            auto data = Data(NIF_ICON);
+            if (!Shell_NotifyIconW(NIM_MODIFY, &data))
+            {
+                icon_ = previous;
+                ownsIcon_ = previousOwned;
+                DestroyIcon(replacement);
+                return false;
+            }
+        }
+        iconRenderState_ = desired;
+        if (previousOwned && previous) DestroyIcon(previous);
+        return true;
     }
 
     void TrayIcon::ShowContextMenu()
@@ -550,6 +607,7 @@ namespace DisplaySwitcher::Native
         auto separatorHeight = ScaleForDpi(1, state->dpi);
         auto menuHeight = 0;
         auto widestTextWidth = 0;
+        auto widestSliderLabelWidth = 0;
         HDC dc = GetDC(window_);
         HGDIOBJ previousFont{};
         if (dc) previousFont = SelectObject(dc, state->font ? state->font : GetStockObject(DEFAULT_GUI_FONT));
@@ -562,7 +620,10 @@ namespace DisplaySwitcher::Native
             {
                 SIZE textSize{};
                 GetTextExtentPoint32W(dc, item.text.c_str(), static_cast<int>(item.text.size()), &textSize);
-                widestTextWidth = (std::max)(widestTextWidth, static_cast<int>(textSize.cx));
+                if (item.slider)
+                    widestSliderLabelWidth = (std::max)(widestSliderLabelWidth, static_cast<int>(textSize.cx));
+                else
+                    widestTextWidth = (std::max)(widestTextWidth, static_cast<int>(textSize.cx));
             }
         }
         if (dc)
@@ -570,7 +631,8 @@ namespace DisplaySwitcher::Native
             if (previousFont) SelectObject(dc, previousFont);
             ReleaseDC(window_, dc);
         }
-        state->layout = BuildTrayPopupLayout(state->dpi, widestTextWidth, !ddcItems_.empty());
+        state->layout = BuildTrayPopupLayout(state->dpi, widestTextWidth,
+            widestSliderLabelWidth, !ddcItems_.empty());
         auto menuWidth = state->layout.width;
         for (auto& item : state->items) item.bounds.right = menuWidth;
 

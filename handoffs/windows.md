@@ -1,11 +1,56 @@
 # Windows 交接记录
 
-## 当前任务：DS-028 / DS-029 / W-030 托盘、离线目录与 USB 冷启动
+## 当前任务：W-034 Windows 后台媒体键 DDC 路由与待验修复集成
+
+- 日期：2026-09-04。综合分支 `codex/windows-media-keys-integration` 从 `origin/main@975b469` 建立，按原提交顺序保留 PR #74 单色通知图标、PR #75 冷启动输入源动作前刷新（用户已实机确认）和 PR #76 托盘退出图标/DDC 行紧凑化；旧 PR 保持开放，不改写历史。
+- 根因：正式 Windows 实现此前没有后台媒体动作入口；托盘隐藏 HWND 只处理 Shell、主题、显示拓扑和 WTS 消息。直接监听 Fn/OEM F 键既不通用，也可能吞掉或重复系统行为。
+- 事件边界：新增 `MediaKeyWatcher`，用 `RIDEV_INPUTSINK` 观察标准音量键盘 VK 及 HID Consumer Control 的标准音量/亮度 usage；不设置 `RIDEV_NOLEGACY`，不监听 Fn/F 键、不猜 OEM 键码、不用低级 hook。30ms 内相同动作的键盘/HID 跨来源双上报只分发一次，同来源或超窗重复继续支持长按。无标准亮度事件的设备自然不支持。
+- 路由语义：每次动作在后台强制刷新当前物理拓扑和句柄租约。关闭联动时，对全部启用对应功能、在线唯一解析且有可信值的显示器做相同步进 5；开启联动时只从确定的公共值生成一个绝对目标，混合/未知零写入。静音按显示器保存当前配置 generation 内的最近非零值，配置重载/安全重置/退出后不恢复旧值，未知/不支持不写。
+- 安全与生命周期：动作计划复用 `DdcWriteQueue` latest-wins、`DdcControlService` 一次刷新重试/最终 RDP gate、side-effect generation、取消和 action-time config；失败清除乐观值，配置变化、拓扑变化及退出清理待处理事件。Raw Input 只观察，Windows 原生媒体行为继续发生。
+- 纯 fake 测试已加入标准音量/亮度事件、释放和非标准键拒绝、重复、联动/非联动、混合/未知、部分未知/离线、RDP/不可信、generation、失败基准与静音恢复。本机 macOS 无法运行 Windows x64 Release；综合 PR #78 / Windows run `33823153891` 已通过 x64 Release、411 checks、framework-dependent 分发校验和 artifact 上传。
+- 综合交付：分支 `codex/windows-media-keys-integration`，提交 `aeda6014f0b2238f8ef78705e07ea307cdd1aed6`，PR #78；artifact `DisplaySwitcher-Windows-x64-unsigned-framework-dependent`（ID `9919244404`，9 文件、902507 字节，下载 ZIP SHA-256 `b9010cdb194af1aa236420efcb0f90a934bc5a1dcfcfe44ab945d3b7766297c5`）。PR 保持开放，状态 MERGEABLE/CLEAN。
+- 不修改 macOS、`PROTOCOL.md`、共享合同/schema 或版本号；未执行真实 DDC、USB、网络、唤醒或输入源动作。
+- 实机待验：不同键盘标准媒体事件、按住重复、原生 Windows 行为不受影响、两屏相对步进/联动/静音、RDP/会话切换，以及 #74/#76 的托盘视觉。
+
+## 上一任务：W-033 Windows 托盘菜单图标与 DDC 行紧凑化
+
+- 日期：2026-09-03。原分支：`codex/windows-tray-menu-polish`，堆叠基线：`origin/codex/windows-monochrome-tray-icon@0ebaccc`（PR #74）；综合分支同时保留 PR #75 的 W-032 冷启动修复。
+- 根因：退出项使用 `E8BB` 关闭 X，而其他项均为常规 Fluent/MDL2 语义图标；DDC 标签列固定 64 像素、间距固定 8 像素且含滑杆时强制 272 像素目标宽度，短标签浪费空间而长标签仍可能裁切。
+- 实现：退出项改为同一图标字体、16 像素字号和正常字重下的 `E7E8` 标准电源图标；不再有退出项专属放大或粗线。DDC 行分别测量普通文本和滑杆标签，标签列取实际最宽名称且最小 32 像素，滑杆间距缩为 4 像素，菜单以 260 像素（96 DPI）为统一最小视觉宽度并按内容扩展。
+- 安全范围：只改变托盘自绘菜单的字形与几何；未修改 Shell 单色通知图标、托盘命令、DDC 投影/写入、USB、网络、设置窗口、协议或持久配置。
+- 自动验证：纯生产布局测试覆盖电源字形、短/长标签、中文名称、混合/三位数值空间和 100%/125%/150%/200% DPI；综合 PR #78 / run `33823153891` 已通过 x64 Release、411 checks 和分发校验。
+- 快捷键审计结论已转入综合分支的独立实现任务；不监听 Fn/OEM F 键，不使用低级键盘 hook。
+- 实机待验：暗/亮菜单、100%/125%/150%/200% DPI、长显示器名称，以及电源图标与系统菜单项的视觉重量；不执行真实 DDC 或快捷键动作。
+
+## 上一任务：W-032 冷启动后首次输入源切换
+
+- 用户实机复现：退出旧测试版后启动新版，首次手动切换有一台物理显示器不切换；关闭再开启 USB 切换后恢复。
+- 根因不在 USB 开关本身：输入源动作直接消费启动时的单次物理拓扑运行态和同一组 DXVA2 句柄租约。若进程交接期一台屏暂时未解析，它会被本次动作跳过；USB 开关仅因触发 `ApplyConfiguration` 重新枚举而表现成“修复”。
+- 修复为动作前重规划：手动协同与 USB 离开都在实际写入前获取一次 fresh 物理拓扑；同指纹强制枚举替换 DXVA2 句柄租约但不改变 topology generation。
+- fresh 结果只修正本次 action config 的运行态绑定，不替换 `config_`、不写 `settings.json`。本地权威快照内单台离线/歧义/缺映射只隔离该屏；RDP/虚拟、部分、空或失败快照整体零写入。
+- USB 观察从读取配置、枚举、协调器决策到批处理共用同一 side-effect generation；配置重载发生在枚举中时，过期计划在首屏前零写入，发生在多显示器写入中途时则在下一目标前停止。
+- 纯 fake 测试覆盖过期冷启动绑定恢复且零持久化、USB 开关无关性、两屏单屏离线隔离、RDP/不可信零写入、配置并发停止及句柄租约刷新决策。
+- 本分支不修改 macOS、共享协议、contracts、schemaVersion 或版本号。
+- 首轮自动验证：GitHub Actions Windows run `33722780439` 成功；x64 Release 构建/打包、363 checks、framework-dependent 分发校验和构件上传全部通过；枚举代次门控由综合分支最终 CI 继续验证。
+- 分支 `codex/windows-cold-start-display-switch`，提交 `b1eee32ce87572ffea242298c8ef780a25a3f9c4`，PR #75；构件 `DisplaySwitcher-Windows-x64-unsigned-framework-dependent`（artifact `9881133096`，SHA-256 `35d48edf18c1729836e0e11deb7c2abe5e5bc05d3a5722910873ee89e3ca2a3b`）。
+- 用户已实机确认冷启动刷新修复通过；综合 PR #78 / run `33823153891` 已重新通过 Windows x64 Release、411 checks 与分发校验。两屏部分失败和 RDP 返回本地仍待专项实机；自动测试未执行真实 DDC、USB、网络或唤醒。
+
+## 上一任务：W-031 Windows 通知区域自适应单色图标
+
+- 日期：2026-09-03。分支：`codex/windows-monochrome-tray-icon`，基线：`origin/main@975b469`，已包含 PR #72/#73。
+- 根因：托盘宿主此前直接把彩色 `AppIcon.ico` 资源交给 Shell，应用图标与通知区域图标没有边界，也没有任务栏主题、DPI 刷新或自有 `HICON` 生命周期。
+- 实现：新增可复现的软件渲染模块，只为 Shell 生成透明的黑/白“显示器 + 百分号”线稿；按用户实机反馈将主体从 88% 调整为占 90% 图标槽，统一笔画保持主体的 6%，100% DPI 仍为约 0.84 像素的抗锯齿视觉线宽。`AppIcon.ico` 及 EXE、设置窗口、任务栏应用图标不变。
+- 主题与刷新：颜色读取系统任务栏 `SystemUsesLightTheme`，高对比或读取失败按系统背景亮度选择高对比 fallback；主题、系统颜色或 DPI 改变时，仅当渲染状态变化才用一次 `NIM_MODIFY` 替换现有通知项。
+- 资源安全：动态 `HICON` 只在 Shell 接受替换后接管，旧自有句柄随后销毁；失败恢复旧句柄，析构和构造失败均释放自有资源，共享 fallback 不销毁。
+- 自动验证：纯测试覆盖 light→black、dark→white、未知 fallback、16/20/24/32 像素透明边界与约 10% 光学留白、黑白预乘 alpha、可见/alpha 覆盖率上下界、重复相同状态不刷新及主题切换一次更新。90% 主体、6% 笔画已由综合 PR #78 / run `33823153891` 通过 x64 Release、411 checks、分发校验和 9 文件 artifact 上传。
+- 实机待验：浅/深色任务栏、高对比、展开/折叠区，以及 100%/125%/150%/200% DPI 的清晰度与无闪烁切换。
+
+## 上一任务：DS-028 / DS-029 / W-030 托盘、离线目录与 USB 冷启动
 
 ### DS-028 已实现
 
 - 托盘 USB 状态只显示持久化开关语义；设备身份不再进入可见菜单。RDP、安全模式、学习和拓扑信任只进入既有运行门控，不改变“配置是否开启”的文案。
-- 所有非分隔菜单项都有语义图标，图标字体不可用时安全退化；菜单几何由同一 DPI/内容布局模型计算，96 DPI 目标宽度 260–272 像素。
+- 所有非分隔菜单项都有语义图标，图标字体不可用时安全退化；菜单几何由同一 DPI/内容布局模型计算；W-033 进一步把 96 DPI 最小视觉宽度统一收紧为 260 像素。
 - 左右键、双击和键盘激活都只打开同一个托盘菜单；设置窗口只从明确的“设置…”命令打开。
 - 设置窗口复用现有实例，打开时恢复、激活并请求前台，没有 topmost 或失焦隐藏行为。
 - 新增纯模型回归覆盖 USB 文案、托盘激活路由、紧凑宽度、DPI 缩放和滑杆最小可操作宽度；Windows Release 与实机视觉结果待本分支最终 CI 统一记录。
