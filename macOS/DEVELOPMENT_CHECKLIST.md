@@ -9,7 +9,7 @@
 - Bundle Identifier：`local.maizi.DisplaySwitcher`；最低支持 macOS 12。
 - 正式构建脚本：`macOS/scripts/build-app.sh`。
 - 构建产物：`macOS/outputs/DisplaySwitcher.app` 和当前架构 ZIP。
-- 当前版本：2.1.0（build 19）。
+- 当前版本：2.2.0（build 20）。
 - 本机配置为 `schemaVersion = 5`；v4 保留非 USB 设置并迁移到新格式，独立 USB 功能默认关闭且不猜测旧绑定或输入源。
 - 双端网络运行时只接受协议 v2；v1、缺失版本、类型错误和未知版本均在入口安全拒绝。
 - macOS 正式运行时只使用 Apple Silicon CoreDisplay/IOAVService 原生 DDC；Intel Mac 明确不支持，不执行外部 DDC 工具或软件调光回退。

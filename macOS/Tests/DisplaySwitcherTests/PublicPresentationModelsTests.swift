@@ -213,8 +213,8 @@ final class PublicPresentationModelsTests: XCTestCase {
     func testC023AboutPageUsesOnlyPublicMetadataAndHasNoRuntimeSideEffectDependencies() {
         let metadata = RecordingAboutMetadata(values: [
             "CFBundleName": "DisplaySwitcher",
-            "CFBundleShortVersionString": "2.1.0",
-            "CFBundleVersion": "19",
+            "CFBundleShortVersionString": "2.2.0",
+            "CFBundleVersion": "20",
             "Peer.Host": "private-peer-value",
             "Peer.PairingCode": "private-pairing-value",
             "USB.Device": "private-usb-value",
@@ -236,7 +236,7 @@ final class PublicPresentationModelsTests: XCTestCase {
             "CFBundleName", "CFBundleShortVersionString", "CFBundleVersion"
         ])
         XCTAssertEqual(content.productName, "DisplaySwitcher")
-        XCTAssertEqual(content.versionText, "版本 2.1.0 (19)")
+        XCTAssertEqual(content.versionText, "版本 2.2.0 (20)")
         XCTAssertEqual(content.platformText, "macOS · simulated-arch · 协议 v2")
         for privateValue in metadata.values.values where privateValue.hasPrefix("private-") {
             XCTAssertFalse(renderedPublicText.contains(privateValue))
@@ -966,8 +966,8 @@ final class PublicPresentationModelsTests: XCTestCase {
         let report = DiagnosticReport.make(
             metadata: RecordingAboutMetadata(values: [
                 "CFBundleName": "DisplaySwitcher",
-                "CFBundleShortVersionString": "2.1.0",
-                "CFBundleVersion": "19"
+                "CFBundleShortVersionString": "2.2.0",
+                "CFBundleVersion": "20"
             ]),
             architecture: "simulated-arch",
             document: document,
@@ -1003,8 +1003,8 @@ final class PublicPresentationModelsTests: XCTestCase {
         let disabledReport = DiagnosticReport.make(
             metadata: RecordingAboutMetadata(values: [
                 "CFBundleName": "DisplaySwitcher",
-                "CFBundleShortVersionString": "2.1.0",
-                "CFBundleVersion": "19"
+                "CFBundleShortVersionString": "2.2.0",
+                "CFBundleVersion": "20"
             ]),
             architecture: "simulated-arch",
             document: document,

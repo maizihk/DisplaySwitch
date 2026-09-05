@@ -2817,7 +2817,7 @@ namespace
         };
 
         DiagnosticSnapshot snapshot;
-        snapshot.about = { L"DisplaySwitch", L"2.1.0 (19)", L"Windows x64", L"UDP 协议 v2",
+        snapshot.about = { L"DisplaySwitch", L"2.2.0 (20)", L"Windows x64", L"UDP 协议 v2",
             L"https://example.invalid/project", L"https://example.invalid/license",
             L"https://example.invalid/notices", L"测试构建", true };
         snapshot.schemaVersion = CurrentAppConfigSchemaVersion;
