@@ -3,8 +3,8 @@
 IDI_APP_ICON ICON "AppIcon.ico"
 
 1 VERSIONINFO
- FILEVERSION 2,1,0,19
- PRODUCTVERSION 2,1,0,19
+ FILEVERSION 2,2,0,20
+ PRODUCTVERSION 2,2,0,20
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -21,11 +21,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "maizihk"
             VALUE "FileDescription", "DisplaySwitch"
-            VALUE "FileVersion", "2.1.0.19"
+            VALUE "FileVersion", "2.2.0.20"
             VALUE "InternalName", "DisplaySwitcher.Windows.exe"
             VALUE "OriginalFilename", "DisplaySwitcher.Windows.exe"
             VALUE "ProductName", "DisplaySwitch"
-            VALUE "ProductVersion", "2.1.0.19"
+            VALUE "ProductVersion", "2.2.0.20"
         END
     END
     BLOCK "VarFileInfo"
